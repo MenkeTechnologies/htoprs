@@ -15,7 +15,12 @@
 //! [`Process_isUserlandThread`], [`Process_isThread`], the pid/parent/tgid
 //! getters + setters, [`Process_init`], and the pure string/state helpers
 //! [`processStateChar`], [`findCommInCmdline`],
-//! [`matchCmdlinePrefixWithExeSuffix`], [`skipPotentialPath`]. C `const
+//! [`matchCmdlinePrefixWithExeSuffix`], [`skipPotentialPath`], the
+//! field-mutators [`Process_updateComm`] / [`Process_updateExe`] /
+//! [`Process_updateCmdline`], and the syscall actions
+//! [`Process_setPriority`] / [`Process_rowChangePriorityBy`] /
+//! [`Process_sendSignal`] / [`Process_rowSendSignal`] (POSIX
+//! `getpriority`/`setpriority`/`kill`, unguarded by cfg). C `const
 //! char*` + `size_t` helpers are modeled on `&[u8]` + `usize`;
 //! NUL-terminated reads treat any index at/after the slice length as the
 //! terminating NUL (`0`). Out-params are returned as tuples/`Option`.
@@ -30,7 +35,7 @@
 //! `stripExeFromCmdline` / `showThreadNames` / `shadowDistPathPrefix` /
 //! `lastUpdate`, and it also needs `CRT_treeStr[TREE_STR_VERT]`, the
 //! `CMDLINE_HIGHLIGHT_FLAG_*` constants, and `CRT_colors[...]`), and the
-//! writeField / init-display / syscall / filter functions. The `COMM`
+//! writeField / init-display / filter functions. The `COMM`
 //! sort case in [`Process_compareByKey_Base`] delegates to the stubbed
 //! [`Process_getCommand`], so that one case is not exercisable until the
 //! `Settings` substrate lands (every other case is pure and tested).
@@ -40,8 +45,9 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use crate::ported::object::{Object, ObjectClass};
+use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::row::{spaceship_number, Row, Row_class, Row_init};
+use crate::ported::settings::Settings_isReadonly;
 use crate::ported::xutils::compareRealNumbers;
 use core::any::Any;
 use core::ffi::c_void;
@@ -659,24 +665,75 @@ pub fn Process_init(this: &mut Process, host: *const c_void) {
     this.st_uid = u32::MAX; // (uid_t)-1
 }
 
-/// TODO: port of `static bool Process_setPriority(Process* this, int priority` from `Process.c:885`.
-pub fn Process_setPriority() {
-    todo!("port of Process.c:885")
+/// Port of `static bool Process_setPriority(Process* this, int priority)`
+/// from `Process.c:885`. Refuses in read-only mode ([`Settings_isReadonly`]),
+/// then `setpriority(PRIO_PROCESS, pid, priority)`. On success, the cached
+/// `nice` is refreshed only when the kernel actually changed the value
+/// (`old_prio != getpriority(...)` re-read) — htop's guard against a no-op
+/// call leaving a stale `nice`. Returns whether `setpriority` succeeded.
+///
+/// The `getpriority`/`setpriority` syscalls are POSIX (present on the
+/// darwin dev host), so this needs no cfg gate. `who` is the pid widened
+/// to `id_t`, matching the C implicit `pid_t`→`id_t` promotion.
+pub fn Process_setPriority(this: &mut Process, priority: i32) -> bool {
+    if Settings_isReadonly() {
+        return false;
+    }
+
+    let who = Process_getPid(this) as libc::id_t;
+    let old_prio = unsafe { libc::getpriority(libc::PRIO_PROCESS, who) };
+
+    let err = unsafe { libc::setpriority(libc::PRIO_PROCESS, who, priority) };
+
+    if err == 0 && old_prio != unsafe { libc::getpriority(libc::PRIO_PROCESS, who) } {
+        this.nice = priority;
+    }
+    err == 0
 }
 
-/// TODO: port of `bool Process_rowChangePriorityBy(Row* super, Arg delta` from `Process.c:898`.
-pub fn Process_rowChangePriorityBy() {
-    todo!("port of Process.c:898")
+/// Port of `bool Process_rowChangePriorityBy(Row* super, Arg delta)` from
+/// `Process.c:898`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// guard + mutable `Any` downcast idiom), then nudges the priority by
+/// `delta.i` relative to the current `nice`. The C `(int)this->nice +
+/// delta.i` is `i32` arithmetic; `delta` is the [`Arg::I`] arm (the
+/// `Arg::V` arm is impossible here, matching the unconditional C `delta.i`
+/// union read).
+pub fn Process_rowChangePriorityBy(super_: &mut dyn Object, delta: Arg) -> bool {
+    debug_assert!(Object_isA(Some(super_ as &dyn Object), &Process_class));
+    let this = (super_ as &mut dyn Any)
+        .downcast_mut::<Process>()
+        .expect("Process_rowChangePriorityBy: row is not a Process");
+    let delta_i = match delta {
+        Arg::I(i) => i,
+        Arg::V(_) => panic!("Process_rowChangePriorityBy: Arg must carry the delta in arg.i"),
+    };
+    let priority = this.nice + delta_i;
+    Process_setPriority(this, priority)
 }
 
-/// TODO: port of `static bool Process_sendSignal(Process* this, Arg sgn` from `Process.c:904`.
-pub fn Process_sendSignal() {
-    todo!("port of Process.c:904")
+/// Port of `static bool Process_sendSignal(Process* this, Arg sgn)` from
+/// `Process.c:904`. A thin wrapper over `kill(pid, sgn.i)`, returning
+/// whether the syscall succeeded. `sgn` is the [`Arg::I`] arm carrying the
+/// signal number (the `Arg::V` arm is impossible, matching the C `sgn.i`
+/// union read).
+pub fn Process_sendSignal(this: &Process, sgn: Arg) -> bool {
+    let signum = match sgn {
+        Arg::I(i) => i,
+        Arg::V(_) => panic!("Process_sendSignal: Arg must carry the signal in arg.i"),
+    };
+    unsafe { libc::kill(Process_getPid(this), signum) == 0 }
 }
 
-/// TODO: port of `bool Process_rowSendSignal(Row* super, Arg sgn` from `Process.c:908`.
-pub fn Process_rowSendSignal() {
-    todo!("port of Process.c:908")
+/// Port of `bool Process_rowSendSignal(Row* super, Arg sgn)` from
+/// `Process.c:908`. Casts the `Row*` to `Process*` (the `Object_isA` guard
+/// + `Any` downcast) and delegates to [`Process_sendSignal`]. `sendSignal`
+/// only reads the pid, so a shared `&Process` suffices.
+pub fn Process_rowSendSignal(super_: &dyn Object, sgn: Arg) -> bool {
+    debug_assert!(Object_isA(Some(super_), &Process_class));
+    let this = (super_ as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Process_rowSendSignal: row is not a Process");
+    Process_sendSignal(this, sgn)
 }
 
 /// TODO: port of `int Process_compare(const void* v1, const void* v2)`
@@ -949,14 +1006,107 @@ pub fn skipPotentialPath(cmdline: &[u8], end: usize) -> usize {
     slash
 }
 
-/// TODO: port of `void Process_updateCmdline(Process* this, const char* cmdline, size_t basenameStart, size_t basenameEnd` from `Process.c:1054`.
-pub fn Process_updateCmdline() {
-    todo!("port of Process.c:1054")
+/// Port of `void Process_updateCmdline(Process* this, const char* cmdline,
+/// size_t basenameStart, size_t basenameEnd)` from `Process.c:1054`.
+///
+/// No-op when both the stored and new `cmdline` are `None` (C `NULL`), or
+/// when both are present and equal (`String_eq`, inlined as `==`).
+/// Otherwise it replaces `cmdline` and recomputes the basename window.
+/// Kernel threads have no basename, so both offsets reset to 0
+/// (`Process_isKernelThread`). Otherwise `cmdlineBasenameStart` is the
+/// caller's `basenameStart` when it is nonzero (or when `cmdline` is
+/// `NULL`), else the heuristic [`skipPotentialPath`] over the new cmdline
+/// bounded by `basenameEnd`; `cmdlineBasenameEnd` is `basenameEnd`
+/// verbatim. Finally the merged-command cache marker is reset.
+///
+/// The three C `assert`s (`basenameStart`/`basenameEnd` vs
+/// `strlen(cmdline)`) become `debug_assert!`s, with `strlen` mapped to the
+/// UTF-8 byte length `c.len()` — the same `char`-index basis the C uses.
+/// The C `free(this->cmdline)` is implicit (the old `String` drops when the
+/// field is overwritten); `skipPotentialPath` runs on the new cmdline's
+/// bytes, only ever reached when `cmdline` is `Some`.
+pub fn Process_updateCmdline(
+    this: &mut Process,
+    cmdline: Option<&str>,
+    basenameStart: usize,
+    basenameEnd: usize,
+) {
+    debug_assert!(cmdline.map_or(basenameStart == 0, |c| basenameStart < c.len()));
+    debug_assert!(basenameEnd > basenameStart || (basenameEnd == 0 && basenameStart == 0));
+    debug_assert!(cmdline.map_or(basenameEnd == 0, |c| basenameEnd <= c.len()));
+
+    if this.cmdline.is_none() && cmdline.is_none() {
+        return;
+    }
+
+    if let (Some(cur), Some(new)) = (&this.cmdline, cmdline) {
+        if cur == new {
+            return;
+        }
+    }
+
+    if Process_isKernelThread(this) {
+        // kernel threads have no basename
+        this.cmdlineBasenameStart = 0;
+        this.cmdlineBasenameEnd = 0;
+    } else {
+        // C: (basenameStart || !cmdline) ? basenameStart
+        //                                 : skipPotentialPath(cmdline, basenameEnd)
+        this.cmdlineBasenameStart = match cmdline {
+            Some(c) if basenameStart == 0 => skipPotentialPath(c.as_bytes(), basenameEnd),
+            _ => basenameStart,
+        };
+        this.cmdlineBasenameEnd = basenameEnd;
+    }
+
+    this.cmdline = cmdline.map(|s| s.to_string());
+
+    this.mergedCommand.lastUpdate = 0;
 }
 
-/// TODO: port of `void Process_updateExe(Process* this, const char* exe` from `Process.c:1079`.
-pub fn Process_updateExe() {
-    todo!("port of Process.c:1079")
+/// Port of `void Process_updateExe(Process* this, const char* exe)` from
+/// `Process.c:1079`. No-op when both the stored `procExe` and the new
+/// `exe` are `None` (C `NULL`), or when both are present and equal
+/// (`String_eq`, inlined as `==`). Otherwise it replaces `procExe`
+/// (`xStrdup(exe)` → an owned `String`, `NULL` → `None`), recomputes the
+/// basename offset, and resets the merged-command cache marker.
+///
+/// The C `strrchr(exe, '/')` + guard
+/// `lastSlash && *(lastSlash + 1) != '\0' && lastSlash != exe` maps to
+/// [`str::rfind`] on the ASCII `'/'`: a match at byte `pos` yields
+/// `pos + 1` only when the slash is neither the final byte
+/// (`*(lastSlash + 1) != '\0'` → `pos + 1 < exe.len()`) nor the first
+/// (`lastSlash != exe` → `pos != 0`); every other case yields `0`. Byte
+/// lengths (`exe.len()`) preserve the C `char`-index arithmetic. The C
+/// `free(this->procExe)` is implicit — the old `String` is dropped when
+/// the field is overwritten.
+pub fn Process_updateExe(this: &mut Process, exe: Option<&str>) {
+    if this.procExe.is_none() && exe.is_none() {
+        return;
+    }
+
+    if let (Some(cur), Some(new)) = (&this.procExe, exe) {
+        if cur == new {
+            return;
+        }
+    }
+
+    match exe {
+        Some(exe) => {
+            let last_slash = exe.rfind('/');
+            this.procExeBasenameOffset = match last_slash {
+                Some(pos) if pos + 1 < exe.len() && pos != 0 => pos + 1,
+                _ => 0,
+            };
+            this.procExe = Some(exe.to_string());
+        }
+        None => {
+            this.procExe = None;
+            this.procExeBasenameOffset = 0;
+        }
+    }
+
+    this.mergedCommand.lastUpdate = 0;
 }
 
 /// TODO: port of `void Process_updateCPUFieldWidths(float percentage` from `Process.c:1099`.
@@ -1330,18 +1480,12 @@ mod tests {
         a.starttime_ctime = 200; // started later => smaller elapsed
         b.starttime_ctime = 100;
         // SPACESHIP(200,100)=1 => r=-1.
-        assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED),
-            -1
-        );
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED), -1);
         // Equal starttime => tie-break by pid.
         b.starttime_ctime = 200;
         Process_setPid(&mut a, 3);
         Process_setPid(&mut b, 8);
-        assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED),
-            -1
-        );
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED), -1);
     }
 
     #[test]
@@ -1351,7 +1495,7 @@ mod tests {
         let mut a = proc();
         a.tty_name = Some("tty1".to_string());
         let b = proc(); // no tty_name => "\x7f"
-        // "tty1" (t=0x74) < "\x7f" => real tty sorts first.
+                        // "tty1" (t=0x74) < "\x7f" => real tty sorts first.
         assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::TTY), -1);
         // Two missing ttys compare equal (both "\x7f").
         let c = proc();
@@ -1396,5 +1540,180 @@ mod tests {
             Some(&p as &dyn Object),
             &Row_class
         ));
+    }
+
+    // ── Process_updateExe (Process.c:1079) ────────────────────────────
+    #[test]
+    fn update_exe_both_none_is_noop() {
+        let mut p = proc();
+        p.mergedCommand.lastUpdate = 7; // must survive the early return
+        Process_updateExe(&mut p, None);
+        assert_eq!(p.procExe, None);
+        assert_eq!(p.mergedCommand.lastUpdate, 7);
+    }
+
+    #[test]
+    fn update_exe_equal_string_is_noop() {
+        let mut p = proc();
+        p.procExe = Some("/usr/bin/htop".to_string());
+        p.procExeBasenameOffset = 999; // stale marker preserved by the no-op
+        p.mergedCommand.lastUpdate = 7;
+        Process_updateExe(&mut p, Some("/usr/bin/htop"));
+        assert_eq!(p.procExe.as_deref(), Some("/usr/bin/htop"));
+        assert_eq!(p.procExeBasenameOffset, 999);
+        assert_eq!(p.mergedCommand.lastUpdate, 7);
+    }
+
+    #[test]
+    fn update_exe_sets_basename_offset_past_last_slash() {
+        let mut p = proc();
+        p.mergedCommand.lastUpdate = 7;
+        Process_updateExe(&mut p, Some("/usr/bin/htop"));
+        assert_eq!(p.procExe.as_deref(), Some("/usr/bin/htop"));
+        // last '/' is byte 8; offset is 9 (start of "htop").
+        assert_eq!(p.procExeBasenameOffset, 9);
+        assert_eq!(&"/usr/bin/htop"[p.procExeBasenameOffset..], "htop");
+        assert_eq!(p.mergedCommand.lastUpdate, 0); // cache invalidated
+    }
+
+    #[test]
+    fn update_exe_trailing_slash_yields_zero_offset() {
+        // strrchr finds the final '/', but *(lastSlash+1) == '\0' -> 0.
+        let mut p = proc();
+        Process_updateExe(&mut p, Some("/usr/bin/"));
+        assert_eq!(p.procExeBasenameOffset, 0);
+    }
+
+    #[test]
+    fn update_exe_leading_slash_only_yields_zero_offset() {
+        // Slash at position 0: lastSlash == exe -> 0.
+        let mut p = proc();
+        Process_updateExe(&mut p, Some("/init"));
+        assert_eq!(p.procExeBasenameOffset, 0);
+    }
+
+    #[test]
+    fn update_exe_no_slash_yields_zero_offset() {
+        let mut p = proc();
+        Process_updateExe(&mut p, Some("bash"));
+        assert_eq!(p.procExe.as_deref(), Some("bash"));
+        assert_eq!(p.procExeBasenameOffset, 0);
+    }
+
+    #[test]
+    fn update_exe_clears_when_new_is_none() {
+        let mut p = proc();
+        p.procExe = Some("/usr/bin/htop".to_string());
+        p.procExeBasenameOffset = 9;
+        p.mergedCommand.lastUpdate = 7;
+        Process_updateExe(&mut p, None);
+        assert_eq!(p.procExe, None);
+        assert_eq!(p.procExeBasenameOffset, 0);
+        assert_eq!(p.mergedCommand.lastUpdate, 0);
+    }
+
+    // ── Process_updateCmdline (Process.c:1054) ────────────────────────
+    #[test]
+    fn update_cmdline_both_none_is_noop() {
+        let mut p = proc();
+        p.mergedCommand.lastUpdate = 7;
+        Process_updateCmdline(&mut p, None, 0, 0);
+        assert_eq!(p.cmdline, None);
+        assert_eq!(p.mergedCommand.lastUpdate, 7);
+    }
+
+    #[test]
+    fn update_cmdline_equal_string_is_noop() {
+        let mut p = proc();
+        p.cmdline = Some("/bin/sh -c foo".to_string());
+        p.cmdlineBasenameStart = 5;
+        p.mergedCommand.lastUpdate = 7;
+        Process_updateCmdline(&mut p, Some("/bin/sh -c foo"), 5, 7);
+        assert_eq!(p.cmdlineBasenameStart, 5); // untouched by the no-op
+        assert_eq!(p.mergedCommand.lastUpdate, 7);
+    }
+
+    #[test]
+    fn update_cmdline_honours_explicit_basename_start() {
+        // basenameStart != 0 -> used verbatim, no skipPotentialPath.
+        let mut p = proc();
+        Process_updateCmdline(&mut p, Some("/usr/bin/htop --tree"), 9, 13);
+        assert_eq!(p.cmdline.as_deref(), Some("/usr/bin/htop --tree"));
+        assert_eq!(p.cmdlineBasenameStart, 9);
+        assert_eq!(p.cmdlineBasenameEnd, 13);
+        assert_eq!(p.mergedCommand.lastUpdate, 0);
+    }
+
+    #[test]
+    fn update_cmdline_derives_basename_via_skip_potential_path() {
+        // basenameStart == 0 and non-kernel -> skipPotentialPath("/usr/bin/htop", 13).
+        let mut p = proc();
+        Process_updateCmdline(&mut p, Some("/usr/bin/htop"), 0, 13);
+        // last path component starts just past "/usr/bin/".
+        assert_eq!(p.cmdlineBasenameStart, 9);
+        assert_eq!(p.cmdlineBasenameEnd, 13);
+    }
+
+    #[test]
+    fn update_cmdline_kernel_thread_has_no_basename() {
+        let mut p = proc();
+        p.isKernelThread = true;
+        Process_updateCmdline(&mut p, Some("[kworker/0:0]"), 1, 8);
+        assert_eq!(p.cmdlineBasenameStart, 0);
+        assert_eq!(p.cmdlineBasenameEnd, 0);
+        assert_eq!(p.cmdline.as_deref(), Some("[kworker/0:0]"));
+    }
+
+    // ── Process_sendSignal / rowSendSignal (Process.c:904/908) ────────
+    #[test]
+    fn send_signal_zero_to_self_succeeds() {
+        // signal 0 performs no delivery, only an error/permission check,
+        // so kill(self, 0) must return 0 (success).
+        let mut p = proc();
+        Process_setPid(&mut p, unsafe { libc::getpid() });
+        assert!(Process_sendSignal(&p, Arg::I(0)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn send_signal_rejects_arg_v() {
+        let p = proc();
+        let _ = Process_sendSignal(&p, Arg::V(core::ptr::null_mut()));
+    }
+
+    #[test]
+    fn row_send_signal_delegates_through_object_isa() {
+        let mut p = proc();
+        Process_setPid(&mut p, unsafe { libc::getpid() });
+        assert!(Process_rowSendSignal(&p as &dyn Object, Arg::I(0)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn row_send_signal_rejects_non_process() {
+        // A bare Row's class chain is Row -> Object, never Process.
+        let row = crate::ported::row::Row::default();
+        let _ = Process_rowSendSignal(&row as &dyn Object, Arg::I(0));
+    }
+
+    #[test]
+    #[should_panic]
+    fn row_change_priority_rejects_non_process() {
+        // Guard fires (downcast) before any setpriority syscall runs.
+        let mut row = crate::ported::row::Row::default();
+        let _ = Process_rowChangePriorityBy(&mut row as &mut dyn Object, Arg::I(1));
+    }
+
+    #[test]
+    fn update_cmdline_clears_when_new_is_none() {
+        let mut p = proc();
+        p.cmdline = Some("/bin/sh".to_string());
+        p.mergedCommand.lastUpdate = 7;
+        Process_updateCmdline(&mut p, None, 0, 0);
+        assert_eq!(p.cmdline, None);
+        // non-kernel path with cmdline None -> basenameStart stays the passed 0.
+        assert_eq!(p.cmdlineBasenameStart, 0);
+        assert_eq!(p.cmdlineBasenameEnd, 0);
+        assert_eq!(p.mergedCommand.lastUpdate, 0);
     }
 }
