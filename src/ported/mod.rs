@@ -5,6 +5,7 @@
 //! origin (`<File>.c:<line>`) in the doc comment. See `build.rs` for
 //! the port-purity gate that enforces this.
 
+pub mod commandline;
 pub mod hashtable;
 pub mod meter;
 pub mod vector;

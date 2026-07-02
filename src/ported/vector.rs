@@ -94,12 +94,7 @@ fn partition<T>(
 /// which the C avoids for overflow reasons). Recurses with
 /// `pivotNewIndex - 1`, which can be `left - 1`; the `left >= right`
 /// guard catches that, which is why the indices are signed `isize`.
-pub fn quickSort<T>(
-    array: &mut [T],
-    left: isize,
-    right: isize,
-    compare: &impl Fn(&T, &T) -> i32,
-) {
+pub fn quickSort<T>(array: &mut [T], left: isize, right: isize, compare: &impl Fn(&T, &T) -> i32) {
     if left >= right {
         return;
     }
@@ -152,11 +147,7 @@ pub fn insertionSort<T>(
 /// or the C sentinel `-1` when absent (kept as an `isize` sentinel, not
 /// an `Option`, to mirror the C `int` return). The `Object`-type and
 /// non-null-slot asserts are omitted.
-pub fn Vector_indexOf<T>(
-    array: &[T],
-    search: &T,
-    compare: &impl Fn(&T, &T) -> i32,
-) -> isize {
+pub fn Vector_indexOf<T>(array: &[T], search: &T, compare: &impl Fn(&T, &T) -> i32) -> isize {
     let mut i: isize = 0;
     while (i as usize) < array.len() {
         if compare(search, &array[i as usize]) == 0 {
@@ -213,8 +204,16 @@ mod tests {
         for input in inputs {
             let mut reference = input.clone();
             reference.sort();
-            assert_eq!(qsorted(input.clone(), &asc), reference, "quickSort {input:?}");
-            assert_eq!(isorted(input.clone(), &asc), reference, "insertionSort {input:?}");
+            assert_eq!(
+                qsorted(input.clone(), &asc),
+                reference,
+                "quickSort {input:?}"
+            );
+            assert_eq!(
+                isorted(input.clone(), &asc),
+                reference,
+                "insertionSort {input:?}"
+            );
             // The two algorithms agree with each other, too.
             assert_eq!(qsorted(input.clone(), &asc), isorted(input, &asc));
         }
