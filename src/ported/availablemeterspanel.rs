@@ -70,47 +70,60 @@ pub fn AvailableMetersPanel_delete() {
 /// TODO: port of `static inline void AvailableMetersPanel_addMeter(Header*
 /// header, MetersPanel* panel, const MeterClass* type, unsigned int param,
 /// size_t column)` from `AvailableMetersPanel.c:41`. Blocked: calls
-/// `Header_addMeterByClass` (a `todo!()` stub in `header.rs`) and
-/// `Meter_toListItem`, which is not ported anywhere in the crate.
+/// `Header_addMeterByClass`, still a `todo!()` stub in `header.rs`
+/// (`Header.c:173`), blocked on the `MeterClass` vtable + `Machine` host.
+/// (`Meter_toListItem` and `Panel_setSelected`/`Panel_size` are now ported,
+/// so `Header_addMeterByClass` is the sole remaining blocker.)
 pub fn AvailableMetersPanel_addMeter() {
-    todo!("port of AvailableMetersPanel.c:41 — needs Header_addMeterByClass (stub) + unported Meter_toListItem")
+    todo!("port of AvailableMetersPanel.c:41 — needs Header_addMeterByClass (todo!() stub in header.rs)")
 }
 
 /// TODO: port of `static HandlerResult AvailableMetersPanel_eventHandler(
 /// Panel* super, int ch)` from `AvailableMetersPanel.c:47`. Blocked: needs
-/// the unmodeled `HandlerResult` enum, the unported `Platform_meterTypes[]`
-/// table, the `todo!()` stubs `ScreenManager_resize`/`Header_updateData`/
-/// `Header_draw`, and the blocked `AvailableMetersPanel_addMeter`.
+/// the `AvailableMetersPanel` struct (its `header`/`meterPanels`/`columns`/
+/// `host`/`scr` fields — the struct is not defined anywhere in the crate),
+/// the unported `Platform_meterTypes[]` table, the `todo!()` stubs
+/// `Header_updateData`/`Header_draw` (`header.rs`), and the blocked
+/// `AvailableMetersPanel_addMeter`. (`HandlerResult`, `ScreenManager_resize`,
+/// `Header_calculateHeight`, and `Panel_getSelected` are now ported.)
 pub fn AvailableMetersPanel_eventHandler() {
-    todo!("port of AvailableMetersPanel.c:47 — needs HandlerResult + Platform_meterTypes + ScreenManager_resize/Header_* + addMeter")
+    todo!("port of AvailableMetersPanel.c:47 — needs AvailableMetersPanel struct + Platform_meterTypes + Header_updateData/Header_draw stubs + addMeter")
 }
 
 /// TODO: port of `static void AvailableMetersPanel_addCPUMeters(Panel*
 /// super, const MeterClass* type, const Machine* host)` from
-/// `AvailableMetersPanel.c:103`. Blocked: reads `type->uiName` off a
-/// `const MeterClass*` (the `MeterClass` vtable is not modeled; `meter.rs`
-/// models only the `Meter` instance) and uses `Settings_cpuId`, unported as
-/// a free fn (the `machine.rs` `Settings` model has no `countCPUsFromOne`).
+/// `AvailableMetersPanel.c:103`. Blocked: the `host->existingCPUs > 1`
+/// branch inlines `Settings_cpuId(host->settings, i - 1)` (`Settings.h:119`,
+/// `countCPUsFromOne ? cpu + 1 : cpu`), but the `machine.rs` `Settings`
+/// model that `Machine::settings` holds carries no `countCPUsFromOne` field
+/// to inline against (and that field lives in an off-limits module).
+/// (`MeterClass::uiName` and `Machine::existingCPUs` are now modeled.)
 pub fn AvailableMetersPanel_addCPUMeters() {
-    todo!("port of AvailableMetersPanel.c:103 — needs unmodeled MeterClass::uiName + unported Settings_cpuId")
+    todo!("port of AvailableMetersPanel.c:103 — needs Settings_cpuId inline over machine::Settings.countCPUsFromOne (field absent)")
 }
 
 /// TODO: port of `static void AvailableMetersPanel_addDynamicMeter(
 /// ht_key_t key, void* value, void* data)` from `AvailableMetersPanel.c:122`.
 /// Blocked: a `Hashtable_foreach` callback reading `meter->description` /
 /// `meter->caption` / `meter->name`; the `dynamicmeter.rs` `DynamicMeter`
-/// model carries only `name`, and `dynamicmeter.rs` is off-limits here.
+/// model carries only `name` (the `description`/`caption` fields are
+/// unmodeled), and `dynamicmeter.rs` is off-limits here. (`Hashtable_foreach`
+/// is now ported.)
 pub fn AvailableMetersPanel_addDynamicMeter() {
-    todo!("port of AvailableMetersPanel.c:122 — DynamicMeter model lacks description/caption; driven by unported Hashtable_foreach")
+    todo!(
+        "port of AvailableMetersPanel.c:122 — DynamicMeter model lacks description/caption fields"
+    )
 }
 
 /// TODO: port of `static void AvailableMetersPanel_addDynamicMeters(Panel*
 /// super, const Settings* settings, unsigned int offset)` from
 /// `AvailableMetersPanel.c:134`. Blocked: drives `Hashtable_foreach` over
-/// `settings->dynamicMeters`; `Hashtable_foreach` is not ported (`hashtable.rs`
-/// ports only the prime math) and the `Settings` model has no `dynamicMeters`.
+/// `settings->dynamicMeters`, but the `Settings` model carries no
+/// `dynamicMeters` field. Also blocked transitively on the callback
+/// [`AvailableMetersPanel_addDynamicMeter`] (missing `DynamicMeter`
+/// description/caption fields). (`Hashtable_foreach` is now ported.)
 pub fn AvailableMetersPanel_addDynamicMeters() {
-    todo!("port of AvailableMetersPanel.c:134 — needs unported Hashtable_foreach + Settings.dynamicMeters")
+    todo!("port of AvailableMetersPanel.c:134 — needs Settings.dynamicMeters field + the blocked addDynamicMeter callback")
 }
 
 /// Port of `static void AvailableMetersPanel_addPlatformMeter(Panel* super,
@@ -136,15 +149,17 @@ pub fn AvailableMetersPanel_addPlatformMeter(super_: &mut Panel, type_: &MeterCl
 
 /// TODO: port of `AvailableMetersPanel* AvailableMetersPanel_new(Machine*
 /// host, Header* header, size_t columns, MetersPanel** meterPanels,
-/// ScreenManager* scr)` from `AvailableMetersPanel.c:147`. Blocked: the
-/// constructor's core loops over the unported `Platform_meterTypes[]` table,
-/// comparing each entry against `&CPUMeter_class` / `&DynamicMeter_class`
-/// (class-identity with no modeled `CPUMeter_class`/`DynamicMeter_class`) and
-/// dispatching to the blocked `addDynamicMeters`/`addCPUMeters` helpers
-/// (`addPlatformMeter` is now ported, but the driving loop and class-identity
-/// tests are not).
+/// ScreenManager* scr)` from `AvailableMetersPanel.c:147`. Blocked: needs the
+/// `AvailableMetersPanel` struct (not defined anywhere in the crate) to store
+/// `host`/`header`/`columns`/`meterPanels`/`scr`, and its core loops over the
+/// unported `Platform_meterTypes[]` table, comparing each entry against
+/// `&CPUMeter_class` / `&DynamicMeter_class` (class-identity with no modeled
+/// `CPUMeter_class`/`DynamicMeter_class`) and dispatching to the blocked
+/// `addDynamicMeters`/`addCPUMeters` helpers. (`FunctionBar_new`, `Panel_init`,
+/// `Panel_setHeader`, and `addPlatformMeter` are ported, but the surrounding
+/// struct, driving loop, and class-identity tests are not.)
 pub fn AvailableMetersPanel_new() {
-    todo!("port of AvailableMetersPanel.c:147 — needs Platform_meterTypes + MeterClass identity + blocked add* helpers")
+    todo!("port of AvailableMetersPanel.c:147 — needs AvailableMetersPanel struct + Platform_meterTypes + MeterClass identity + blocked add* helpers")
 }
 
 #[cfg(test)]

@@ -29,27 +29,26 @@
 //!   super` vtable in the ported `InfoScreen` has no slot for it, and only
 //!   the stubbed `InfoScreen_run` would dispatch through it.
 //!
-//! # Stubbed (cannot be ported faithfully yet), each naming its blocker
+//! # Ported (calling through a stubbed command source)
 //!
 //! - [`CommandScreen_scan`] (`CommandScreen.c:22`) — `static` in C; the
-//!   vtable `scan` hook. Its word-wrap loop is self-contained, but its
-//!   only input is `Process_getCommand(this->process)`, and
-//!   `Process_getCommand` (`process.rs:575`, `Process.c:808`) is still a
-//!   `todo!()` stub blocked on the unported `Machine`/`Settings`
-//!   substrate (it reads `this->super.host->settings->showThreadNames`).
-//!   With no command bytes to wrap, the loop has no faithful input, so the
-//!   whole function stays a stub. `Panel_getSelectedIndex`/`Panel_prune`/
-//!   `Panel_setSelected` (`panel.rs`) and `InfoScreen_addLine`
-//!   (`infoscreen.rs`) are all available — the sole blocker is
-//!   `Process_getCommand`.
+//!   vtable `scan` hook. Its word-wrap loop over
+//!   `Process_getCommand(this->process)`, feeding `InfoScreen_addLine` and
+//!   restoring the selection across `Panel_prune`, is ported in full.
+//!   `Panel_getSelectedIndex`/`Panel_prune`/`Panel_setSelected` (`panel.rs`)
+//!   and `InfoScreen_addLine` (`infoscreen.rs`) are all available;
+//!   `Process_getCommand` (`process.rs`, `Process.c:831`) still `todo!()`s
+//!   on the `Settings` substrate, so a real scan panics through it — the
+//!   faithful chain-of-stubs the ported `Process_getSortKey` already uses.
 //! - [`CommandScreen_draw`] (`CommandScreen.c:68`) — `static` in C; the
-//!   vtable `draw` hook. A single call to `InfoScreen_drawTitled(this,
+//!   vtable `draw` hook. A single `InfoScreen_drawTitled(this,
 //!   "Command of process %d - %s", Process_getPid(this->process),
-//!   Process_getCommand(this->process))`. Blocked on: `InfoScreen_drawTitled`
-//!   (`infoscreen.rs`, `todo!()` — needs `String_stripControlChars`, which
-//!   is ABSENT from the port-purity snapshot, plus the unported
-//!   `IncSet_drawBar`) and `Process_getCommand` (stub, above).
-//!   `Process_getPid` (`process.rs:802`) is available.
+//!   Process_getCommand(this->process))`, now ported: `InfoScreen_drawTitled`
+//!   (`infoscreen.rs`) and `Process_getPid` (`process.rs`) are both
+//!   available; `Process_getCommand` is the same stubbed command source.
+//!
+//! # Stubbed (cannot be ported faithfully yet), each naming its blocker
+//!
 //! - [`CommandScreen_delete`] (`CommandScreen.c:86`) — the `Object.delete`
 //!   hook: `free(InfoScreen_done((InfoScreen*)this))`. Blocked on
 //!   `InfoScreen_done` (`infoscreen.rs`, `todo!()`): it is heap-free only,
@@ -61,11 +60,13 @@
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_init};
+use crate::ported::infoscreen::{
+    InfoScreen, InfoScreen_addLine, InfoScreen_drawTitled, InfoScreen_init,
+};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::Object;
-use crate::ported::panel::Panel_new;
-use crate::ported::process::Process;
+use crate::ported::panel::{Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected};
+use crate::ported::process::{Process, Process_getCommand, Process_getPid};
 use crate::ported::vector::Vector_new;
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -82,26 +83,116 @@ pub struct CommandScreen {
     pub super_: InfoScreen,
 }
 
-/// TODO: port of `static void CommandScreen_scan(InfoScreen* this)` from
-/// `CommandScreen.c:22`. Word-wraps `Process_getCommand(this->process)` to
-/// `COLS`-width lines fed to `InfoScreen_addLine`. Blocked: its only input
-/// is `Process_getCommand` (`process.rs:575`, `Process.c:808`), still a
-/// `todo!()` stub needing the `Machine`/`Settings` substrate. The wrap
-/// loop, `Panel_getSelectedIndex`/`Panel_prune`/`Panel_setSelected`, and
-/// `InfoScreen_addLine` are all available; only the command source is not.
-pub fn CommandScreen_scan() {
-    todo!("port of CommandScreen.c:22 — needs Process_getCommand (Process.c:808 stub: Machine/Settings substrate)")
+/// Port of `static void CommandScreen_scan(InfoScreen* this)` from
+/// `CommandScreen.c:22` — the vtable `scan` hook. Word-wraps
+/// `Process_getCommand(this->process)` to `COLS`-width lines (min 40) fed
+/// to [`InfoScreen_addLine`], preserving the selected index across the
+/// `Panel_prune`. C's `Panel* panel = this->display` alias becomes a
+/// reborrow of `this.display` at each use point (the panel is only touched
+/// before and after the wrap loop, so no live borrow spans the
+/// `InfoScreen_addLine` calls). The scratch `char line[line_maxlen + 1]`
+/// buffer maps to a `Vec<u8>` whose used length is tracked by `line_offset`
+/// (C's `memmove(line, line + line_len, line_offset)` shift becomes
+/// `Vec::copy_within`). The command bytes come from [`Process_getCommand`]
+/// (still a `todo!()` stub pending the `Settings` substrate), so a real
+/// scan panics through it — the same faithful chain-of-stubs the ported
+/// [`Process_getSortKey`](crate::ported::process::Process_getSortKey) uses;
+/// `None` maps to the empty command (nothing to wrap).
+pub fn CommandScreen_scan(this: &mut InfoScreen) {
+    // C: Panel* panel = this->display;
+    //    int idx = MAXIMUM(Panel_getSelectedIndex(panel), 0);
+    let idx = Panel_getSelectedIndex(&this.display).max(0);
+    // C: Panel_prune(panel);
+    Panel_prune(&mut this.display);
+
+    // C: const char* p = Process_getCommand(this->process);
+    let p = Process_getCommand(unsafe { &*this.process });
+    // C treats `p` as a NUL-terminated char*; iterate the command bytes.
+    let bytes: &[u8] = match p {
+        Some(b) => b,
+        None => &[],
+    };
+
+    // C: size_t line_maxlen = COLS < 40 ? 40 : COLS;
+    let cols = Ncurses::cols();
+    let line_maxlen: usize = if cols < 40 { 40 } else { cols as usize };
+    // C: size_t line_offset = 0; size_t last_space = 0;
+    let mut line_offset: usize = 0;
+    let mut last_space: usize = 0;
+    // C: char* line = xCalloc(line_maxlen + 1, sizeof(char));
+    let mut line: Vec<u8> = vec![0u8; line_maxlen + 1];
+
+    // C: for (; *p != '\0'; p++) { ... }
+    for &ch in bytes {
+        if line_offset >= line_maxlen {
+            debug_assert!(line_offset <= line_maxlen);
+            debug_assert!(last_space <= line_maxlen);
+
+            // C: size_t line_len = last_space <= 0 ? line_offset : last_space;
+            //    (last_space is size_t, so `<= 0` means `== 0`.)
+            let line_len = if last_space == 0 {
+                line_offset
+            } else {
+                last_space
+            };
+            // C: char tmp = line[line_len]; line[line_len] = '\0';
+            //    InfoScreen_addLine(this, line); line[line_len] = tmp;
+            {
+                let s = String::from_utf8_lossy(&line[..line_len]);
+                InfoScreen_addLine(this, &s);
+            }
+
+            debug_assert!(line_len <= line_offset);
+            // C: line_offset -= line_len; memmove(line, line + line_len, line_offset);
+            let old_offset = line_offset;
+            line_offset -= line_len;
+            line.copy_within(line_len..old_offset, 0);
+
+            // C: last_space = 0;
+            last_space = 0;
+        }
+
+        // C: line[line_offset++] = *p;
+        line[line_offset] = ch;
+        line_offset += 1;
+        // C: if (*p == ' ') last_space = line_offset;
+        if ch == b' ' {
+            last_space = line_offset;
+        }
+    }
+
+    // C: if (line_offset > 0) { line[line_offset] = '\0'; InfoScreen_addLine(this, line); }
+    if line_offset > 0 {
+        let s = String::from_utf8_lossy(&line[..line_offset]);
+        InfoScreen_addLine(this, &s);
+    }
+
+    // C: free(line); — the Vec drops here.
+
+    // C: Panel_setSelected(panel, idx);
+    Panel_setSelected(&mut this.display, idx);
 }
 
-/// TODO: port of `static void CommandScreen_draw(InfoScreen* this)` from
-/// `CommandScreen.c:68`. Single call to `InfoScreen_drawTitled(this,
-/// "Command of process %d - %s", Process_getPid(this->process),
-/// Process_getCommand(this->process))`. Blocked: `InfoScreen_drawTitled`
-/// (`infoscreen.rs` stub — `String_stripControlChars` absent from the
-/// snapshot + unported `IncSet_drawBar`) and `Process_getCommand` (stub).
-/// `Process_getPid` (`process.rs:802`) is available.
-pub fn CommandScreen_draw() {
-    todo!("port of CommandScreen.c:68 — needs InfoScreen_drawTitled + Process_getCommand stubs")
+/// Port of `static void CommandScreen_draw(InfoScreen* this)` from
+/// `CommandScreen.c:68` — the vtable `draw` hook. A single
+/// [`InfoScreen_drawTitled`] call with the C `printf`-style
+/// `"Command of process %d - %s"` pre-formatted (the ported
+/// `InfoScreen_drawTitled` takes an already-built `&str`, the standard
+/// `xSnprintf`/`vsnprintf` idiom). `%d` is [`Process_getPid`] and `%s` is
+/// [`Process_getCommand`] (a `const char*`, rendered lossily from its
+/// bytes; `None` -> empty). `Process_getCommand` is still a `todo!()` stub,
+/// so a real draw panics through it — the faithful chain-of-stubs wiring.
+pub fn CommandScreen_draw(this: &mut InfoScreen) {
+    // C: InfoScreen_drawTitled(this, "Command of process %d - %s",
+    //        Process_getPid(this->process), Process_getCommand(this->process));
+    let pid = Process_getPid(unsafe { &*this.process });
+    let cmd = Process_getCommand(unsafe { &*this.process });
+    let cmd = match cmd {
+        Some(b) => String::from_utf8_lossy(b).into_owned(),
+        None => String::new(),
+    };
+    let title = format!("Command of process {} - {}", pid, cmd);
+    InfoScreen_drawTitled(this, &title);
 }
 
 /// Port of `CommandScreen* CommandScreen_new(Process* process)` from

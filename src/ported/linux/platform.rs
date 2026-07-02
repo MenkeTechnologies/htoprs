@@ -1,33 +1,59 @@
 //! Partial port of `linux/Platform.c` — htop's Linux platform hooks.
 //!
-//! Ported here (self-contained: only libc / Rust std / already-ported
-//! `String_*` helpers — no unported substrate):
+//! Ported here (self-contained: only libc / Rust std / the already-ported
+//! `Compat_*` file readers / `String_*` helpers / `ACPresence`):
 //! - `Platform_getPressureStall` (`Platform.c:643`)
 //! - `Platform_getProcessEnv` (`Platform.c:519`)
+//! - `Platform_getUptime` (`Platform.c:283`)
+//! - `Platform_getLoadAverage` (`Platform.c:302`)
+//! - `Platform_getMaxPid` (`Platform.c:325`)
+//! - `Platform_getFileDescriptors` (`Platform.c:661`)
+//! - `Platform_Battery_getProcBatInfo` (`Platform.c:764`)
+//! - `procAcpiCheck` (`Platform.c:827`)
+//! - `Platform_Battery_getProcData` (`Platform.c:836`)
+//! - `Platform_Battery_getSysData` (`Platform.c:845`, `HAVE_OPENAT` build)
+//! - `Platform_getBattery` (`Platform.c:964`)
 //! - `Platform_longOptionsUsage` (`Platform.c:994`, non-`HAVE_LIBCAP` build)
 //! - `Platform_done` (`Platform.c:1171`, non-`HAVE_SENSORS` build)
 //! - `Platform_init` (`Platform.c:1129`)
 //!
 //! Everything else is still `todo!()` and blocked on unported substrate —
-//! chiefly `LinuxMachine`/`CPUData` (whole struct unmodeled), the `Compat_*`
-//! file readers (`Compat.c`, no signatures yet), and the meter/panel/battery
-//! types (`ACPresence`, `DiskIOData`, `NetworkIOData`, `FileLocks_*`,
-//! `CommandLineStatus`, `State`, `MainPanel`, …) owned by other files.
-//! `HAVE_LIBCAP`-only functions
-//! (`dropCapabilities`, the `Platform_getLongOption`/`longOptionsUsage`
-//! capability branches) are the mutually-exclusive alternative build and are
-//! not ported (rule 3).
+//! chiefly the meter setters needing `Meter::host` (unmodeled field, owned by
+//! `meter.rs`) plus the `LinuxMachine` memory/zfs/zswap/zram/gpu accessors,
+//! and the panel/action/lock types (`DiskIOData`, `NetworkIOData`,
+//! `FileLocks_*`, `CommandLineStatus`, `State`, `MainPanel`, …) owned by other
+//! files. `HAVE_LIBCAP`-only functions (`dropCapabilities`, the
+//! `Platform_getLongOption`/`longOptionsUsage` capability branches) are the
+//! mutually-exclusive alternative build and are not ported (rule 3).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use std::ffi::{CStr, CString};
+use std::sync::Mutex;
 
+use crate::ported::batterymeter::ACPresence;
+use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
 use crate::ported::xutils::{String_eq, String_startsWith};
 
 /// `PROCDIR` — the procfs mount htop was compiled to read (a `config.h`
 /// macro, default `"/proc"`). Defined locally so this module's `/proc`
 /// reads reproduce the C string-literal concatenations verbatim.
 const PROCDIR: &str = "/proc";
+
+/// `PROC_BATTERY_DIR` — `PROCDIR "/acpi/battery"` (`Platform.c:755`).
+const PROC_BATTERY_DIR: &str = "/proc/acpi/battery";
+/// `PROC_POWERSUPPLY_ACSTATE_FILE` — `PROC_POWERSUPPLY_DIR "/AC/state"`,
+/// i.e. `PROCDIR "/acpi/ac_adapter/AC/state"` (`Platform.c:757`).
+const PROC_POWERSUPPLY_ACSTATE_FILE: &str = "/proc/acpi/ac_adapter/AC/state";
+/// `SYS_POWERSUPPLY_DIR` — sysfs power-supply class dir (`Platform.c:758`).
+const SYS_POWERSUPPLY_DIR: &str = "/sys/class/power_supply";
+
+/// `O_PATH` — `Platform.c:74-76` declares it (`010000000`) for ancient
+/// glibc / platforms whose libc omits the flag. Modeled as a local const so
+/// the `openat` in [`Platform_Battery_getSysData`] compiles wherever the
+/// ported tree is built.
+const O_PATH: libc::c_int = 0o10000000;
 
 /// Port of the global `bool Running_containerized` from `Platform.c:87`.
 /// Set by [`Platform_init`] when htop detects it is running inside a
@@ -61,19 +87,78 @@ pub fn Platform_setBindings() {
     todo!("port of Platform.c:222")
 }
 
-/// TODO: port of `int Platform_getUptime(void` from `Platform.c:283`.
-pub fn Platform_getUptime() {
-    todo!("port of Platform.c:283")
+/// Port of `int Platform_getUptime(void)` from `Platform.c:283`. Reads
+/// `PROCDIR/uptime` via [`Compat_readfile`] and returns `floor(uptime)`
+/// (the first of the two whitespace-separated doubles), or `0` on any read
+/// or parse failure — mirroring the C `sscanf("%lf %lf")` needing 2 fields.
+pub fn Platform_getUptime() -> i32 {
+    let mut uptimedata = [0u8; 64];
+    let path = CString::new(format!("{}/uptime", PROCDIR)).unwrap();
+    let uptimeread = Compat_readfile(&path, &mut uptimedata);
+    if uptimeread < 1 {
+        return 0;
+    }
+
+    let text = String::from_utf8_lossy(&uptimedata[..uptimeread as usize]);
+    let mut tokens = text.split_whitespace();
+    let uptime: Option<f64> = tokens.next().and_then(|t| t.parse().ok());
+    let idle: Option<f64> = tokens.next().and_then(|t| t.parse().ok());
+    // C: sscanf must fill both (`n != 2` → return 0).
+    match (uptime, idle) {
+        (Some(uptime), Some(_idle)) => uptime.floor() as i32,
+        _ => 0,
+    }
 }
 
-/// TODO: port of `void Platform_getLoadAverage(double* one, double* five, double* fifteen` from `Platform.c:302`.
-pub fn Platform_getLoadAverage() {
-    todo!("port of Platform.c:302")
+/// Port of `void Platform_getLoadAverage(double* one, double* five, double* fifteen)`
+/// from `Platform.c:302`. Reads `PROCDIR/loadavg`, sets the three out-params
+/// to its first three doubles, or leaves them `NAN` on any read/parse
+/// failure (the C `sscanf("%lf %lf %lf")` needing 3 fields).
+pub fn Platform_getLoadAverage(one: &mut f64, five: &mut f64, fifteen: &mut f64) {
+    *one = f64::NAN;
+    *five = f64::NAN;
+    *fifteen = f64::NAN;
+
+    let mut loaddata = [0u8; 128];
+    let path = CString::new(format!("{}/loadavg", PROCDIR)).unwrap();
+    let loadread = Compat_readfile(&path, &mut loaddata);
+    if loadread < 1 {
+        return;
+    }
+
+    let text = String::from_utf8_lossy(&loaddata[..loadread as usize]);
+    let mut tokens = text.split_whitespace();
+    let scan_one: Option<f64> = tokens.next().and_then(|t| t.parse().ok());
+    let scan_five: Option<f64> = tokens.next().and_then(|t| t.parse().ok());
+    let scan_fifteen: Option<f64> = tokens.next().and_then(|t| t.parse().ok());
+    if let (Some(a), Some(b), Some(c)) = (scan_one, scan_five, scan_fifteen) {
+        *one = a;
+        *five = b;
+        *fifteen = c;
+    }
 }
 
-/// TODO: port of `pid_t Platform_getMaxPid(void` from `Platform.c:325`.
-pub fn Platform_getMaxPid() {
-    todo!("port of Platform.c:325")
+/// Port of `pid_t Platform_getMaxPid(void)` from `Platform.c:325`. Reads
+/// `PROCDIR/sys/kernel/pid_max`; on any read/parse failure returns the C
+/// fallback `0x3FFFFF` (4194303).
+pub fn Platform_getMaxPid() -> libc::pid_t {
+    let mut piddata = [0u8; 32];
+    let path = CString::new(format!("{}/sys/kernel/pid_max", PROCDIR)).unwrap();
+    let pidread = Compat_readfile(&path, &mut piddata);
+    if pidread < 1 {
+        return 0x3FFFFF; // 4194303
+    }
+
+    let text = String::from_utf8_lossy(&piddata[..pidread as usize]);
+    // C: sscanf("%32d") — first integer token.
+    match text
+        .split_whitespace()
+        .next()
+        .and_then(|t| t.parse::<i32>().ok())
+    {
+        Some(pidmax) => pidmax as libc::pid_t,
+        None => 0x3FFFFF, // 4194303
+    }
 }
 
 /// TODO: port of `double Platform_setCPUValues(Meter* this, unsigned int cpu` from `Platform.c:343`.
@@ -222,9 +307,30 @@ pub fn Platform_getPressureStall(
     debug_assert!(total == 3);
 }
 
-/// TODO: port of `void Platform_getFileDescriptors(double* used, double* max` from `Platform.c:661`.
-pub fn Platform_getFileDescriptors() {
-    todo!("port of Platform.c:661")
+/// Port of `void Platform_getFileDescriptors(double* used, double* max)` from
+/// `Platform.c:661`. Reads `PROCDIR/sys/fs/file-nr` (three integers: allocated,
+/// free, max). Defaults are `used = NAN`, `max = 65536`; when all three parse
+/// (`sscanf` returning 3) `used` becomes the first value and `max` the third.
+pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
+    *used = f64::NAN;
+    *max = 65536.0;
+
+    let mut buffer = [0u8; 128];
+    let path = CString::new(format!("{}/sys/fs/file-nr", PROCDIR)).unwrap();
+    let fdread = Compat_readfile(&path, &mut buffer);
+    if fdread < 1 {
+        return;
+    }
+
+    let text = String::from_utf8_lossy(&buffer[..fdread as usize]);
+    let mut tokens = text.split_whitespace();
+    let v1: Option<u64> = tokens.next().and_then(|t| t.parse().ok());
+    let v2: Option<u64> = tokens.next().and_then(|t| t.parse().ok());
+    let v3: Option<u64> = tokens.next().and_then(|t| t.parse().ok());
+    if let (Some(v1), Some(_v2), Some(v3)) = (v1, v2, v3) {
+        *used = v1 as f64;
+        *max = v3 as f64;
+    }
 }
 
 /// TODO: port of `bool Platform_getDiskIO(DiskIOData* data` from `Platform.c:679`.
@@ -237,29 +343,392 @@ pub fn Platform_getNetworkIO() {
     todo!("port of Platform.c:722")
 }
 
-/// TODO: port of `static double Platform_Battery_getProcBatInfo(void` from `Platform.c:764`.
-pub fn Platform_Battery_getProcBatInfo() {
-    todo!("port of Platform.c:764")
+/// Port of `static double Platform_Battery_getProcBatInfo(void)` from
+/// `Platform.c:764`. Sums "last full capacity" (from each `BAT*/info`) and
+/// "remaining capacity" (from each `BAT*/state`) under `PROC_BATTERY_DIR`,
+/// returning the percentage or `NAN` when no batteries / total full is 0.
+pub fn Platform_Battery_getProcBatInfo() -> f64 {
+    let batdir = CString::new(PROC_BATTERY_DIR).unwrap();
+    let battery_dir = unsafe { libc::opendir(batdir.as_ptr()) };
+    if battery_dir.is_null() {
+        return f64::NAN;
+    }
+
+    let mut total_full: u64 = 0;
+    let mut total_remain: u64 = 0;
+
+    // `%d` conversion: skip leading whitespace, optional sign, require ≥1 digit.
+    let scan_c_int = |s: &str| -> Option<i32> {
+        let s = s.trim_start();
+        let bytes = s.as_bytes();
+        let mut end = 0;
+        if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+            end += 1;
+        }
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == digits_start {
+            return None;
+        }
+        s[..end].parse::<i32>().ok()
+    };
+    // sscanf(line, "%99[^:]:%d", field, &val) — both fields required (C `== 2`).
+    let scan_field_colon_int = |line: &str| -> Option<(String, i32)> {
+        let colon = line.find(':')?;
+        if colon == 0 {
+            return None; // %99[^:] matched nothing
+        }
+        let field = &line[..colon.min(99)];
+        let val = scan_c_int(&line[colon + 1..])?;
+        Some((field.to_string(), val))
+    };
+
+    loop {
+        let dir_entry = unsafe { libc::readdir(battery_dir) };
+        if dir_entry.is_null() {
+            break;
+        }
+        let entry_name = unsafe { CStr::from_ptr((*dir_entry).d_name.as_ptr()) }.to_string_lossy();
+        if !String_startsWith(&entry_name, "BAT") {
+            continue;
+        }
+
+        let mut buf_info = [0u8; 1024];
+        let info_path = CString::new(format!("{}/{}/info", PROC_BATTERY_DIR, entry_name)).unwrap();
+        let r = Compat_readfile(&info_path, &mut buf_info);
+        if r < 0 {
+            continue;
+        }
+        let info = String::from_utf8_lossy(&buf_info[..r as usize]).into_owned();
+
+        let mut buf_state = [0u8; 1024];
+        let state_path =
+            CString::new(format!("{}/{}/state", PROC_BATTERY_DIR, entry_name)).unwrap();
+        let r = Compat_readfile(&state_path, &mut buf_state);
+        if r < 0 {
+            continue;
+        }
+        let state = String::from_utf8_lossy(&buf_state[..r as usize]).into_owned();
+
+        // Getting total charge for all batteries
+        for line in info.split('\n') {
+            if let Some((field, val)) = scan_field_colon_int(line) {
+                if String_eq(&field, "last full capacity") {
+                    total_full += val as u64;
+                    break;
+                }
+            }
+        }
+
+        // Getting remaining charge for all batteries
+        for line in state.split('\n') {
+            if let Some((field, val)) = scan_field_colon_int(line) {
+                if String_eq(&field, "remaining capacity") {
+                    total_remain += val as u64;
+                    break;
+                }
+            }
+        }
+    }
+
+    unsafe {
+        libc::closedir(battery_dir);
+    }
+
+    if total_full > 0 {
+        (total_remain as f64 * 100.0) / total_full as f64
+    } else {
+        f64::NAN
+    }
 }
 
-/// TODO: port of `static ACPresence procAcpiCheck(void` from `Platform.c:827`.
-pub fn procAcpiCheck() {
-    todo!("port of Platform.c:827")
+/// Port of `static ACPresence procAcpiCheck(void)` from `Platform.c:827`.
+/// Reads `PROC_POWERSUPPLY_ACSTATE_FILE`; returns [`ACPresence::AC_ERROR`] on
+/// read failure, else [`ACPresence::AC_PRESENT`] iff the content equals
+/// `"on-line"` (otherwise [`ACPresence::AC_ABSENT`]).
+pub fn procAcpiCheck() -> ACPresence {
+    let mut buffer = [0u8; 1024];
+    let path = CString::new(PROC_POWERSUPPLY_ACSTATE_FILE).unwrap();
+    let r = Compat_readfile(&path, &mut buffer);
+    if r < 1 {
+        return ACPresence::AC_ERROR;
+    }
+
+    let content = String::from_utf8_lossy(&buffer[..r as usize]);
+    if String_eq(&content, "on-line") {
+        ACPresence::AC_PRESENT
+    } else {
+        ACPresence::AC_ABSENT
+    }
 }
 
-/// TODO: port of `static void Platform_Battery_getProcData(double* percent, ACPresence* isOnAC` from `Platform.c:836`.
-pub fn Platform_Battery_getProcData() {
-    todo!("port of Platform.c:836")
+/// Port of `static void Platform_Battery_getProcData(double* percent, ACPresence* isOnAC)`
+/// from `Platform.c:836`. Sets `isOnAC` from [`procAcpiCheck`], then `percent`
+/// from [`Platform_Battery_getProcBatInfo`] unless AC state errored.
+pub fn Platform_Battery_getProcData(percent: &mut f64, isOnAC: &mut ACPresence) {
+    *isOnAC = procAcpiCheck();
+    *percent = if *isOnAC != ACPresence::AC_ERROR {
+        Platform_Battery_getProcBatInfo()
+    } else {
+        f64::NAN
+    };
 }
 
-/// TODO: port of `static void Platform_Battery_getSysData(double* percent, ACPresence* isOnAC` from `Platform.c:845`.
-pub fn Platform_Battery_getSysData() {
-    todo!("port of Platform.c:845")
+/// Port of `static void Platform_Battery_getSysData(double* percent, ACPresence* isOnAC)`
+/// from `Platform.c:845` (the `HAVE_OPENAT` variant, matching this build's
+/// [`Compat_readfileat`]/[`Compat_openatArgClose`]). Walks
+/// `SYS_POWERSUPPLY_DIR`, summing battery `ENERGY/CHARGE_FULL` and
+/// `ENERGY/CHARGE_NOW` (falling back to `CAPACITY` × full when no `_NOW`),
+/// and reading the first mains adapter's `online` flag into `isOnAC`.
+pub fn Platform_Battery_getSysData(percent: &mut f64, isOnAC: &mut ACPresence) {
+    *percent = f64::NAN;
+    *isOnAC = ACPresence::AC_ERROR;
+
+    let sysdir = CString::new(SYS_POWERSUPPLY_DIR).unwrap();
+    let dir = unsafe { libc::opendir(sysdir.as_ptr()) };
+    if dir.is_null() {
+        return;
+    }
+
+    let mut total_full: u64 = 0;
+    let mut total_remain: u64 = 0;
+
+    // `%d` conversion: skip leading whitespace, optional sign, require ≥1 digit.
+    let scan_c_int = |s: &str| -> Option<i32> {
+        let s = s.trim_start();
+        let bytes = s.as_bytes();
+        let mut end = 0;
+        if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+            end += 1;
+        }
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == digits_start {
+            return None;
+        }
+        s[..end].parse::<i32>().ok()
+    };
+
+    // AC / BAT mirror the sysfs entry-name prefixes ("AC*", "BAT*"); keep them.
+    #[allow(clippy::upper_case_acronyms)]
+    #[derive(PartialEq)]
+    enum EntryType {
+        AC,
+        BAT,
+    }
+
+    loop {
+        let dir_entry = unsafe { libc::readdir(dir) };
+        if dir_entry.is_null() {
+            break;
+        }
+        let entry_name_c = unsafe { CStr::from_ptr((*dir_entry).d_name.as_ptr()) };
+
+        // C (HAVE_OPENAT): openat(xDirfd(dir), entryName, O_DIRECTORY | O_PATH)
+        let entry_fd = unsafe {
+            libc::openat(
+                libc::dirfd(dir),
+                entry_name_c.as_ptr(),
+                libc::O_DIRECTORY | O_PATH,
+            )
+        };
+        if entry_fd < 0 {
+            continue;
+        }
+
+        // C's `goto next` teardown (Compat_openatArgClose) is the `'next` block's exit.
+        'next: {
+            let entry_name = entry_name_c.to_string_lossy();
+
+            let etype = if String_startsWith(&entry_name, "BAT") {
+                EntryType::BAT
+            } else if String_startsWith(&entry_name, "AC") {
+                EntryType::AC
+            } else {
+                let mut buffer = [0u8; 32];
+                let ret = Compat_readfileat(entry_fd, c"type", &mut buffer);
+                if ret <= 0 {
+                    break 'next;
+                }
+                // drop optional trailing newlines
+                let typestr = String::from_utf8_lossy(&buffer[..ret as usize]);
+                let typestr = typestr.trim_end_matches('\n');
+
+                if String_eq(typestr, "Battery") {
+                    EntryType::BAT
+                } else if String_eq(typestr, "Mains") {
+                    EntryType::AC
+                } else {
+                    break 'next;
+                }
+            };
+
+            if etype == EntryType::BAT {
+                let mut buffer = [0u8; 1024];
+                let r = Compat_readfileat(entry_fd, c"uevent", &mut buffer);
+                if r < 0 {
+                    break 'next;
+                }
+
+                let mut full = false;
+                let mut now = false;
+
+                let mut full_charge: f64 = 0.0;
+                let mut capacity_level: f64 = f64::NAN;
+
+                let content = String::from_utf8_lossy(&buffer[..r as usize]).into_owned();
+                for line in content.split('\n') {
+                    // sscanf(line, "POWER_SUPPLY_%99[^=]=%d", field, &val)
+                    let rest = match line.strip_prefix("POWER_SUPPLY_") {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    let eq = match rest.find('=') {
+                        Some(e) if e > 0 => e,
+                        _ => continue, // %99[^=] needs ≥1 char before '='
+                    };
+                    let field = &rest[..eq.min(99)];
+                    let val = match scan_c_int(&rest[eq + 1..]) {
+                        Some(v) => v,
+                        None => continue,
+                    };
+
+                    if String_eq(field, "CAPACITY") {
+                        capacity_level = val as f64 / 100.0;
+                        continue;
+                    }
+
+                    if String_eq(field, "ENERGY_FULL") || String_eq(field, "CHARGE_FULL") {
+                        full_charge = val as f64;
+                        total_full += full_charge as u64;
+                        full = true;
+                        if now {
+                            break;
+                        }
+                        continue;
+                    }
+
+                    if String_eq(field, "ENERGY_NOW") || String_eq(field, "CHARGE_NOW") {
+                        total_remain += val as u64;
+                        now = true;
+                        if full {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+
+                // isNonnegative(capacityLevel): false for NAN.
+                if !now && full && capacity_level >= 0.0 {
+                    total_remain += (capacity_level * full_charge) as u64;
+                }
+            } else {
+                // EntryType::AC
+                if *isOnAC != ACPresence::AC_ERROR {
+                    break 'next;
+                }
+
+                let mut buffer = [0u8; 2];
+                let r = Compat_readfileat(entry_fd, c"online", &mut buffer);
+                if r < 1 {
+                    *isOnAC = ACPresence::AC_ERROR;
+                    break 'next;
+                }
+
+                if buffer[0] == b'0' {
+                    *isOnAC = ACPresence::AC_ABSENT;
+                } else if buffer[0] == b'1' {
+                    *isOnAC = ACPresence::AC_PRESENT;
+                }
+            }
+        }
+
+        Compat_openatArgClose(entry_fd);
+    }
+
+    unsafe {
+        libc::closedir(dir);
+    }
+
+    *percent = if total_full > 0 {
+        (total_remain as f64 * 100.0) / total_full as f64
+    } else {
+        f64::NAN
+    };
 }
 
-/// TODO: port of `void Platform_getBattery(double* percent, ACPresence* isOnAC` from `Platform.c:964`.
-pub fn Platform_getBattery() {
-    todo!("port of Platform.c:964")
+/// Global battery cache backing [`Platform_getBattery`] — the four file-static
+/// C variables (`Platform_Battery_method`, `_cacheTime`, `_cachePercent`,
+/// `_cacheIsOnAC`) modeled as one [`Mutex`]-guarded record per the
+/// global-mutable-static idiom (rule 4). `method` mirrors the C anonymous
+/// `enum { BAT_PROC, BAT_SYS, BAT_ERR }`.
+// C names preserved verbatim per port rules (C's anonymous enum `{ BAT_PROC,
+// BAT_SYS, BAT_ERR }` and the file-static battery cache record).
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy)]
+enum Platform_Battery_method_t {
+    BAT_PROC,
+    BAT_SYS,
+    BAT_ERR,
+}
+
+#[allow(non_camel_case_types)]
+struct Platform_Battery_cache_t {
+    method: Platform_Battery_method_t,
+    cacheTime: libc::time_t,
+    cachePercent: f64,
+    cacheIsOnAC: ACPresence,
+}
+
+static PLATFORM_BATTERY: Mutex<Platform_Battery_cache_t> = Mutex::new(Platform_Battery_cache_t {
+    method: Platform_Battery_method_t::BAT_PROC, // C: static ... = BAT_PROC
+    cacheTime: 0,
+    cachePercent: f64::NAN,             // C: = NAN
+    cacheIsOnAC: ACPresence::AC_ABSENT, // C: zero-initialized static (AC_ABSENT == 0)
+});
+
+/// Port of `void Platform_getBattery(double* percent, ACPresence* isOnAC)`
+/// from `Platform.c:964`. Serves the cached reading for 10 seconds, else
+/// refreshes it: try the `/proc` method, falling back to `/sys`, then giving
+/// up (`AC_ERROR`/`NAN`). A successful reading is clamped to `0..=100`.
+pub fn Platform_getBattery(percent: &mut f64, isOnAC: &mut ACPresence) {
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut cache = PLATFORM_BATTERY.lock().unwrap();
+
+    // update battery reading is slow. Update it each 10 seconds only.
+    if now < cache.cacheTime + 10 {
+        *percent = cache.cachePercent;
+        *isOnAC = cache.cacheIsOnAC;
+        return;
+    }
+
+    if matches!(cache.method, Platform_Battery_method_t::BAT_PROC) {
+        Platform_Battery_getProcData(percent, isOnAC);
+        if !(*percent >= 0.0) {
+            cache.method = Platform_Battery_method_t::BAT_SYS;
+        }
+    }
+    if matches!(cache.method, Platform_Battery_method_t::BAT_SYS) {
+        Platform_Battery_getSysData(percent, isOnAC);
+        if !(*percent >= 0.0) {
+            cache.method = Platform_Battery_method_t::BAT_ERR;
+        }
+    }
+    if matches!(cache.method, Platform_Battery_method_t::BAT_ERR) {
+        *percent = f64::NAN;
+        *isOnAC = ACPresence::AC_ERROR;
+    } else {
+        // C CLAMP(*percent, 0.0, 100.0)
+        *percent = percent.clamp(0.0, 100.0);
+    }
+
+    cache.cachePercent = *percent;
+    cache.cacheIsOnAC = *isOnAC;
+    cache.cacheTime = now;
 }
 
 /// Port of `void Platform_longOptionsUsage(const char* name)` from
@@ -343,6 +812,35 @@ pub fn Platform_init() -> bool {
 /// faithful port of the non-sensors build is a genuine no-op.
 pub fn Platform_done() {}
 
+/// Port of `linux/Platform.h:140`. The Linux build has no dynamic columns,
+/// so the `static inline` returns `NULL` — [`DynamicColumns_new`] then falls
+/// back to `Hashtable_new(0, true)`.
+///
+/// [`DynamicColumns_new`]: crate::ported::dynamiccolumn::DynamicColumns_new
+pub fn Platform_dynamicColumns() -> Option<crate::ported::hashtable::Hashtable> {
+    None
+}
+
+/// Port of `linux/Platform.h:144`. `ATTR_UNUSED` no-op teardown for the
+/// Linux build's (nonexistent) dynamic-column table.
+pub fn Platform_dynamicColumnsDone(_table: &crate::ported::hashtable::Hashtable) {}
+
+/// Port of `linux/Platform.h:146`. No dynamic columns on Linux, so the
+/// `static inline` returns `NULL` for every key.
+pub fn Platform_dynamicColumnName(_key: u32) -> Option<&'static str> {
+    None
+}
+
+/// Port of `linux/Platform.h:150`. No dynamic columns on Linux, so the
+/// `static inline` writes nothing and returns `false`.
+pub fn Platform_dynamicColumnWriteField(
+    _proc: &crate::ported::process::Process,
+    _str: &mut crate::ported::richstring::RichString,
+    _key: u32,
+) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +884,40 @@ mod tests {
     fn noop_ports_do_not_panic() {
         Platform_longOptionsUsage("htop");
         Platform_done();
+    }
+
+    /// `Platform_getMaxPid` is always positive: the fallback `0x3FFFFF` on a
+    /// host without `PROCDIR/sys/kernel/pid_max`, or the parsed value on Linux.
+    #[test]
+    fn getmaxpid_is_positive() {
+        assert!(Platform_getMaxPid() > 0);
+    }
+
+    /// `Platform_getUptime` never returns a negative number, and returns `0`
+    /// on a host lacking `PROCDIR/uptime`.
+    #[test]
+    fn getuptime_nonnegative() {
+        assert!(Platform_getUptime() >= 0);
+    }
+
+    /// `Platform_getFileDescriptors` defaults `max` to at least `65536` (the C
+    /// default on read failure) and always writes a value.
+    #[test]
+    fn getfiledescriptors_sets_max() {
+        let (mut used, mut max) = (0.0, 0.0);
+        Platform_getFileDescriptors(&mut used, &mut max);
+        assert!(max > 0.0);
+        let _ = used;
+    }
+
+    /// `Platform_getBattery` completes without panicking and yields a valid
+    /// `ACPresence`; on a battery-less host it degrades to `AC_ERROR`/`NAN`.
+    #[test]
+    fn getbattery_does_not_panic() {
+        let mut percent = 0.0;
+        let mut is_on_ac = ACPresence::AC_ABSENT;
+        Platform_getBattery(&mut percent, &mut is_on_ac);
+        // Either a clamped percentage or NAN; simply ensure the call returned.
+        assert!(percent.is_nan() || (0.0..=100.0).contains(&percent));
     }
 }

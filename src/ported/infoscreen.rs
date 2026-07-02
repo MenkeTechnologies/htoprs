@@ -90,6 +90,14 @@
 //!   owned `InfoScreen` releases its fields via `Drop`, so there is no
 //!   algorithm to port (same precedent as `IncSet_delete` /
 //!   `History_delete` / `Panel_delete`).
+//! - [`InfoScreen_drawTitled`] (`InfoScreen.c:50`) — the title-row draw
+//!   (`attrset`/`mvhline`/`mvaddstr` -> [`Ncurses`], `CRT_colors[X]` ->
+//!   `ColorElements::X.packed`), `Panel_draw`, and [`IncSet_drawBar`] (now
+//!   ported). C's variadic `fmt, ...` becomes a pre-formatted `title: &str`
+//!   (caller-side `format!`, the `vsnprintf` idiom) with the `COLS`-truncate +
+//!   `"..."` ellipsis reproduced on the byte buffer; `String_stripControlChars`
+//!   (`XUtils.h:147`, absent from the port-purity snapshot) is inlined as a
+//!   byte loop rather than a module-level `fn`.
 //! - [`InfoScreen_appendLine`] (`InfoScreen.c:81`) — depends on the
 //!   weak-panel shared-`Object*` identity that owned `Box`es cannot model.
 //!   Its `displayLast != last` test is a pointer-identity compare between
@@ -106,17 +114,6 @@
 //!   item) is itself portable, but the function as a whole is gated on the
 //!   panel identity dedup — the same blocker `incset.rs` documents for
 //!   `updateWeakPanel` (`IncSet.c:96`).
-//! - [`InfoScreen_drawTitled`] (`InfoScreen.c:50`) — a pure draw
-//!   side-effect (`attrset`/`mvhline`/`mvaddstr`/`CRT_colors`, `Panel_draw`,
-//!   `IncSet_drawBar`) that also calls `String_stripControlChars`
-//!   (`XUtils.h:147`, a `static inline`), which is ABSENT from the
-//!   port-purity snapshot (`tests/data/htop_c_fn_names.txt`) and so cannot
-//!   be added as a `pub fn` yet; `IncSet_drawBar` is itself an unported
-//!   `todo!()` (`incset.rs:378`). No splittable pure logic. (Its sibling
-//!   [`InfoScreen_run`] is now ported and dispatches the vtable via the
-//!   [`InfoScreenClass`] trait; it routes its own unported `IncSet` leaves —
-//!   `IncSet_drawBar`/`IncSet_handleKey`/`IncSet_activate` — to those stubs,
-//!   documented on the fn.)
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -337,14 +334,98 @@ pub fn InfoScreen_done() {
     todo!("port of InfoScreen.c:43 — Drop releases owned fields")
 }
 
-/// TODO: port of `void InfoScreen_drawTitled(InfoScreen* this, const char*
-/// fmt, ...)` from `InfoScreen.c:50`. Pure ncurses draw
-/// (`attrset`/`mvhline`/`mvaddstr`/`CRT_colors`, `Panel_draw`,
-/// `IncSet_drawBar`) plus `String_stripControlChars` (`XUtils.h:147`), which
-/// is ABSENT from the port-purity snapshot and so cannot be added as a
-/// `pub fn` yet; `IncSet_drawBar` is itself a `todo!()` (`incset.rs:378`).
-pub fn InfoScreen_drawTitled() {
-    todo!("port of InfoScreen.c:50 — ncurses draw; String_stripControlChars (absent from snapshot) + IncSet_drawBar unported")
+/// Port of `void InfoScreen_drawTitled(InfoScreen* this, const char* fmt,
+/// ...)` from `InfoScreen.c:50`.
+///
+/// Paints the title row (`METER_TEXT`, whole line cleared, title at `(0,0)`),
+/// then the panel and the incremental-search bar. Two faithful adaptations:
+///
+/// - **Variadic `fmt, ...` -> pre-formatted `title: &str`.** Rust has no C
+///   `va_list`; the caller does the `format!` (the standard idiom for the
+///   `xSnprintf`/`vsnprintf` family). C's `char title[COLS + 1]` +
+///   `vsnprintf` truncates the result to `COLS` bytes and returns the
+///   would-be full length in `len`; both are reproduced on the byte buffer
+///   (`len > COLS && COLS >= 3` overwrites the last three kept bytes with
+///   `.`, C's `memset(&title[COLS - 3], '.', 3)`).
+/// - **`String_stripControlChars` (`XUtils.h:147`) inlined.** Its C name is
+///   absent from the port-purity snapshot, so it cannot be a module-level
+///   `fn`; the loop (with `Char_isControl` `XUtils.h:137` and
+///   `Char_isC1Control` `XUtils.h:141`) is reproduced inline on the byte
+///   buffer, replacing C0/DEL and C1 controls with `?`.
+///
+/// `CRT_colors[X]` map to `ColorElements::X.packed(ColorScheme::active())`,
+/// `COLS` to [`Ncurses::cols`], and `IncSet_drawBar` is threaded the panel
+/// (the `Panel*` IncSet back-pointer is not modeled — see [`IncSet_drawBar`]).
+pub fn InfoScreen_drawTitled(this: &mut InfoScreen, title: &str) {
+    let cols = Ncurses::cols();
+
+    // C: char title[COLS + 1]; int len = vsnprintf(title, sizeof(title), fmt, ap);
+    // The caller supplies the already-formatted string; the COLS+1 buffer
+    // truncates it to COLS bytes, and `len` is the would-be full length.
+    let len = title.len() as c_int;
+    let bound = if cols < 0 {
+        0
+    } else {
+        (cols as usize).min(title.len())
+    };
+    let mut buf: Vec<u8> = title.as_bytes()[..bound].to_vec();
+
+    // C: if (len > COLS && COLS >= 3) memset(&title[COLS - 3], '.', 3);
+    // (len > cols implies bound == cols, so buf is exactly `cols` bytes here.)
+    if len > cols && cols >= 3 {
+        let start = (cols - 3) as usize;
+        for b in &mut buf[start..start + 3] {
+            *b = b'.';
+        }
+    }
+
+    // C: String_stripControlChars(title); — inlined (its C name is absent from
+    // the port-purity snapshot; XUtils.h:147 with Char_isControl XUtils.h:137
+    // and Char_isC1Control XUtils.h:141). Replace C0/DEL and C1 controls.
+    let mut i = 0usize;
+    while i < buf.len() {
+        let c = buf[i];
+        // Char_isControl(c): (unsigned char)c < ' ' || c == '\x7F'.
+        if c < b' ' || c == 0x7F {
+            buf[i] = b'?';
+        } else if c == 0xC2 && i + 1 < buf.len() && (0x80..=0x9F).contains(&buf[i + 1]) {
+            // Char_isC1Control(c, next): 0xC2 followed by 0x80..=0x9F.
+            buf[i] = b'?';
+            buf[i + 1] = b'?';
+            i += 1;
+        }
+        i += 1;
+    }
+    let title = String::from_utf8_lossy(&buf);
+
+    {
+        let mut out = io::stdout().lock();
+        // C: attrset(CRT_colors[METER_TEXT]);
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::METER_TEXT.packed(ColorScheme::active()),
+        );
+        // C: mvhline(0, 0, ' ', COLS);
+        Ncurses::mvhline(&mut out, 0, 0, ' ', cols);
+        // C: mvaddstr(0, 0, title);
+        Ncurses::mvaddstr(&mut out, 0, 0, &title);
+        // C: attrset(CRT_colors[DEFAULT_COLOR]);
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::DEFAULT_COLOR.packed(ColorScheme::active()),
+        );
+        let _ = out.flush();
+    }
+
+    // C: Panel_draw(this->display, true, true, true, false);
+    Panel_draw(&mut this.display, true, true, true, false);
+
+    // C: IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR]);
+    IncSet_drawBar(
+        &mut this.inc,
+        &mut this.display,
+        ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+    );
 }
 
 /// Port of `void InfoScreen_addLine(InfoScreen* this, const char* line)`
@@ -398,22 +479,19 @@ pub fn InfoScreen_appendLine() {
 /// crossterm full-screen clear (a local closure, kept off module scope so the
 /// port-purity gate — which has no `clear` C entry — does not flag it).
 ///
-/// # Transitively blocked leaves (routed to their `incset.rs` stubs)
+/// # Transitively blocked leaf (routed to its `incset.rs` stub)
 ///
-/// The control flow is ported in full, but three loop leaves call `IncSet`
-/// functions that are still honest `todo!()` stubs (see `incset.rs`), so the
-/// loop panics on reaching them until they land — the same "routed to the
-/// stub" arrangement `InfoScreen_drawTitled` uses:
-/// - `IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR])` (`:108`) →
-///   [`IncSet_drawBar`] (`IncSet.c:302`, needs `LineEditor_draw` + the omitted
-///   `Panel` back-pointer).
-/// - `IncSet_handleKey(this->inc, ch, panel, IncSet_getListItemValue,
-///   this->lines)` (`:145`) → [`IncSet_handleKey`] (`IncSet.c:177`).
-/// - `IncSet_activate(this->inc, INC_SEARCH|INC_FILTER, panel)` (`:154/158`) →
-///   [`IncSet_activate`] (`IncSet.c:136`).
-///
-/// The zero-arg stub signatures drop the C arguments (documented at each call
-/// site); the stubs `todo!()`-panic, so no argument is ever observed.
+/// The control flow is ported in full. Two of its `IncSet` leaves are now
+/// ported and called with their real arguments —
+/// [`IncSet_drawBar`]`(this->inc, CRT_colors[FUNCTION_BAR])` (`:108`) and
+/// [`IncSet_activate`]`(this->inc, INC_SEARCH|INC_FILTER, panel)` (`:154/158`).
+/// The one remaining honest `todo!()` stub is
+/// `IncSet_handleKey(this->inc, ch, panel, IncSet_getListItemValue,
+/// this->lines)` (`:145`) → [`IncSet_handleKey`] (`IncSet.c:177`, whose filter
+/// path needs the still-unported `updateWeakPanel`), so the loop panics only if
+/// it reaches an active incremental mode. That zero-arg stub signature drops
+/// the C arguments (documented at the call site); it `todo!()`-panics, so no
+/// argument is ever observed.
 ///
 /// # Omitted: the `HAVE_GETMOUSE` block (`:120`–`:142`)
 ///

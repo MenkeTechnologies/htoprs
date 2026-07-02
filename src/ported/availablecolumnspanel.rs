@@ -40,8 +40,6 @@
 //!   reserved-field count bounds are still not modeled. Blocks
 //!   [`AvailableColumnsPanel_insert`] and
 //!   [`AvailableColumnsPanel_addPlatformColumns`].
-//! - **`DynamicColumn_name`** (`DynamicColumn.c:36`) — still a `todo!()`
-//!   stub. Blocks [`AvailableColumnsPanel_insert`].
 //! - **`Platform_addDynamicScreenAvailableColumns`** — the `Platform`
 //!   layer is not ported. Blocks [`AvailableColumnsPanel_addDynamicScreens`].
 //! - **The omitted `columns: Panel*` back-pointer** — blocks
@@ -94,12 +92,12 @@ pub fn AvailableColumnsPanel_delete() {
 /// int at, int key)` from `AvailableColumnsPanel.c:38`. Chooses the column
 /// name via `key >= ROW_DYNAMIC_FIELDS ? DynamicColumn_name(key) :
 /// Process_fields[key].name` and inserts a `ListItem_new(name, key)` into
-/// `this->columns`. Blocked on the unported `Process_fields[]` table,
-/// `ROW_DYNAMIC_FIELDS` (`RowField.h:53`), the stubbed `DynamicColumn_name`
-/// (`DynamicColumn.c:36`), and the omitted foreign-owned `columns: Panel*`
-/// back-pointer.
+/// `this->columns`. [`crate::ported::dynamiccolumn::DynamicColumn_name`] is
+/// ported now, but this is still blocked on the unported `Process_fields[]`
+/// table, `ROW_DYNAMIC_FIELDS` (`RowField.h:53`), and the omitted
+/// foreign-owned `columns: Panel*` back-pointer.
 pub fn AvailableColumnsPanel_insert() {
-    todo!("port of AvailableColumnsPanel.c:38 — needs Process_fields[]/ROW_DYNAMIC_FIELDS/DynamicColumn_name + columns Panel*")
+    todo!("port of AvailableColumnsPanel.c:38 — needs Process_fields[]/ROW_DYNAMIC_FIELDS + columns Panel*")
 }
 
 /// TODO: port of `static HandlerResult AvailableColumnsPanel_eventHandler(Panel* super,

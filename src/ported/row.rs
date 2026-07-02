@@ -33,9 +33,11 @@
 //! - [`Row_updateFieldWidth`], [`Row_resetFieldWidths`] — need the
 //!   `Row_fieldWidths[LAST_RESERVED_FIELD]` global, sized by a platform
 //!   constant not modeled in the port.
-//! - [`alignedTitleDynamicColumn`] — needs `Settings.dynamicColumns`,
-//!   `Hashtable_get`, and `DynamicColumn.{width,heading}` /
-//!   `DYNAMIC_*_COLUMN_WIDTH`, none present yet.
+//! - [`alignedTitleDynamicColumn`] — needs `Settings.dynamicColumns`
+//!   (`Hashtable_get`, `DynamicColumn.{width,heading}` and
+//!   `DYNAMIC_*_COLUMN_WIDTH` have since landed, but the `Settings` struct
+//!   in `settings.rs` still carries no `dynamicColumns` `Hashtable` field
+//!   to look the column up in).
 //! - [`RowField_alignedTitle`], [`RowField_keyAt`] — blocked transitively
 //!   on the two `alignedTitle*` helpers (and `Settings.ss`).
 //!
@@ -378,10 +380,12 @@ pub fn Row_updateFieldWidth() {
 /// Settings* settings, int key, char* titleBuffer, size_t
 /// titleBufferSize)` from `Row.c:127`. Not portable yet: looks up
 /// `settings->dynamicColumns` (a `Hashtable`) via `Hashtable_get` and
-/// reads `column->width` / `column->heading`. `Settings` (`settings.rs`)
-/// carries no `dynamicColumns` field, `Hashtable_get` is unported, and
-/// `dynamiccolumn.rs`'s `DynamicColumn` has no `width`/`heading` fields
-/// nor the `DYNAMIC_{MAX,DEFAULT}_COLUMN_WIDTH` constants. Stays a stub.
+/// reads `column->width` / `column->heading`. `Hashtable_get`
+/// (`hashtable.rs`), `DynamicColumn.{width,heading}` and
+/// `DYNAMIC_{MAX,DEFAULT}_COLUMN_WIDTH` (`dynamiccolumn.rs`) are all now
+/// present, but the `Settings` struct (`settings.rs`) still carries no
+/// `dynamicColumns` field — the `Hashtable` to look the column up in —
+/// and that field is owned by `settings.rs`, not this module. Stays a stub.
 pub fn alignedTitleDynamicColumn() {
     todo!("port of Row.c:127 — needs Settings.dynamicColumns + Hashtable_get + DynamicColumn")
 }
@@ -399,8 +403,8 @@ pub fn alignedTitleProcessField() {
 /// TODO: port of `const char* RowField_alignedTitle(const Settings*
 /// settings, RowField field)` from `Row.c:168`. Dispatches to
 /// [`alignedTitleProcessField`] (blocked on `Process_fields`) or
-/// [`alignedTitleDynamicColumn`] (blocked on `Settings.dynamicColumns` /
-/// `Hashtable_get`); blocked transitively on both helpers.
+/// [`alignedTitleDynamicColumn`] (blocked on `Settings.dynamicColumns`);
+/// blocked transitively on both helpers.
 pub fn RowField_alignedTitle() {
     todo!("port of Row.c:168 — needs alignedTitleProcessField/alignedTitleDynamicColumn")
 }

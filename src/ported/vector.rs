@@ -110,6 +110,11 @@ use core::ffi::{c_int, c_uint};
 
 use crate::ported::object::{Object, ObjectClass, Object_isA};
 
+/// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
+/// initial `size` most callers pass to [`Vector_new`] (the starting
+/// `arraySize`/`growthRate` in C; here the preallocated `Vec` capacity).
+pub const VECTOR_DEFAULT_SIZE: c_int = 10;
+
 /// Port of `swap(Object** array, int indexA, int indexB)` from
 /// `Vector.c:98`. Exchanges the elements at `indexA` and `indexB`.
 /// `slice::swap` performs the same tmp-swap the C does on the two

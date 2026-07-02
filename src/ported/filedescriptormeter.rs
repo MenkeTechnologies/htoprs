@@ -36,34 +36,76 @@
 //!   the used count `FILE_DESCRIPTOR_USED`, and the max count (or the word
 //!   `unlimited`) `FILE_DESCRIPTOR_MAX`; a negative/NaN used count instead
 //!   writes a single `METER_TEXT` `unknown` and returns.
-//!
-//! Stubbed (blocked on unported substrate — keeps its `todo!()`):
-//! - `FileDescriptorMeter_updateValues` (`FileDescriptorMeter.c:30`) — the
-//!   used/max figures are sourced by `Platform_getFileDescriptors(&this->
-//!   values[0], &this->values[1])`, the platform-specific reader in
-//!   `Platform.c` (`linux/platform.rs` has it as a `todo!()` stub whose
-//!   signature takes no out-params, so there is nothing to feed
-//!   `this->values[]`). The bar-scaling arithmetic over `this->total` and
-//!   the `this->txtBuffer` formatting are pure, but without the platform
-//!   data source there is nothing to compute over — faking the source would
-//!   be an adhoc reimplementation, not a faithful port.
+//! - [`FileDescriptorMeter_updateValues`] (`FileDescriptorMeter.c:30`) —
+//!   sources the used/max figures via the now-ported
+//!   [`Platform_getFileDescriptors`](crate::ported::linux::platform::Platform_getFileDescriptors)
+//!   out-param reader, sets `curItems = 1` (only the first value drives the
+//!   bar), scales `this->total` per the C capping ladder, and formats
+//!   `this->txtBuffer` as `used/max` (`unknown/unknown` on a negative/NaN
+//!   used count, `<n>/unlimited` on an effectively-unlimited max).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::linux::platform::Platform_getFileDescriptors;
 use crate::ported::meter::Meter;
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendnAscii};
 
-/// TODO: port of `static void FileDescriptorMeter_updateValues(Meter* this)`
-/// from `FileDescriptorMeter.c:30`. Blocked: the used/max values come from
-/// `Platform_getFileDescriptors(&this->values[0], &this->values[1])`, the
-/// platform-specific reader in `Platform.c`, which is only a `todo!()` stub
-/// in `linux/platform.rs` (and its stub signature takes no out-params, so it
-/// cannot populate `this->values[]`). The subsequent bar-scaling over
-/// `this->total` and the `this->txtBuffer` formatting are pure, but there is
-/// no faithful data source to drive them.
-pub fn FileDescriptorMeter_updateValues() {
-    todo!("port of FileDescriptorMeter.c:30: needs Platform_getFileDescriptors")
+/// Port of `static void FileDescriptorMeter_updateValues(Meter* this)` from
+/// `FileDescriptorMeter.c:30`. Seeds `values[0]=0`/`values[1]=1`, fills them
+/// from [`Platform_getFileDescriptors`], then sets `curItems = 1` (only the
+/// first value is drawn as a bar). `this->total` is scaled by the C ladder:
+/// a max `<= 1<<16` is used directly; otherwise `total` grows from `1<<16`
+/// (doubling while below `16 * used`, capped at `1<<30`) and is then clamped
+/// to the max and to `1<<30`. Finally `txtBuffer` is set to `used/max`,
+/// `unknown/unknown` for a negative/NaN used count, or `<n>/unlimited` when
+/// the max is `FD_EFFECTIVE_UNLIMITED`.
+pub fn FileDescriptorMeter_updateValues(this: &mut Meter) {
+    this.values[0] = 0.0;
+    this.values[1] = 1.0;
+
+    // Platform_getFileDescriptors(&this->values[0], &this->values[1]) — split
+    // into temporaries since the two Vec slots cannot be borrowed at once.
+    let mut used = this.values[0];
+    let mut max = this.values[1];
+    Platform_getFileDescriptors(&mut used, &mut max);
+    this.values[0] = used;
+    this.values[1] = max;
+
+    // only print bar for first value
+    this.curItems = 1;
+
+    if this.values[1] <= (1u32 << 16) as f64 {
+        this.total = this.values[1];
+    } else {
+        if this.total < 16.0 * this.values[0] {
+            this.total = (1u32 << 16) as f64;
+            while this.total < 16.0 * this.values[0] {
+                if this.total >= (1u32 << 30) as f64 {
+                    break;
+                }
+                this.total *= 2.0;
+            }
+        }
+
+        if this.total > this.values[1] {
+            this.total = this.values[1];
+        }
+
+        if this.total > (1u32 << 30) as f64 {
+            this.total = (1u32 << 30) as f64;
+        }
+    }
+
+    // !isNonnegative(this->values[0]) — negative or NaN.
+    if !(this.values[0] >= 0.0) {
+        this.txtBuffer = "unknown/unknown".to_string();
+    // FD_EFFECTIVE_UNLIMITED(this->values[1]) — !((1<<30) >= x), true for NaN.
+    } else if !((1u32 << 30) as f64 >= this.values[1]) {
+        this.txtBuffer = format!("{:.0}/unlimited", this.values[0]);
+    } else {
+        this.txtBuffer = format!("{:.0}/{:.0}", this.values[0], this.values[1]);
+    }
 }
 
 /// Port of `static void FileDescriptorMeter_display(const Object* cast,

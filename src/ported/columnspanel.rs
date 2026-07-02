@@ -53,18 +53,24 @@
 //! - [`ColumnsPanel_add`] (`ColumnsPanel.c:137`) — indexes the platform
 //!   `Process_fields[key].name` table and `LAST_PROCESSFIELD`, and for
 //!   dynamic columns calls `Hashtable_get` for a `DynamicColumn` whose
-//!   `heading` it reads. The `Process_fields[]` table, `Hashtable_get`,
-//!   and `DynamicColumn.heading` are all unported.
+//!   `heading` it reads. `Hashtable_get` and `DynamicColumn.heading`/`.name`
+//!   are now ported, but the `key < LAST_PROCESSFIELD` branch still indexes
+//!   the unported platform `Process_fields[]` name table (and the
+//!   `LAST_PROCESSFIELD` bound), so the function stays blocked.
 //! - [`ColumnsPanel_fill`] (`ColumnsPanel.c:156`) — iterates `ss->fields`
-//!   and calls [`ColumnsPanel_add`]. The ported `ScreenSettings`
-//!   (`settings.rs`) has no `fields` array, and `_add` is itself stubbed.
+//!   and calls [`ColumnsPanel_add`]. `ScreenSettings.fields` now exists, but
+//!   `_add` is still stubbed (transitively on `Process_fields[]`) and the
+//!   reduced [`ColumnsPanel`] models no `ss` back-pointer to assign
+//!   `this->ss = ss`.
 //! - [`ColumnsPanel_new`] (`ColumnsPanel.c:164`) — allocates the panel
 //!   and calls [`ColumnsPanel_fill`] unconditionally; blocked transitively
-//!   on `_fill` and on the missing `ss->fields`.
+//!   on `_fill` (`Process_fields[]`) and on the unmodeled `ss`/`changed`
+//!   back-pointers.
 //! - [`ColumnsPanel_update`] (`ColumnsPanel.c:181`) — rewrites
 //!   `ss->fields`/`ss->flags` from the list, OR-ing `Process_fields[key].flags`.
-//!   Needs `ScreenSettings.fields`/`.flags` and the `Process_fields[]`
-//!   table — none ported.
+//!   `ScreenSettings.fields`/`.flags` now exist, but the flag OR still needs
+//!   the unported `Process_fields[]` table and `LAST_PROCESSFIELD`, and the
+//!   reduced [`ColumnsPanel`] has no `ss`/`changed` back-pointers.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -266,43 +272,49 @@ pub fn ColumnsPanel_eventHandler(this: &mut ColumnsPanel, ch: i32) -> HandlerRes
 /// Hashtable* columns)` from `ColumnsPanel.c:137`. Reads
 /// `Process_fields[key].name`/`LAST_PROCESSFIELD` and, for dynamic
 /// columns, `Hashtable_get(columns, key)` then the `DynamicColumn`'s
-/// `heading`/`name`. The `Process_fields[]` table, `Hashtable_get`, and
-/// `DynamicColumn.heading` are all unported. Left as a stub.
+/// `heading`/`name`. `Hashtable_get` and `DynamicColumn.heading`/`.name`
+/// are now ported, but the `key < LAST_PROCESSFIELD` branch still indexes
+/// the unported platform `Process_fields[]` name table (and the
+/// `LAST_PROCESSFIELD` bound). Left as a stub.
 pub fn ColumnsPanel_add() {
-    todo!(
-        "port of ColumnsPanel.c:137 — needs Process_fields[], Hashtable_get, DynamicColumn.heading"
-    )
+    todo!("port of ColumnsPanel.c:137 — needs Process_fields[] name table + LAST_PROCESSFIELD")
 }
 
 /// TODO: port of `void ColumnsPanel_fill(ColumnsPanel* this,
 /// ScreenSettings* ss, Hashtable* columns)` from `ColumnsPanel.c:156`.
-/// Iterates `ss->fields` calling [`ColumnsPanel_add`]. The ported
-/// `ScreenSettings` (`settings.rs`) has no `fields` array and `_add` is
-/// itself stubbed. Left as a stub.
+/// `Panel_prune`s the panel, iterates `ss->fields` calling
+/// [`ColumnsPanel_add`], then assigns `this->ss = ss`. `ScreenSettings.fields`
+/// and `Panel_prune` now exist, but `_add` is still stubbed (transitively on
+/// `Process_fields[]`) and the reduced [`ColumnsPanel`] models no `ss`
+/// back-pointer to assign. Left as a stub.
 pub fn ColumnsPanel_fill() {
-    todo!("port of ColumnsPanel.c:156 — needs ScreenSettings.fields + ColumnsPanel_add")
+    todo!(
+        "port of ColumnsPanel.c:156 — needs ColumnsPanel_add (Process_fields[]) + ss back-pointer"
+    )
 }
 
 /// TODO: port of `ColumnsPanel* ColumnsPanel_new(ScreenSettings* ss,
 /// Hashtable* columns, bool* changed)` from `ColumnsPanel.c:164`.
-/// Allocates the panel and calls [`ColumnsPanel_fill`] unconditionally;
-/// blocked transitively on `_fill` and the missing `ss->fields`. Left as
-/// a stub.
+/// Allocates the panel, sets `this->ss`/`this->changed`, and calls
+/// [`ColumnsPanel_fill`] unconditionally; blocked transitively on `_fill`
+/// (`Process_fields[]`) and on the unmodeled `ss`/`changed` back-pointers.
+/// Left as a stub.
 pub fn ColumnsPanel_new() {
-    todo!("port of ColumnsPanel.c:164 — needs ColumnsPanel_fill + ScreenSettings.fields")
+    todo!("port of ColumnsPanel.c:164 — needs ColumnsPanel_fill (Process_fields[]) + ss/changed back-pointers")
 }
 
 /// TODO: port of `void ColumnsPanel_update(Panel* super)` from
 /// `ColumnsPanel.c:181`. Rewrites `ss->fields`/`ss->flags` from the list,
-/// OR-ing `Process_fields[key].flags`. Needs `ScreenSettings.fields`/
-/// `.flags` and the `Process_fields[]` table — none ported, and the reduced
-/// [`ColumnsPanel`] has no `ss`/`changed` fields at all. Left as a stub. The
+/// OR-ing `Process_fields[key].flags`. `ScreenSettings.fields`/`.flags` now
+/// exist, but the per-row flag OR still needs the unported `Process_fields[]`
+/// table and `LAST_PROCESSFIELD`, and the reduced [`ColumnsPanel`] has no
+/// `ss`/`changed` fields at all. Left as a stub. The
 /// signature matches the C `Panel* super` so [`ColumnsPanel_eventHandler`]'s
 /// `HANDLED` tail can call it faithfully; every such call reaches this
 /// `todo!()` (the transitive block documented on the event handler).
 pub fn ColumnsPanel_update(super_: &mut Panel) {
     let _ = super_;
-    todo!("port of ColumnsPanel.c:181 — needs ScreenSettings.fields/.flags + Process_fields[]")
+    todo!("port of ColumnsPanel.c:181 — needs Process_fields[] flags table + LAST_PROCESSFIELD + ss/changed back-pointers")
 }
 
 #[cfg(test)]

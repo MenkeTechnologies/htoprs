@@ -1,18 +1,73 @@
-//! Stub scaffold for `LinuxProcessTable.c` — NOT yet ported.
+//! Partial port of `linux/LinuxProcessTable.c` — the Linux `/proc` process
+//! scanner and its `LinuxProcessTable` container.
 //!
-//! Every `pub fn` below is a placeholder (`todo!()`) named after a real
-//! htop C function so the port-purity gate accepts the module and the
-//! port surface is laid out. Replace each stub with a faithful port of
-//! the C body, updating the signature and the doc comment to `Port of
-//! `LinuxProcessTable.c`:<line>.` as you go. `gen_port_report.py` counts these
-//! `todo!()` bodies as *stubbed*, not *ported*, so scaffolding does not
-//! inflate coverage.
+//! Ported: the fast integer parsers (`fast_strto*`), `strtopid`,
+//! `sortTtyDrivers`, `LinuxProcessTable_getProcessState`,
+//! `LinuxProcessTable_adjustTime`, `fopenat`, `LinuxProcessTable_initTtyDrivers`,
+//! `ProcessTable_new`, `readFileDynamic`, `isOlderThan`, and the per-process
+//! `/proc` file readers that only need already-ported substrate:
+//! `readStatFile`, `readStatusFile`, `readStatmFile`, `readOomData`,
+//! `readAutogroup`, `readCwd`, `LinuxProcessList_readExe`,
+//! `LinuxProcessTable_readCmdlineFile`, `LinuxProcessList_readComm`.
+//!
+//! Still stubbed (each fn's doc gives the precise blocker): the scan drivers
+//! `LinuxProcessTable_recurseProcTree` / `ProcessTable_goThroughEntries`
+//! (need the process-typed `ProcessTable_getProcess`/`_add`, still stubbed in
+//! `processtable.rs`); `updateUser` (opaque `usersTable`); `readIoFile`
+//! (`saturatingSub` unported); `readMaps` + `calcLibSize_helper` (`Hashtable`
+//! unported); `readSmapsFile` (`skipEndOfLine` unported); `readCGroupFile` /
+//! `readSecattrData` (`Row_updateFieldWidth` stub + Linux `RowField` ids);
+//! `updateTtyDevice` (`major`/`minor` macros unported); `ProcessTable_delete`
+//! (pure `free()` teardown → `Drop`); and `readOpenVZData` (absent from the
+//! vendored 3.5.1 SPEC).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use crate::ported::process::ProcessState;
-use crate::ported::processtable::ProcessTable;
+use core::ffi::CStr;
+use std::os::unix::io::FromRawFd;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use libc::ssize_t;
+
+use crate::ported::linux::compat::{
+    openat_arg_t, Compat_faccessat, Compat_openat, Compat_readfile, Compat_readfileat,
+};
+use crate::ported::linux::linuxmachine::LinuxMachine;
+use crate::ported::linux::linuxprocess::LinuxProcess;
+use crate::ported::machine::Machine;
+use crate::ported::process::{
+    Process, ProcessState, Process_getPid, Process_setParent, Process_updateCmdline,
+    Process_updateComm, Process_updateExe, Tristate,
+};
+use crate::ported::processtable::{ProcessTable, ProcessTable_init};
 use crate::ported::row::spaceship_number;
+use crate::ported::xutils::{String_safeStrncpy, String_startsWith};
+
+/// Port of `#define PROCDIR "/proc"` (`LinuxMachine.h:105`).
+const PROCDIR: &str = "/proc";
+/// Port of `#define PROCTTYDRIVERSFILE PROCDIR "/tty/drivers"`
+/// (`LinuxMachine.h:125`).
+const PROCTTYDRIVERSFILE: &CStr = c"/proc/tty/drivers";
+/// Port of `#define PROC_LINE_LENGTH 4096` (`LinuxMachine.h:129`).
+const PROC_LINE_LENGTH: usize = 4096;
+/// Port of `#define MAX_READ 2048` (`Machine.h:32`).
+const MAX_READ: usize = 2048;
+/// Port of `#define MAX_NAME 128` (`Machine.h:28`).
+const MAX_NAME: usize = 128;
+/// Port of `PATH_MAX` (`Compat.c:24` / `limits.h`; 4096 on Linux).
+const PATH_MAX: usize = 4096;
+/// Port of `#define PF_KTHREAD 0x00200000` (`LinuxProcessTable.c:61`).
+const PF_KTHREAD: u64 = 0x0020_0000;
+/// Port of `#define MAX_CMDLINE_BUFFER_SIZE (2 * 1024 * 1024 + 512)`
+/// (`LinuxProcessTable.c:65`).
+const MAX_CMDLINE_BUFFER_SIZE: usize = 2 * 1024 * 1024 + 512;
+
+/// Port of `static ino_t rootPidNs = (ino_t)-1;` (`LinuxProcessTable.c:68`),
+/// the inode number of htop's own PID namespace. The C `(ino_t)-1` sentinel
+/// is modeled as `u64::MAX` in an [`AtomicU64`] (a module-private mutable C
+/// static; see the `Row_uidDigits` idiom).
+#[allow(non_upper_case_globals)] // faithful C identifier `rootPidNs`
+static rootPidNs: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// Port of `struct TtyDriver_` (`LinuxProcessTable.h:15`). One row of
 /// `/proc/tty/drivers`, describing a tty driver's major/minor range and
@@ -47,9 +102,22 @@ pub struct LinuxProcessTable {
     pub haveAutogroup: bool,
 }
 
-/// TODO: port of `static FILE* fopenat(openat_arg_t openatArg, const char* pathname, const char* mode` from `LinuxProcessTable.c:71`.
-pub fn fopenat() {
-    todo!("port of LinuxProcessTable.c:71")
+/// Port of `LinuxProcessTable.c:71`. Opens `pathname` (relative to the
+/// directory handle `openatArg`) via [`Compat_openat`] and wraps the fd in a
+/// buffered file handle. The C `FILE*` is modeled as an owned
+/// [`std::fs::File`] (the `TraceScreen`/`OpenFilesScreen` idiom); `None`
+/// mirrors the C `NULL` return. Only `mode == "r"` is supported, matching the
+/// C `assert(String_eq(mode, "r"))`. `File::from_raw_fd` cannot fail, so the
+/// C `fdopen` NULL branch (`close(fd)`) is unreachable.
+fn fopenat(openatArg: openat_arg_t, pathname: &CStr, mode: &str) -> Option<std::fs::File> {
+    debug_assert!(mode == "r"); // only currently supported mode
+
+    let fd = Compat_openat(openatArg, pathname, libc::O_RDONLY);
+    if fd < 0 {
+        return None;
+    }
+
+    Some(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 /// Port of `LinuxProcessTable.c:85`. Parse a `/proc` directory name into
@@ -230,24 +298,141 @@ pub fn sortTtyDrivers(va: &TtyDriver, vb: &TtyDriver) -> i32 {
     spaceship_number!(a.minorFrom, b.minorFrom)
 }
 
-/// TODO: port of `static void LinuxProcessTable_initTtyDrivers(LinuxProcessTable* this` from `LinuxProcessTable.c:183`.
-pub fn LinuxProcessTable_initTtyDrivers() {
-    todo!("port of LinuxProcessTable.c:183")
+/// Port of `LinuxProcessTable.c:183`. Reads and parses `/proc/tty/drivers`
+/// into the major/minor-sorted [`TtyDriver`] table stored on `this`. Each
+/// line has the form `name  nodepath  major  minor-range  type`. The C
+/// in-place `strchr`/`atoi` tokenizer is expressed here with line/whitespace
+/// splitting yielding the same fields; a partial (truncated) final line is
+/// dropped, matching the C `goto finish` bail-outs. The trailing
+/// `path == NULL` sentinel the C array carries is modeled as a final
+/// [`TtyDriver`] with `path: None`.
+fn LinuxProcessTable_initTtyDrivers(this: &mut LinuxProcessTable) {
+    let mut buf = [0u8; 16384];
+    let r = Compat_readfile(PROCTTYDRIVERSFILE, &mut buf);
+    if r < 0 {
+        return;
+    }
+
+    // atoi(): parse the leading run of decimal digits, defaulting to 0.
+    let atoi = |s: &str| -> u32 {
+        let mut v: u32 = 0;
+        for c in s.bytes() {
+            if !c.is_ascii_digit() {
+                break;
+            }
+            v = v.wrapping_mul(10).wrapping_add((c - b'0') as u32);
+        }
+        v
+    };
+
+    let text = &buf[..r as usize];
+    let mut ttyDrivers: Vec<TtyDriver> = Vec::new();
+
+    for line in text.split(|&c| c == b'\n') {
+        // [name]  [node path]  [major]  [minor range]  [type]
+        let line = match std::str::from_utf8(line) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut it = line.split_whitespace();
+
+        // skip first token (name)
+        if it.next().is_none() {
+            continue;
+        }
+        let path = match it.next() {
+            Some(p) => p,
+            None => continue, // truncation
+        };
+        let major = match it.next() {
+            Some(m) => atoi(m),
+            None => continue, // truncation
+        };
+        let minor = match it.next() {
+            Some(m) => m,
+            None => continue, // truncation
+        };
+
+        let (minorFrom, minorTo) = match minor.split_once('-') {
+            Some((from, to)) => (atoi(from), atoi(to)),
+            None => (atoi(minor), atoi(minor)),
+        };
+
+        ttyDrivers.push(TtyDriver {
+            path: Some(path.to_string()),
+            major,
+            minorFrom,
+            minorTo,
+        });
+    }
+
+    // qsort(ttyDrivers, numDrivers, ...): sort the real entries only.
+    ttyDrivers.sort_by(|a, b| match sortTtyDrivers(a, b) {
+        n if n < 0 => std::cmp::Ordering::Less,
+        0 => std::cmp::Ordering::Equal,
+        _ => std::cmp::Ordering::Greater,
+    });
+
+    // ttyDrivers[numDrivers].path = NULL; — the sentinel terminator.
+    ttyDrivers.push(TtyDriver::default());
+
+    this.ttyDrivers = Some(ttyDrivers);
 }
 
-/// TODO: port of `ProcessTable* ProcessTable_new(Machine* host, Hashtable* pidMatchList` from `LinuxProcessTable.c:261`.
-pub fn ProcessTable_new() {
-    todo!("port of LinuxProcessTable.c:261")
+/// Port of `LinuxProcessTable.c:261`. Constructs the Linux process table:
+/// initializes the embedded base [`ProcessTable`], loads the tty-driver
+/// table, probes `/proc/self/smaps_rollup` availability, and records htop's
+/// own PID-namespace inode in the [`rootPidNs`] static.
+///
+/// Signature mapping: the C `xCalloc` + `Object_setClass` heap allocation is
+/// modeled as an owned [`LinuxProcessTable`] value (the `LinuxProcess_new`
+/// idiom); class identity is the Rust type. The C returns `&this->super`
+/// (a `ProcessTable*` upcast); the owning caller here keeps the concrete
+/// value. `Hashtable* pidMatchList` is the opaque [`Option<usize>`] handle.
+pub fn ProcessTable_new(host: *const Machine, pidMatchList: Option<usize>) -> LinuxProcessTable {
+    let mut this = LinuxProcessTable {
+        super_: ProcessTable::empty(),
+        ttyDrivers: None,
+        haveSmapsRollup: false,
+        haveAutogroup: false,
+    };
+
+    ProcessTable_init(&mut this.super_, host, pidMatchList);
+
+    LinuxProcessTable_initTtyDrivers(&mut this);
+
+    // Test /proc/PID/smaps_rollup availability (faster to parse, Linux 4.14+)
+    this.haveSmapsRollup =
+        unsafe { libc::access(c"/proc/self/smaps_rollup".as_ptr(), libc::R_OK) } == 0;
+
+    // Read PID namespace inode number
+    let mut sb: libc::stat = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::stat(c"/proc/self/ns/pid".as_ptr(), &mut sb) };
+    if r == 0 {
+        rootPidNs.store(sb.st_ino as u64, Ordering::Relaxed);
+    } else {
+        rootPidNs.store(u64::MAX, Ordering::Relaxed);
+    }
+
+    this
 }
 
-/// TODO: port of `void ProcessTable_delete(Object* cast` from `LinuxProcessTable.c:287`.
+/// TODO: port of `void ProcessTable_delete(Object* cast)` from
+/// `LinuxProcessTable.c:287`. Kept stubbed: a pure `free()` teardown —
+/// `ProcessTable_done(&this->super)`, then `free()` of each `ttyDrivers[i].path`
+/// and the array, the `#ifdef HAVE_DELAYACCT` netlink-socket destroy (the
+/// non-delayacct build variant this module commits to omits it), and
+/// `free(this)`. Rust owns the `Option<Vec<TtyDriver>>` and every
+/// `Option<String>`, so `Drop` reclaims them automatically (the
+/// `Affinity_delete` precedent).
 pub fn ProcessTable_delete() {
-    todo!("port of LinuxProcessTable.c:287")
+    todo!("port of LinuxProcessTable.c:287 — pure free() teardown; Rust Drop handles it")
 }
 
-/// TODO: port of `static inline unsigned long long LinuxProcessTable_adjustTime(const LinuxMachine* lhost, unsigned long long t` from `LinuxProcessTable.c:302`.
-pub fn LinuxProcessTable_adjustTime() {
-    todo!("port of LinuxProcessTable.c:302")
+/// Port of `LinuxProcessTable.c:302`. Rescales a jiffy-denominated time `t`
+/// to hundredths of a second using the host's `USER_HZ` (`jiffies`).
+fn LinuxProcessTable_adjustTime(lhost: &LinuxMachine, t: u64) -> u64 {
+    t * 100 / lhost.jiffies as u64
 }
 
 /// Port of `LinuxProcessTable.c:307`. Map the single-character process
@@ -268,114 +453,1060 @@ pub fn LinuxProcessTable_getProcessState(state: u8) -> ProcessState {
     }
 }
 
-/// TODO: port of `static bool LinuxProcessTable_readStatFile(LinuxProcess* lp, openat_arg_t procFd, const LinuxMachine* lhost, bool scanMainThread, char* command, size_t commLen` from `LinuxProcessTable.c:325`.
-pub fn LinuxProcessTable_readStatFile() {
-    todo!("port of LinuxProcessTable.c:325")
+/// Port of `LinuxProcessTable.c:325`. Reads and parses `/proc/<pid>/stat`
+/// (thread-specific data) into the [`LinuxProcess`]/[`Process`] fields,
+/// copying the parenthesized `comm` into `command`. The C `char* location`
+/// cursor is modeled as a byte index `loc` into the NUL-terminated read
+/// buffer (out-of-range / past-NUL reads model as `0`); each field is read
+/// via the `fast_strto*` helpers (which advance a `&mut &[u8]` suffix of the
+/// buffer). `commLen` caps the `comm` copy exactly as the C `MINIMUM(...)`.
+fn LinuxProcessTable_readStatFile(
+    lp: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    lhost: &LinuxMachine,
+    scanMainThread: bool,
+    command: &mut [u8],
+    commLen: usize,
+) -> bool {
+    let mut buf = [0u8; MAX_READ + 1];
+
+    // char path[22] = "stat"; task/<pid>/stat when scanning the main thread.
+    let path = if scanMainThread {
+        std::ffi::CString::new(format!("task/{}/stat", Process_getPid(&lp.super_))).unwrap()
+    } else {
+        std::ffi::CString::new("stat").unwrap()
+    };
+    let r = Compat_readfileat(procFd, &path, &mut buf);
+    if r < 0 {
+        return false;
+    }
+
+    // Byte at `i`, with past-end / NUL-region reads as 0 (NUL terminator).
+    let byte = |i: usize| -> u8 { buf.get(i).copied().unwrap_or(0) };
+    // strchr(&buf[from], ch): first index >= from holding ch before the NUL.
+    let find = |from: usize, ch: u8| -> Option<usize> {
+        let mut i = from;
+        loop {
+            let c = buf.get(i).copied().unwrap_or(0);
+            if c == 0 {
+                return None;
+            }
+            if c == ch {
+                return Some(i);
+            }
+            i += 1;
+        }
+    };
+    // fast_strto* helpers over the buffer suffix at `loc`, returning the new
+    // cursor index alongside the value.
+    let read_i = |loc: usize| -> (i32, usize) {
+        let mut cur: &[u8] = &buf[loc..];
+        let v = fast_strtoi_dec(&mut cur, 0);
+        (v, buf.len() - cur.len())
+    };
+    let read_ul = |loc: usize| -> (u64, usize) {
+        let mut cur: &[u8] = &buf[loc..];
+        let v = fast_strtoul_dec(&mut cur, 0);
+        (v, buf.len() - cur.len())
+    };
+    let read_ull = |loc: usize| -> (u64, usize) {
+        let mut cur: &[u8] = &buf[loc..];
+        let v = fast_strtoull_dec(&mut cur, 0);
+        (v, buf.len() - cur.len())
+    };
+    let read_l = |loc: usize| -> (i64, usize) {
+        let mut cur: &[u8] = &buf[loc..];
+        let v = fast_strtol_dec(&mut cur, 0);
+        (v, buf.len() - cur.len())
+    };
+    let read_ll = |loc: usize| -> (i64, usize) {
+        let mut cur: &[u8] = &buf[loc..];
+        let v = fast_strtoll_dec(&mut cur, 0);
+        (v, buf.len() - cur.len())
+    };
+
+    /* (1) pid   -  %d */
+    debug_assert_eq!(
+        Process_getPid(&lp.super_),
+        fast_strtoi_dec(&mut &buf[..], 0)
+    );
+    let mut loc = match find(0, b' ') {
+        Some(i) => i,
+        None => return false,
+    };
+
+    /* (2) comm  -  (%s) */
+    if byte(loc) == 0 || byte(loc + 1) == 0 {
+        return false;
+    }
+    loc += 2;
+    // strrchr(location, ')')
+    let end = {
+        let mut e: Option<usize> = None;
+        let mut i = loc;
+        while byte(i) != 0 {
+            if byte(i) == b')' {
+                e = Some(i);
+            }
+            i += 1;
+        }
+        match e {
+            Some(i) => i,
+            None => return false,
+        }
+    };
+    if end < loc {
+        return false;
+    }
+    let size = core::cmp::min(end - loc + 1, commLen).min(command.len());
+    if size > 0 {
+        String_safeStrncpy(&mut command[..size], &buf[loc..]);
+    }
+    if byte(end) == 0 || byte(end + 1) == 0 {
+        return false;
+    }
+    loc = end + 2;
+
+    /* (3) state  -  %c */
+    lp.super_.state = LinuxProcessTable_getProcessState(byte(loc));
+    if byte(loc) == 0 || byte(loc + 1) == 0 {
+        return false;
+    }
+    loc += 2;
+
+    /* (4) ppid  -  %d */
+    let (ppid, l) = read_i(loc);
+    Process_setParent(&mut lp.super_, ppid);
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (5) pgrp  -  %d */
+    let (v, l) = read_i(loc);
+    lp.super_.pgrp = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (6) session  -  %d */
+    let (v, l) = read_i(loc);
+    lp.super_.session = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (7) tty_nr  -  %d */
+    let (v, l) = read_ul(loc);
+    lp.super_.tty_nr = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (8) tpgid  -  %d */
+    let (v, l) = read_i(loc);
+    lp.super_.tpgid = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (9) flags  -  %u */
+    let (v, l) = read_ul(loc);
+    lp.flags = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (10) minflt  -  %lu */
+    let (v, l) = read_ull(loc);
+    lp.super_.minflt = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (11) cminflt  -  %lu */
+    let (v, l) = read_ull(loc);
+    lp.cminflt = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (12) majflt  -  %lu */
+    let (v, l) = read_ull(loc);
+    lp.super_.majflt = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (13) cmajflt  -  %lu */
+    let (v, l) = read_ull(loc);
+    lp.cmajflt = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (14) utime  -  %lu */
+    let (v, l) = read_ull(loc);
+    lp.utime = LinuxProcessTable_adjustTime(lhost, v);
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (15) stime  -  %lu */
+    let (v, l) = read_ull(loc);
+    lp.stime = LinuxProcessTable_adjustTime(lhost, v);
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (16) cutime  -  %ld */
+    let (v, l) = read_ull(loc);
+    lp.cutime = LinuxProcessTable_adjustTime(lhost, v);
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (17) cstime  -  %ld */
+    let (v, l) = read_ull(loc);
+    lp.cstime = LinuxProcessTable_adjustTime(lhost, v);
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (18) priority  -  %ld */
+    let (v, l) = read_l(loc);
+    lp.super_.priority = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (19) nice  -  %ld */
+    let (v, l) = read_i(loc);
+    lp.super_.nice = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* (20) num_threads  -  %ld */
+    let (v, l) = read_l(loc);
+    lp.super_.nlwp = v;
+    loc = l;
+    if byte(loc) == 0 {
+        return false;
+    }
+    loc += 1;
+
+    /* Skip (21) itrealvalue  -  %ld */
+    loc = match find(loc, b' ') {
+        Some(i) => i,
+        None => return false,
+    };
+    loc += 1;
+
+    /* (22) starttime  -  %llu */
+    if lp.super_.starttime_ctime == 0 {
+        let (v, l) = read_ll(loc);
+        lp.super_.starttime_ctime =
+            lhost.boottime + (LinuxProcessTable_adjustTime(lhost, v as u64) / 100) as i64;
+        loc = l;
+    } else {
+        loc = match find(loc, b' ') {
+            Some(i) => i,
+            None => return false,
+        };
+    }
+    loc += 1;
+
+    /* Skip (23) - (38) */
+    for _ in 0..16 {
+        loc = match find(loc, b' ') {
+            Some(i) => i,
+            None => return false,
+        };
+        loc += 1;
+    }
+
+    /* (39) processor  -  %d */
+    let (v, _l) = read_i(loc);
+    lp.super_.processor = v;
+
+    /* Ignore further fields */
+
+    lp.super_.time = lp.utime + lp.stime;
+
+    true
 }
 
-/// TODO: port of `static bool LinuxProcessTable_readStatusFile(Process* process, openat_arg_t procFd` from `LinuxProcessTable.c:549`.
-pub fn LinuxProcessTable_readStatusFile() {
-    todo!("port of LinuxProcessTable.c:549")
+/// Port of `LinuxProcessTable.c:549`. Reads `/proc/<pid>/status`, detecting
+/// container membership (the `NSpid:` line listing more than one pid
+/// namespace) and summing the voluntary + nonvoluntary context switches into
+/// the [`LinuxProcess`] `ctxt_total`/`ctxt_diff` counters. The C `fgets`
+/// line loop over a `FILE*` opened by [`fopenat`] becomes a buffered
+/// line iterator; `sscanf(..., "\t%lu")` becomes a strip-prefix + trim +
+/// parse.
+///
+/// Signature mapping: the C takes `Process*` and immediately downcasts to
+/// `LinuxProcess*`; the faithful Rust receiver is the concrete
+/// `&mut LinuxProcess`, reaching the base via `super_`.
+fn LinuxProcessTable_readStatusFile(process: &mut LinuxProcess, procFd: openat_arg_t) -> bool {
+    use std::io::BufRead;
+
+    let mut ctxt: u64 = 0;
+    process.super_.isRunningInContainer = Tristate::TRI_OFF;
+
+    let statusfile = match fopenat(procFd, c"status", "r") {
+        Some(f) => f,
+        None => return false,
+    };
+
+    let reader = std::io::BufReader::new(statusfile);
+    for line in reader.lines() {
+        let buffer = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        if String_startsWith(&buffer, "NSpid:") {
+            // Count the distinct numeric fields (each a pid in one namespace).
+            let bytes = buffer.as_bytes();
+            let mut pid_ns_count = 0;
+            let mut i = 0;
+            while i < bytes.len() && !bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            while i < bytes.len() {
+                if bytes[i].is_ascii_digit() {
+                    pid_ns_count += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+                while i < bytes.len() && !bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+
+            if pid_ns_count > 1 {
+                process.super_.isRunningInContainer = Tristate::TRI_ON;
+            }
+        } else if String_startsWith(&buffer, "voluntary_ctxt_switches:") {
+            if let Some(v) = buffer
+                .strip_prefix("voluntary_ctxt_switches:")
+                .and_then(|s| s.trim().parse::<u64>().ok())
+            {
+                ctxt += v;
+            }
+        } else if String_startsWith(&buffer, "nonvoluntary_ctxt_switches:") {
+            if let Some(v) = buffer
+                .strip_prefix("nonvoluntary_ctxt_switches:")
+                .and_then(|s| s.trim().parse::<u64>().ok())
+            {
+                ctxt += v;
+            }
+        }
+    }
+
+    process.ctxt_diff = if ctxt > process.ctxt_total {
+        ctxt - process.ctxt_total
+    } else {
+        0
+    };
+    process.ctxt_total = ctxt;
+
+    true
 }
 
-/// TODO: port of `static bool LinuxProcessTable_updateUser(const Machine* host, Process* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:628`.
+/// TODO: port of `static bool LinuxProcessTable_updateUser(const Machine*
+/// host, Process* process, openat_arg_t procFd, const LinuxProcess* mainTask)`
+/// from `LinuxProcessTable.c:628`. Blocked: the non-`mainTask` path calls
+/// `UsersTable_getRef(host->usersTable, sb.st_uid)` to resolve the username,
+/// but [`Machine::usersTable`](crate::ported::machine::Machine) is the opaque
+/// `Option<usize>` handle (the `UsersTable` is not modeled as a reachable
+/// value), so the ported `UsersTable_getRef` (which needs `&mut UsersTable`)
+/// cannot be called. Stays stubbed until the machine exposes a real
+/// `UsersTable`.
 pub fn LinuxProcessTable_updateUser() {
-    todo!("port of LinuxProcessTable.c:628")
+    todo!("port of LinuxProcessTable.c:628 — needs Machine::usersTable as a real UsersTable")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readIoFile(LinuxProcess* lp, openat_arg_t procFd, bool scanMainThread` from `LinuxProcessTable.c:655`.
+/// TODO: port of `static void LinuxProcessTable_readIoFile(LinuxProcess* lp,
+/// openat_arg_t procFd, bool scanMainThread)` from `LinuxProcessTable.c:655`.
+/// Blocked: the rate calculations use `saturatingSub(...)` (`Macros.h`),
+/// which is not ported anywhere in the tree (no free fn to call and it is not
+/// a helper local to this module), so the faithful body cannot be written.
+/// Stays stubbed until `saturatingSub` lands.
 pub fn LinuxProcessTable_readIoFile() {
-    todo!("port of LinuxProcessTable.c:655")
+    todo!("port of LinuxProcessTable.c:655 — needs saturatingSub (Macros.h) ported")
 }
 
-/// TODO: port of `static void LinuxProcessTable_calcLibSize_helper(ATTR_UNUSED ht_key_t key, void* value, void* data` from `LinuxProcessTable.c:727`.
+/// TODO: port of `static void LinuxProcessTable_calcLibSize_helper(
+/// ATTR_UNUSED ht_key_t key, void* value, void* data)` from
+/// `LinuxProcessTable.c:727`. Blocked: this is a `Hashtable_foreach`
+/// callback (`typedef void (*Hashtable_PairFunction)(ht_key_t, void*,
+/// void*)`) invoked by [`LinuxProcessTable_readMaps`] over a `Hashtable` of
+/// `LibraryData`; the `Hashtable` container is not ported (no Rust value to
+/// iterate), so the callback has nothing to be wired to. Stays stubbed with
+/// `readMaps`.
 pub fn LinuxProcessTable_calcLibSize_helper() {
-    todo!("port of LinuxProcessTable.c:727")
+    todo!("port of LinuxProcessTable.c:727 — Hashtable_foreach callback; Hashtable not ported")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readMaps(LinuxProcess* process, openat_arg_t procFd, const LinuxMachine* host, bool calcSize, bool checkDeletedLib` from `LinuxProcessTable.c:745`.
+/// TODO: port of `static void LinuxProcessTable_readMaps(LinuxProcess*
+/// process, openat_arg_t procFd, const LinuxMachine* host, bool calcSize,
+/// bool checkDeletedLib)` from `LinuxProcessTable.c:745`. Blocked: the
+/// `calcSize` path aggregates per-inode library sizes in a
+/// `Hashtable` (`Hashtable_new`/`_get`/`_put`/`_foreach`/`_delete`), which is
+/// not ported as a reachable container, so the size-accounting cannot be
+/// expressed faithfully. Stays stubbed until `Hashtable` lands.
 pub fn LinuxProcessTable_readMaps() {
-    todo!("port of LinuxProcessTable.c:745")
+    todo!("port of LinuxProcessTable.c:745 — needs Hashtable container ported")
 }
 
-/// TODO: port of `static bool LinuxProcessTable_readStatmFile(LinuxProcess* process, openat_arg_t procFd, const LinuxMachine* host, const LinuxProcess* mainTask` from `LinuxProcessTable.c:860`.
-pub fn LinuxProcessTable_readStatmFile() {
-    todo!("port of LinuxProcessTable.c:860")
+/// Port of `LinuxProcessTable.c:840`. Reads `/proc/<pid>/statm`
+/// (process-shared data): total program size and RSS (both scaled to KiB),
+/// shared/text/data sizes, and derives private RSS. Thread tasks copy
+/// `m_virt`/`m_resident` from the main task. The C `sscanf("%ld %ld ...")`
+/// of the seven fields is modeled by whitespace-splitting and decimal
+/// parsing, mirroring `sscanf`'s "stop at the first field that fails to
+/// convert" semantics (and requiring all seven, `r == 7`, before scaling).
+fn LinuxProcessTable_readStatmFile(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    host: &LinuxMachine,
+    mainTask: Option<&LinuxProcess>,
+) -> bool {
+    if let Some(mt) = mainTask {
+        process.super_.m_virt = mt.super_.m_virt;
+        process.super_.m_resident = mt.super_.m_resident;
+        return true;
+    }
+
+    let mut statmdata = [0u8; 128];
+    if Compat_readfileat(procFd, c"statm", &mut statmdata) < 1 {
+        return false;
+    }
+
+    let nul = statmdata
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(statmdata.len());
+    let text = std::str::from_utf8(&statmdata[..nul]).unwrap_or("");
+
+    // sscanf("%ld %ld %ld %ld %ld %ld %ld"): parse up to seven longs, stopping
+    // at the first token that fails to convert (matching sscanf's return).
+    let mut fields = [0i64; 7];
+    let mut r = 0usize;
+    for tok in text.split_ascii_whitespace() {
+        if r >= 7 {
+            break;
+        }
+        match tok.parse::<i64>() {
+            Ok(v) => {
+                fields[r] = v;
+                r += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Assign the fields sscanf would have written (in order).
+    if r >= 1 {
+        process.super_.m_virt = fields[0];
+    }
+    if r >= 2 {
+        process.super_.m_resident = fields[1];
+    }
+    if r >= 3 {
+        process.m_share = fields[2];
+    }
+    if r >= 4 {
+        process.m_trs = fields[3];
+    }
+    // fields[4] is unused since Linux 2.6 (always 0)
+    if r >= 6 {
+        process.m_drs = fields[5];
+    }
+    // fields[6] is unused since Linux 2.6 (always 0)
+
+    if r == 7 {
+        process.super_.m_virt *= host.pageSizeKB as i64;
+        process.super_.m_resident *= host.pageSizeKB as i64;
+
+        process.m_priv = process.super_.m_resident - (process.m_share * host.pageSizeKB as i64);
+    }
+
+    r == 7
 }
 
-/// TODO: port of `static bool LinuxProcessTable_readSmapsFile(LinuxProcess* process, openat_arg_t procFd, bool haveSmapsRollup` from `LinuxProcessTable.c:897`.
+/// TODO: port of `static bool LinuxProcessTable_readSmapsFile(LinuxProcess*
+/// process, openat_arg_t procFd, bool haveSmapsRollup)` from
+/// `LinuxProcessTable.c:897`. Blocked: the partial-line handling calls
+/// `skipEndOfLine(FILE*)` (`generic`/`FileUtils`), which is not ported in the
+/// tree, so the `fgets` chunk loop cannot be faithfully reproduced. Stays
+/// stubbed until `skipEndOfLine` lands.
 pub fn LinuxProcessTable_readSmapsFile() {
-    todo!("port of LinuxProcessTable.c:897")
+    todo!("port of LinuxProcessTable.c:897 — needs skipEndOfLine ported")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readOpenVZData(LinuxProcess* process, openat_arg_t procFd` from `LinuxProcessTable.c:934`.
+/// TODO: port of `static void LinuxProcessTable_readOpenVZData(LinuxProcess*
+/// process, openat_arg_t procFd)` (an `#ifdef HAVE_OPENVZ` reader in older
+/// htop). Kept stubbed: this function is absent from the vendored htop 3.5.1
+/// SPEC (`vendor/htop/linux/LinuxProcessTable.c` has no OpenVZ reader), so
+/// there is no C body to port faithfully — the fn name survives only in the
+/// port-purity name list. Nothing to port here.
 pub fn LinuxProcessTable_readOpenVZData() {
-    todo!("port of LinuxProcessTable.c:934")
+    todo!("port of LinuxProcessTable_readOpenVZData — not present in vendored htop 3.5.1 source")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess* process, openat_arg_t procFd` from `LinuxProcessTable.c:1024`.
+/// TODO: port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess*
+/// process, openat_arg_t procFd)` from `LinuxProcessTable.c:1024`. Blocked on
+/// two unported pieces: (1) it reports column widths through
+/// `Row_updateFieldWidth(CGROUP/CCGROUP/CONTAINER, ...)`, but
+/// [`Row_updateFieldWidth`](crate::ported::row::Row_updateFieldWidth) is a
+/// stub (its `Row_fieldWidths` global is unmodeled); and (2) the `CGROUP`,
+/// `CCGROUP`, `CONTAINER` field ids are Linux-platform `RowField` variants
+/// (`linux/ProcessField.h`) that the shared `ProcessField` enum does not
+/// model. The `CGroup_filterName`/`CGroup_filterContainer` shorteners it
+/// calls *are* ported. Stays stubbed until the field-width table + platform
+/// field ids land.
 pub fn LinuxProcessTable_readCGroupFile() {
-    todo!("port of LinuxProcessTable.c:1024")
+    todo!("port of LinuxProcessTable.c:1024 — needs Row_updateFieldWidth + Linux RowField ids")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readOomData(LinuxProcess* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:1128`.
-pub fn LinuxProcessTable_readOomData() {
-    todo!("port of LinuxProcessTable.c:1128")
+/// Port of `LinuxProcessTable.c:1022`. Reads `/proc/<pid>/oom_score` into the
+/// [`LinuxProcess`] `oom` field (thread tasks copy from the main task).
+/// Defaults to `UINT_MAX` and only accepts a value terminated by NUL, `\n`,
+/// or space, exactly as the C guards. `fast_strtoull_dec` is capped at the
+/// number of bytes read.
+fn LinuxProcessTable_readOomData(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) {
+    if let Some(mt) = mainTask {
+        process.oom = mt.oom;
+        return;
+    }
+
+    let mut buffer = [0u8; PROC_LINE_LENGTH + 1];
+
+    process.oom = u32::MAX; // UINT_MAX
+    let oomRead = Compat_readfileat(procFd, c"oom_score", &mut buffer);
+    if oomRead < 1 {
+        return;
+    }
+
+    let mut cur: &[u8] = &buffer[..];
+    let oom = fast_strtoull_dec(&mut cur, oomRead as usize);
+    let next = buffer.len() - cur.len();
+    let c = buffer.get(next).copied().unwrap_or(0);
+    if c != 0 && c != b'\n' && c != b' ' {
+        return;
+    }
+
+    if oom > u32::MAX as u64 {
+        return;
+    }
+
+    process.oom = oom as u32;
 }
 
-/// TODO: port of `static void LinuxProcessTable_readAutogroup(LinuxProcess* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:1157`.
-pub fn LinuxProcessTable_readAutogroup() {
-    todo!("port of LinuxProcessTable.c:1157")
+/// Port of `LinuxProcessTable.c:1052`. Reads `/proc/<pid>/autogroup` (CFS
+/// autogroup id + nice), copying from the main task for threads. The C
+/// `sscanf("/autogroup-%ld nice %d", ...)` (requiring both fields, `ok == 2`)
+/// is modeled by a prefix strip + whitespace split. `autogroup_id` stays `-1`
+/// on any parse failure.
+fn LinuxProcessTable_readAutogroup(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) {
+    if let Some(mt) = mainTask {
+        process.autogroup_id = mt.autogroup_id;
+        return;
+    }
+
+    process.autogroup_id = -1;
+
+    let mut autogroup = [0u8; 64];
+    let amtRead = Compat_readfileat(procFd, c"autogroup", &mut autogroup);
+    if amtRead < 0 {
+        return;
+    }
+
+    let nul = autogroup
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(autogroup.len());
+    let content = std::str::from_utf8(&autogroup[..nul]).unwrap_or("");
+
+    // "/autogroup-%ld nice %d"
+    let parsed = (|| -> Option<(i64, i32)> {
+        let rest = content.strip_prefix("/autogroup-")?;
+        let mut it = rest.split_whitespace();
+        let identity: i64 = it.next()?.parse().ok()?;
+        if it.next()? != "nice" {
+            return None;
+        }
+        let nice: i32 = it.next()?.parse().ok()?;
+        Some((identity, nice))
+    })();
+
+    if let Some((identity, nice)) = parsed {
+        process.autogroup_id = identity;
+        process.autogroup_nice = nice;
+    }
 }
 
-/// TODO: port of `static void LinuxProcessTable_readSecattrData(LinuxProcess* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:1182`.
+/// TODO: port of `static void LinuxProcessTable_readSecattrData(LinuxProcess*
+/// process, openat_arg_t procFd, const LinuxProcess* mainTask)` from
+/// `LinuxProcessTable.c:1182`. Blocked: the non-`mainTask` path reports the
+/// column width via `Row_updateFieldWidth(SECATTR, strlen(buffer))`, but
+/// [`Row_updateFieldWidth`](crate::ported::row::Row_updateFieldWidth) is a
+/// stub and `SECATTR` is a Linux-platform `RowField` id the shared
+/// `ProcessField` enum does not model. Stays stubbed until those land. (The
+/// `attr/current` read + newline trimming + `secattr` assignment are
+/// otherwise trivial.)
 pub fn LinuxProcessTable_readSecattrData() {
-    todo!("port of LinuxProcessTable.c:1182")
+    todo!("port of LinuxProcessTable.c:1182 — needs Row_updateFieldWidth + SECATTR field id")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readCwd(LinuxProcess* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:1216`.
-pub fn LinuxProcessTable_readCwd() {
-    todo!("port of LinuxProcessTable.c:1216")
+/// Port of `LinuxProcessTable.c:1111`. Resolves `/proc/<pid>/cwd` (the
+/// process working directory) via `readlinkat`, storing it in
+/// [`Process::procCwd`]; threads copy from the main task. The C
+/// `#if HAVE_READLINKAT && HAVE_OPENAT` branch (the one this build commits
+/// to) is ported; the `Compat_readlink` fallback is the other build variant.
+fn LinuxProcessTable_readCwd(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) {
+    if let Some(mt) = mainTask {
+        // free_and_xStrdup(mainCwd) when set, else free + NULL.
+        process.super_.procCwd = mt.super_.procCwd.clone();
+        return;
+    }
+
+    let mut pathBuffer = [0u8; PATH_MAX + 1];
+    let r = unsafe {
+        libc::readlinkat(
+            procFd,
+            c"cwd".as_ptr(),
+            pathBuffer.as_mut_ptr() as *mut libc::c_char,
+            pathBuffer.len() - 1,
+        )
+    };
+
+    if r < 0 {
+        process.super_.procCwd = None;
+        return;
+    }
+
+    process.super_.procCwd = Some(String::from_utf8_lossy(&pathBuffer[..r as usize]).into_owned());
 }
 
-/// TODO: port of `static void LinuxProcessList_readExe(Process* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:1250`.
-pub fn LinuxProcessList_readExe() {
-    todo!("port of LinuxProcessTable.c:1250")
+/// Port of `LinuxProcessTable.c:1145`. Resolves `/proc/<pid>/exe` via
+/// `readlinkat`, handling the kernel `" (deleted)"` suffix (stripping it and
+/// flagging `procExeDeleted`), and updates the executable path through
+/// [`Process_updateExe`]. Threads copy from the main task. The
+/// suffix/comparison logic runs on raw bytes (paths may not be UTF-8);
+/// the final value is handed to `Process_updateExe` as a (lossily-decoded)
+/// string, matching the `Option<String> procExe` model. The
+/// `HAVE_READLINKAT && HAVE_OPENAT` branch is ported (committed build
+/// variant).
+fn LinuxProcessList_readExe(
+    process: &mut Process,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) {
+    if let Some(mt) = mainTask {
+        Process_updateExe(process, mt.super_.procExe.as_deref());
+        process.procExeDeleted = mt.super_.procExeDeleted;
+        return;
+    }
+
+    let mut filename = [0u8; PATH_MAX + 1];
+    let amtRead = unsafe {
+        libc::readlinkat(
+            procFd,
+            c"exe".as_ptr(),
+            filename.as_mut_ptr() as *mut libc::c_char,
+            filename.len() - 1,
+        )
+    };
+
+    if amtRead > 0 {
+        let mut fbytes = filename[..amtRead as usize].to_vec();
+
+        // if (!procExe || (!procExeDeleted && !String_eq(filename, procExe)) || procExeDeleted)
+        let differs = process
+            .procExe
+            .as_deref()
+            .map(|e| e.as_bytes() != fbytes.as_slice())
+            .unwrap_or(true);
+        // Faithful mirror of the C boolean; kept verbatim to match the SPEC.
+        #[allow(clippy::nonminimal_bool)]
+        let cond = process.procExe.is_none()
+            || (!process.procExeDeleted && differs)
+            || process.procExeDeleted;
+
+        if cond {
+            const DELETED_MARKER: &[u8] = b" (deleted)";
+            let markerLen = DELETED_MARKER.len();
+            let filenameLen = fbytes.len();
+
+            if filenameLen > markerLen {
+                let oldExeDeleted = process.procExeDeleted;
+
+                process.procExeDeleted = &fbytes[filenameLen - markerLen..] == DELETED_MARKER;
+
+                if process.procExeDeleted {
+                    fbytes.truncate(filenameLen - markerLen);
+                }
+
+                if oldExeDeleted != process.procExeDeleted {
+                    process.mergedCommand.lastUpdate = 0;
+                }
+            }
+
+            let s = String::from_utf8_lossy(&fbytes).into_owned();
+            Process_updateExe(process, Some(&s));
+        }
+    } else if process.procExe.is_some() {
+        Process_updateExe(process, None);
+        process.procExeDeleted = false;
+    }
 }
 
-/// TODO: port of `static char* readFileDynamic(openat_arg_t procFd, const char* filename, ssize_t* amtRead` from `LinuxProcessTable.c:1299`.
-pub fn readFileDynamic() {
-    todo!("port of LinuxProcessTable.c:1299")
+/// Port of `LinuxProcessTable.c:1194`. Reads a whole `/proc` file whose size
+/// is not known in advance, growing the buffer (starting at 512 bytes,
+/// doubling) up to `MAX_CMDLINE_BUFFER_SIZE` while each read fills the buffer.
+/// The C `char*` result + `ssize_t* amtRead` out-param become a returned
+/// `Some((buffer, amtRead))`; `None` mirrors the C `NULL` (nothing read /
+/// error). The buffer keeps its full allocated length (data is NUL-terminated
+/// at `amtRead` by [`Compat_readfileat`]), matching the C caller expectations.
+fn readFileDynamic(procFd: openat_arg_t, filename: &CStr) -> Option<(Vec<u8>, ssize_t)> {
+    let mut bufferSize: usize = 512;
+    let mut buffer = vec![0u8; bufferSize];
+
+    let mut amtRead = Compat_readfileat(procFd, filename, &mut buffer);
+
+    // If the buffer was full, the file might be larger; retry with more space.
+    while amtRead > 0 && amtRead as usize == bufferSize - 1 && bufferSize < MAX_CMDLINE_BUFFER_SIZE
+    {
+        bufferSize *= 2;
+        buffer.resize(bufferSize, 0);
+        amtRead = Compat_readfileat(procFd, filename, &mut buffer);
+    }
+
+    if amtRead <= 0 {
+        return None;
+    }
+
+    Some((buffer, amtRead))
 }
 
-/// TODO: port of `static bool LinuxProcessTable_readCmdlineFile(Process* process, openat_arg_t procFd, const LinuxProcess* mainTask` from `LinuxProcessTable.c:1324`.
-pub fn LinuxProcessTable_readCmdlineFile() {
-    todo!("port of LinuxProcessTable.c:1324")
+/// Port of `LinuxProcessTable.c:1219`. Reads `/proc/<pid>/cmdline`, first
+/// refreshing the exe link ([`LinuxProcessList_readExe`]), then splitting the
+/// NUL-delimited argument vector and computing the basename token
+/// `[tokenStart, tokenEnd)` for display. Ports the full argument-parsing
+/// heuristic for processes that flatten their cmdline with spaces (e.g.
+/// chrome), including the `faccessat` path-existence cross-validation. The C
+/// `char*` cursor arithmetic on the mutable buffer is modeled with byte
+/// indices into a `Vec<u8>`; `(size_t)-1` sentinels map to [`usize::MAX`]
+/// (`NPOS`), whose unsigned comparisons match C `size_t` exactly.
+///
+/// Signature mapping: takes the concrete `&mut Process` (the C `Process*`);
+/// `mainTask` is the [`Option`] of a borrowed [`LinuxProcess`].
+fn LinuxProcessTable_readCmdlineFile(
+    process: &mut Process,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) -> bool {
+    LinuxProcessList_readExe(process, procFd, mainTask);
+
+    let (mut command, amtRead) = match readFileDynamic(procFd, c"cmdline") {
+        Some(v) => v,
+        None => return false,
+    };
+    let amtRead = amtRead as usize;
+
+    const NPOS: usize = usize::MAX; // (size_t)-1
+
+    let mut tokenEnd = NPOS;
+    let mut tokenStart = NPOS;
+    let mut lastChar = 0usize;
+    let mut argSepNUL = false;
+    let mut argSepSpace = false;
+
+    for i in 0..amtRead {
+        let argChar = command[i];
+
+        // newline used as delimiter -> non-printable placeholder
+        if argChar == b'\n' {
+            command[i] = b'\r';
+            continue;
+        }
+
+        if argChar == b'\0' {
+            command[i] = b'\n';
+
+            if tokenEnd == NPOS {
+                tokenEnd = i;
+            }
+
+            continue;
+        }
+
+        // NUL byte in the middle of command
+        if tokenEnd != NPOS {
+            argSepNUL = true;
+        }
+
+        if argChar <= b' ' {
+            argSepSpace = true;
+        }
+
+        // last '/' before end of token = start of basename
+        if argChar == b'/' && tokenEnd == NPOS {
+            tokenStart = i + 1;
+        }
+
+        lastChar = i;
+    }
+
+    command[lastChar + 1] = b'\0';
+
+    // faccessat(AT_FDCWD, bytes, F_OK, AT_SYMLINK_NOFOLLOW); interior NUL -> -1.
+    let faccess = |bytes: &[u8]| -> i32 {
+        match std::ffi::CString::new(bytes) {
+            Ok(cs) => Compat_faccessat(libc::AT_FDCWD, &cs, libc::F_OK, libc::AT_SYMLINK_NOFOLLOW),
+            Err(_) => -1,
+        }
+    };
+
+    if !argSepNUL && argSepSpace {
+        /* Argument parsing heuristic for processes that flatten their
+         * command line with spaces instead of NUL bytes. */
+        tokenStart = NPOS;
+        tokenEnd = NPOS;
+
+        let exeLen = process.procExe.as_ref().map(|s| s.len()).unwrap_or(0);
+
+        let starts_with_exe = process
+            .procExe
+            .as_deref()
+            .map(|e| command[..=lastChar].starts_with(e.as_bytes()))
+            .unwrap_or(false);
+
+        if process.procExe.is_some()
+            && starts_with_exe
+            && exeLen < lastChar
+            && command[exeLen] <= b' '
+        {
+            tokenStart = process.procExeBasenameOffset;
+            tokenEnd = exeLen;
+        }
+        // Check if the space is part of a filename for an existing file.
+        else if faccess(&command[..=lastChar]) != 0 {
+            // Path does not exist; search for the part that does.
+            let mut tokenArg0Start = NPOS;
+
+            for i in 0..=lastChar {
+                let cmdChar = command[i];
+
+                if cmdChar <= b' ' {
+                    if tokenEnd != NPOS {
+                        // Split on every further separator
+                        command[i] = b'\n';
+                        continue;
+                    }
+
+                    // Found our first argument
+                    command[i] = b'\0';
+
+                    let found = faccess(&command[..i]) == 0;
+
+                    // Restore if this wasn't it
+                    command[i] = if found { b'\n' } else { cmdChar };
+
+                    if found {
+                        tokenEnd = i;
+                    }
+                    if tokenArg0Start == NPOS {
+                        tokenArg0Start = if tokenStart == NPOS { 0 } else { tokenStart };
+                    }
+
+                    continue;
+                }
+
+                if tokenEnd != NPOS {
+                    continue;
+                }
+
+                if cmdChar == b'/' {
+                    // Normal path separator
+                    tokenStart = i + 1;
+                } else if cmdChar == b'\\'
+                    && (tokenStart == NPOS || tokenStart == 0 || command[tokenStart - 1] == b'\\')
+                {
+                    // Windows Path separator (WINE)
+                    tokenStart = i + 1;
+                } else if cmdChar == b':' && (command[i + 1] != b'/' && command[i + 1] != b'\\') {
+                    // Colon not part of a Windows Path
+                    tokenEnd = i;
+                } else if tokenStart == NPOS {
+                    // Relative path
+                    tokenStart = i;
+                }
+            }
+
+            if tokenEnd == NPOS {
+                tokenStart = tokenArg0Start;
+
+                // No token delimiter found, forcibly split
+                for i in 0..=lastChar {
+                    if command[i] <= b' ' {
+                        command[i] = b'\n';
+                        if tokenEnd == NPOS {
+                            tokenEnd = i;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reset if start is behind end.
+        if tokenStart >= tokenEnd {
+            tokenStart = NPOS;
+            tokenEnd = NPOS;
+        }
+    }
+
+    if tokenStart == NPOS {
+        tokenStart = 0;
+    }
+
+    if tokenEnd == NPOS {
+        tokenEnd = lastChar + 1;
+    }
+
+    let s = String::from_utf8_lossy(&command[..=lastChar]).into_owned();
+    Process_updateCmdline(process, Some(&s), tokenStart, tokenEnd);
+
+    true
 }
 
-/// TODO: port of `static void LinuxProcessList_readComm(Process* process, openat_arg_t procFd` from `LinuxProcessTable.c:1501`.
-pub fn LinuxProcessList_readComm() {
-    todo!("port of LinuxProcessTable.c:1501")
+/// Port of `LinuxProcessTable.c:1396`. Reads `/proc/<pid>/comm` (the process
+/// "command" name) and updates it via [`Process_updateComm`]; a failed read
+/// clears it (`None`). The C `command[amtRead - 1] = '\0'` drops the trailing
+/// newline, modeled by slicing off the last byte.
+fn LinuxProcessList_readComm(process: &mut Process, procFd: openat_arg_t) {
+    match readFileDynamic(procFd, c"comm") {
+        Some((command, amtRead)) => {
+            let end = (amtRead as usize).saturating_sub(1);
+            let s = String::from_utf8_lossy(&command[..end]).into_owned();
+            Process_updateComm(process, Some(&s));
+        }
+        None => Process_updateComm(process, None),
+    }
 }
 
-/// TODO: port of `static char* LinuxProcessTable_updateTtyDevice(TtyDriver* ttyDrivers, unsigned long int tty_nr` from `LinuxProcessTable.c:1514`.
+/// TODO: port of `static char* LinuxProcessTable_updateTtyDevice(TtyDriver*
+/// ttyDrivers, unsigned long int tty_nr)` from `LinuxProcessTable.c:1514`.
+/// Blocked: the body decomposes `tty_nr` and each candidate `st_rdev` with
+/// the `major()`/`minor()` device-number macros (from `sys/sysmacros.h` /
+/// `sys/mkdev.h`), which are not ported anywhere in the tree — and their
+/// glibc bit-layout must match how the kernel encodes `tty_nr` for the
+/// comparisons to be correct. Porting a subtly-wrong `major`/`minor` here
+/// would corrupt every tty-name lookup, so this stays stubbed until those
+/// macros are modeled. (Only consumer is the stubbed `recurseProcTree`.)
 pub fn LinuxProcessTable_updateTtyDevice() {
-    todo!("port of LinuxProcessTable.c:1514")
+    todo!("port of LinuxProcessTable.c:1514 — needs major()/minor() device-number macros")
 }
 
-/// TODO: port of `static bool isOlderThan(const Process* proc, unsigned int seconds` from `LinuxProcessTable.c:1571`.
-pub fn isOlderThan() {
-    todo!("port of LinuxProcessTable.c:1571")
+/// Port of `LinuxProcessTable.c:1466`. True iff `proc` has been alive for
+/// more than `seconds`, using the host's current realtime clock and the
+/// process's parsed start time. Reads `proc->super.host->realtimeMs` through
+/// the opaque `*const Machine` handle (the `GPU_readProcessData` idiom).
+/// Returns `false` while the start time is not yet parsed.
+fn isOlderThan(proc: &Process, seconds: u32) -> bool {
+    let host = proc.super_.host as *const Machine;
+    let realtimeMs = unsafe { (*host).realtimeMs };
+
+    debug_assert!(realtimeMs > 0);
+
+    /* Starttime might not yet be parsed */
+    if proc.starttime_ctime <= 0 {
+        return false;
+    }
+
+    let realtime = realtimeMs / 1000;
+
+    if realtime < proc.starttime_ctime as u64 {
+        return false;
+    }
+
+    realtime - proc.starttime_ctime as u64 > seconds as u64
 }
 
-/// TODO: port of `static bool LinuxProcessTable_recurseProcTree(LinuxProcessTable* this, openat_arg_t parentFd, const LinuxMachine* lhost, const char* dirname, const LinuxProc...` from `LinuxProcessTable.c:1588`.
+/// TODO: port of `static bool LinuxProcessTable_recurseProcTree(
+/// LinuxProcessTable* this, openat_arg_t parentFd, const LinuxMachine* lhost,
+/// const char* dirname, const LinuxProcess* mainTask)` from
+/// `LinuxProcessTable.c:1588`. Blocked at its core: it obtains each process
+/// via `ProcessTable_getProcess(pt, pid, &preExisting, LinuxProcess_new)` and
+/// registers it with `ProcessTable_add(pt, proc)` / `ProcessTable_findProcess`,
+/// but the ported [`ProcessTable`]/`Table` store rows as `Row` values (not the
+/// polymorphic `Process*` htop holds), so `ProcessTable_getProcess`/`_add` are
+/// themselves stubbed (see `processtable.rs`) — there is no `Process` to fetch,
+/// mutate, or add. It also depends on several still-stubbed leaves
+/// (`updateUser`, `readIoFile`, `readMaps`, `readSmapsFile`, `readCGroupFile`,
+/// `readSecattrData`, `updateTtyDevice`) and on `GPU_readProcessData` /
+/// `Process_fillStarttimeBuffer`. Stays stubbed until the process-typed table
+/// lands.
 pub fn LinuxProcessTable_recurseProcTree() {
-    todo!("port of LinuxProcessTable.c:1588")
+    todo!("port of LinuxProcessTable.c:1588 — needs ProcessTable_getProcess/_add (process-typed table)")
 }
 
-/// TODO: port of `void ProcessTable_goThroughEntries(ProcessTable* super` from `LinuxProcessTable.c:1951`.
+/// TODO: port of `void ProcessTable_goThroughEntries(ProcessTable* super)`
+/// from `LinuxProcessTable.c:1951`. Blocked: its whole job is to kick off the
+/// `/proc` walk via [`LinuxProcessTable_recurseProcTree`] (stubbed above), and
+/// it also queries `LinuxProcess_isAutogroupEnabled()` (a stub in
+/// `linuxprocess.rs`) and shifts the `LinuxMachine` GPU-engine linked list.
+/// Cannot be ported faithfully until `recurseProcTree` is unblocked.
 pub fn ProcessTable_goThroughEntries() {
-    todo!("port of LinuxProcessTable.c:1951")
+    todo!("port of LinuxProcessTable.c:1951 — delegates to the stubbed recurseProcTree")
 }
 
 #[cfg(test)]
@@ -471,6 +1602,28 @@ mod tests {
         assert_eq!(sortTtyDrivers(&b, &a), -1);
         assert_eq!(sortTtyDrivers(&a, &c), -1);
         assert_eq!(sortTtyDrivers(&a, &a), 0);
+    }
+
+    #[test]
+    fn isOlderThan_compares_against_host_realtime() {
+        use crate::ported::machine::Machine;
+        use crate::ported::process::Process;
+        use core::ffi::c_void;
+
+        let mut host = Machine::default();
+        host.realtimeMs = 100_000; // 100 s of realtime
+
+        let mut proc = Process::default();
+        proc.super_.host = &host as *const Machine as *const c_void;
+
+        // Alive since t=50s -> 50s old: older than 10s, not older than 60s.
+        proc.starttime_ctime = 50;
+        assert!(isOlderThan(&proc, 10));
+        assert!(!isOlderThan(&proc, 60));
+
+        // Unparsed start time (<= 0) is never "older than".
+        proc.starttime_ctime = 0;
+        assert!(!isOlderThan(&proc, 0));
     }
 
     #[test]

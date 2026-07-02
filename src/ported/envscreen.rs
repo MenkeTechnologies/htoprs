@@ -43,11 +43,12 @@
 //! - [`EnvScreen_draw`] (`EnvScreen.c:35`) — the `draw` vtable hook: a
 //!   single call to `InfoScreen_drawTitled(this, "Environment of process
 //!   %d - %s", Process_getPid(this->process), Process_getCommand(
-//!   this->process))`. Blocked on `InfoScreen_drawTitled` (`infoscreen.rs`,
-//!   `todo!()` — needs `String_stripControlChars`, ABSENT from the
-//!   port-purity snapshot, plus the unported `IncSet_drawBar`) and
-//!   `Process_getCommand` (`process.rs`, `todo!()` — needs the
-//!   `Machine`/`Settings` substrate). `Process_getPid` is available.
+//!   this->process))`. `InfoScreen_drawTitled` (`infoscreen.rs`) and
+//!   `Process_getPid` are now ported, but the title's `%s` argument
+//!   `Process_getCommand` (`process.rs`, `todo!()` — needs
+//!   `settings->showThreadNames`, a field the ported `Settings` subset lacks,
+//!   reached through the opaque `Row::host` pointer) is still a stub, so the
+//!   hook still cannot be drawn faithfully.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -133,13 +134,13 @@ pub fn EnvScreen_delete() {
 /// TODO: port of `static void EnvScreen_draw(InfoScreen* this)` from
 /// `EnvScreen.c:35`. Single call to `InfoScreen_drawTitled(this,
 /// "Environment of process %d - %s", Process_getPid(this->process),
-/// Process_getCommand(this->process))`. Blocked: `InfoScreen_drawTitled`
-/// (`infoscreen.rs` stub — `String_stripControlChars` absent from the
-/// snapshot + unported `IncSet_drawBar`) and `Process_getCommand`
-/// (`process.rs` stub — needs the `Machine`/`Settings` substrate).
-/// `Process_getPid` is available.
+/// Process_getCommand(this->process))`. `InfoScreen_drawTitled`
+/// (`infoscreen.rs`) and `Process_getPid` (`process.rs`) are ported; blocked
+/// only on the title's `%s` argument `Process_getCommand` (`process.rs` stub —
+/// needs `settings->showThreadNames`, absent from the ported `Settings`
+/// subset, reached via the opaque `Row::host` pointer).
 pub fn EnvScreen_draw() {
-    todo!("port of EnvScreen.c:35 — needs InfoScreen_drawTitled + Process_getCommand stubs")
+    todo!("port of EnvScreen.c:35 — needs Process_getCommand (process.rs stub: settings->showThreadNames)")
 }
 
 /// Port of `static void EnvScreen_scan(InfoScreen* this)` from

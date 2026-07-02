@@ -17,30 +17,35 @@
 //!   (`hashtable.rs`).
 //! - `DynamicColumn_lookup` (`DynamicColumn.c:70`) — thin wrapper over
 //!   `Hashtable_get`, ported now.
-//!
-//! Stubbed (cannot be ported faithfully yet — specific blocker named):
-//! - `DynamicColumns_new` (`DynamicColumn.c:22`) — calls
-//!   `Platform_dynamicColumns()`, an unported `Platform_*` fn (the
-//!   `Hashtable_new` fallback IS ported).
-//! - `DynamicColumns_delete` (`DynamicColumn.c:29`) — calls
-//!   `Platform_dynamicColumnsDone` (unported `Platform_*`) and
-//!   `Hashtable_delete` (still a stub in `hashtable.rs`; `Drop` frees the
-//!   owned `Vec`/`Box` fields).
+//! - `DynamicColumns_new` (`DynamicColumn.c:22`) — asks
+//!   `Platform_dynamicColumns()` (ported now, Linux stub) then falls back to
+//!   `Hashtable_new(0, true)`.
 //! - `DynamicColumn_name` (`DynamicColumn.c:36`) — thin wrapper over
-//!   `Platform_dynamicColumnName`, an unported `Platform_*` fn.
-//! - `DynamicColumn_done` (`DynamicColumn.c:40`) — `free()`s `heading`,
-//!   `caption`, `description`. No faithful safe-Rust analog: a
-//!   `DynamicColumn` owns its `String` fields, so `Drop` frees them
-//!   automatically (same precedent as `History_delete`).
-//! - `DynamicColumn_writeField` (`DynamicColumn.c:74`) — thin wrapper
-//!   over `Platform_dynamicColumnWriteField`; also needs the `Process`
-//!   and `RichString` graph.
+//!   `Platform_dynamicColumnName` (ported now, Linux stub).
+//! - `DynamicColumn_writeField` (`DynamicColumn.c:74`) — thin wrapper over
+//!   `Platform_dynamicColumnWriteField` (ported now, Linux stub).
+//!
+//! Stubbed (deliberate non-ports — kept as documented `todo!()`):
+//! - `DynamicColumns_delete` (`DynamicColumn.c:29`) — a `*_delete` teardown:
+//!   calls `Platform_dynamicColumnsDone` (Linux no-op) then
+//!   `Hashtable_delete` (itself a deliberate teardown stub in `hashtable.rs`;
+//!   `Drop` frees the owned `Vec`/`Box` fields). Kept stubbed per rule 3.
+//! - `DynamicColumn_done` (`DynamicColumn.c:40`) — a `*_done` teardown that
+//!   `free()`s `heading`, `caption`, `description`. No faithful safe-Rust
+//!   analog: a `DynamicColumn` owns its `String` fields, so `Drop` frees them
+//!   automatically (same precedent as `History_delete`). Kept stubbed per
+//!   rule 3.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)] // preserve the C-style class name `DynamicColumn_class`
 #![allow(dead_code)]
 
-use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get};
+use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get, Hashtable_new};
+use crate::ported::linux::platform::{
+    Platform_dynamicColumnName, Platform_dynamicColumnWriteField, Platform_dynamicColumns,
+};
 use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::process::Process;
+use crate::ported::richstring::RichString;
 use crate::ported::table::Table;
 
 /// C `#define DYNAMIC_MAX_COLUMN_WIDTH 64` (`DynamicColumn.h:19`).
@@ -118,9 +123,15 @@ pub fn DynamicColumn_compare<'a>(
     }
 }
 
-/// TODO: port of `Hashtable* DynamicColumns_new(void` from `DynamicColumn.c:22`.
-pub fn DynamicColumns_new() {
-    todo!("port of DynamicColumn.c:22")
+/// Port of `DynamicColumn.c:22`. Asks the platform for its dynamic-column
+/// registry ([`Platform_dynamicColumns`]); when the platform has none (C
+/// `NULL` — the Linux build always), falls back to an owning
+/// `Hashtable_new(0, true)`. C `true` == the table owns (and frees) its
+/// values.
+pub fn DynamicColumns_new() -> Hashtable {
+    // C: Hashtable* dynamics = Platform_dynamicColumns();
+    //    if (!dynamics) dynamics = Hashtable_new(0, true);
+    Platform_dynamicColumns().unwrap_or_else(|| Hashtable_new(0, true))
 }
 
 /// TODO: port of `void DynamicColumns_delete(Hashtable* dynamics` from `DynamicColumn.c:29`.
@@ -128,9 +139,11 @@ pub fn DynamicColumns_delete() {
     todo!("port of DynamicColumn.c:29")
 }
 
-/// TODO: port of `const char* DynamicColumn_name(unsigned int key` from `DynamicColumn.c:36`.
-pub fn DynamicColumn_name() {
-    todo!("port of DynamicColumn.c:36")
+/// Port of `DynamicColumn.c:36`. Thin wrapper over
+/// [`Platform_dynamicColumnName`]; returns the platform-supplied name for
+/// `key`, or `None` (C `NULL`) when the platform provides none.
+pub fn DynamicColumn_name(key: u32) -> Option<&'static str> {
+    Platform_dynamicColumnName(key)
 }
 
 /// TODO: port of `void DynamicColumn_done(DynamicColumn* this` from `DynamicColumn.c:40`.
@@ -212,15 +225,18 @@ pub fn DynamicColumn_lookup(dynamics: &Hashtable, key: u32) -> Option<&DynamicCo
     })
 }
 
-/// TODO: port of `bool DynamicColumn_writeField(const Process* proc, RichString* str, unsigned int key` from `DynamicColumn.c:74`.
-pub fn DynamicColumn_writeField() {
-    todo!("port of DynamicColumn.c:74")
+/// Port of `DynamicColumn.c:74`. Thin wrapper over
+/// [`Platform_dynamicColumnWriteField`]: renders the dynamic column `key`
+/// for `proc` into `str`, returning whether the platform handled it (C
+/// `false` when the platform has no such column).
+pub fn DynamicColumn_writeField(proc: &Process, str: &mut RichString, key: u32) -> bool {
+    Platform_dynamicColumnWriteField(proc, str, key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ported::hashtable::{Hashtable_new, Hashtable_put};
+    use crate::ported::hashtable::{Hashtable_count, Hashtable_put};
 
     fn col(name: &str) -> DynamicColumn {
         DynamicColumn {
@@ -362,6 +378,21 @@ mod tests {
         DynamicColumn_compare(9, &upper, &mut iter);
         assert_eq!(iter.key, 0);
         assert!(iter.data.is_none());
+    }
+
+    #[test]
+    fn new_returns_empty_owning_registry() {
+        // Platform_dynamicColumns() is NULL on Linux, so C falls back to
+        // Hashtable_new(0, true): a fresh, empty registry.
+        let ht = DynamicColumns_new();
+        assert_eq!(Hashtable_count(&ht), 0);
+    }
+
+    #[test]
+    fn name_is_none_on_this_platform() {
+        // Platform_dynamicColumnName() returns NULL for every key on Linux.
+        assert!(DynamicColumn_name(0).is_none());
+        assert!(DynamicColumn_name(12345).is_none());
     }
 
     #[test]

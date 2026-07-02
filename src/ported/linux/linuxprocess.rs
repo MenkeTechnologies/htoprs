@@ -20,12 +20,12 @@
 //! - [`LinuxProcess_totalIORate`] (`LinuxProcess.c:213`) — pure.
 //! - [`LinuxProcess_changeAutogroupPriorityBy`] (`LinuxProcess.c:185`) and
 //!   [`LinuxProcess_rowChangeAutogroupPriorityBy`] (`LinuxProcess.c:207`).
+//! - [`LinuxProcess_isAutogroupEnabled`] (`LinuxProcess.c:178`) — reads
+//!   `sched_autogroup_enabled` via the now-ported `Compat_readfile`.
 //!
 //! Still stubbed (blocked on unported substrate; see each fn's doc):
 //! - [`Process_delete`] (`LinuxProcess.c:119`) — a pure `free()` teardown
 //!   (Rust `Drop` handles it), kept stubbed per the module port rules.
-//! - [`LinuxProcess_isAutogroupEnabled`] (`LinuxProcess.c:178`) — calls the
-//!   unported bare-stub `Compat_readfile` (no signature to call yet).
 //! - [`LinuxProcess_rowWriteField`] (`LinuxProcess.c:226`) and
 //!   [`LinuxProcess_compareByKey`] (`LinuxProcess.c:366`) — both switch on
 //!   the Linux platform [`ProcessField`] ids (`M_DRS`, `RCHAR`, `OOM`, …)
@@ -37,6 +37,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use crate::ported::linux::compat::Compat_readfile;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::process::{
@@ -44,6 +45,7 @@ use crate::ported::process::{
 };
 use core::any::Any;
 use core::ffi::c_void;
+use std::ffi::CString;
 
 /// Port of `#define PROCDIR "/proc"` from `LinuxMachine.h:105` — the procfs
 /// mount htop was compiled to read. Defined locally (as `platform.rs` also
@@ -345,14 +347,21 @@ pub fn LinuxProcess_rowSetIOPriority(super_: &mut dyn Object, ioprio: Arg) -> bo
     LinuxProcess_setIOPriority(p, ioprio)
 }
 
-/// TODO: port of `bool LinuxProcess_isAutogroupEnabled(void)` from
-/// `LinuxProcess.c:178`. Blocked: the C body reads
-/// `PROCDIR "/sys/kernel/sched_autogroup_enabled"` through
-/// `Compat_readfile`, which is still an unported bare stub in
-/// `linux/compat.rs` (no `(path, buf, size) -> ssize_t` signature to call),
-/// so the faithful call cannot be written yet.
-pub fn LinuxProcess_isAutogroupEnabled() {
-    todo!("port of LinuxProcess.c:178 — needs Compat_readfile signature")
+/// Port of `bool LinuxProcess_isAutogroupEnabled(void)` from
+/// `LinuxProcess.c:178`. Reads `PROCDIR "/sys/kernel/sched_autogroup_enabled"`
+/// into a 16-byte buffer via [`Compat_readfile`]; returns `false` on any read
+/// error (`< 0`), else `true` iff the first byte is `'1'`. The C string-literal
+/// concatenation `PROCDIR "/sys/..."` is rebuilt from the [`PROCDIR`] const and
+/// passed as a NUL-terminated [`CString`], matching `Compat_readfile`'s
+/// `const char*` parameter.
+pub fn LinuxProcess_isAutogroupEnabled() -> bool {
+    let mut buf = [0u8; 16];
+    let path = CString::new(format!("{}/sys/kernel/sched_autogroup_enabled", PROCDIR))
+        .expect("PROCDIR path contains no interior NUL");
+    if Compat_readfile(&path, &mut buf) < 0 {
+        return false;
+    }
+    buf[0] == b'1'
 }
 
 /// Port of `static bool LinuxProcess_changeAutogroupPriorityBy(Process* p,

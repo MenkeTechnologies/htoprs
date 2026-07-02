@@ -28,6 +28,12 @@
 //! - [`ProcessLocksScreen_new`] (`ProcessLocksScreen.c:23`) — resolves the
 //!   pid (thread-group id for a thread, else the pid), then chains through
 //!   [`InfoScreen_init`] with `LINES - 2` height and the column header.
+//! - [`ProcessLocksScreen_draw`] (`ProcessLocksScreen.c:38`) — the
+//!   `InfoScreenClass` `draw` hook; a single forward to [`InfoScreen_drawTitled`]
+//!   (now ported) with the `"Snapshot of file locks of process %d - %s"` title
+//!   built from the stored pid and [`Process_getCommand`]. The latter is still a
+//!   `todo!()`, so a real draw panics through it — faithful chain-of-stubs
+//!   wiring (matching `CommandScreen_draw`).
 //!
 //! ## Divergences (documented)
 //!
@@ -55,13 +61,6 @@
 //!   `InfoScreen`/`ProcessLocksScreen` releases its fields via `Drop`), so
 //!   there is no algorithm to port (same class as `InfoScreen_done` /
 //!   `History_delete`).
-//! - [`ProcessLocksScreen_draw`] (`ProcessLocksScreen.c:38`) — a single
-//!   call to `InfoScreen_drawTitled`, which is stubbed in `infoscreen.rs`
-//!   (`InfoScreen.c:50`): blocked on `String_stripControlChars`
-//!   (`XUtils.h:147`), ABSENT from the port-purity snapshot
-//!   (`tests/data/htop_c_fn_names.txt`) and so not addable as a `pub fn`,
-//!   plus `IncSet_drawBar` (unported `todo!()`, `incset.rs`). No splittable
-//!   pure logic.
 //! - [`FileLocks_Data_clear`] (`ProcessLocksScreen.c:42`) — `static inline`;
 //!   frees the four `char*` fields (`locktype`/`exclusive`/`readwrite`/
 //!   `filename`) of a `FileLocks_Data`. It is heap-free only: modeled with
@@ -86,11 +85,13 @@
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_init};
+use crate::ported::infoscreen::{InfoScreen, InfoScreen_drawTitled, InfoScreen_init};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::Panel_new;
-use crate::ported::process::{Process, Process_getPid, Process_getThreadGroup, Process_isThread};
+use crate::ported::process::{
+    Process, Process_getCommand, Process_getPid, Process_getThreadGroup, Process_isThread,
+};
 use crate::ported::vector::Vector_new;
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -167,13 +168,30 @@ pub fn ProcessLocksScreen_delete() {
     )
 }
 
-/// TODO: port of `static void ProcessLocksScreen_draw(InfoScreen* this)` from
-/// `ProcessLocksScreen.c:38`. A single call to `InfoScreen_drawTitled`, which
-/// is stubbed (`InfoScreen.c:50`): blocked on `String_stripControlChars`
-/// (`XUtils.h:147`), absent from the port-purity snapshot, plus the unported
-/// `IncSet_drawBar` (`incset.rs`).
-pub fn ProcessLocksScreen_draw() {
-    todo!("port of ProcessLocksScreen.c:38 — InfoScreen_drawTitled stub (String_stripControlChars absent from snapshot + IncSet_drawBar unported)")
+/// Port of `static void ProcessLocksScreen_draw(InfoScreen* this)` from
+/// `ProcessLocksScreen.c:38`. A single forward to [`InfoScreen_drawTitled`]:
+/// C `InfoScreen_drawTitled(this, "Snapshot of file locks of process %d - %s",
+/// ((ProcessLocksScreen*)this)->pid, Process_getCommand(this->process))`.
+///
+/// `%d` is the stored [`ProcessLocksScreen::pid`] (C's `(ProcessLocksScreen*)this`
+/// downcast — so the port takes `&mut ProcessLocksScreen`, not `&mut InfoScreen`,
+/// to reach the field) and `%s` is [`Process_getCommand`] on the
+/// `super_.process` back-pointer (a `const char*`, rendered lossily from its
+/// bytes; `None` -> empty). The variadic `fmt, ...` becomes a pre-built `&str`
+/// (the `xSnprintf`/`vsnprintf` idiom [`InfoScreen_drawTitled`] expects).
+/// `Process_getCommand` is still a `todo!()` stub, so a real draw panics
+/// through it — the faithful chain-of-stubs wiring (same as `CommandScreen_draw`).
+pub fn ProcessLocksScreen_draw(this: &mut ProcessLocksScreen) {
+    // C: InfoScreen_drawTitled(this, "Snapshot of file locks of process %d - %s",
+    //        ((ProcessLocksScreen*)this)->pid, Process_getCommand(this->process));
+    let pid = this.pid;
+    let cmd = Process_getCommand(unsafe { &*this.super_.process });
+    let cmd = match cmd {
+        Some(b) => String::from_utf8_lossy(b).into_owned(),
+        None => String::new(),
+    };
+    let title = format!("Snapshot of file locks of process {} - {}", pid, cmd);
+    InfoScreen_drawTitled(&mut this.super_, &title);
 }
 
 /// TODO: port of `static inline void FileLocks_Data_clear(FileLocks_Data*

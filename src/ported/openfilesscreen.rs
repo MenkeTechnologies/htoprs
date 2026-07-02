@@ -71,10 +71,12 @@
 //!   (an owned `InfoScreen` releases its fields via `Drop`), so there is
 //!   no free routine left to port.
 //! - [`OpenFilesScreen_draw`] (`OpenFilesScreen.c:95`) — a one-line
-//!   forward to `InfoScreen_drawTitled`, which is a `todo!()` in
-//!   `infoscreen.rs` (blocked on `String_stripControlChars`, absent from
-//!   the port-purity snapshot, plus the unported `IncSet_drawBar`). No
-//!   splittable logic of its own.
+//!   forward to `InfoScreen_drawTitled` that formats the title
+//!   `"Snapshot of files open in process %d - %s"` with `pid` and
+//!   `Process_getCommand(super->process)`. `InfoScreen_drawTitled` is now
+//!   ported, but [`Process_getCommand`] (`Process.c:831`) is itself a
+//!   `todo!()` stub (blocked on `settings->showThreadNames`), so the `%s`
+//!   command argument cannot be produced. No logic of its own to split out.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -405,13 +407,16 @@ pub fn OpenFilesScreen_delete() {
 }
 
 /// TODO: port of `static void OpenFilesScreen_draw(InfoScreen* this)` from
-/// `OpenFilesScreen.c:95`. A one-line forward to `InfoScreen_drawTitled`,
-/// which is a `todo!()` in `infoscreen.rs` — blocked on
-/// `String_stripControlChars` (`XUtils.h:147`), absent from the port-purity
-/// snapshot and so unaddable as a `pub fn`, plus the unported
-/// `IncSet_drawBar`. No logic of its own to split out.
+/// `OpenFilesScreen.c:95`. A one-line forward to
+/// `InfoScreen_drawTitled(this, "Snapshot of files open in process %d - %s",
+/// pid, Process_getCommand(this->process))`. `InfoScreen_drawTitled` is now
+/// ported, but the title's `%s` argument is `Process_getCommand`
+/// (`Process.c:831`), which is itself a `todo!()` stub in `process.rs`
+/// (blocked on `settings->showThreadNames`). Until that returns a real
+/// command string the title cannot be built, so this stays stubbed. No logic
+/// of its own to split out.
 pub fn OpenFilesScreen_draw() {
-    todo!("port of OpenFilesScreen.c:95 — forwards to InfoScreen_drawTitled (stubbed: String_stripControlChars absent, IncSet_drawBar unported)")
+    todo!("port of OpenFilesScreen.c:95 — forwards to InfoScreen_drawTitled; needs Process_getCommand (itself a todo!() stub in process.rs)")
 }
 
 /// Port of `static OpenFiles_ProcessData* OpenFilesScreen_getProcessData(pid_t

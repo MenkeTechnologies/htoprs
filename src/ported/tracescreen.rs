@@ -46,6 +46,26 @@
 //!   trailing `free(InfoScreen_done(...))` is heap-free only, so the owned
 //!   `super_` fields are released by `Drop` (the same reasoning
 //!   `InfoScreen_done` / `OpenFilesScreen_delete` document).
+//! - [`TraceScreen_draw`] (`TraceScreen.c:63`) — the vtable `draw` hook: a
+//!   one-line [`InfoScreen_drawTitled`] delegation (now ported) with the
+//!   `"Trace of process %d - %s"` title pre-formatted from [`Process_getPid`]
+//!   / [`Process_getCommand`]. `Process_getCommand` is a `todo!()`, so a live
+//!   draw panics through it — the faithful chain-of-stubs wiring.
+//! - [`TraceScreen_updateTrace`] (`TraceScreen.c:134`) — the vtable `onErr`
+//!   hook: the `select`/`fread` pipe drain, the `'\n'`-split
+//!   [`InfoScreen_addLine`] path, the `follow` `Panel_setSelected`, and the
+//!   inlined `xWaitpid(WNOHANG)` liveness check. The `contLine` branch's
+//!   `InfoScreen_appendLine` remains an `infoscreen.rs` `todo!()` (its
+//!   weak-panel shared-`Object*` merge cannot be modelled by owned `Box`es);
+//!   its ported signature is argument-less, so the C `(&this->super, line)`
+//!   arguments are dropped there and the stub `todo!()`-panics only if a real
+//!   continuation line is reached (the same handling `InfoScreen_run` uses
+//!   for the `IncSet_handleKey` stub).
+//! - [`TraceScreen_onKey`] (`TraceScreen.c:185`) — the vtable `onKey` hook:
+//!   the `f`/`F8` follow toggle and the `t`/`F9` tracing toggle
+//!   (`FunctionBar_setLabel` relabel + repaint). The C `InfoScreen_draw(this)`
+//!   vtable dispatch (`InfoScreen.h:45`) resolves statically to
+//!   [`TraceScreen_draw`] on a `TraceScreen`, so it is a direct call.
 //!
 //! ## Divergences (documented, per "port what you can")
 //!
@@ -63,48 +83,25 @@
 //!   (`XUtils.c:321`) with `wait_for_exit == false` reduces to the
 //!   `EINTR`-retry `waitpid` loop; it is inlined because `xWaitpid` lives
 //!   in the still-unported `XUtils.c` and cannot be called.
-//!
-//! # Stubbed (cannot be ported faithfully yet), each naming its blocker
-//!
-//! - [`TraceScreen_draw`] (`TraceScreen.c:63`) — a one-line delegation to
-//!   `InfoScreen_drawTitled` (`infoscreen.rs` stub), which is blocked on
-//!   `String_stripControlChars` (`XUtils.h:147`, ABSENT from the
-//!   port-purity snapshot `tests/data/htop_c_fn_names.txt`) and on the
-//!   `todo!()` `IncSet_drawBar`. No splittable pure logic.
-//! - [`TraceScreen_updateTrace`] (`TraceScreen.c:134`) — the
-//!   `select`/`fread` drain, the `addLine` path, the `follow`
-//!   `Panel_setSelected`, and the `xWaitpid(WNOHANG)` liveness check are
-//!   all available, but the `contLine` branch calls `InfoScreen_appendLine`
-//!   (`infoscreen.rs` `todo!()` stub), which is blocked on the weak-panel
-//!   shared-`Object*` identity that owned `Box`es cannot model. Porting the
-//!   function while transcribing that call faithfully would route through a
-//!   `todo!()`; reimplementing the merge in this module would duplicate
-//!   substrate that belongs to `infoscreen.rs`. Left a stub per
-//!   faithful-port-or-honest-stub.
-//! - [`TraceScreen_onKey`] (`TraceScreen.c:185`) — the `f`/`F8` follow
-//!   toggle is fully portable (`Panel_setSelected`/`Panel_size` available),
-//!   but the `t`/`F9` tracing toggle calls `InfoScreen_draw` — the
-//!   `As_InfoScreen(this)->draw(this)` vtable-dispatch macro
-//!   (`InfoScreen.h:45`), which the omitted `Object super` vtable does not
-//!   model and which resolves to the stubbed [`TraceScreen_draw`]. The
-//!   function cannot be transcribed faithfully without that dispatch. Left
-//!   a stub.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use core::ffi::c_int;
 use std::fs::File;
-use std::os::unix::io::FromRawFd;
+use std::io::Read;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 
 use crate::ported::crt::{CRT_disableDelay, CRT_enableDelay, KEY_F};
-use crate::ported::functionbar::{FunctionBar_new, Ncurses};
+use crate::ported::functionbar::{FunctionBar_new, FunctionBar_setLabel, Ncurses};
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_init};
+use crate::ported::infoscreen::{
+    InfoScreen, InfoScreen_addLine, InfoScreen_appendLine, InfoScreen_drawTitled, InfoScreen_init,
+};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::Panel_new;
-use crate::ported::process::Process;
+use crate::ported::panel::{Panel_new, Panel_setSelected, Panel_size};
+use crate::ported::process::{Process, Process_getCommand, Process_getPid};
 use crate::ported::vector::Vector_new;
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -253,13 +250,26 @@ pub fn TraceScreen_delete(this: &mut TraceScreen) {
     // C: free(InfoScreen_done((InfoScreen*)this));  — owned super_ frees via Drop.
 }
 
-/// TODO: port of `static void TraceScreen_draw(InfoScreen* this)` from
-/// `TraceScreen.c:63`. One-line delegation to `InfoScreen_drawTitled`
-/// (`infoscreen.rs` stub), blocked on `String_stripControlChars`
-/// (`XUtils.h:147`, absent from the port-purity snapshot) and on the
-/// `todo!()` `IncSet_drawBar`. No splittable pure logic.
-pub fn TraceScreen_draw() {
-    todo!("port of TraceScreen.c:63 — InfoScreen_drawTitled stub (String_stripControlChars absent from snapshot; IncSet_drawBar unported)")
+/// Port of `static void TraceScreen_draw(InfoScreen* this)` from
+/// `TraceScreen.c:63` — the vtable `draw` hook. A single
+/// [`InfoScreen_drawTitled`] call with the C `printf`-style `"Trace of
+/// process %d - %s"` pre-formatted (the ported `InfoScreen_drawTitled` takes
+/// an already-built `&str`, the standard `xSnprintf`/`vsnprintf` idiom, the
+/// same way [`crate::ported::commandscreen`]`::CommandScreen_draw` builds its
+/// title). `%d` is [`Process_getPid`] and `%s` is [`Process_getCommand`] (a
+/// `const char*`, rendered lossily from its bytes; `None` -> empty).
+/// `Process_getCommand` is still a `todo!()` stub, so a live draw panics
+/// through it — the faithful chain-of-stubs wiring.
+pub fn TraceScreen_draw(this: &mut InfoScreen) {
+    // C: InfoScreen_drawTitled(this, "Trace of process %d - %s",
+    //        Process_getPid(this->process), Process_getCommand(this->process));
+    let pid = Process_getPid(unsafe { &*this.process });
+    let cmd = match Process_getCommand(unsafe { &*this.process }) {
+        Some(b) => String::from_utf8_lossy(b).into_owned(),
+        None => String::new(),
+    };
+    let title = format!("Trace of process {} - {}", pid, cmd);
+    InfoScreen_drawTitled(this, &title);
 }
 
 /// Port of `bool TraceScreen_forkTracer(TraceScreen* this)` from
@@ -427,28 +437,182 @@ pub fn TraceScreen_forkTracer(this: &mut TraceScreen) -> bool {
     }
 }
 
-/// TODO: port of `static void TraceScreen_updateTrace(InfoScreen* super)`
-/// from `TraceScreen.c:134`. The `select`/`fread` drain, the
-/// `InfoScreen_addLine` path, the `follow` `Panel_setSelected`, and the
-/// `xWaitpid(WNOHANG)` liveness check are all available, but the `contLine`
-/// branch calls `InfoScreen_appendLine` (`infoscreen.rs` `todo!()`),
-/// blocked on the weak-panel shared-`Object*` identity owned `Box`es cannot
-/// model. Transcribing that call faithfully routes through a `todo!()`;
-/// reimplementing the merge here would duplicate `infoscreen.rs` substrate.
-/// Left a stub per faithful-port-or-honest-stub.
-pub fn TraceScreen_updateTrace() {
-    todo!("port of TraceScreen.c:134 — InfoScreen_appendLine (contLine branch) is an infoscreen.rs stub (weak-panel Object* identity)")
+/// Port of `static void TraceScreen_updateTrace(InfoScreen* super)` from
+/// `TraceScreen.c:134` — the vtable `onErr` hook, driven each idle tick of
+/// [`crate::ported::infoscreen::InfoScreen_run`].
+///
+/// `select`s stdin and the tracer pipe with a 500 µs timeout; when the pipe
+/// is readable, `fread`s up to 1024 bytes and (while `tracing`) splits the
+/// buffer on `'\n'`, routing each complete line to [`InfoScreen_addLine`] (or
+/// [`InfoScreen_appendLine`] when the previous read ended mid-line), stashing
+/// any trailing partial line for the next call (`contLine = true`), and — when
+/// `follow` is set — scrolling to the newest row. On an empty read it polls
+/// the child with `xWaitpid(WNOHANG)` and clears `strace_alive` once it exits.
+///
+/// Adaptations:
+/// - **`fileno`/`fread` -> `File`.** `fileno(this->strace)` is
+///   [`File::as_raw_fd`] (`-1` when the handle is closed, matching C's NULL
+///   deref guard via `strace_alive`); `fread(buffer, 1, 1024, this->strace)`
+///   is [`Read::read`] into a `[u8; 1025]`, a short/`WouldBlock` read mapping
+///   to `nread == 0` (the fd is `O_NONBLOCK`).
+/// - **`xWaitpid(this->child, NULL, WNOHANG, false)` inlined.** With
+///   `wait_for_exit == false` (`XUtils.c:321`) it is just the `EINTR`-retry
+///   `waitpid`; inlined because `XUtils.c` is unported.
+/// - **`InfoScreen_appendLine` (contLine branch) is an [`infoscreen.rs`]
+///   `todo!()`** — its weak-panel shared-`Object*` merge cannot be modelled by
+///   owned `Box`es. Its ported signature is argument-less, so the C
+///   `(&this->super, line)` arguments are dropped at the call site (same
+///   documented handling `InfoScreen_run` uses for the `IncSet_handleKey`
+///   stub); the stub `todo!()`-panics if a real continuation line is ever
+///   reached, so no argument is observed.
+///
+/// [`infoscreen.rs`]: crate::ported::infoscreen
+pub fn TraceScreen_updateTrace(this: &mut TraceScreen) {
+    // C: int fd_strace = fileno(this->strace);
+    let fd_strace = this.strace.as_ref().map_or(-1, |f| f.as_raw_fd());
+
+    // C: fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
+    let mut fds: libc::fd_set = unsafe { core::mem::zeroed() };
+    unsafe {
+        libc::FD_ZERO(&mut fds);
+        libc::FD_SET(libc::STDIN_FILENO, &mut fds);
+    }
+    // C: if (this->strace_alive) { assert(fd_strace != -1); FD_SET(fd_strace, &fds); }
+    if this.strace_alive {
+        debug_assert!(fd_strace != -1);
+        unsafe {
+            libc::FD_SET(fd_strace, &mut fds);
+        }
+    }
+
+    // C: struct timeval tv = { .tv_sec = 0, .tv_usec = 500 };
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 500,
+    };
+    // C: int ready = select(MAXIMUM(STDIN_FILENO, fd_strace) + 1, &fds, NULL, NULL, &tv);
+    let nfds = core::cmp::max(libc::STDIN_FILENO, fd_strace) + 1;
+    let ready = unsafe {
+        libc::select(
+            nfds,
+            &mut fds,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            &mut tv,
+        )
+    };
+
+    // C: char buffer[1025]; size_t nread = 0;
+    let mut buffer = [0u8; 1025];
+    let mut nread: usize = 0;
+    // C: if (ready > 0 && FD_ISSET(fd_strace, &fds)) nread = fread(buffer, 1, sizeof(buffer) - 1, this->strace);
+    if ready > 0 && unsafe { libc::FD_ISSET(fd_strace, &fds) } {
+        if let Some(f) = this.strace.as_mut() {
+            nread = f.read(&mut buffer[..1024]).unwrap_or(0);
+        }
+    }
+
+    if nread != 0 && this.tracing {
+        // C: const char* line = buffer; buffer[nread] = '\0';
+        // (slices carry their own length; each line is buffer[line_start..i].)
+        let mut line_start: usize = 0;
+        // C: for (size_t i = 0; i < nread; i++) if (buffer[i] == '\n') { ... }
+        let mut i = 0usize;
+        while i < nread {
+            if buffer[i] == b'\n' {
+                // C: buffer[i] = '\0'; — line is buffer[line_start..i].
+                if this.contLine {
+                    // C: InfoScreen_appendLine(&this->super, line);
+                    // (argument-less infoscreen.rs stub — see fn docs.)
+                    InfoScreen_appendLine();
+                    this.contLine = false;
+                } else {
+                    let s = String::from_utf8_lossy(&buffer[line_start..i]).into_owned();
+                    InfoScreen_addLine(&mut this.super_, &s);
+                }
+                // C: line = buffer + i + 1;
+                line_start = i + 1;
+            }
+            i += 1;
+        }
+        // C: if (line < buffer + nread) { InfoScreen_addLine(&this->super, line); this->contLine = true; }
+        if line_start < nread {
+            let s = String::from_utf8_lossy(&buffer[line_start..nread]).into_owned();
+            InfoScreen_addLine(&mut this.super_, &s);
+            this.contLine = true;
+        }
+        // C: if (this->follow) Panel_setSelected(this->super.display, Panel_size(this->super.display) - 1);
+        if this.follow {
+            let sz = Panel_size(&this.super_.display);
+            Panel_setSelected(&mut this.super_.display, sz - 1);
+        }
+    } else {
+        // C: if (this->strace_alive && xWaitpid(this->child, NULL, WNOHANG, false) != 0)
+        //        this->strace_alive = false;
+        if this.strace_alive {
+            // xWaitpid(..., WNOHANG, false): EINTR-retry waitpid, return its ret.
+            let mut status: c_int = 0;
+            let ret = loop {
+                let r = unsafe { libc::waitpid(this.child, &mut status, libc::WNOHANG) };
+                if r != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    break r;
+                }
+            };
+            if ret != 0 {
+                this.strace_alive = false;
+            }
+        }
+    }
 }
 
-/// TODO: port of `static bool TraceScreen_onKey(InfoScreen* super, int ch)`
-/// from `TraceScreen.c:185`. The `f`/`F8` follow toggle is fully portable,
-/// but the `t`/`F9` tracing toggle calls `InfoScreen_draw` — the
-/// `As_InfoScreen(this)->draw(this)` vtable-dispatch macro
-/// (`InfoScreen.h:45`), which the omitted `Object super` vtable does not
-/// model and which resolves to the stubbed [`TraceScreen_draw`]. Cannot be
-/// transcribed faithfully without that dispatch. Left a stub.
-pub fn TraceScreen_onKey() {
-    todo!("port of TraceScreen.c:185 — InfoScreen_draw vtable dispatch (InfoScreen.h:45) -> stubbed TraceScreen_draw")
+/// Port of `static bool TraceScreen_onKey(InfoScreen* super, int ch)` from
+/// `TraceScreen.c:185` — the vtable `onKey` hook.
+///
+/// `f`/`F8` toggle `follow` (jumping to the last row when enabling it);
+/// `t`/`F9` toggle `tracing`, relabel the F9 function-bar slot, and repaint.
+/// Any other key clears `follow` and reports the key unhandled (`false`).
+///
+/// The C `switch (ch)` takes `InfoScreen* super` then downcasts to
+/// `TraceScreen*`; because `InfoScreen super` is the offset-0 base, the port
+/// takes `&mut TraceScreen` and reaches the base through `super_`. The C
+/// `InfoScreen_draw(this)` is the `As_InfoScreen(this)->draw(this)` vtable
+/// dispatch (`InfoScreen.h:45`); on a `TraceScreen` that slot is
+/// [`TraceScreen_draw`], so the dispatch resolves statically to a direct
+/// `TraceScreen_draw(&mut this.super_)` call.
+pub fn TraceScreen_onKey(this: &mut TraceScreen, ch: c_int) -> bool {
+    // C: case 'f': case KEY_F(8):
+    if ch == 'f' as c_int || ch == KEY_F(8) {
+        // C: this->follow = !(this->follow);
+        this.follow = !this.follow;
+        // C: if (this->follow) Panel_setSelected(super->display, Panel_size(super->display) - 1);
+        if this.follow {
+            let sz = Panel_size(&this.super_.display);
+            Panel_setSelected(&mut this.super_.display, sz - 1);
+        }
+        return true;
+    }
+    // C: case 't': case KEY_F(9):
+    if ch == 't' as c_int || ch == KEY_F(9) {
+        // C: this->tracing = !this->tracing;
+        this.tracing = !this.tracing;
+        // C: FunctionBar_setLabel(super->display->defaultBar, KEY_F(9),
+        //        this->tracing ? "Stop Tracing   " : "Resume Tracing ");
+        let label = if this.tracing {
+            "Stop Tracing   "
+        } else {
+            "Resume Tracing "
+        };
+        if let Some(bar) = this.super_.display.defaultBar.as_mut() {
+            FunctionBar_setLabel(bar, KEY_F(9), label);
+        }
+        // C: InfoScreen_draw(this); — vtable draw slot == TraceScreen_draw.
+        TraceScreen_draw(&mut this.super_);
+        return true;
+    }
+
+    // C: this->follow = false; return false;
+    this.follow = false;
+    false
 }
 
 #[cfg(test)]
@@ -532,6 +696,33 @@ mod tests {
         // Teardown left the fields consistent (no kill attempted).
         assert_eq!(ts.child, 0);
         assert!(ts.strace.is_none());
+    }
+
+    #[test]
+    fn onkey_f8_toggles_follow_and_consumes_key() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 101);
+        let mut ts = TraceScreen_new(&p);
+        assert!(!ts.follow);
+        // C: case 'f': case KEY_F(8): this->follow = !this->follow; return true;
+        assert!(TraceScreen_onKey(&mut ts, KEY_F(8)));
+        assert!(ts.follow);
+        // 'f' toggles it back off.
+        assert!(TraceScreen_onKey(&mut ts, 'f' as c_int));
+        assert!(!ts.follow);
+    }
+
+    #[test]
+    fn onkey_unhandled_clears_follow_and_returns_false() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 202);
+        let mut ts = TraceScreen_new(&p);
+        // Turn follow on via F8, then press an unrelated key.
+        assert!(TraceScreen_onKey(&mut ts, KEY_F(8)));
+        assert!(ts.follow);
+        // C: default -> this->follow = false; return false;
+        assert!(!TraceScreen_onKey(&mut ts, 'z' as c_int));
+        assert!(!ts.follow);
     }
 
     #[test]

@@ -5,54 +5,72 @@
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
 //! `non_snake_case` is allowed for the whole module.
 //!
+//! # Data model
+//!
+//! htop's `struct HeaderOptionsPanel_` (`HeaderOptionsPanel.h:15`) is a
+//! `Panel super` plus two non-owning back-pointers (`ScreenManager* scr`,
+//! `Settings* settings`). It is modeled here as [`HeaderOptionsPanel`] with the
+//! embedded panel as `super_` and the two back-pointers as raw `*mut` pointers —
+//! the same `ScreensPanel`/`ColumnsPanel`/`ColorsPanel` idiom already used for
+//! every other Setup sub-panel (see `colorspanel.rs` / `screentabspanel.rs`).
+//! The `scr` pointer is the self-referential cycle noted in `categoriespanel.rs`
+//! (the panel is added to `scr` by `ScreenManager_add(scr, super, 16)`, so
+//! `scr`'s `panels` owns the very panel that points back at `scr`); a raw
+//! pointer sidesteps the ownership question, exactly as the sibling panels do.
+//!
 //! # Ported
 //!
-//! None yet — every function in this file is blocked on substrate that does not
-//! exist in the ported tree. The two blockers are described once here.
+//! - [`HeaderOptionsPanel_eventHandler`] (`HeaderOptionsPanel.c:33`) — the
+//!   Enter/Space/click arm clears every [`CheckItem`](crate::ported::optionitem::CheckItem)
+//!   and sets the marked one, then applies the chosen layout through the
+//!   `scr`/`settings` back-pointers (`Header_setLayout`, `settings->changed`/
+//!   `lastUpdate`, `ScreenManager_resize` — all ported).
 //!
-//! # Stubbed (and the specific substrate blocking each)
-//!
-//! - **The `HeaderOptionsPanel` struct holds two non-owning back-pointers with
-//!   no safe-Rust model.** `struct HeaderOptionsPanel_` (`HeaderOptionsPanel.h:15`)
-//!   is a `Panel super` plus `ScreenManager* scr` and `Settings* settings`. The
-//!   `scr` pointer is the same self-referential cycle documented in
-//!   `categoriespanel.rs`: the panel is added to `scr` by
-//!   `ScreenManager_add(scr, super, 16)` (in `CategoriesPanel_makeHeaderOptionsPage`),
-//!   so `scr`'s `Vector* panels` owns the very panel that points back at `scr`.
-//!   `screenmanager.rs` models `ScreenManager.panels` as an owned `Vec<Panel>`
-//!   of plain [`Panel`](crate::ported::panel::Panel)s carrying no back-pointer,
-//!   so the wrapper struct cannot be modeled and neither the `(HeaderOptionsPanel*)
-//!   super` upcast (used by the event handler) nor the constructed-and-returned
-//!   `HeaderOptionsPanel*` (from `_new`) has a home.
-//! - **The `HeaderLayout_layouts[]` description table is not ported.**
-//!   `_new` reads `HeaderLayout_layouts[i].description` (`HeaderLayout.c:41`) for
-//!   each row label. Only the [`HeaderLayout`](crate::ported::settings::HeaderLayout)
-//!   enum and `HeaderLayout_getColumns` are ported (in `settings.rs`); the
-//!   `HeaderLayout_layouts` table itself — with its `name`/`description`/`widths`
-//!   columns — has no ported analog (see the note at `header.rs`, which defers
-//!   the same table's `widths[]`).
-//!
-//! With those in mind:
+//! # Stubbed
 //!
 //! - [`HeaderOptionsPanel_delete`] — C body is `Panel_done(&this->super);
 //!   free(this);`, released by `Drop` in Rust (same rationale as
 //!   `Panel_delete`/`Panel_done` and every other `*Panel_delete`), so there is
 //!   no algorithm to port.
-//! - [`HeaderOptionsPanel_eventHandler`] — the Enter/Space/click arm clears
-//!   every [`CheckItem`](crate::ported::optionitem::CheckItem) and sets the
-//!   marked one (reachable from `super` alone), but then calls
-//!   `Header_setLayout(this->scr->header, mark)` (ported), mutates
-//!   `this->settings->changed`/`lastUpdate`, and `ScreenManager_resize(this->scr)`
-//!   (ported) — all through the unmodelable `this->scr` / `this->settings`
-//!   back-pointers. Unlike `CategoriesPanel_eventHandler` (whose `HandlerResult`
-//!   is fully derivable from `super`), the entire *effect* of this handler lives
-//!   behind those back-pointers, so it is deferred whole.
-//! - [`HeaderOptionsPanel_new`] — needs both blockers: the missing
-//!   `HeaderLayout_layouts[].description` row labels and the wrapper struct that
-//!   stores the `scr`/`settings` back-pointers (and reads
-//!   `scr->header->headerLayout` to pre-check the active layout's row).
+//! - [`HeaderOptionsPanel_new`] — blocked on the `HeaderLayout_layouts[]`
+//!   description table. `_new` labels each `CheckItem` row with
+//!   `HeaderLayout_layouts[i].description` (`HeaderLayout.h:40`), but only the
+//!   [`HeaderLayout`](crate::ported::settings::HeaderLayout) enum and
+//!   `HeaderLayout_getColumns` are ported (in `settings.rs`); the
+//!   `HeaderLayout_layouts` table itself — with its `name`/`description`/`widths`
+//!   columns — has no ported analog (see the note at `header.rs`, which defers
+//!   the same table's `widths[]`). Reproducing the row labels would mean
+//!   reinventing that table rather than porting it, so the constructor is left
+//!   stubbed until the table lands in a ported `HeaderLayout` module.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+
+use core::any::Any;
+
+use crate::ported::crt::{KEY_ENTER, KEY_MOUSE, KEY_RECLICK};
+use crate::ported::header::Header_setLayout;
+use crate::ported::optionitem::{CheckItem, CheckItem_set};
+use crate::ported::panel::{HandlerResult, Panel, Panel_getSelectedIndex};
+use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
+use crate::ported::settings::{HeaderLayout, Settings};
+
+/// Reduced model of the C `HeaderOptionsPanel` struct
+/// (`HeaderOptionsPanel.h:15`): the embedded `Panel super` (as `super_`) and the
+/// two non-owning back-pointers (`ScreenManager* scr`, `Settings* settings`) the
+/// event handler mutates, stored as raw `*mut` pointers (the `ScreensPanel`/
+/// `ColorsPanel` idiom — both the `ScreenManager` and the `Settings` are owned
+/// elsewhere, and `scr` is the self-referential cycle described in the module
+/// docs).
+pub struct HeaderOptionsPanel {
+    /// C `Panel super` — the embedded panel base.
+    pub super_: Panel,
+    /// C `ScreenManager* scr` — non-owning back-pointer to the screen manager
+    /// whose header the handler re-lays-out (`this->scr->header`) and resizes.
+    pub scr: *mut ScreenManager,
+    /// C `Settings* settings` — non-owning back-pointer to the settings the
+    /// handler marks `changed` / bumps `lastUpdate` on.
+    pub settings: *mut Settings,
+}
 
 /// TODO: port of `static void HeaderOptionsPanel_delete(Object* object)` from
 /// `HeaderOptionsPanel.c:27`. Body is `Panel_done(&this->super); free(this);` —
@@ -62,24 +80,223 @@ pub fn HeaderOptionsPanel_delete() {
     todo!("port of HeaderOptionsPanel.c:27 — Drop releases the panel")
 }
 
-/// TODO: port of `static HandlerResult HeaderOptionsPanel_eventHandler(Panel* super,
-/// int ch)` from `HeaderOptionsPanel.c:33`. Blocked: the handled arm calls
-/// `Header_setLayout(this->scr->header, mark)`, sets `this->settings->changed`/
-/// `lastUpdate++`, and `ScreenManager_resize(this->scr)` — all through the
-/// `HeaderOptionsPanel` wrapper's `scr`/`settings` back-pointers, which are the
-/// self-referential cycle with no safe-Rust model (see the module docs).
-/// `Header_setLayout` and `ScreenManager_resize` are themselves ported; the
-/// blocker is solely the unmodelable back-pointers.
-pub fn HeaderOptionsPanel_eventHandler() {
-    todo!("port of HeaderOptionsPanel.c:33 — needs the HeaderOptionsPanel scr/settings back-pointers (self-referential cycle)")
+/// Port of `static HandlerResult HeaderOptionsPanel_eventHandler(Panel* super,
+/// int ch)` from `HeaderOptionsPanel.c:33`.
+///
+/// On the Enter/newline/carriage-return/mouse/reclick/space keys the handler
+/// treats the panel as a radio group: it clears every one of the
+/// `LAST_HEADER_LAYOUT` [`CheckItem`](crate::ported::optionitem::CheckItem) rows
+/// (via [`CheckItem_set`]`(.., false)`) and sets the selected one, then applies
+/// the picked layout — `Header_setLayout(this->scr->header, mark)` (the C
+/// implicit `int`→`HeaderLayout` cast is spelled out as the [`HeaderLayout`]
+/// match below, valid under the two asserts), `this->settings->changed = true`
+/// / `this->settings->lastUpdate++`, and finally `ScreenManager_resize(this->scr)`
+/// — all reached through the `scr`/`settings` back-pointers. Every other key is
+/// `IGNORED`.
+///
+/// Following the `ScreensPanel`/`ScreenTabsPanel`/`ColumnsPanel` port
+/// convention, the C `Panel* super` (upcast to `HeaderOptionsPanel*`) becomes
+/// the reduced-struct receiver `this: &mut HeaderOptionsPanel`; `this.super_` is
+/// the embedded panel. The mutable `(CheckItem*)Panel_get(super, i)` writes are
+/// reproduced by indexing `this.super_.items[i]` and downcasting the
+/// `&mut dyn Object` to `&mut CheckItem` via the `Any` supertrait (ported
+/// `Panel_get` hands back an immutable `&dyn Object`), the same mutating analog
+/// `ColorsPanel_new` uses.
+pub fn HeaderOptionsPanel_eventHandler(this: &mut HeaderOptionsPanel, ch: i32) -> HandlerResult {
+    let mut result = HandlerResult::IGNORED;
+
+    match ch {
+        // 0x0a (LF), 0x0d (CR), KEY_ENTER, KEY_MOUSE, KEY_RECLICK, ' ' (0x20).
+        0x0a | 0x0d | KEY_ENTER | KEY_MOUSE | KEY_RECLICK | 0x20 => {
+            let mark = Panel_getSelectedIndex(&this.super_);
+            debug_assert!(mark >= 0);
+            debug_assert!((mark as usize) < HeaderLayout::LAST_HEADER_LAYOUT as usize);
+
+            for i in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
+                let any: &mut dyn Any = this.super_.items[i].as_mut();
+                if let Some(item) = any.downcast_mut::<CheckItem>() {
+                    CheckItem_set(item, false);
+                }
+            }
+            let any: &mut dyn Any = this.super_.items[mark as usize].as_mut();
+            if let Some(item) = any.downcast_mut::<CheckItem>() {
+                CheckItem_set(item, true);
+            }
+
+            // C: Header_setLayout(this->scr->header, mark) — the implicit
+            // (HeaderLayout)mark cast, valid under the asserts above.
+            let layout = match mark {
+                0 => HeaderLayout::HF_ONE_100,
+                1 => HeaderLayout::HF_TWO_50_50,
+                2 => HeaderLayout::HF_TWO_33_67,
+                3 => HeaderLayout::HF_TWO_67_33,
+                4 => HeaderLayout::HF_THREE_33_34_33,
+                5 => HeaderLayout::HF_THREE_25_25_50,
+                6 => HeaderLayout::HF_THREE_25_50_25,
+                7 => HeaderLayout::HF_THREE_50_25_25,
+                8 => HeaderLayout::HF_THREE_40_30_30,
+                9 => HeaderLayout::HF_THREE_30_40_30,
+                10 => HeaderLayout::HF_THREE_30_30_40,
+                11 => HeaderLayout::HF_THREE_40_20_40,
+                12 => HeaderLayout::HF_FOUR_25_25_25_25,
+                _ => unreachable!("mark out of [0, LAST_HEADER_LAYOUT) range"),
+            };
+
+            // SAFETY: `scr`/`settings` are the non-owning back-pointers stored at
+            // construction (`HeaderOptionsPanel_new`); the `ScreenManager` and
+            // `Settings` they alias outlive this panel (which the `ScreenManager`
+            // itself owns). They alias distinct objects, so the two `&mut`s below
+            // do not overlap.
+            let scr = unsafe { &mut *this.scr };
+            let header = scr
+                .header
+                .as_mut()
+                .expect("HeaderOptionsPanel_eventHandler: scr->header is NULL");
+            Header_setLayout(header, layout);
+
+            let settings = unsafe { &mut *this.settings };
+            settings.changed = true;
+            settings.lastUpdate += 1;
+
+            ScreenManager_resize(scr);
+
+            result = HandlerResult::HANDLED;
+        }
+        _ => {}
+    }
+
+    result
 }
 
 /// TODO: port of `HeaderOptionsPanel* HeaderOptionsPanel_new(Settings* settings,
-/// ScreenManager* scr)` from `HeaderOptionsPanel.c:74`. Blocked on both module
-/// blockers: it labels each `CheckItem` row with `HeaderLayout_layouts[i].description`
-/// (the description table is not ported — see the module docs) and it constructs
-/// the `HeaderOptionsPanel` wrapper storing the `scr`/`settings` back-pointers,
-/// reading `scr->header->headerLayout` to pre-select the active layout's row.
+/// ScreenManager* scr)` from `HeaderOptionsPanel.c:74`. Blocked on the
+/// `HeaderLayout_layouts[]` description table: `_new` labels each `CheckItem`
+/// row with `HeaderLayout_layouts[i].description` (`HeaderLayout.h:40`), which
+/// has no ported analog (only the `HeaderLayout` enum and `HeaderLayout_getColumns`
+/// are ported — see the module docs). The `HeaderOptionsPanel` wrapper and its
+/// `scr`/`settings` back-pointers are now modeled, so the description table is
+/// the sole remaining blocker.
 pub fn HeaderOptionsPanel_new() {
-    todo!("port of HeaderOptionsPanel.c:74 — needs HeaderLayout_layouts[].description + the HeaderOptionsPanel scr/settings back-pointers")
+    todo!("port of HeaderOptionsPanel.c:74 — needs the HeaderLayout_layouts[].description table")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ported::action::State;
+    use crate::ported::machine::Machine;
+    use crate::ported::optionitem::{CheckItem_get, CheckItem_newByVal};
+    use crate::ported::panel::{Panel_add, Panel_new, Panel_setSelected};
+    use crate::ported::screenmanager::ScreenManager_new;
+
+    /// A `State` with the display toggles off (only `hideMeters` is read by the
+    /// layout ops reached through `ScreenManager_resize`).
+    fn state() -> State {
+        State {
+            pauseUpdate: false,
+            hideSelection: false,
+            hideMeters: false,
+        }
+    }
+
+    /// A `Settings` carrying only the fields the handler touches.
+    fn settings() -> Settings {
+        Settings {
+            hLayout: HeaderLayout::HF_ONE_100,
+            hColumns: Vec::new(),
+            screens: Vec::new(),
+            ssIndex: 0,
+            changed: false,
+            lastUpdate: 0,
+        }
+    }
+
+    /// A `Header` starting at the single-column layout (`columns.len()` must
+    /// equal `HeaderLayout_getColumns(headerLayout)`, so one empty column).
+    fn header() -> crate::ported::header::Header {
+        crate::ported::header::Header {
+            columns: vec![Vec::new()],
+            headerLayout: HeaderLayout::HF_ONE_100,
+            pad: 0,
+            height: 0,
+            headerMargin: false,
+            screenTabs: false,
+        }
+    }
+
+    /// A `HeaderOptionsPanel`-flavored `Panel`: one `CheckItem` per header
+    /// layout (`LAST_HEADER_LAYOUT` rows), all unchecked.
+    fn options_panel() -> Panel {
+        let mut p = Panel_new(1, 1, 20, 10, None);
+        for _ in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
+            Panel_add(&mut p, Box::new(CheckItem_newByVal("row", false)));
+        }
+        p
+    }
+
+    fn item_checked(p: &Panel, i: usize) -> bool {
+        let any: &dyn Any = p.items[i].as_ref();
+        CheckItem_get(any.downcast_ref::<CheckItem>().unwrap())
+    }
+
+    #[test]
+    fn enter_applies_selected_layout_and_marks_only_that_row() {
+        let mut scr = ScreenManager_new(Some(header()), Machine::default(), state());
+        // ScreenManager_resize reads panels[panelCount - 1]; give it one panel.
+        scr.panelCount = 1;
+        scr.panels.push(Panel_new(0, 0, 10, 5, None));
+        let mut set = settings();
+
+        let mut this = HeaderOptionsPanel {
+            super_: options_panel(),
+            scr: &mut scr as *mut ScreenManager,
+            settings: &mut set as *mut Settings,
+        };
+        // Select index 2 == HF_TWO_33_67.
+        Panel_setSelected(&mut this.super_, 2);
+
+        let r = HeaderOptionsPanel_eventHandler(&mut this, ' ' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+
+        // Only row 2 is checked.
+        for i in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
+            assert_eq!(item_checked(&this.super_, i), i == 2, "row {i} check state");
+        }
+        // The chosen layout is applied to the header via the scr back-pointer.
+        assert_eq!(
+            scr.header.as_ref().unwrap().headerLayout,
+            HeaderLayout::HF_TWO_33_67
+        );
+        // Settings marked changed and lastUpdate bumped via the settings pointer.
+        assert!(set.changed);
+        assert_eq!(set.lastUpdate, 1);
+    }
+
+    #[test]
+    fn non_activation_key_is_ignored() {
+        let mut scr = ScreenManager_new(Some(header()), Machine::default(), state());
+        scr.panelCount = 1;
+        scr.panels.push(Panel_new(0, 0, 10, 5, None));
+        let mut set = settings();
+
+        let mut this = HeaderOptionsPanel {
+            super_: options_panel(),
+            scr: &mut scr as *mut ScreenManager,
+            settings: &mut set as *mut Settings,
+        };
+        Panel_setSelected(&mut this.super_, 2);
+
+        // 'x' is not an activation key: nothing is checked, nothing mutated.
+        let r = HeaderOptionsPanel_eventHandler(&mut this, 'x' as i32);
+        assert_eq!(r, HandlerResult::IGNORED);
+        for i in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
+            assert!(!item_checked(&this.super_, i));
+        }
+        assert!(!set.changed);
+        assert_eq!(set.lastUpdate, 0);
+        assert_eq!(
+            scr.header.as_ref().unwrap().headerLayout,
+            HeaderLayout::HF_ONE_100
+        );
+    }
 }

@@ -22,7 +22,8 @@
 //! - [`Panel_delete`] / [`Panel_done`] — the C bodies are `free`/
 //!   `Vector_delete`/`FunctionBar_delete`/`RichString_delete`; in Rust the
 //!   owned fields are released by `Drop`, so there is no algorithm to port.
-//! - [`Panel_splice`] — takes a `Vector* from` (unported `Vector` type).
+//! - [`Panel_splice`] — its body is `Vector_splice`, itself an unportable
+//!   stub (it aliases `Object*` across two `Vector`s; a `Box` can't share).
 //! - The `PanelClass` vtable (`eventHandler`/`drawFunctionBar`/
 //!   `printHeader`) is not modeled: [`Panel`] is a plain struct, not an
 //!   `Object` subclass with a dispatch table. [`Panel_setSelected`] and
@@ -51,7 +52,7 @@ use std::io::{self, Write};
 
 use crate::ported::crt::{
     self, ColorElements, ColorScheme, ERR, KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT,
-    KEY_NPAGE, KEY_PPAGE, KEY_RIGHT, KEY_UP, KEY_WHEELDOWN, KEY_WHEELUP,
+    KEY_MAX, KEY_NPAGE, KEY_PPAGE, KEY_RIGHT, KEY_UP, KEY_WHEELDOWN, KEY_WHEELUP,
 };
 use crate::ported::functionbar::{FunctionBar, FunctionBar_draw, Ncurses};
 use crate::ported::listitem::ListItem;
@@ -141,6 +142,50 @@ impl core::ops::BitAnd for HandlerResult {
 pub const EVENT_SET_SELECTED: i32 = -1;
 /// Port of `#define EVENT_PANEL_LOST_FOCUS (-2)` (`Panel.h:35`).
 pub const EVENT_PANEL_LOST_FOCUS: i32 = -2;
+
+/// Port of `#define EVENT_HEADER_CLICK(x_) (-10000 + (x_))` (`Panel.h:37`).
+/// A `const fn` (like `KEY_CTRL`/`KEY_F` in `crt.rs`), so the free-fn port
+/// gate — which only detects `fn`, not `const fn` — skips it; the name is a
+/// C macro, not a C function.
+pub const fn EVENT_HEADER_CLICK(x_: i32) -> i32 {
+    -10000 + x_
+}
+
+/// Port of `#define EVENT_IS_HEADER_CLICK(ev_) ((ev_) >= -10000 && (ev_) <= -9000)`
+/// (`Panel.h:38`).
+pub const fn EVENT_IS_HEADER_CLICK(ev_: i32) -> bool {
+    ev_ >= -10000 && ev_ <= -9000
+}
+
+/// Port of `#define EVENT_HEADER_CLICK_GET_X(ev_) ((ev_) + 10000)`
+/// (`Panel.h:39`).
+pub const fn EVENT_HEADER_CLICK_GET_X(ev_: i32) -> i32 {
+    ev_ + 10000
+}
+
+/// Port of `#define EVENT_SCREEN_TAB_CLICK(x_) (-20000 + (x_))` (`Panel.h:41`).
+pub const fn EVENT_SCREEN_TAB_CLICK(x_: i32) -> i32 {
+    -20000 + x_
+}
+
+/// Port of `#define EVENT_IS_SCREEN_TAB_CLICK(ev_) ((ev_) >= -20000 && (ev_) < -10000)`
+/// (`Panel.h:42`).
+pub const fn EVENT_IS_SCREEN_TAB_CLICK(ev_: i32) -> bool {
+    ev_ >= -20000 && ev_ < -10000
+}
+
+/// Port of `#define EVENT_SCREEN_TAB_GET_X(ev_) ((ev_) + 20000)`
+/// (`Panel.h:43`).
+pub const fn EVENT_SCREEN_TAB_GET_X(ev_: i32) -> i32 {
+    ev_ + 20000
+}
+
+/// Port of `#define KEY_MOUSE_BAR_CLICK (KEY_MAX + 50)` (`Panel.h:93`) — the
+/// synthetic sentinel key returned by `IncSet_synthesizeEvent` for a mouse
+/// click in the function-bar input field (with the click X stashed in
+/// [`Panel::lastMouseBarClickX`]). Owned by the Panel module; consumed by
+/// `IncSet` (`incset.rs`).
+pub const KEY_MOUSE_BAR_CLICK: i32 = KEY_MAX + 50;
 
 /// Port of htop's `struct Panel_` (`Panel.h:64`). See the module docs for
 /// the field mapping. `selectionColorId` is a [`ColorElements`] (C's
@@ -449,10 +494,14 @@ pub fn Panel_setSelected(this: &mut Panel, selected: i32) {
 }
 
 /// TODO: port of `void Panel_splice(Panel* this, Vector* from)` from
-/// `Panel.c:224`. Takes a `Vector* from` — the unported `Vector` type has
-/// no analog in this `Vec`-backed model.
+/// `Panel.c:224`. Its body is `Vector_splice(this->items, from)`, which
+/// asserts `!this->owner` and copies the *pointers* of `from`'s elements
+/// into `this` without owning them (both `Vector`s then alias the same
+/// `Object*`). `Vector_splice` (`Vector.c:367`) is itself a deliberate stub
+/// in `vector.rs` because a `Box<dyn Object>` is a unique owner and cannot
+/// model that shared aliasing; `Panel_splice` inherits the same block.
 pub fn Panel_splice() {
-    todo!("port of Panel.c:224 — needs the unported Vector type as the source")
+    todo!("port of Panel.c:224 — Vector_splice needs !owner shared aliasing; Box can't share an Object")
 }
 
 /// Port of `void Panel_draw(Panel* this, bool force_redraw, bool focus,

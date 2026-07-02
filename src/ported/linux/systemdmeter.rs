@@ -23,6 +23,9 @@
 //!
 //! Ported (self-contained — `RichString` + `CRT_colors` + `String_eq` are
 //! ported and the ctx cache is modeled here):
+//! - [`updateViaExec`] (`SystemdMeter.c:214`) — the `systemctl show` spawn +
+//!   parse (inlined `libc` fork/exec/pipe/waitpid, the `openfilesscreen.rs`
+//!   precedent; takes `user: bool`, so needs no `Meter_name`)
 //! - [`zeroDigitColor`] (`SystemdMeter.c:318`)
 //! - [`valueDigitColor`] (`SystemdMeter.c:329`)
 //! - [`SystemdMeter_display`] (`SystemdMeter.c:341`)
@@ -33,7 +36,6 @@
 //! the per-fn docs):
 //! - `SystemdMeter_done` (`SystemdMeter.c:71`)
 //! - `updateViaLib` (`SystemdMeter.c:98`)
-//! - `updateViaExec` (`SystemdMeter.c:214`)
 //! - `SystemdMeter_updateValues` (`SystemdMeter.c:300`)
 #![allow(non_snake_case)]
 // `SystemdMeterContext_t` mirrors the C typedef name verbatim (SystemdMeter.c:57).
@@ -42,13 +44,19 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use core::ffi::{c_char, c_int};
+use std::ffi::CString;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::os::unix::io::FromRawFd;
 use std::sync::Mutex;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii,
 };
-use crate::ported::xutils::String_eq;
+use crate::ported::settings::Settings_isReadonly;
+use crate::ported::xutils::{String_eq, String_startsWith};
 
 /// Port of `#define INVALID_VALUE ((unsigned int)-1)` from
 /// `SystemdMeter.c:55` — the sentinel a count field holds when the
@@ -124,28 +132,223 @@ pub fn updateViaLib() {
     todo!("port of SystemdMeter.c:98: needs libsystemd sd-bus FFI (dlopen/dlsym)")
 }
 
-/// TODO: port of `static void updateViaExec(bool user)` from
-/// `SystemdMeter.c:214`. Blocked on the process-spawning substrate: it
-/// `pipe`/`fork`/`dup2`/`execlp`s `systemctl show ...`, reaps the child via
-/// `xWaitpid`, then `fgets`-parses the output and copies fields with
-/// `free_and_xStrdup`. `Settings_isReadonly` (settings.rs) is ported, but
-/// `xWaitpid` and `free_and_xStrdup` are absent from `xutils.rs` and no
-/// fork/exec helper is ported, so the spawn+reap+parse pipeline has no
-/// faithful call target.
-pub fn updateViaExec() {
-    todo!("port of SystemdMeter.c:214: needs xWaitpid + free_and_xStrdup + fork/exec/pipe")
+/// Port of `static void updateViaExec(bool user)` from `SystemdMeter.c:214`.
+/// Shells out to `systemctl show --{system,user} --property=…` and parses
+/// its `Key=value` output into the selected `ctx_*` cache. `user` picks
+/// `ctx_user` vs `ctx_system` (the C ternary), so no `Meter_name` is needed.
+///
+/// The `pipe`/`fork`/`dup2`/`execlp` + reap pipeline is reproduced with raw
+/// `libc` syscalls, exactly as [`OpenFilesScreen_getProcessData`]
+/// (`openfilesscreen.rs`) ports the sibling `lsof` pipeline: the child path
+/// stays async-signal-safe (the `argv` `CString`s are built before the
+/// `fork`), `execlp` becomes `execvp` (both do a `$PATH` lookup) over an
+/// explicit `argv`, and the `xWaitpid(child, &wstatus, 0, false)` (options
+/// `0`, retry only on `EINTR` — `XUtils.c:321`) is an inlined `waitpid`
+/// loop. `free_and_xStrdup(&ctx->systemState, …)` maps to assigning
+/// `Option<String>` (the openfilesscreen precedent).
+///
+/// Faithful quirk: like the C, `fgets` (here `read_line`) keeps the trailing
+/// `'\n'`. The `SystemState=` branch strips it (the C `strchr('\n')`), but
+/// the numeric branches copy the C verbatim — `strtoul` is emulated to yield
+/// the value and the byte at `endptr`, and the field is stored only when
+/// `value <= UINT_MAX && *endptr == '\0'`. Because the retained newline
+/// leaves `*endptr == '\n'`, the numeric fields are stored only from a
+/// final line lacking a newline, mirroring the C's exact behavior (not
+/// "fixed"). The fixed `char lineBuffer[128]` is a C-string-buffer artifact,
+/// so the owned `String` read is not length-capped (the `history.rs` /
+/// `openfilesscreen.rs` treatment of C's fixed `fgets` buffers).
+pub fn updateViaExec(user: bool) {
+    // C: SystemdMeterContext_t* ctx = user ? &ctx_user : &ctx_system;
+    let ctx_mutex = if user { &ctx_user } else { &ctx_system };
+
+    // C: if (Settings_isReadonly()) return;
+    if Settings_isReadonly() {
+        return;
+    }
+
+    // C: int fdpair[2] = {-1, -1}; if (pipe(fdpair) < 0) return;
+    let mut fdpair: [c_int; 2] = [-1, -1];
+    if unsafe { libc::pipe(fdpair.as_mut_ptr()) } < 0 {
+        return;
+    }
+
+    // Build the execvp argv before the fork so the child does no allocation
+    // (async-signal-safety). C: execlp("systemctl", "systemctl", "show",
+    // user ? "--user" : "--system", "--property=SystemState", …, (char*)NULL).
+    let c_systemctl = CString::new("systemctl").expect("no interior NUL");
+    let c_show = CString::new("show").expect("no interior NUL");
+    let c_scope = CString::new(if user { "--user" } else { "--system" }).expect("no interior NUL");
+    let c_p_state = CString::new("--property=SystemState").expect("no interior NUL");
+    let c_p_failed = CString::new("--property=NFailedUnits").expect("no interior NUL");
+    let c_p_names = CString::new("--property=NNames").expect("no interior NUL");
+    let c_p_jobs = CString::new("--property=NJobs").expect("no interior NUL");
+    let c_p_installed = CString::new("--property=NInstalledJobs").expect("no interior NUL");
+    let argv: [*const c_char; 9] = [
+        c_systemctl.as_ptr(),
+        c_show.as_ptr(),
+        c_scope.as_ptr(),
+        c_p_state.as_ptr(),
+        c_p_failed.as_ptr(),
+        c_p_names.as_ptr(),
+        c_p_jobs.as_ptr(),
+        c_p_installed.as_ptr(),
+        core::ptr::null(),
+    ];
+
+    // C: pid_t child = fork();
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        // C: close(fdpair[1]); close(fdpair[0]); return;
+        unsafe {
+            libc::close(fdpair[1]);
+            libc::close(fdpair[0]);
+        }
+        return;
+    }
+
+    if child == 0 {
+        // Child — async-signal-safe libc syscalls only.
+        unsafe {
+            libc::close(fdpair[0]);
+            libc::dup2(fdpair[1], libc::STDOUT_FILENO);
+            libc::close(fdpair[1]);
+            // C: int fdnull = open("/dev/null", O_WRONLY); if (fdnull < 0) _exit(1);
+            let fdnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+            if fdnull < 0 {
+                libc::_exit(1);
+            }
+            libc::dup2(fdnull, libc::STDERR_FILENO);
+            libc::close(fdnull);
+            libc::execvp(c_systemctl.as_ptr(), argv.as_ptr());
+            // C: _exit(127);  (only reached if execvp failed — systemctl not found)
+            libc::_exit(127);
+        }
+    }
+
+    // Parent. C: close(fdpair[1]);
+    unsafe {
+        libc::close(fdpair[1]);
+    }
+
+    // C: int wstatus; if (xWaitpid(child, &wstatus, 0, false) < 0
+    //        || !WIFEXITED(wstatus) || WEXITSTATUS(wstatus) != 0) { close; return; }
+    // xWaitpid with wait_for_exit == false and options == 0 is a plain
+    // waitpid that only retries on EINTR (XUtils.c:321).
+    let mut wstatus: c_int = 0;
+    let ret = loop {
+        let r = unsafe { libc::waitpid(child, &mut wstatus, 0) };
+        if r == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        break r;
+    };
+    if ret < 0 || !libc::WIFEXITED(wstatus) || libc::WEXITSTATUS(wstatus) != 0 {
+        unsafe {
+            libc::close(fdpair[0]);
+        }
+        return;
+    }
+
+    // C: FILE* commandOutput = fdopen(fdpair[0], "r"); if (!commandOutput) {...}
+    // The BufReader owns fdpair[0]; dropping it at the end is the C fclose.
+    // (File::from_raw_fd is infallible, so the C NULL check is unreachable.)
+    let file = unsafe { File::from_raw_fd(fdpair[0]) };
+    let mut reader = BufReader::new(file);
+
+    // strtoul emulation (base 10): reproduces C's parse so the `*endptr`
+    // check is faithful. Returns the parsed value (saturating, matching
+    // strtoul's ULONG_MAX clamp for our small inputs) and the byte the C
+    // `endptr` would point at — a NUL-terminated char* read models
+    // index >= len as 0 (rule 4).
+    let strtoul = |s: &str| -> (u64, u8) {
+        let bytes = s.as_bytes();
+        let mut i = 0usize;
+        // C strtoul skips leading isspace().
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+            i += 1;
+        }
+        // C strtoul accepts an optional sign.
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+            i += 1;
+        }
+        let mut val: u64 = 0;
+        let mut any = false;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            any = true;
+            val = val
+                .saturating_mul(10)
+                .saturating_add((bytes[i] - b'0') as u64);
+            i += 1;
+        }
+        // On a successful conversion endptr is the first unparsed byte; with
+        // no digits C leaves endptr == nptr (the original start).
+        let endbyte = if any {
+            bytes.get(i).copied().unwrap_or(0)
+        } else {
+            bytes.first().copied().unwrap_or(0)
+        };
+        (val, endbyte)
+    };
+
+    let mut ctx = ctx_mutex.lock().unwrap();
+
+    // C: char lineBuffer[128]; while (fgets(lineBuffer, sizeof, commandOutput)) { … }
+    // read_line keeps the trailing '\n', matching fgets.
+    let mut lineBuffer = String::new();
+    loop {
+        lineBuffer.clear();
+        match reader.read_line(&mut lineBuffer) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+
+        if String_startsWith(&lineBuffer, "SystemState=") {
+            // C: char* newline = strchr(…, '\n'); if (newline) *newline = '\0';
+            //    free_and_xStrdup(&ctx->systemState, lineBuffer + strlen("SystemState="));
+            let rest = &lineBuffer["SystemState=".len()..];
+            let rest = match rest.find('\n') {
+                Some(p) => &rest[..p],
+                None => rest,
+            };
+            ctx.systemState = Some(rest.to_string());
+        } else if String_startsWith(&lineBuffer, "NFailedUnits=") {
+            let (value, endbyte) = strtoul(&lineBuffer["NFailedUnits=".len()..]);
+            if value <= u32::MAX as u64 && endbyte == 0 {
+                ctx.nFailedUnits = value as u32;
+            }
+        } else if String_startsWith(&lineBuffer, "NNames=") {
+            let (value, endbyte) = strtoul(&lineBuffer["NNames=".len()..]);
+            if value <= u32::MAX as u64 && endbyte == 0 {
+                ctx.nNames = value as u32;
+            }
+        } else if String_startsWith(&lineBuffer, "NJobs=") {
+            let (value, endbyte) = strtoul(&lineBuffer["NJobs=".len()..]);
+            if value <= u32::MAX as u64 && endbyte == 0 {
+                ctx.nJobs = value as u32;
+            }
+        } else if String_startsWith(&lineBuffer, "NInstalledJobs=") {
+            let (value, endbyte) = strtoul(&lineBuffer["NInstalledJobs=".len()..]);
+            if value <= u32::MAX as u64 && endbyte == 0 {
+                ctx.nInstalledJobs = value as u32;
+            }
+        }
+    }
+    // C: fclose(commandOutput);  (BufReader/File Drop here.)
 }
 
 /// TODO: port of `static void SystemdMeter_updateValues(Meter* this)` from
-/// `SystemdMeter.c:300`. Blocked: it selects `&ctx_user` vs `&ctx_system`
-/// via `String_eq(Meter_name(this), "SystemdUser")`, but the partial
-/// `Meter` in `meter.rs` has no `name` field (`Meter_name`,
-/// `Meter.h:101`, has no instance target); and it drives the refresh through
-/// `updateViaLib` / `updateViaExec`, both stubbed. It writes
-/// `this->txtBuffer` (modeled) from `ctx->systemState`, but the two blockers
-/// above prevent a faithful port.
+/// `SystemdMeter.c:300`. Blocked on `Meter_name`: it selects `&ctx_user` vs
+/// `&ctx_system` via `String_eq(Meter_name(this), "SystemdUser")` — the
+/// concrete class name (`As_Meter(this)->name`, `Meter.h:101`) — but the
+/// ported `Meter` (`meter.rs`) carries no per-instance klass pointer (its
+/// `klass()` always returns the base `Meter_class`), so `user` cannot be
+/// derived from a `&Meter`. It also drives the refresh through `updateViaLib`
+/// (still stubbed — libsystemd sd-bus FFI) with an `updateViaExec` fallback
+/// (now ported), and writes `this->txtBuffer` (modeled) from
+/// `ctx->systemState`; but the `Meter_name` blocker prevents a faithful port.
 pub fn SystemdMeter_updateValues() {
-    todo!("port of SystemdMeter.c:300: needs Meter.name (Meter_name) + updateViaLib/updateViaExec")
+    todo!("port of SystemdMeter.c:300: needs Meter.name (Meter_name) + updateViaLib")
 }
 
 /// Port of `static int zeroDigitColor(unsigned int value)` from

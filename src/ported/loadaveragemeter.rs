@@ -30,17 +30,18 @@
 //!
 //! Stubbed (blocked on unported substrate — each keeps its `todo!()`):
 //! - `LoadAverageMeter_updateValues` (`LoadAverageMeter.c:42`) /
-//!   `LoadMeter_updateValues` (`LoadAverageMeter.c:76`) — the values are
-//!   sourced by `Platform_getLoadAverage(&this->values[0], ...)`, the
-//!   platform-specific load reader in `Platform.c` (no platform layer
-//!   ported); there is no data source to reproduce faithfully. The bodies
-//!   also read `this->host->activeCPUs`, but the partial `Meter` in
-//!   `meter.rs` models no `host` back-pointer (`host` is listed there as
-//!   substrate the ported renderers do not touch). Faking the load source as
-//!   a struct read would be an adhoc reimplementation, not a faithful port.
-//!   (The other fields these bodies touch — `this->total`,
-//!   `this->curAttributes`, `this->curItems`, `this->txtBuffer` — the
-//!   `Meter` struct now does carry; the two blockers above are what remain.)
+//!   `LoadMeter_updateValues` (`LoadAverageMeter.c:76`) — both bodies read
+//!   `this->host->activeCPUs` (for the `total` clamp and the OK/Medium/High
+//!   color threshold), but the partial `Meter` in `meter.rs` models no
+//!   `host` back-pointer (`host` is listed there as substrate the ported
+//!   renderers do not touch). Reproducing that branch would require an
+//!   invented `activeCPUs` source, i.e. an adhoc reimplementation rather
+//!   than a faithful port. (The load source itself,
+//!   `Platform_getLoadAverage(&this->values[0], ...)`, is now ported in
+//!   `linux/platform.rs`, and the other fields these bodies touch —
+//!   `this->total`, `this->curAttributes`, `this->curItems`,
+//!   `this->txtBuffer` — the `Meter` struct now carries; the missing
+//!   `host->activeCPUs` is the sole remaining blocker.)
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -49,16 +50,16 @@ use crate::ported::meter::Meter;
 use crate::ported::richstring::{RichString, RichString_appendnAscii};
 
 /// TODO: port of `static void LoadAverageMeter_updateValues(Meter* this)`
-/// from `LoadAverageMeter.c:42`. Blocked: the 1/5/15-minute values come
-/// from `Platform_getLoadAverage(&this->values[0], &this->values[1],
-/// &this->values[2])`, the platform-specific load reader in `Platform.c`,
-/// which is not ported — there is no faithful data source to feed. The
-/// body further reads `this->host->activeCPUs`, but the partial `Meter` in
-/// `meter.rs` carries no `host` back-pointer to dereference. (Its other
+/// from `LoadAverageMeter.c:42`. Blocked: the body reads
+/// `this->host->activeCPUs` (for the `total` clamp and the OK/Medium/High
+/// color threshold), but the partial `Meter` in `meter.rs` carries no
+/// `host` back-pointer to dereference. (The load source
+/// `Platform_getLoadAverage(&this->values[0], &this->values[1],
+/// &this->values[2])` is now ported in `linux/platform.rs`, and the other
 /// fields — `total`, `curAttributes`, `curItems`, `txtBuffer` — the `Meter`
-/// struct now models.)
+/// struct now models; only `host->activeCPUs` remains missing.)
 pub fn LoadAverageMeter_updateValues() {
-    todo!("port of LoadAverageMeter.c:42: needs Platform_getLoadAverage + Meter.host->activeCPUs")
+    todo!("port of LoadAverageMeter.c:42: needs Meter.host->activeCPUs")
 }
 
 /// Port of `static void LoadAverageMeter_display(const Object* cast,
@@ -96,12 +97,14 @@ pub fn LoadAverageMeter_display(this: &Meter, out: &mut RichString) {
 
 /// TODO: port of `static void LoadMeter_updateValues(Meter* this)` from
 /// `LoadAverageMeter.c:76`. Blocked for the same reason as
-/// [`LoadAverageMeter_updateValues`]: the 1-minute value comes from
-/// `Platform_getLoadAverage(&this->values[0], &five, &fifteen)` (unported
-/// `Platform.c` reader), and the body also reads `this->host->activeCPUs`,
-/// but the partial `Meter` in `meter.rs` carries no `host` back-pointer.
+/// [`LoadAverageMeter_updateValues`]: the body reads
+/// `this->host->activeCPUs` (for the `total` clamp and the OK/Medium/High
+/// color threshold), but the partial `Meter` in `meter.rs` carries no
+/// `host` back-pointer. (The load source
+/// `Platform_getLoadAverage(&this->values[0], &five, &fifteen)` is now
+/// ported in `linux/platform.rs`; only `host->activeCPUs` remains missing.)
 pub fn LoadMeter_updateValues() {
-    todo!("port of LoadAverageMeter.c:76: needs Platform_getLoadAverage + Meter.host->activeCPUs")
+    todo!("port of LoadAverageMeter.c:76: needs Meter.host->activeCPUs")
 }
 
 /// Port of `static void LoadMeter_display(const Object* cast, RichString*

@@ -68,11 +68,12 @@
 //!   `cpuids`; reproducing the shared-pointer store needs either the
 //!   unported `Vector` (with its `owner` flag) or `Rc`/`RefCell` shared
 //!   ownership, neither of which the substrate provides.
-//! - [`AffinityPanel_eventHandler`] (`AffinityPanel.c:203`) — returns the
-//!   `HandlerResult` enum (`IGNORED`/`HANDLED`/`BREAK_LOOP`), which is not
-//!   modeled in any ported module (it blocks every sibling `*Panel`
-//!   `eventHandler`); it also depends on the `cpuids` aliasing above and on
-//!   [`AffinityPanel_update`].
+//! - [`AffinityPanel_eventHandler`] (`AffinityPanel.c:203`) — toggles the
+//!   selected item's `value` in `super->items`, which must alias `cpuids`
+//!   (see [`AffinityPanel_update`]), and calls [`AffinityPanel_update`] on a
+//!   `HANDLED` result. `HandlerResult` is now modeled in `panel.rs`, so the
+//!   remaining block is the `cpuids` aliasing above plus the still-stubbed
+//!   [`AffinityPanel_update`] / [`Panel_splice`].
 //! - [`AffinityPanel_new`] (`AffinityPanel.c:379`) — builds `cpuids` while
 //!   the `Panel` splices the same pointers, and its last statement calls
 //!   [`AffinityPanel_update`]; blocked transitively on the same aliasing.
@@ -258,13 +259,14 @@ pub fn AffinityPanel_update() {
 }
 
 /// TODO: port of `static HandlerResult AffinityPanel_eventHandler(Panel* super,
-/// int ch)` from `AffinityPanel.c:203`. Returns the `HandlerResult` enum
-/// (`IGNORED`/`HANDLED`/`BREAK_LOOP`), which is not modeled in any ported
-/// module (it blocks every sibling `*Panel` `eventHandler`); it also toggles
-/// the selected item in `super->items`, which must alias `cpuids` (see
-/// [`AffinityPanel_update`]), and calls `AffinityPanel_update` on success.
+/// int ch)` from `AffinityPanel.c:203`. `HandlerResult`
+/// (`IGNORED`/`HANDLED`/`BREAK_LOOP`) is now modeled in `panel.rs`, but the
+/// body toggles the selected item's `value` in `super->items` — which must
+/// alias `cpuids` (see [`AffinityPanel_update`]) — and calls
+/// `AffinityPanel_update` on a `HANDLED` result. Both still depend on the
+/// panel/cpuids shared-pointer aliasing, i.e. the stubbed [`Panel_splice`].
 pub fn AffinityPanel_eventHandler() {
-    todo!("port of AffinityPanel.c:203 — needs HandlerResult enum + panel/cpuids aliasing + AffinityPanel_update")
+    todo!("port of AffinityPanel.c:203 — needs panel/cpuids aliasing (Panel_splice) + AffinityPanel_update")
 }
 
 /// TODO: port of `static MaskItem* AffinityPanel_addObject(AffinityPanel* this,
