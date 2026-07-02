@@ -1,0 +1,668 @@
+.\" htoprsall(1) — comprehensive all-in-one man page for htoprs
+.\" Modeled after zshall(1): every man page in one document.
+.\" Ported from htop's htop.1.in (htop 3.5.1). htoprs is a faithful
+.\" Rust port of htop; this page documents the full htop feature set
+.\" htoprs targets — every option, meter, view, and keybinding.
+.\" Render with:  man -l man/man1/htoprsall.1
+.\" Install:      cp man/man1/htoprsall.1 /usr/local/share/man/man1/
+.TH HTOPRSALL 1 "2026-07-02" "htoprs 0.1.0" "User Commands"
+.SH NAME
+htoprsall \- the htoprs comprehensive reference (invocation, options,
+process list, meters, tree, search, filter, tagging, sorting, every
+keybinding, function bar, setup screen, colors, mouse, signals, config)
+.SH OVERVIEW
+This is the all-in-one
+.B htoprs
+manual, modeled on
+.BR zshall (1).
+It concatenates every section of the htoprs reference into a single
+page so you can grep with `/`:
+.RS 2
+.PP
+.B 1.  INVOCATION
+.RB "\(em " "startup, default behavior, privileges"
+.br
+.B 2.  COMMAND-LINE OPTIONS
+.RB "\(em " "delay, color, filter, pid, sort, user, tree, readonly"
+.br
+.B 3.  THE PROCESS LIST
+.RB "\(em " "columns, meanings, per-process state"
+.br
+.B 4.  THE HEADER AND METERS
+.RB "\(em " "CPU, memory, swap, load, uptime, tasks, and meter modes"
+.br
+.B 5.  TREE VIEW
+.RB "\(em " "hierarchy, expand/collapse, sort within tree"
+.br
+.B 6.  SEARCH, FILTER, AND TAGGING
+.RB "\(em " "incremental search, filter, tag, act on many at once"
+.br
+.B 7.  SORTING
+.RB "\(em " "sort column, direction, quick sort keys"
+.br
+.B 8.  INTERACTIVE COMMANDS
+.RB "\(em " "every keybinding in every mode"
+.br
+.B 9.  THE FUNCTION BAR
+.RB "\(em " "F1\(enF10 and their actions"
+.br
+.B 10. THE SETUP SCREEN
+.RB "\(em " "meters, display options, colors, columns"
+.br
+.B 11. COLOR SCHEMES
+.br
+.B 12. MOUSE SUPPORT
+.br
+.B 13. SIGNALS
+.RB "\(em " "the kill menu, nice, affinity, IO priority"
+.br
+.B 14. CONFIGURATION AND FILES
+.br
+.B 15. ENVIRONMENT
+.br
+.B 16. EXIT STATUS
+.br
+.B 17. EXAMPLES
+.br
+.B 18. PORTING NOTES
+.RB "\(em " "how htoprs tracks the htop 3.5.1 C source"
+.RE
+.PP
+For a shorter quick-reference page see
+.BR htoprs (1).
+.SH NAME
+htoprs \- interactive process viewer (a faithful Rust port of htop)
+.SH SYNOPSIS
+.B htoprs
+.RB [ \-dCFhpustvH ]
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+.B htoprs
+is a Rust port of
+.BR htop (1),
+the cross-platform ncurses process viewer, ported function-for-function
+from the htop 3.5.1 C source, which is the specification.
+.PP
+Like
+.BR top (1),
+htoprs lets you scroll the process list vertically and horizontally,
+interact with a pointing device, observe all processes with their full
+command lines, view them as a tree, select (tag) multiple processes,
+and act on them at once. Tasks such as killing and renicing are done
+without typing PIDs \(em you point at the process and press a key.
+.PP
+.B Highlights:
+.IP \[bu] 2
+Live process table with configurable, reorderable columns and a
+per-core / aggregate CPU, memory, and swap header of meters.
+.IP \[bu] 2
+Tree view of the process hierarchy with expand / collapse.
+.IP \[bu] 2
+Incremental search, live text filter, and multi-process tagging.
+.IP \[bu] 2
+Sort by any column; quick keys for CPU, memory, and time.
+.IP \[bu] 2
+Send any signal, renice, set CPU affinity and IO priority \(em to one
+process or every tagged process at once.
+.IP \[bu] 2
+A setup screen (F2) to configure meters, display options, colors, and
+columns, persisted to
+.IR ~/.config/htop/htoprc .
+.IP \[bu] 2
+Full mouse support: click to select, click the function bar, click a
+column header to sort.
+.SH "1.  INVOCATION"
+Run
+.B htoprs
+with no arguments for the default interactive view: all processes of
+all users, meters in the header, the process list below, and the
+function bar at the bottom.
+.PP
+htoprs does not require elevated privileges to view processes. Acting
+on a process you do not own (killing, renicing to a higher priority)
+requires the appropriate privileges, exactly as with
+.BR htop (1)
+and
+.BR kill (1).
+.SH "2.  COMMAND-LINE OPTIONS"
+Mandatory arguments to long options are mandatory for short options too.
+.TP
+\fB\-d\fR, \fB\-\-delay=\fIDELAY\fR
+Delay between updates, in tenths of a second. If the delay value is
+less than 1, it is increased to 1 (1/10 second). If it is greater than
+100, it is decreased to 100 (10 seconds).
+.TP
+\fB\-C\fR, \fB\-\-no\-color\fR, \fB\-\-no\-colour\fR
+Start in monochrome mode.
+.TP
+\fB\-F\fR, \fB\-\-filter=\fIFILTER\fR
+Show only the commands matching the given filter. Terms are matched
+case-insensitively as fixed strings (not regular expressions); separate
+multiple terms with "|".
+.TP
+\fB\-\-no\-function\-bar\fR
+Hide the function bar at the bottom of the screen.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Display a help message and exit.
+.TP
+\fB\-p\fR, \fB\-\-pid=\fIPID,PID...\fR
+Show only the given PIDs.
+.TP
+\fB\-s\fR, \fB\-\-sort\-key\fI COLUMN\fR
+Sort by this column. Use
+.B \-\-sort\-key help
+for the column list. This forces a flat (list) view unless
+.B \-t
+is also given, in which case sorting applies to the direct children of
+each process within the tree.
+.TP
+\fB\-t\fR, \fB\-\-tree\fR
+Show processes in tree view. Combine with
+.B \-s
+to force a tree while requesting a sort order.
+.TP
+\fB\-u\fR, \fB\-\-user\fR[=\fIUSERNAME\fR|\fIUID\fR]
+Show only the processes of a given user, or of the current user if the
+argument is omitted.
+.TP
+\fB\-n\fR, \fB\-\-max\-iterations=\fINUMBER\fR
+Exit after NUMBER refresh iterations. Useful for scripted capture.
+.TP
+\fB\-U\fR, \fB\-\-no\-unicode\fR
+Do not use Unicode; draw graph meters with ASCII characters only.
+.TP
+\fB\-M\fR, \fB\-\-no\-mouse\fR
+Disable mouse control.
+.TP
+\fB\-\-no\-meters\fR
+Hide the header graph meters.
+.TP
+\fB\-\-readonly\fR
+Disable all system- and process-changing features: no kill, no renice,
+no affinity or IO-priority changes. A safe observation-only mode.
+.TP
+\fB\-H\fR, \fB\-\-highlight\-changes\fR[=\fIDELAY\fR]
+Highlight new and old processes. With an optional DELAY (in seconds),
+control how long a change stays highlighted.
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Output version information and exit.
+.SH "3.  THE PROCESS LIST"
+Each row is a process (or, in tree view, a node). The default columns:
+.PP
+.TS
+tab(|);
+l l.
+.B Column|.B Meaning
+PID|process ID
+USER|owning user name
+PRI|kernel scheduling priority
+NI|nice value (\-20 highest \(-> 19 lowest)
+VIRT|virtual memory size
+RES|resident set size (physical memory in use)
+SHR|shared memory size
+S|process state (R/S/D/Z/T/...)
+CPU%|percentage of a single core's time
+MEM%|percentage of physical memory (RES / total)
+TIME+|cumulative CPU time, MM:SS.hh
+Command|command line (or program name)
+.TE
+.PP
+Process states in the
+.B S
+column follow
+.BR ps (1):
+.B R
+running,
+.B S
+sleeping (interruptible),
+.B D
+uninterruptible sleep,
+.B Z
+zombie/defunct,
+.B T
+stopped/traced. Columns are configurable and reorderable in the setup
+screen (chapter 10).
+.SH "4.  THE HEADER AND METERS"
+The header holds one or more
+.I meters.
+Available meters include:
+.PP
+.TS
+tab(|);
+l l.
+.B Meter|.B Shows
+CPU|per-core or averaged CPU usage, colored by usage type
+Memory|used / buffers / cache / total physical memory
+Swap|used / total swap
+Load average|1, 5, and 15 minute run-queue averages
+Uptime|time since boot
+Tasks|thread / process / running counts
+Hostname|the machine hostname
+Clock|current time
+Date|current date
+DateTime|combined date and time
+Battery|charge percentage and AC state (where available)
+Blank|spacer to arrange the layout
+.TE
+.PP
+Each meter can be displayed in one of several
+.I modes:
+.RS 2
+.TP
+.B Bar
+a horizontal bar broken into colored regions.
+.TP
+.B Text
+a compact numeric line.
+.TP
+.B Graph
+a scrolling braille/plot history of recent values.
+.TP
+.B LED
+a large seven-segment style readout.
+.RE
+.PP
+Meters are laid out in a left and a right column; both the set of
+meters and their modes are configured in the setup screen (chapter 10)
+and persisted to
+.IR htoprc .
+.SH "5.  TREE VIEW"
+Press
+.B F5
+(or
+.BR t )
+to toggle tree view, which shows the parent/child hierarchy of
+processes instead of a flat list.
+.PP
+.TS
+tab(|);
+l l.
+.B Key|.B Action
++ / \-|Expand or collapse the subtree under the selected process
+* |Expand or collapse all subtrees
+F5 / t|Toggle between tree and list view
+.TE
+.PP
+When sorting is requested in tree view, the sort order applies to the
+direct children of each parent, preserving the hierarchy.
+.SH "6.  SEARCH, FILTER, AND TAGGING"
+.SS Search
+.B F3
+(or
+.BR / )
+starts an incremental search: type to jump to the next matching
+command;
+.B F3
+again cycles to the next match;
+.B Shift+F3
+searches backward.
+.B Esc
+ends the search.
+.SS Filter
+.B F4
+(or
+.BR \e )
+starts a live filter: only processes whose command matches the typed
+text remain visible. The filter persists until cleared with
+.B F4
+again or
+.BR Esc .
+.SS Tagging
+.B Space
+tags or untags the selected process; tagged processes are highlighted.
+.B U
+untags all. Actions such as kill, renice, and signal apply to every
+tagged process at once when any are tagged; otherwise they apply to the
+selected process.
+.PP
+.TS
+tab(|);
+l l.
+.B Key|.B Action
+F3 / /|Incremental search
+Shift+F3|Search previous match
+F4 / \e|Live text filter
+Space|Tag / untag selected process
+c|Tag the selected process and all its children
+U|Untag all
+.TE
+.SH "7.  SORTING"
+.B F6
+(or
+.BR < " / " > )
+chooses the sort column from a menu; select a column and the list
+re-sorts.
+.B I
+inverts the sort direction. Quick sort keys act without opening the
+menu:
+.PP
+.TS
+tab(|);
+l l.
+.B Key|.B Action
+F6 / < / >|Open the sort-column menu
+I|Invert sort direction
+M|Sort by memory usage (MEM%)
+P|Sort by processor usage (CPU%)
+T|Sort by cumulative time (TIME+)
+.TE
+.SH "8.  INTERACTIVE COMMANDS"
+Every htoprs keybinding, grouped by purpose. Function keys and their
+letter aliases are equivalent.
+.SS Navigation
+.TS
+tab(|);
+l l.
+.B Key|.B Action
+Up / Down|Select previous / next process
+Left / Right|Scroll the process list horizontally
+PgUp / PgDn|Scroll one page up / down
+Home / End|Jump to first / last process
+Ctrl+A / Ctrl+E|Scroll to the start / end of the command column
+.TE
+.SS Views and display
+.TS
+tab(|);
+l l.
+.B Key|.B Action
+F5 / t|Toggle tree view
++ / \- / *|Expand / collapse (see chapter 5)
+F / \-\-follow|Follow the selected process as the list re-sorts
+u|Show only one user's processes (chooser)
+H|Hide / show userland process threads
+K|Hide / show kernel threads
+p|Toggle full program path in the Command column
+Z|Pause / resume list updates
+.TE
+.SS Process actions
+.TS
+tab(|);
+l l.
+.B Key|.B Action
+F9 / k|Kill: open the signal menu for the selected/tagged process(es)
+F7 / ]|Raise priority (renice \(em, needs privilege)
+F8 / [|Lower priority (renice +)
+a|Set CPU affinity (where supported)
+i|Set IO priority (where supported)
+e|Show the process environment
+l|List open files of the process (via lsof)
+s|Trace system calls of the process (via strace)
+.TE
+.SS General
+.TS
+tab(|);
+l l.
+.B Key|.B Action
+F1 / h / ?|Help
+F2 / S|Setup screen
+F3 / /|Search
+F4 / \e|Filter
+F6 / < / >|Sort column
+F10 / q|Quit
+Ctrl+L|Refresh / redraw the screen
+.TE
+.SH "9.  THE FUNCTION BAR"
+The bar along the bottom maps
+.BR F1 \(en F10 :
+.PP
+.TS
+tab(|);
+l l.
+.B Key|.B Label
+F1|Help
+F2|Setup
+F3|Search
+F4|Filter
+F5|Tree
+F6|SortBy
+F7|Nice \-
+F8|Nice +
+F9|Kill
+F10|Quit
+.TE
+.PP
+Hide the bar with
+.B \-\-no\-function\-bar
+to reclaim a line of screen space; every action remains available via
+its letter alias.
+.SH "10. THE SETUP SCREEN"
+.B F2
+(or
+.BR S )
+opens the setup screen with four categories:
+.RS 2
+.TP
+.B Meters
+Add, remove, move, and change the mode (Bar / Text / Graph / LED) of
+each header meter, in the left or right column.
+.TP
+.B Display options
+Toggles: tree view on start, shadow other users' processes, hide kernel
+threads, hide userland threads, highlight base name, highlight
+megabytes, highlight large numbers in memory counters, leave a margin
+around the header, detailed CPU time, count CPUs from 1, update process
+names on every refresh, and more.
+.TP
+.B Colors
+Choose one of the built-in color schemes (chapter 11).
+.TP
+.B Columns
+Add, remove, and reorder the columns of the process list.
+.RE
+.PP
+Changes are written to
+.I ~/.config/htop/htoprc
+on exit.
+.SH "11. COLOR SCHEMES"
+htoprs ships the classic htop color schemes, selectable in the
+.B Colors
+category of the setup screen:
+.RS 2
+.PP
+.B Default
+,
+.B Monochrome
+,
+.B "Black on White"
+,
+.B "Light Terminal"
+,
+.B "MC (Midnight Commander)"
+,
+.B "Black Night"
+, and
+.BR "Broken Gray" .
+.RE
+.PP
+Start in monochrome directly with
+.BR \-C .
+The selected scheme persists in
+.IR htoprc .
+.SH "12. MOUSE SUPPORT"
+When the terminal reports mouse events (and
+.B \-M
+is not given):
+.PP
+.TS
+tab(|);
+l l.
+.B Input|.B Action
+Left click (row)|Select that process
+Left click (header meter)|Cycle the meter's mode
+Left click (column header)|Sort by that column
+Left click (function bar)|Invoke that F-key action
+Scroll up / down|Move the selection up / down
+.TE
+.PP
+Disable all mouse handling with
+.B \-M
+or
+.BR \-\-no\-mouse .
+.SH "13. SIGNALS"
+.B F9
+(or
+.BR k )
+opens the signal menu. Choose a signal by name or number and send it to
+the selected process, or to every tagged process at once. The default
+is
+.B SIGTERM
+(15); the menu also offers
+.BR SIGKILL " (9), " SIGHUP " (1), " SIGINT " (2), " SIGSTOP ", " SIGCONT ,
+and the rest of the platform's signal set.
+.PP
+Priority and scheduling actions:
+.RS 2
+.TP
+.BR F7 " / " ]
+Raise priority (more favorable, lower nice value \(em needs privilege).
+.TP
+.BR F8 " / " [
+Lower priority (less favorable, higher nice value).
+.TP
+.B a
+Set CPU affinity: choose the CPUs a process may run on.
+.TP
+.B i
+Set IO scheduling priority class and level.
+.RE
+.PP
+All of these are disabled under
+.BR \-\-readonly .
+.SH "14. CONFIGURATION AND FILES"
+.TP
+.I ~/.config/htop/htoprc
+Per-user configuration: meters and their modes, display option toggles,
+color scheme, columns, sort key and direction. Written on exit; edited
+through the setup screen rather than by hand.
+.TP
+.I /usr/local/share/man/man1/htoprs.1
+Short quick-reference man page.
+.TP
+.I /usr/local/share/man/man1/htoprsall.1
+This comprehensive reference.
+.PP
+htoprs honors the XDG base-directory convention: if
+.B $XDG_CONFIG_HOME
+is set, the configuration lives under
+.IR $XDG_CONFIG_HOME/htop/htoprc .
+.SH "15. ENVIRONMENT"
+.TP
+.B HOME
+Locates the configuration directory when
+.B $XDG_CONFIG_HOME
+is unset.
+.TP
+.B XDG_CONFIG_HOME
+Overrides the base directory for
+.IR htop/htoprc .
+.TP
+.B TERM
+Selects terminal capabilities; also gates mouse and Unicode support.
+.TP
+.B NO_COLOR
+When set, color is suppressed even on a color terminal (equivalent to
+.BR \-C ).
+.SH "16. EXIT STATUS"
+.TP
+.B 0
+Successful completion (including a clean quit with
+.BR F10 / q ).
+.TP
+.B 1
+Invalid option, invalid sort key, invalid PID list, or a fatal runtime
+error.
+.SH "17. EXAMPLES"
+.PP
+Default interactive view:
+.RS
+.nf
+htoprs
+.fi
+.RE
+.PP
+Slow the refresh to every 3 seconds:
+.RS
+.nf
+htoprs \-d 30
+.fi
+.RE
+.PP
+Watch only your own processes, in a tree:
+.RS
+.nf
+htoprs \-u \-t
+.fi
+.RE
+.PP
+Watch two specific PIDs:
+.RS
+.nf
+htoprs \-p 1,1234
+.fi
+.RE
+.PP
+Filter to just the ssh processes:
+.RS
+.nf
+htoprs \-F ssh
+.fi
+.RE
+.PP
+Sort by memory, monochrome, observation-only:
+.RS
+.nf
+htoprs \-s PERCENT_MEM \-C \-\-readonly
+.fi
+.RE
+.PP
+List valid sort keys:
+.RS
+.nf
+htoprs \-\-sort\-key help
+.fi
+.RE
+.PP
+Highlight process changes for 5 seconds each:
+.RS
+.nf
+htoprs \-H=5
+.fi
+.RE
+.SH "18. PORTING NOTES"
+htoprs is ported function-for-function from the htop 3.5.1 C source,
+which is treated as the specification. The
+.B XUtils
+string and math utility layer is ported and tested; the process table,
+meters, tree, setup screen, and platform data collectors are ported
+against their upstream counterparts
+.RB ( "Process.c" ", " "ProcessList.c" ", " "Meter.c" ", " "ScreenManager.c" ,
+and the
+.B linux/
+and
+.B darwin/
+platform directories). The command-line surface in chapter 2 mirrors
+htop's exactly so that scripts and muscle memory carry over unchanged.
+.SH SEE ALSO
+.BR htoprs (1),
+.BR htop (1),
+.BR top (1),
+.BR ps (1),
+.BR kill (1),
+.BR renice (1),
+.BR lsof (8),
+.BR strace (1),
+.BR iftoprsall (1),
+.BR lsofrsall (1),
+.BR nmaprsall (1),
+.BR zshrsall (1)
+.SH AUTHORS
+.B Jacob Menke
+.RI < https://github.com/MenkeTechnologies >
+wrote htoprs as a faithful Rust port of htop. htop was originally
+written by Hisham Muhammad and is maintained by the htop dev team.
+.SH BUGS
+Report bugs at
+.UR https://github.com/MenkeTechnologies/htoprs/issues
+.UE .

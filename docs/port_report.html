@@ -2,9 +2,10 @@
 <!--PORT-REPORT-SCHEMA
 Machine-readable dataset: <script id="port-report-data" type="application/json"> below.
   c_functions_defined = htop C function definitions (definitions only, not referenced libc symbols)
-  ported              = ported fns whose name matches a defined C function
-  coverage_pct        = 100 * ported / c_functions_defined
-  per_file            = [{cfile, ported, defined}] for each C file with >=1 ported fn
+  ported              = ported fns (real body) whose name matches a defined C function
+  stubbed             = scaffold fns (todo!()/unimplemented!() body) not yet ported
+  coverage_pct        = 100 * ported / c_functions_defined (stubs do NOT count)
+  per_file            = [{cfile, ported, stubbed, defined}] for each C file with >=1 ported or stubbed fn
 -->
 <html lang="en">
 <head>
@@ -51,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T05:39:50Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T05:50:13Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -69,51 +70,64 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">16</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val green">18</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">0</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">1.46%</div><div class="stat-label">Coverage</div></div>
-        <div class="stat-card"><div class="stat-val cyan">4</div><div class="stat-label">Files started</div></div>
+        <div class="stat-card"><div class="stat-val cyan">1.65%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">5</div><div class="stat-label">Files started</div></div>
       </div>
 
       <h2 class="tutorial-title"><span class="step-hash">~</span>PER-FILE</h2>
       <table class="arch-table">
-        <thead><tr><th>C file</th><th>ported</th><th>defined</th><th>coverage</th></tr></thead>
+        <thead><tr><th>C file</th><th>ported</th><th>stubbed</th><th>defined</th><th>coverage</th></tr></thead>
         <tbody>
-          <tr><td><code>Hashtable.c</code></td><td>1</td><td>13</td><td>8%</td></tr>
-          <tr><td><code>Meter.c</code></td><td>1</td><td>16</td><td>6%</td></tr>
-          <tr><td><code>Vector.c</code></td><td>5</td><td>27</td><td>19%</td></tr>
-          <tr><td><code>XUtils.c</code></td><td>9</td><td>26</td><td>35%</td></tr>
+          <tr><td><code>CommandLine.c</code></td><td>2</td><td>0</td><td>5</td><td>40%</td></tr>
+          <tr><td><code>Hashtable.c</code></td><td>1</td><td>0</td><td>13</td><td>8%</td></tr>
+          <tr><td><code>Meter.c</code></td><td>1</td><td>0</td><td>16</td><td>6%</td></tr>
+          <tr><td><code>Vector.c</code></td><td>5</td><td>0</td><td>27</td><td>19%</td></tr>
+          <tr><td><code>XUtils.c</code></td><td>9</td><td>0</td><td>26</td><td>35%</td></tr>
         </tbody>
       </table>
     </main>
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-02T05:39:50Z",
+  "generated": "2026-07-02T05:50:13Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1093,
-  "ported": 16,
-  "coverage_pct": 1.46,
-  "files_started": 4,
+  "ported": 18,
+  "stubbed": 0,
+  "coverage_pct": 1.65,
+  "files_started": 5,
   "per_file": [
+    {
+      "cfile": "CommandLine.c",
+      "ported": 2,
+      "stubbed": 0,
+      "defined": 5
+    },
     {
       "cfile": "Hashtable.c",
       "ported": 1,
+      "stubbed": 0,
       "defined": 13
     },
     {
       "cfile": "Meter.c",
       "ported": 1,
+      "stubbed": 0,
       "defined": 16
     },
     {
       "cfile": "Vector.c",
       "ported": 5,
+      "stubbed": 0,
       "defined": 27
     },
     {
       "cfile": "XUtils.c",
       "ported": 9,
+      "stubbed": 0,
       "defined": 26
     }
   ]

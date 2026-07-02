@@ -75,28 +75,60 @@ RE_RS_FN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:async\s+)?
 RE_PORT_CITE = re.compile(r"Port of .*?`?([A-Za-z_][\w]*\.c):(\d+)`?")
 
 
-def walk_ported() -> dict[str, dict]:
-    """ported fn name -> {file, line, cite_file, cite_line}."""
-    out: dict[str, dict] = {}
-    pending_cite = None
+def _body_is_stub(lines: list[str], fn_idx: int) -> bool:
+    """True if the fn starting at `lines[fn_idx]` has a `todo!()` /
+    `unimplemented!()` body — i.e. it's a scaffold stub, not a port.
+
+    Brace-matches from the fn's first `{` to its close and looks for a
+    stub macro in between. A genuine port never contains `todo!()`, so
+    this cannot misclassify real work as a stub."""
+    depth = 0
+    started = False
+    body: list[str] = []
+    for line in lines[fn_idx:]:
+        for ch in line:
+            if ch == "{":
+                depth += 1
+                started = True
+            elif ch == "}":
+                depth -= 1
+        if started:
+            body.append(line)
+            if depth <= 0:
+                break
+    text = "\n".join(body)
+    return "todo!(" in text or "unimplemented!(" in text
+
+
+def walk_ported() -> tuple[dict[str, dict], dict[str, dict]]:
+    """(real, stubbed): fn name -> {rs_file, rs_line, cite_file, cite_line}.
+
+    `real`    = a column-0 fn with an implemented body.
+    `stubbed` = a column-0 fn whose body is `todo!()`/`unimplemented!()`.
+    Stubs are scaffolding, not ports, so they are reported separately and
+    never counted toward coverage."""
+    real: dict[str, dict] = {}
+    stubbed: dict[str, dict] = {}
     for rs in sorted(PORTED.rglob("*.rs")):
         rel = rs.relative_to(ROOT).as_posix()
+        lines = rs.read_text(errors="replace").splitlines()
         pending_cite = None
-        for i, line in enumerate(rs.read_text(errors="replace").splitlines(), 1):
+        for i, line in enumerate(lines, 1):
             cite = RE_PORT_CITE.search(line)
             if cite:
                 pending_cite = (cite.group(1), int(cite.group(2)))
             m = RE_RS_FN.match(line)
             if m and line[: len(line) - len(line.lstrip())] == "":
                 name = m.group(1)
-                out[name] = {
+                entry = {
                     "rs_file": rel,
                     "rs_line": i,
                     "cite_file": pending_cite[0] if pending_cite else None,
                     "cite_line": pending_cite[1] if pending_cite else None,
                 }
+                (stubbed if _body_is_stub(lines, i - 1) else real)[name] = entry
                 pending_cite = None
-    return out
+    return real, stubbed
 
 
 def main() -> int:
@@ -106,30 +138,35 @@ def main() -> int:
         return 1
 
     c_defs = walk_c_defs()
-    ported = walk_ported()
+    real, stubbed = walk_ported()
 
-    # Per-C-file coverage: how many of a file's defined fns are ported.
+    # Per-C-file coverage: how many of a file's defined fns are ported
+    # (real body) vs merely stubbed (todo!() scaffold).
     by_cfile: dict[str, dict] = {}
     for name, locs in c_defs.items():
         for (rel, _line) in locs:
-            by_cfile.setdefault(rel, {"total": set(), "ported": set()})
+            by_cfile.setdefault(rel, {"total": set(), "ported": set(), "stubbed": set()})
             by_cfile[rel]["total"].add(name)
 
-    ported_names = set(ported)
+    real_names = set(real)
+    stub_names = set(stubbed)
     for rel, d in by_cfile.items():
-        d["ported"] = {n for n in d["total"] if n in ported_names}
+        d["ported"] = {n for n in d["total"] if n in real_names}
+        d["stubbed"] = {n for n in d["total"] if n in stub_names and n not in real_names}
 
     total_c = len(c_defs)
-    total_ported = len({n for n in ported_names if n in c_defs})
+    total_ported = len({n for n in real_names if n in c_defs})
+    total_stubbed = len({n for n in stub_names if n in c_defs and n not in real_names})
 
     rows = []
     for rel in sorted(by_cfile):
         d = by_cfile[rel]
         t = len(d["total"])
         p = len(d["ported"])
-        if p == 0:
+        s = len(d["stubbed"])
+        if p == 0 and s == 0:
             continue
-        rows.append((rel, p, t))
+        rows.append((rel, p, s, t))
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     pct = (100.0 * total_ported / total_c) if total_c else 0.0
@@ -139,26 +176,29 @@ def main() -> int:
         "htop_source": str(HTOP_SRC),
         "c_functions_defined": total_c,
         "ported": total_ported,
+        "stubbed": total_stubbed,
         "coverage_pct": round(pct, 2),
         "files_started": len(rows),
         "per_file": [
-            {"cfile": rel, "ported": p, "defined": t} for (rel, p, t) in rows
+            {"cfile": rel, "ported": p, "stubbed": s, "defined": t}
+            for (rel, p, s, t) in rows
         ],
     }
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     body_rows = "\n".join(
         f'          <tr><td><code>{html.escape(rel)}</code></td>'
-        f"<td>{p}</td><td>{t}</td><td>{100.0 * p / t:.0f}%</td></tr>"
-        for (rel, p, t) in rows
+        f"<td>{p}</td><td>{s}</td><td>{t}</td><td>{100.0 * p / t:.0f}%</td></tr>"
+        for (rel, p, s, t) in rows
     )
     doc = f"""<!DOCTYPE html>
 <!--PORT-REPORT-SCHEMA
 Machine-readable dataset: <script id="port-report-data" type="application/json"> below.
   c_functions_defined = htop C function definitions (definitions only, not referenced libc symbols)
-  ported              = ported fns whose name matches a defined C function
-  coverage_pct        = 100 * ported / c_functions_defined
-  per_file            = [{{cfile, ported, defined}}] for each C file with >=1 ported fn
+  ported              = ported fns (real body) whose name matches a defined C function
+  stubbed             = scaffold fns (todo!()/unimplemented!() body) not yet ported
+  coverage_pct        = 100 * ported / c_functions_defined (stubs do NOT count)
+  per_file            = [{{cfile, ported, stubbed, defined}}] for each C file with >=1 ported or stubbed fn
 -->
 <html lang="en">
 <head>
@@ -224,6 +264,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
 
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-val green">{total_ported}</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">{total_stubbed}</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">{total_c}</div><div class="stat-label">C fns defined</div></div>
         <div class="stat-card"><div class="stat-val cyan">{pct:.2f}%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">{len(rows)}</div><div class="stat-label">Files started</div></div>
@@ -231,7 +272,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
 
       <h2 class="tutorial-title"><span class="step-hash">~</span>PER-FILE</h2>
       <table class="arch-table">
-        <thead><tr><th>C file</th><th>ported</th><th>defined</th><th>coverage</th></tr></thead>
+        <thead><tr><th>C file</th><th>ported</th><th>stubbed</th><th>defined</th><th>coverage</th></tr></thead>
         <tbody>
 {body_rows}
         </tbody>
@@ -248,7 +289,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     OUT.write_text(doc)
     print(f"Wrote {OUT.relative_to(ROOT)}")
     print(f"  {total_ported}/{total_c} C fns ported ({pct:.2f}%), "
-          f"{len(rows)} file(s) started")
+          f"{total_stubbed} stubbed, {len(rows)} file(s) started")
     return 0
 
 
