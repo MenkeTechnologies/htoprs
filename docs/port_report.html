@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T06:44:22Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T07:02:02Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">108</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">504</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">119</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">498</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">9.88%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">10.89%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">67</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -119,18 +119,18 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>MainPanel.c</code></td><td>0</td><td>12</td><td>12</td><td>0%</td></tr>
           <tr><td><code>MemoryMeter.c</code></td><td>0</td><td>2</td><td>2</td><td>0%</td></tr>
           <tr><td><code>MemorySwapMeter.c</code></td><td>0</td><td>5</td><td>5</td><td>0%</td></tr>
-          <tr><td><code>Meter.c</code></td><td>2</td><td>0</td><td>16</td><td>12%</td></tr>
+          <tr><td><code>Meter.c</code></td><td>3</td><td>4</td><td>16</td><td>19%</td></tr>
           <tr><td><code>MetersPanel.c</code></td><td>0</td><td>6</td><td>6</td><td>0%</td></tr>
           <tr><td><code>NetworkIOMeter.c</code></td><td>0</td><td>2</td><td>2</td><td>0%</td></tr>
           <tr><td><code>Object.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>OpenFilesScreen.c</code></td><td>0</td><td>8</td><td>8</td><td>0%</td></tr>
-          <tr><td><code>OptionItem.c</code></td><td>13</td><td>9</td><td>22</td><td>59%</td></tr>
+          <tr><td><code>OptionItem.c</code></td><td>16</td><td>6</td><td>22</td><td>73%</td></tr>
           <tr><td><code>Panel.c</code></td><td>5</td><td>22</td><td>27</td><td>19%</td></tr>
           <tr><td><code>Process.c</code></td><td>4</td><td>28</td><td>32</td><td>12%</td></tr>
           <tr><td><code>ProcessLocksScreen.c</code></td><td>0</td><td>5</td><td>5</td><td>0%</td></tr>
           <tr><td><code>ProcessTable.c</code></td><td>0</td><td>6</td><td>6</td><td>0%</td></tr>
           <tr><td><code>RichString.c</code></td><td>18</td><td>0</td><td>18</td><td>100%</td></tr>
-          <tr><td><code>Row.c</code></td><td>1</td><td>23</td><td>24</td><td>4%</td></tr>
+          <tr><td><code>Row.c</code></td><td>8</td><td>16</td><td>24</td><td>33%</td></tr>
           <tr><td><code>Scheduling.c</code></td><td>1</td><td>6</td><td>7</td><td>14%</td></tr>
           <tr><td><code>ScreenManager.c</code></td><td>0</td><td>13</td><td>13</td><td>0%</td></tr>
           <tr><td><code>ScreenTabsPanel.c</code></td><td>0</td><td>16</td><td>16</td><td>0%</td></tr>
@@ -154,12 +154,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-02T06:44:22Z",
+  "generated": "2026-07-02T07:02:02Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1093,
-  "ported": 108,
-  "stubbed": 504,
-  "coverage_pct": 9.88,
+  "ported": 119,
+  "stubbed": 498,
+  "coverage_pct": 10.89,
   "files_started": 67,
   "per_file": [
     {
@@ -392,8 +392,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Meter.c",
-      "ported": 2,
-      "stubbed": 0,
+      "ported": 3,
+      "stubbed": 4,
       "defined": 16
     },
     {
@@ -422,8 +422,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "OptionItem.c",
-      "ported": 13,
-      "stubbed": 9,
+      "ported": 16,
+      "stubbed": 6,
       "defined": 22
     },
     {
@@ -458,8 +458,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Row.c",
-      "ported": 1,
-      "stubbed": 23,
+      "ported": 8,
+      "stubbed": 16,
       "defined": 24
     },
     {

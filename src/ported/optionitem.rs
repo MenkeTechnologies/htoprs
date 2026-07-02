@@ -10,15 +10,23 @@
 //! These are self-contained arithmetic + string logic with no dependency
 //! on unported substrate.
 //!
+//! Also ported: `TextItem_display`, `CheckItem_display`, and
+//! `NumberItem_display` — the option-row renderers — plus the [`Object`]
+//! vtable wiring (`impl Object for {TextItem, CheckItem, NumberItem}`) that
+//! dispatches `display` faithfully. They build the row through the real
+//! [`RichString`]/[`ColorElements`] substrate (checkbox glyphs, spacing, and
+//! `CRT_colors[CHECK_BOX/CHECK_MARK/CHECK_TEXT/HELP_BOLD]` exactly as htop).
+//! The label (C `OptionItem.super.text`) is modeled as a plain `text: String`
+//! field on each struct — pure data, no object substrate needed.
+//!
 //! Left as `todo!()` stubs (require unported substrate):
-//! - `OptionItem_delete`, `TextItem_display`, `CheckItem_display`,
-//!   `NumberItem_display` — depend on the `Object` vtable and
-//!   `RichString`/`CRT_colors`, none of which are ported.
+//! - `OptionItem_delete` — frees through the `Object` cast; its safe-Rust
+//!   analog is `Drop`, so there is no free-fn to port.
 //! - `TextItem_new`, `CheckItem_newByRef`, `CheckItem_newByVal`,
 //!   `NumberItem_newByRef`, `NumberItem_newByVal` — allocate through
-//!   `AllocThis`/`xStrdup` and populate the `Object` super and `text`
-//!   fields, which need the object substrate. Tests construct the
-//!   structs directly via their public fields instead.
+//!   `AllocThis`/`xStrdup` and populate the `Object` super, which need the
+//!   object allocation substrate. Tests construct the structs directly via
+//!   their public fields instead.
 //!
 //! Pointer-indirection limitation: the C `CheckItem`/`NumberItem` can
 //! store either a direct value or a pointer to an external value
@@ -29,17 +37,35 @@
 //! the `else` (direct) branch of its C body faithfully; the `if
 //! (this->ref)` branch is intentionally NOT modeled (not faked).
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
+
+use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::richstring::{
+    RichString, RichString_appendAscii, RichString_appendWide, RichString_appendnAscii,
+    RichString_writeAscii,
+};
 
 /// Maximum number of characters in a [`NumberItem`] edit buffer.
 /// Port of `#define NUMBERITEM_EDIT_MAX 10` from `OptionItem.h:14`.
 pub const NUMBERITEM_EDIT_MAX: usize = 10;
 
+/// Model of C `TextItem` (`OptionItem.h:38`). `TextItem_display` renders
+/// `this->super.text`, modeled here as the `text` field (C's own
+/// `TextItem.text` shadow field is unused/dead in the C source).
+pub struct TextItem {
+    pub text: String,
+}
+
 /// Direct-value model of C `CheckItem` (`OptionItem.h:43`). The C struct
 /// also carries `bool* ref` for pointer-indirection; that case is not
-/// modeled in safe Rust (see module docs), so only `value` is kept.
+/// modeled in safe Rust (see module docs), so only `value` is kept. `text`
+/// models the C `OptionItem.super.text` label rendered by
+/// [`CheckItem_display`].
 pub struct CheckItem {
     pub value: bool,
+    pub text: String,
 }
 
 /// Direct-value model of C `NumberItem` (`OptionItem.h:50`). The C
@@ -56,6 +82,8 @@ pub struct NumberItem {
     pub editing: bool,
     pub editBuffer: String,
     pub savedValue: i32,
+    /// C `OptionItem.super.text` — the label rendered by [`NumberItem_display`].
+    pub text: String,
 }
 
 /// TODO: port of `static void OptionItem_delete(Object* cast` from `OptionItem.c:23`.
@@ -63,19 +91,127 @@ pub fn OptionItem_delete() {
     todo!("port of OptionItem.c:23")
 }
 
-/// TODO: port of `static void TextItem_display(const Object* cast, RichString* out` from `OptionItem.c:31`.
-pub fn TextItem_display() {
-    todo!("port of OptionItem.c:31")
+/// Port of `OptionItem.c:31` (`static void TextItem_display`). Appends the
+/// label `this->super.text` in `CRT_colors[HELP_BOLD]`
+/// (`HELP_BOLD.packed(active scheme)`).
+pub fn TextItem_display(this: &TextItem, out: &mut RichString) {
+    let help_bold = ColorElements::HELP_BOLD.packed(ColorScheme::active());
+    RichString_appendWide(out, help_bold, this.text.as_bytes());
 }
 
-/// TODO: port of `static void CheckItem_display(const Object* cast, RichString* out` from `OptionItem.c:38`.
-pub fn CheckItem_display() {
-    todo!("port of OptionItem.c:38")
+/// Port of `OptionItem.c:38` (`static void CheckItem_display`). Renders the
+/// checkbox row `"[x]    <label>"` / `"[ ]    <label>"`: `"["` in
+/// `CRT_colors[CHECK_BOX]`, the `x`/space mark in `CRT_colors[CHECK_MARK]`,
+/// the literal `"]    "` (bracket + four spaces) in `CRT_colors[CHECK_BOX]`,
+/// then the label `this->super.text` in `CRT_colors[CHECK_TEXT]`.
+pub fn CheckItem_display(this: &CheckItem, out: &mut RichString) {
+    let scheme = ColorScheme::active();
+    let check_box = ColorElements::CHECK_BOX.packed(scheme);
+    let check_mark = ColorElements::CHECK_MARK.packed(scheme);
+    let check_text = ColorElements::CHECK_TEXT.packed(scheme);
+
+    RichString_writeAscii(out, check_box, b"[");
+    if CheckItem_get(this) {
+        RichString_appendAscii(out, check_mark, b"x");
+    } else {
+        RichString_appendAscii(out, check_mark, b" ");
+    }
+    RichString_appendAscii(out, check_box, b"]    ");
+    RichString_appendWide(out, check_text, this.text.as_bytes());
 }
 
-/// TODO: port of `static void NumberItem_display(const Object* cast, RichString* out` from `OptionItem.c:52`.
-pub fn NumberItem_display() {
-    todo!("port of OptionItem.c:52")
+/// Port of `OptionItem.c:52` (`static void NumberItem_display`). Renders the
+/// number row `"[<value>]"` followed by right-padding to a 5-column field and
+/// the label. The bracketed value is drawn in `CRT_colors[CHECK_MARK]` and is
+/// (in C's branch order): the raw `editBuffer` while `editing`; else
+/// `%.*f` of `10^scale * value` with `-scale` decimals when `scale < 0`;
+/// else the truncated integer `10^scale * value` when `scale > 0`; else the
+/// plain integer value. `written` is the character count of that field; the
+/// C `for (i = written; i < 5; i++)` loop pads with `CRT_colors[CHECK_BOX]`
+/// spaces (no padding once `written >= 5`). The brackets are
+/// `CRT_colors[CHECK_BOX]`; the label `this->super.text` is
+/// `CRT_colors[CHECK_TEXT]`.
+pub fn NumberItem_display(this: &NumberItem, out: &mut RichString) {
+    let scheme = ColorScheme::active();
+    let check_box = ColorElements::CHECK_BOX.packed(scheme);
+    let check_mark = ColorElements::CHECK_MARK.packed(scheme);
+    let check_text = ColorElements::CHECK_TEXT.packed(scheme);
+
+    RichString_writeAscii(out, check_box, b"[");
+    let written: usize;
+    if this.editing {
+        // C: written = this->editLen; append editBuffer[0..editLen].
+        written = this.editBuffer.len();
+        RichString_appendnAscii(out, check_mark, this.editBuffer.as_bytes(), written);
+    } else if this.scale < 0 {
+        let buffer = format!(
+            "{:.*}",
+            (-this.scale) as usize,
+            10f64.powi(this.scale) * NumberItem_get(this) as f64
+        );
+        written = buffer.len();
+        RichString_appendnAscii(out, check_mark, buffer.as_bytes(), written);
+    } else if this.scale > 0 {
+        let buffer = format!("{}", (10f64.powi(this.scale) * NumberItem_get(this) as f64) as i32);
+        written = buffer.len();
+        RichString_appendnAscii(out, check_mark, buffer.as_bytes(), written);
+    } else {
+        let buffer = format!("{}", NumberItem_get(this));
+        written = buffer.len();
+        RichString_appendnAscii(out, check_mark, buffer.as_bytes(), written);
+    }
+    RichString_appendAscii(out, check_box, b"]");
+    // C: for (int i = written; i < 5; i++) — empty range once written >= 5.
+    for _ in written..5 {
+        RichString_appendAscii(out, check_box, b" ");
+    }
+    RichString_appendWide(out, check_text, this.text.as_bytes());
+}
+
+/// Port of `const OptionItemClass OptionItem_class` (`OptionItem.c:78`):
+/// `.super.extends = Class(Object)`. Declared `static` for stable identity
+/// (see [`Object_isA`]). Only the `extends` link is modeled here; the C
+/// `.kind` field lives on `OptionItemClass`, which is not needed for display
+/// dispatch.
+static OptionItem_class: ObjectClass = ObjectClass { extends: Some(&Object_class) };
+
+/// Port of `const OptionItemClass TextItem_class` (`OptionItem.c:86`):
+/// `.super.extends = Class(OptionItem)`, `.super.display = TextItem_display`.
+static TextItem_class: ObjectClass = ObjectClass { extends: Some(&OptionItem_class) };
+
+/// Port of `const OptionItemClass CheckItem_class` (`OptionItem.c:96`):
+/// `.super.extends = Class(OptionItem)`, `.super.display = CheckItem_display`.
+static CheckItem_class: ObjectClass = ObjectClass { extends: Some(&OptionItem_class) };
+
+/// Port of `const OptionItemClass NumberItem_class` (`OptionItem.c:106`):
+/// `.super.extends = Class(OptionItem)`, `.super.display = NumberItem_display`.
+static NumberItem_class: ObjectClass = ObjectClass { extends: Some(&OptionItem_class) };
+
+impl Object for TextItem {
+    fn klass(&self) -> &'static ObjectClass {
+        &TextItem_class
+    }
+    fn display(&self, out: &mut RichString) {
+        TextItem_display(self, out);
+    }
+}
+
+impl Object for CheckItem {
+    fn klass(&self) -> &'static ObjectClass {
+        &CheckItem_class
+    }
+    fn display(&self, out: &mut RichString) {
+        CheckItem_display(self, out);
+    }
+}
+
+impl Object for NumberItem {
+    fn klass(&self) -> &'static ObjectClass {
+        &NumberItem_class
+    }
+    fn display(&self, out: &mut RichString) {
+        NumberItem_display(self, out);
+    }
 }
 
 /// TODO: port of `TextItem* TextItem_new(const char* text` from `OptionItem.c:115`.
@@ -332,12 +468,18 @@ mod tests {
             editing: false,
             editBuffer: String::new(),
             savedValue: 0,
+            text: String::new(),
         }
+    }
+
+    /// Visible characters of the valid `[0, chlen)` range.
+    fn rendered(rs: &RichString) -> String {
+        rs.chptr.iter().take(rs.chlen as usize).map(|c| c.chars).collect()
     }
 
     #[test]
     fn check_item_get_set_toggle() {
-        let mut it = CheckItem { value: false };
+        let mut it = CheckItem { value: false, text: String::new() };
         assert!(!CheckItem_get(&it));
         CheckItem_set(&mut it, true);
         assert!(CheckItem_get(&it));
@@ -345,6 +487,137 @@ mod tests {
         assert!(!CheckItem_get(&it));
         CheckItem_toggle(&mut it);
         assert!(CheckItem_get(&it));
+    }
+
+    // ── display renderers (chars + attrs pinned) ─────────────────────
+
+    /// The masked `CRT_colors[element]` an ASCII/wide write path stores.
+    fn attr_of(el: ColorElements) -> i32 {
+        el.packed(ColorScheme::active()) & 0xffffff
+    }
+
+    #[test]
+    fn text_item_display_renders_label_in_help_bold() {
+        let it = TextItem { text: "General".to_string() };
+        let mut rs = RichString::new();
+        TextItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "General");
+        for i in 0..rs.chlen as usize {
+            assert_eq!(rs.chptr[i].attr, attr_of(ColorElements::HELP_BOLD), "attr at {i}");
+        }
+    }
+
+    #[test]
+    fn check_item_display_checked_and_unchecked_glyphs() {
+        let checked = CheckItem { value: true, text: "Tree view".to_string() };
+        let mut rs = RichString::new();
+        CheckItem_display(&checked, &mut rs);
+        assert_eq!(rendered(&rs), "[x]    Tree view");
+
+        let unchecked = CheckItem { value: false, text: "Tree view".to_string() };
+        let mut rs2 = RichString::new();
+        CheckItem_display(&unchecked, &mut rs2);
+        assert_eq!(rendered(&rs2), "[ ]    Tree view");
+    }
+
+    #[test]
+    fn check_item_display_attrs_per_cell() {
+        let it = CheckItem { value: true, text: "ab".to_string() };
+        let mut rs = RichString::new();
+        CheckItem_display(&it, &mut rs);
+        // "[x]    ab" -> idx0 '[' box, idx1 'x' mark, idx2..=6 "]    " box,
+        // idx7.. "ab" text.
+        let box_c = attr_of(ColorElements::CHECK_BOX);
+        let mark_c = attr_of(ColorElements::CHECK_MARK);
+        let text_c = attr_of(ColorElements::CHECK_TEXT);
+        assert_eq!(rendered(&rs), "[x]    ab");
+        assert_eq!(rs.chptr[0].attr, box_c);
+        assert_eq!(rs.chptr[1].attr, mark_c);
+        for i in 2..=6 {
+            assert_eq!(rs.chptr[i].attr, box_c, "bracket/space attr at {i}");
+        }
+        assert_eq!(rs.chptr[7].attr, text_c);
+        assert_eq!(rs.chptr[8].attr, text_c);
+    }
+
+    #[test]
+    fn number_item_display_integer_pads_to_five() {
+        // value 42, scale 0 -> "[42]" + 3 pad spaces + label.
+        let mut it = number_item(42, 0, 0, 1000);
+        it.text = "Delay".to_string();
+        let mut rs = RichString::new();
+        NumberItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "[42]   Delay");
+        // '4','2' are the CHECK_MARK value cells.
+        assert_eq!(rs.chptr[1].attr, attr_of(ColorElements::CHECK_MARK));
+        assert_eq!(rs.chptr[2].attr, attr_of(ColorElements::CHECK_MARK));
+        // trailing pad spaces are CHECK_BOX.
+        assert_eq!(rs.chptr[4].attr, attr_of(ColorElements::CHECK_BOX));
+        // label is CHECK_TEXT.
+        assert_eq!(rs.chptr[7].attr, attr_of(ColorElements::CHECK_TEXT));
+    }
+
+    #[test]
+    fn number_item_display_no_padding_when_field_at_least_five() {
+        // "12345" is 5 chars -> for-loop range 5..5 is empty, no pad spaces.
+        let mut it = number_item(12345, 0, 0, 100000);
+        it.text = "N".to_string();
+        let mut rs = RichString::new();
+        NumberItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "[12345]N");
+    }
+
+    #[test]
+    fn number_item_display_scaled_decimal() {
+        // scale -2 -> 10^-2 * 150 = 1.5 formatted "%.2f" = "1.50" (4 chars),
+        // one pad space to reach the 5-field.
+        let mut it = number_item(150, -2, 0, 100000);
+        it.text = "Pct".to_string();
+        let mut rs = RichString::new();
+        NumberItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "[1.50] Pct");
+    }
+
+    #[test]
+    fn number_item_display_positive_scale_multiplies() {
+        // scale 1 -> (int)(10 * 3) = 30 -> "[30]" + 3 pad + label.
+        let mut it = number_item(3, 1, 0, 1000);
+        it.text = "K".to_string();
+        let mut rs = RichString::new();
+        NumberItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "[30]   K");
+    }
+
+    #[test]
+    fn number_item_display_editing_uses_edit_buffer() {
+        let mut it = number_item(999, 0, 0, 100000);
+        it.editing = true;
+        it.editBuffer = "7".to_string();
+        it.text = "X".to_string();
+        let mut rs = RichString::new();
+        NumberItem_display(&it, &mut rs);
+        // editBuffer "7" is 1 char -> 4 pad spaces.
+        assert_eq!(rendered(&rs), "[7]    X");
+        assert_eq!(rs.chptr[1].attr, attr_of(ColorElements::CHECK_MARK));
+    }
+
+    #[test]
+    fn object_display_dispatches_for_each_kind() {
+        let t = TextItem { text: "T".to_string() };
+        let mut rs = RichString::new();
+        Object::display(&t, &mut rs);
+        assert_eq!(rendered(&rs), "T");
+
+        let c = CheckItem { value: false, text: "C".to_string() };
+        let mut rs2 = RichString::new();
+        Object::display(&c, &mut rs2);
+        assert_eq!(rendered(&rs2), "[ ]    C");
+
+        let mut n = number_item(5, 0, 0, 100);
+        n.text = "N".to_string();
+        let mut rs3 = RichString::new();
+        Object::display(&n, &mut rs3);
+        assert_eq!(rendered(&rs3), "[5]    N");
     }
 
     #[test]

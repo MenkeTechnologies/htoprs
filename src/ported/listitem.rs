@@ -6,17 +6,27 @@
 //!
 //! [`ListItem_compare`], [`ListItem_init`], and [`ListItem_append`] are
 //! ported: they only read/write the `value` string (and the plain
-//! `key`/`moving` scalars) and have no `Object`, `CRT`, or `RichString`
-//! dependency. `ListItem_new` (allocates via `AllocThis` + wires the
-//! `Object` vtable), `ListItem_display` (draws through `RichString`/
-//! `CRT_colors`), and `ListItem_delete` (frees through the `Object`
-//! cast) depend on substrate not yet ported, so they remain `todo!()`
-//! stubs — `gen_port_report.py` counts those as *stubbed*, not
-//! *ported*.
+//! `key`/`moving` scalars). [`ListItem_display`] is ported for its
+//! always-executed path — it appends `value` with `CRT_colors[DEFAULT_COLOR]`
+//! through the real [`RichString`]/[`ColorElements`] substrate — and the
+//! [`Object`] vtable is wired via `impl Object for ListItem` (dispatching
+//! `display`/`compare` faithfully). The `moving` prefix branch selects its
+//! glyph from `CRT_utf8` (`↕ ` vs `+ `), an unported `CRT.c:91` global that
+//! lives in `crt.rs` (off-limits to this module), so that one branch stays a
+//! `todo!()` — which makes `gen_port_report.py` classify `ListItem_display`
+//! as *stubbed*, not *ported*. `ListItem_new` (allocates via `AllocThis`)
+//! and `ListItem_delete` (frees through the `Object` cast) have no
+//! safe-Rust free-fn analog (construction is a struct literal; destruction
+//! is `Drop`), so they remain `todo!()` stubs.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use std::cmp::Ordering;
+
+use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::object::{Object, ObjectClass};
+use crate::ported::richstring::{RichString, RichString_appendWide};
 
 /// Minimal model of the C `ListItem` struct (`ListItem.h`). The C type
 /// embeds an `Object super` (vtable) as its first field; that is only
@@ -34,9 +44,54 @@ pub fn ListItem_delete() {
     todo!("port of ListItem.c:21")
 }
 
-/// TODO: port of `void ListItem_display(const Object* cast, RichString* out` from `ListItem.c:27`.
-pub fn ListItem_display() {
-    todo!("port of ListItem.c:27")
+/// Port of `ListItem.c:27`. Writes the item into `out`: when `moving`, the
+/// C first draws a `RichString_writeWide` prefix (`CRT_utf8 ? "↕ " : "+ "`)
+/// in `CRT_colors[DEFAULT_COLOR]`, then always appends `value` in the same
+/// color. `CRT_colors[DEFAULT_COLOR]` is `DEFAULT_COLOR.packed(active
+/// scheme)`. The moving-glyph selection depends on the unported `CRT_utf8`
+/// global (`CRT.c:91`, in the off-limits `crt.rs`), so that branch cannot be
+/// ported faithfully yet and stays a `todo!()`; the always-run value append
+/// is ported exactly.
+pub fn ListItem_display(this: &ListItem, out: &mut RichString) {
+    let default_color = ColorElements::DEFAULT_COLOR.packed(ColorScheme::active());
+    if this.moving {
+        // C (HAVE_LIBNCURSESW): RichString_writeWide(out, CRT_colors[DEFAULT_COLOR],
+        //                                             CRT_utf8 ? "↕ " : "+ ");
+        // The glyph choice needs the unported CRT_utf8 (CRT.c:91); crt.rs is
+        // off-limits to this module, so this branch is not portable yet.
+        todo!("ListItem.c:30: moving-glyph selection needs unported CRT_utf8 (CRT.c:91)");
+    }
+    RichString_appendWide(out, default_color, this.value.as_bytes());
+}
+
+/// Port of `const ObjectClass ListItem_class` (`ListItem.c:70`). The C
+/// initializer sets `.display`/`.delete`/`.compare` but no `.extends`, so
+/// `extends` is `NULL` (zero-initialized) — ported verbatim as `None`.
+/// Declared `static` so its address (the type's identity, per [`Object_isA`])
+/// is stable.
+static ListItem_class: ObjectClass = ObjectClass { extends: None };
+
+impl Object for ListItem {
+    /// C `this->klass` set to `&ListItem_class`.
+    fn klass(&self) -> &'static ObjectClass {
+        &ListItem_class
+    }
+
+    /// C vtable slot `.display = ListItem_display`.
+    fn display(&self, out: &mut RichString) {
+        ListItem_display(self, out);
+    }
+
+    /// C vtable slot `.compare = ListItem_compare`. The C comparator casts
+    /// the opaque `const void*` back to `ListItem`; the safe-Rust analog
+    /// downcasts the trait object via `Any`.
+    fn compare(&self, other: &dyn Object) -> i32 {
+        let any: &dyn core::any::Any = other;
+        let o = any
+            .downcast_ref::<ListItem>()
+            .expect("ListItem_compare called across incompatible classes");
+        ListItem_compare(self, o)
+    }
 }
 
 /// Port of `ListItem_init(ListItem* this, const char* value, int key)`
@@ -115,6 +170,51 @@ mod tests {
         assert_eq!(it.value, "new");
         assert_eq!(it.key, 42);
         assert!(!it.moving);
+    }
+
+    /// Visible characters of the valid `[0, chlen)` range.
+    fn rendered(rs: &RichString) -> String {
+        rs.chptr.iter().take(rs.chlen as usize).map(|c| c.chars).collect()
+    }
+
+    #[test]
+    fn display_appends_value_in_default_color() {
+        let it = ListItem { value: "hello".to_string(), key: 0, moving: false };
+        let mut rs = RichString::new();
+        ListItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "hello");
+        assert_eq!(rs.chlen, 5);
+        // CRT_colors[DEFAULT_COLOR], masked as the ASCII/wide write path does.
+        let expect = ColorElements::DEFAULT_COLOR.packed(ColorScheme::active()) & 0xffffff;
+        for i in 0..5 {
+            assert_eq!(rs.chptr[i].attr, expect, "attr at {i}");
+        }
+    }
+
+    #[test]
+    fn object_display_dispatches_to_listitem_display() {
+        let it = ListItem { value: "abc".to_string(), key: 0, moving: false };
+        let mut rs = RichString::new();
+        // Dispatch through the Object vtable, not the free fn directly.
+        Object::display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "abc");
+    }
+
+    #[test]
+    fn object_compare_dispatches_to_listitem_compare() {
+        let a = ListItem { value: "apple".to_string(), key: 0, moving: false };
+        let b = ListItem { value: "banana".to_string(), key: 0, moving: false };
+        assert_eq!(a.compare(&b), -1);
+        assert_eq!(b.compare(&a), 1);
+        assert_eq!(a.compare(&ListItem { value: "apple".to_string(), key: 9, moving: true }), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "CRT_utf8")]
+    fn display_moving_branch_is_blocked_on_crt_utf8() {
+        let it = ListItem { value: "x".to_string(), key: 0, moving: true };
+        let mut rs = RichString::new();
+        ListItem_display(&it, &mut rs);
     }
 
     #[test]

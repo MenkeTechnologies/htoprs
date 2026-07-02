@@ -66,17 +66,45 @@ pub fn Meter_humanUnit(mut value: f64) -> String {
     format!("{:.*}{}", precision, value, UNIT_PREFIXES[i])
 }
 
-/// A minimal model of htop's `struct Meter_` (`Meter.h:111`) holding only
-/// the two fields [`Meter_computeSum`] reads: `values` (the per-item value
-/// array, C `double* values`) and `curItems` (C `uint8_t curItems`, the
-/// number of live entries at the front of `values`). Every other field of
-/// the C struct — `super`, `draw`, `host`, `caption`, `mode`, `param`,
+/// Port of `typedef unsigned int MeterModeId` from `MeterMode.h:19`. The
+/// mode ids are the `enum MeterModeId_` values (`MeterMode.h:11`); mode `0`
+/// is reserved, so the real modes start at `1` and `LAST_METERMODE` is the
+/// trailing count sentinel.
+pub type MeterModeId = u32;
+
+/// `BAR_METERMODE = 1` (`MeterMode.h:13`).
+pub const BAR_METERMODE: MeterModeId = 1;
+/// `TEXT_METERMODE` (`MeterMode.h:14`).
+pub const TEXT_METERMODE: MeterModeId = 2;
+/// `GRAPH_METERMODE` (`MeterMode.h:15`).
+pub const GRAPH_METERMODE: MeterModeId = 3;
+/// `LED_METERMODE` (`MeterMode.h:16`).
+pub const LED_METERMODE: MeterModeId = 4;
+/// `LAST_METERMODE` — trailing count sentinel (`MeterMode.h:17`).
+pub const LAST_METERMODE: MeterModeId = 5;
+
+/// A partial model of htop's `struct Meter_` (`Meter.h:111`) holding the
+/// fields the pure-logic ports in this module read:
+///   * `values` — the per-item value array (C `double* values`);
+///   * `curItems` — the number of live entries at the front of `values`
+///     (C `uint8_t curItems`);
+///   * `mode` — the current draw mode (C `MeterModeId mode`), read by
+///     [`Meter_nextSupportedMode`];
+///   * `supportedModes` — the bitset of supported modes. In C this is a
+///     `const uint32_t` on the `MeterClass` vtable, read through the
+///     instance via the `Meter_supportedModes(this)` macro (`Meter.h`);
+///     it is modeled here as an instance field carrying that class
+///     constant, which is exactly the value the macro yields.
+///
+/// The remaining C fields — `super`, `draw`, `host`, `caption`, `param`,
 /// `drawData`, `h`, `columnWidthCount`, `curAttributes`, `txtBuffer`,
-/// `total`, `meterData` — is omitted; it is substrate this pure-math port
-/// does not touch.
+/// `total`, `meterData` — are omitted; they are substrate (vtable
+/// dispatch, terminal draw state) these ports do not touch.
 pub struct Meter {
     pub values: Vec<f64>,
     pub curItems: u8,
+    pub mode: MeterModeId,
+    pub supportedModes: u32,
 }
 
 /// Port of `static double Meter_computeSum(const Meter* this)` from
@@ -96,6 +124,75 @@ pub fn Meter_computeSum(this: &Meter) -> f64 {
     } else {
         sum
     }
+}
+
+/// Port of `MeterModeId Meter_nextSupportedMode(const Meter* this)` from
+/// `Meter.c:556`. Given the current `mode`, returns the next supported
+/// mode id, cycling back to the lowest supported mode once the highest is
+/// passed. The selection is a pure bit operation over the
+/// `supportedModes` bitset: mask off every mode id `<= this->mode`
+/// (`((uint32_t)-1 << 1) << this->mode`), and if nothing remains fall back
+/// to the full set, then take the lowest set bit
+/// ([`countTrailingZeros`](crate::ported::xutils::countTrailingZeros)).
+///
+/// The C `assert(supportedModes)` and `assert(this->mode < UINT32_WIDTH)`
+/// are debug-only preconditions, kept as `debug_assert!`. As in C, the
+/// shift by `this->mode` is only well-defined for `mode < 32`.
+pub fn Meter_nextSupportedMode(this: &Meter) -> MeterModeId {
+    let supportedModes = this.supportedModes;
+    debug_assert!(supportedModes != 0);
+    debug_assert!(this.mode < 32);
+
+    let mode_mask = (u32::MAX << 1) << this.mode;
+    let mut next_modes = supportedModes & mode_mask;
+    if next_modes == 0 {
+        next_modes = supportedModes;
+    }
+
+    crate::ported::xutils::countTrailingZeros(next_modes) as MeterModeId
+}
+
+/// TODO: port of `static inline void Meter_displayBuffer(const Meter*
+/// this, RichString* out)` from `Meter.c:43`. Stubbed: the `Object_display`
+/// branch needs the `Object` vtable dispatch (`Object_displayFn` /
+/// `Object_display`) and the else branch needs `Meter_attributes(this)[0]`
+/// (the `MeterClass` vtable), `this->txtBuffer`, and `CRT_colors` — none of
+/// that substrate is ported yet.
+pub fn Meter_displayBuffer() {
+    todo!("port of Meter.c:43")
+}
+
+/// TODO: port of `static void TextMeterMode_draw(Meter* this, int x, int y,
+/// int w)` from `Meter.c:61`. Stubbed: the body is terminal cursor drawing
+/// (`attrset`, `mvaddnstr`) plus `Meter_displayBuffer` and
+/// `RichString_printoffnVal`, none of which are ported (no terminal layer,
+/// and `RichString_printoffnVal` is absent from `richstring.rs`).
+pub fn TextMeterMode_draw() {
+    todo!("port of Meter.c:61")
+}
+
+/// TODO: port of `static void BarMeterMode_draw(Meter* this, int x, int y,
+/// int w)` from `Meter.c:89`. Stubbed: the bar-fill string assembly needs
+/// RichString primitives absent from `richstring.rs`
+/// (`RichString_setChar` as a public fn, `RichString_getCharVal`,
+/// `RichString_sizeVal`), and the surrounding body is terminal cursor
+/// drawing (`attrset`, `mvaddch`, `move`, `RichString_printoffnVal`). The
+/// bar glyphs are `BarMeterMode_characters = "|#*@$%&."` (`Meter.c:87`),
+/// with `'|'` used outside `COLORSCHEME_MONOCHROME`.
+pub fn BarMeterMode_draw() {
+    todo!("port of Meter.c:89")
+}
+
+/// TODO: port of `void Meter_setMode(Meter* this, MeterModeId modeIndex)`
+/// from `Meter.c:525`. Stubbed: the body assigns C draw function pointers
+/// (`this->draw = mode->draw`), reads the `MeterClass` vtable
+/// (`Meter_updateModeFn` / `Meter_drawFn` / `Meter_supportedModes`), calls
+/// `Meter_updateMode`, resets the `GraphData` `drawData` buffer, and
+/// indexes the `Meter_modes[]` draw-fn/height table (`Meter.c:419`) — none
+/// of that substrate (vtable dispatch, function pointers, `GraphData`, the
+/// `Meter_modes` table) is ported yet.
+pub fn Meter_setMode() {
+    todo!("port of Meter.c:525")
 }
 
 #[cfg(test)]
@@ -163,6 +260,8 @@ mod tests {
         let m = Meter {
             values: vec![5.0, -3.0, f64::NAN, 2.0],
             curItems: 4,
+            mode: BAR_METERMODE,
+            supportedModes: 0,
         };
         assert_eq!(Meter_computeSum(&m), 7.0);
     }
@@ -173,6 +272,8 @@ mod tests {
         let m = Meter {
             values: vec![1.0, 2.0, 100.0],
             curItems: 2,
+            mode: BAR_METERMODE,
+            supportedModes: 0,
         };
         assert_eq!(Meter_computeSum(&m), 3.0);
     }
@@ -184,7 +285,56 @@ mod tests {
         let m = Meter {
             values: vec![f64::MAX, f64::MAX],
             curItems: 2,
+            mode: BAR_METERMODE,
+            supportedModes: 0,
         };
         assert_eq!(Meter_computeSum(&m), f64::MAX);
+    }
+
+    // ── Meter_nextSupportedMode ───────────────────────────────────────
+
+    /// `METERMODE_DEFAULT_SUPPORTED` (`MeterMode.h:21`): all four real
+    /// modes supported = bits 1..4 set.
+    const ALL_MODES: u32 =
+        (1 << BAR_METERMODE) | (1 << TEXT_METERMODE) | (1 << GRAPH_METERMODE) | (1 << LED_METERMODE);
+
+    fn mode_meter(mode: MeterModeId, supportedModes: u32) -> Meter {
+        Meter { values: vec![], curItems: 0, mode, supportedModes }
+    }
+
+    #[test]
+    fn next_supported_mode_cycles_through_all_modes() {
+        // With every mode supported, cycling advances 1->2->3->4 and wraps
+        // 4->1 (LED back to BAR).
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, ALL_MODES)), TEXT_METERMODE);
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(TEXT_METERMODE, ALL_MODES)), GRAPH_METERMODE);
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(GRAPH_METERMODE, ALL_MODES)), LED_METERMODE);
+        // highest mode wraps to the lowest supported mode
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(LED_METERMODE, ALL_MODES)), BAR_METERMODE);
+    }
+
+    #[test]
+    fn next_supported_mode_skips_unsupported_modes() {
+        // Only BAR and LED supported: BAR -> LED (skips TEXT/GRAPH),
+        // LED wraps back to BAR.
+        let supported = (1 << BAR_METERMODE) | (1 << LED_METERMODE);
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, supported)), LED_METERMODE);
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(LED_METERMODE, supported)), BAR_METERMODE);
+    }
+
+    #[test]
+    fn next_supported_mode_single_mode_stays_put() {
+        // Only TEXT supported: the mask above TEXT is empty, so it falls
+        // back to the full set and returns TEXT again.
+        let supported = 1 << TEXT_METERMODE;
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(TEXT_METERMODE, supported)), TEXT_METERMODE);
+    }
+
+    #[test]
+    fn next_supported_mode_from_lower_than_all_supported() {
+        // mode below the lowest supported bit: BAR (1) current, but only
+        // GRAPH and LED supported -> next is GRAPH.
+        let supported = (1 << GRAPH_METERMODE) | (1 << LED_METERMODE);
+        assert_eq!(Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, supported)), GRAPH_METERMODE);
     }
 }
