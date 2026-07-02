@@ -125,5 +125,14 @@ dead code in `Vector.c` and is not ported.
 ```sh
 cargo build          # runs the port-purity gate
 cargo test           # ports have hand-crafted unit tests pinning C edge behavior
+cargo test --test parity   # diff htoprs output vs the reference htop 3.5.x
 python3 scripts/gen_port_report.py   # regenerate docs/port_report.html
 ```
+
+The **parity suite** (`tests/parity/`) runs the same inputs through the
+reference `htop` (the C original htoprs is ported from) and `htoprs`, then
+compares output byte-for-byte, modulo the deliberate rebrand
+(`htoprs`→`htop`, version banner). It skips gracefully when no matching htop
+3.5.x is installed, so CI stays green; a dev box with htop runs the real
+comparison. Point it at a specific reference with `HTOP_REF=/path/to/htop`.
+See [docs/PARITY.md](docs/PARITY.md).

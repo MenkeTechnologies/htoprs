@@ -17,3 +17,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "htoprs"
 path = "src/main.rs"
+
+# Parity suite: run the reference htop (C original, 3.5.x) and htoprs on the
+# same inputs and diff the output. Cargo does not auto-discover files under
+# tests/parity/, so this aggregator file is the single registered target.
+# Run: `cargo test --test parity`  (see tests/parity/main.rs).
+[[test]]
+name = "parity"
+path = "tests/parity/main.rs"
