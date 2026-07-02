@@ -42,16 +42,25 @@ enforced mechanically, following the same precedent as `zshrs`.
   `cargo test --test X`.
 - **C-name snapshot:** regenerate with `tests/data/extract_c_fn_names.sh` after
   pulling upstream htop (`HTOP_C_SOURCE=~/forkedRepos/htop`).
+- **Stub scaffold (`scripts/gen_port_stubs.py`):** lays out the full port
+  surface — one module per C file, one `todo!()` stub `pub fn` per C function
+  (named to satisfy the gate). Stubs are placeholders, not ports; replace each
+  with a faithful body and a `/// Port of` cite. Already-ported modules are
+  never overwritten.
 - **Port report:** `scripts/gen_port_report.py` walks the C source and the Rust
   port and writes `docs/port_report.html` with per-file and overall coverage,
-  derived from source at run time (nothing hardcoded).
+  derived from source at run time (nothing hardcoded). A `todo!()` /
+  `unimplemented!()` body is counted as **stubbed**, never **ported**, so
+  scaffolding cannot inflate the coverage number.
 
 ## Current state
 
 The pure-logic layers are ported — string/math utilities, the container
 sort/search algorithms, the prime table, and the human-readable unit
-formatter. Overall and per-file coverage lives in `docs/port_report.html`
-(derived from source at run time — nothing hardcoded).
+formatter. The rest of the C source (every remaining top-level `.c` file) is
+scaffolded with `todo!()` stubs so the full surface is laid out and ready to
+fill in. Overall and per-file coverage — real ports vs stubs — lives in
+`docs/port_report.html` (derived from source at run time — nothing hardcoded).
 
 **`XUtils.c`** — string / math utilities:
 
