@@ -87,6 +87,9 @@ pub struct Settings {
     pub highlightChanges: bool,
     /// C `int highlightDelaySecs`.
     pub highlightDelaySecs: i32,
+    /// C `bool showCPUFrequency` — gates `LinuxMachine_scanCPUFrequency`
+    /// in `Machine_scan`.
+    pub showCPUFrequency: bool,
     /// C `ScreenSettings* ss` — the active screen settings.
     pub ss: ScreenSettings,
     /// C `ScreenSettings** screens` (+ `size_t nScreens`).

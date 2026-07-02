@@ -601,6 +601,7 @@ mod tests {
             ssIndex: 0,
             changed: false,
             lastUpdate: 0,
+            ..Default::default()
         };
 
         Header_writeBackToSettings(&h, &mut settings);
@@ -630,6 +631,7 @@ mod tests {
             ssIndex: 0,
             changed: false,
             lastUpdate: 0,
+            ..Default::default()
         };
 
         Header_writeBackToSettings(&h, &mut settings);

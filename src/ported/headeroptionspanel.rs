@@ -208,6 +208,7 @@ mod tests {
             ssIndex: 0,
             changed: false,
             lastUpdate: 0,
+            ..Default::default()
         }
     }
 

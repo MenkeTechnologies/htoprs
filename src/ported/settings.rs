@@ -77,10 +77,12 @@ pub type MeterModeId = u32;
 /// Port of the `HeaderLayout` enum from `HeaderLayout.h:18`. Discriminants
 /// match the C enum: `HF_INVALID = -1`, `HF_ONE_100 = 0`, then ascending.
 #[repr(i32)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum HeaderLayout {
     HF_INVALID = -1,
     HF_ONE_100 = 0,
+    /// htop's default header layout (`Settings.c:131`).
+    #[default]
     HF_TWO_50_50,
     HF_TWO_33_67,
     HF_TWO_67_33,
@@ -139,14 +141,68 @@ pub struct MeterColumnSetting {
 /// `ssIndex` is the C `unsigned int ssIndex` (index of the active screen;
 /// the C `ScreenSettings* ss` back-pointer is not modeled — the index
 /// suffices and avoids a self-referential borrow). `lastUpdate` is the C
-/// `uint64_t lastUpdate`. The remaining `Settings.h` fields (filenames,
-/// display toggles, dynamic-column hashtables, `colorScheme`, `delay`, …)
-/// are omitted because no ported function reads or writes them.
+/// `uint64_t lastUpdate`. The `Settings.h` display toggles (`show*`/`hide*`/
+/// `highlight*`, `colorScheme`, `delay`, …) are modeled below as their C
+/// `bool`/`int` fields so the meter, machine, and process ports can read
+/// them faithfully. The `char* filename`/`initialFilename` and the
+/// `Hashtable* dynamicColumns/dynamicMeters/dynamicScreens` fields are still
+/// omitted (they need the file-path and Hashtable substrate and no ported
+/// reader touches them yet).
+#[derive(Default, Clone, Debug)]
 pub struct Settings {
     pub hLayout: HeaderLayout,
     pub hColumns: Vec<MeterColumnSetting>,
     pub screens: Vec<ScreenSettings>,
     pub ssIndex: u32,
+
+    // ---- Settings.h display toggles (bool unless noted) ----
+    /// C `bool writeConfig` — write current settings on exit.
+    pub writeConfig: bool,
+    /// C `int config_version`.
+    pub config_version: i32,
+    /// C `int colorScheme`.
+    pub colorScheme: i32,
+    /// C `int delay` — update delay in tenths of a second.
+    pub delay: i32,
+
+    pub countCPUsFromOne: bool,
+    pub detailedCPUTime: bool,
+    pub showCPUUsage: bool,
+    pub showCPUFrequency: bool,
+    pub showCPUSMTLabels: bool,
+    /// C `bool showCPUTemperature` (behind `BUILD_WITH_CPU_TEMP`).
+    pub showCPUTemperature: bool,
+    /// C `bool degreeFahrenheit` (behind `BUILD_WITH_CPU_TEMP`).
+    pub degreeFahrenheit: bool,
+    pub showProgramPath: bool,
+    pub shadowOtherUsers: bool,
+    pub showThreadNames: bool,
+    pub hideKernelThreads: bool,
+    pub hideRunningInContainer: bool,
+    pub hideUserlandThreads: bool,
+    pub highlightBaseName: bool,
+    pub highlightDeletedExe: bool,
+    pub shadowDistPathPrefix: bool,
+    pub highlightMegabytes: bool,
+    pub highlightThreads: bool,
+    pub highlightChanges: bool,
+    /// C `int highlightDelaySecs`.
+    pub highlightDelaySecs: i32,
+    pub findCommInCmdline: bool,
+    pub stripExeFromCmdline: bool,
+    pub showMergedCommand: bool,
+    pub updateProcessNames: bool,
+    pub accountGuestInCPUMeter: bool,
+    pub headerMargin: bool,
+    pub screenTabs: bool,
+    pub showCachedMemory: bool,
+    /// C `bool enableMouse` (behind `HAVE_GETMOUSE`).
+    pub enableMouse: bool,
+    /// C `int hideFunctionBar` — 0 off, 1 on-ESC-until-input, 2 permanent.
+    pub hideFunctionBar: i32,
+    /// C `bool topologyAffinity` (behind `HAVE_LIBHWLOC`).
+    pub topologyAffinity: bool,
+
     pub changed: bool,
     pub lastUpdate: u64,
 }
@@ -657,6 +713,7 @@ mod tests {
             ssIndex: 0,
             changed: false,
             lastUpdate: 0,
+            ..Default::default()
         }
     }
 

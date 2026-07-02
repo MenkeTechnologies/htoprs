@@ -206,6 +206,7 @@ mod tests {
                 table: None,
             },
             screens: Vec::new(),
+            ..Default::default()
         });
         m
     }

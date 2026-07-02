@@ -1039,16 +1039,11 @@ fn LinuxMachine_scanCPUFrequency(this: &mut LinuxMachine) {
 /// trailing `LibSensors_getCPUTemperatures` call are omitted (no-sensors
 /// build variant; see module docs).
 ///
-/// The `settings->showCPUFrequency` gate (`LinuxMachine.c:809-815`) reads a
-/// field not modeled on `machine::Settings` (owned by `machine.rs`; rule 4
-/// forbids adding fields to another file's type). C binds `settings`
-/// unconditionally (`const Settings* settings = super->settings;`) and
-/// dereferences it with no null check, so guarding on settings *presence*
-/// would fabricate a control condition that is not in the original. Because
-/// the gate's sole input cannot be modeled, the flag-gated frequency pass is
-/// left as a documented deferred stub rather than a fabricated proxy: it
-/// runs when `settings->showCPUFrequency` is set and is skipped otherwise,
-/// and that flag is unavailable here. See the report notes.
+/// Port of `void Machine_scan(Machine* super)` from `LinuxMachine.c:786`.
+/// Runs the per-scan `/proc` passes in C order, then — when
+/// `settings->showCPUFrequency` is set — the CPU-frequency pass. C binds
+/// `const Settings* settings = super->settings;` and dereferences it with no
+/// null check, so this `expect`s `super->settings` present, matching C.
 pub fn Machine_scan(this: &mut LinuxMachine) {
     LinuxMachine_scanMemoryInfo(this);
     LinuxMachine_scanHugePages(this);
@@ -1061,20 +1056,15 @@ pub fn Machine_scan(this: &mut LinuxMachine) {
     //   if (settings->showCPUFrequency /* || settings->showCPUTemperature */)
     //      LinuxMachine_scanCPUFrequency(this);
     // C dereferences `settings` unconditionally (never null here).
-    let _settings = this
+    let show_cpu_frequency = this
         .super_
         .settings
         .as_ref()
-        .expect("Machine_scan: super->settings (C dereferences it unconditionally)");
-    // The `showCPUFrequency` gate cannot be evaluated: the flag is not
-    // modeled on `machine::Settings` and rule 4 forbids adding it there.
-    // Deferred as a documented stub rather than fabricating a proxy
-    // condition or unconditionally running the pass (which would diverge
-    // from C whenever the flag is disabled).
-    todo!(
-        "LinuxMachine.c:810-815 — gate LinuxMachine_scanCPUFrequency on \
-         settings->showCPUFrequency (flag unmodeled on machine::Settings; rule 4)"
-    )
+        .expect("Machine_scan: super->settings (C dereferences it unconditionally)")
+        .showCPUFrequency;
+    if show_cpu_frequency {
+        LinuxMachine_scanCPUFrequency(this);
+    }
 }
 
 /// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t
