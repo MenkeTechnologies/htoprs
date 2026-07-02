@@ -148,36 +148,102 @@ def main() -> int:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     body_rows = "\n".join(
-        f"<tr><td>{html.escape(rel)}</td><td>{p}</td><td>{t}</td>"
-        f"<td>{100.0 * p / t:.0f}%</td></tr>"
+        f'          <tr><td><code>{html.escape(rel)}</code></td>'
+        f"<td>{p}</td><td>{t}</td><td>{100.0 * p / t:.0f}%</td></tr>"
         for (rel, p, t) in rows
     )
     doc = f"""<!DOCTYPE html>
-<!--PORT-REPORT-SCHEMA: c_functions_defined=htop C fn definitions; ported=ported fns matching a C name; per_file=[cfile,ported,defined]-->
-<html lang="en"><head><meta charset="utf-8">
-<title>htoprs port report</title>
-<style>
- body {{ background:#0b0e14; color:#c8d3f5; font:14px/1.5 ui-monospace,monospace; margin:2rem; }}
- h1 {{ color:#7aa2f7; }}
- .stat {{ font-size:2rem; color:#9ece6a; }}
- table {{ border-collapse:collapse; margin-top:1rem; }}
- th,td {{ border:1px solid #2a2f45; padding:.3rem .8rem; text-align:left; }}
- th {{ color:#7aa2f7; }}
- .muted {{ color:#565f89; }}
-</style></head><body>
-<h1>htoprs — port report</h1>
-<p class="muted">Spec: htop C source at {html.escape(str(HTOP_SRC))} · generated {ts}</p>
-<p><span class="stat">{total_ported}</span> / {total_c} C functions ported
- (<b>{pct:.2f}%</b>) across {len(rows)} file(s) started.</p>
-<table>
-<thead><tr><th>C file</th><th>ported</th><th>defined</th><th>coverage</th></tr></thead>
-<tbody>
+<!--PORT-REPORT-SCHEMA
+Machine-readable dataset: <script id="port-report-data" type="application/json"> below.
+  c_functions_defined = htop C function definitions (definitions only, not referenced libc symbols)
+  ported              = ported fns whose name matches a defined C function
+  coverage_pct        = 100 * ported / c_functions_defined
+  per_file            = [{{cfile, ported, defined}}] for each C file with >=1 ported fn
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="htoprs port report — C-to-Rust coverage of the htop 3.5.1 port, per file and overall, derived from source at generation time.">
+  <title>htoprs — Port Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&amp;family=Share+Tech+Mono&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="hud-static.css">
+  <link rel="stylesheet" href="tutorial.css">
+  <style>
+    .tutorial-main {{ max-width: 68rem; }}
+    .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.5rem; margin: 1rem 0; }}
+    .stat-card {{ border: 1px solid var(--border); border-left: 2px solid var(--cyan); padding: 0.65rem 0.85rem; background: color-mix(in srgb, var(--bg-card) 92%, transparent); border-radius: 2px; }}
+    .stat-val {{ font-family: 'Orbitron', sans-serif; font-size: 20px; font-weight: 700; color: var(--accent); }}
+    .stat-val.cyan {{ color: var(--cyan); }}
+    .stat-val.green {{ color: var(--green); }}
+    .stat-label {{ font-family: 'Share Tech Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-dim); margin-top: 0.2rem; }}
+    .arch-table {{ width: 100%; border-collapse: collapse; margin: 0.6rem 0; font-size: 12.5px; }}
+    .arch-table th {{ background: var(--bg-secondary); color: var(--cyan); font-family: 'Orbitron', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; text-align: left; padding: 6px 10px; border: 1px solid var(--border); }}
+    .arch-table td {{ padding: 6px 10px; border: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }}
+    .arch-table td code {{ color: var(--accent-light); background: var(--bg); padding: 1px 4px; }}
+  </style>
+</head>
+<body>
+  <div class="app tutorial-app" id="portReportApp">
+    <div class="crt-scanline" id="crtH" aria-hidden="true"></div>
+    <div class="crt-scanline-v" id="crtV" aria-hidden="true"></div>
+
+    <header class="tutorial-header">
+      <div class="tutorial-header-inner">
+        <div>
+          <h1 class="tutorial-brand">// HTOPRS &mdash; PORT REPORT</h1>
+          <nav class="tutorial-crumbs" aria-label="Breadcrumb">
+            <span class="current">Port Report</span>
+            <span class="sep">/</span>
+            <a href="index.html">Docs</a>
+            <span class="sep">/</span>
+            <a href="report.html">Engineering report</a>
+            <span class="sep">/</span>
+            <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
+          </nav>
+          <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
+            Coverage of the htop 3.5.1 C spec &middot; generated {ts}
+          </p>
+        </div>
+        <div class="tutorial-toolbar">
+          <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
+          <button type="button" class="btn btn-secondary active" id="btnCrt" title="CRT scanline overlay">CRT</button>
+          <button type="button" class="btn btn-secondary active" id="btnNeon" title="Neon border pulse">Neon</button>
+          <a class="btn btn-secondary" href="index.html">Docs</a>
+          <a class="btn btn-secondary" href="report.html">Report</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="tutorial-main">
+      <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>PORT COVERAGE</h2>
+      <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>{html.escape(str(HTOP_SRC))}</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val green">{total_ported}</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">{total_c}</div><div class="stat-label">C fns defined</div></div>
+        <div class="stat-card"><div class="stat-val cyan">{pct:.2f}%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">{len(rows)}</div><div class="stat-label">Files started</div></div>
+      </div>
+
+      <h2 class="tutorial-title"><span class="step-hash">~</span>PER-FILE</h2>
+      <table class="arch-table">
+        <thead><tr><th>C file</th><th>ported</th><th>defined</th><th>coverage</th></tr></thead>
+        <tbody>
 {body_rows}
-</tbody></table>
-<script id="port-report-data" type="application/json">
+        </tbody>
+      </table>
+    </main>
+  </div>
+  <script id="port-report-data" type="application/json">
 {json.dumps(data, indent=2)}
-</script>
-</body></html>
+  </script>
+  <script src="hud-theme.js"></script>
+</body>
+</html>
 """
     OUT.write_text(doc)
     print(f"Wrote {OUT.relative_to(ROOT)}")

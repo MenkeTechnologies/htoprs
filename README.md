@@ -20,6 +20,8 @@
 interactive process viewer. Every function under `src/ported/` ports a specific htop
 C function, cited by `<File>.c:<line>` in its doc comment. Created by MenkeTechnologies.
 
+### [`Read the Docs`](https://menketechnologies.github.io/htoprs/) &middot; [`Engineering Report`](https://menketechnologies.github.io/htoprs/report.html) · [`Port Report`](https://menketechnologies.github.io/htoprs/port_report.html)
+
 ---
 
 ## Porting methodology
