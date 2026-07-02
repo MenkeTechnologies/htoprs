@@ -1,24 +1,80 @@
-//! Partial port of `Process.c` — pure string/state helpers are ported;
-//! everything requiring unported substrate (RichString, ncurses/CRT
-//! attrs, Panel, Object vtables, syscalls, or `Process` struct fields)
-//! remains a `todo!()` stub named after its real htop C function.
+//! Partial port of `Process.c` + `Process.h` — the process data model
+//! and its pure comparison / predicate logic. Everything requiring the
+//! unported `Machine` / `Settings` / `Table` substrate, syscalls, or the
+//! ncurses draw layer remains a `todo!()` stub named after its real htop
+//! C function.
 //!
-//! C names are preserved verbatim, so `non_snake_case` is allowed for
-//! the whole module. Ported so far: [`processStateChar`],
-//! [`findCommInCmdline`], [`matchCmdlinePrefixWithExeSuffix`], and
-//! [`skipPotentialPath`] — the pure `const char*` + `size_t` helpers,
-//! modeled on `&[u8]` + `usize`. NUL-terminated C string reads are
-//! modeled by treating any index at/after the slice length as the
-//! terminating NUL (`0`), matching a well-formed C string's `s[len]`.
-//! Out-params are returned as tuples/`Option`.
+//! Ported data model: [`Process`] (every `Process.h` field; embeds
+//! [`Row`] as its `super` base — htop's emulated OOP), the [`ProcessField`]
+//! column-id enum (`RowField.h` reserved fields), [`Tristate`],
+//! [`ProcessMergedCommand`] + [`ProcessCmdlineHighlight`], and the
+//! [`Object`] trait impl chaining `Process_class` → `Row_class`.
 //!
-//! Each remaining `todo!()` is a placeholder named after a real htop C
-//! function so the port-purity gate accepts the module and the port
-//! surface is laid out. `gen_port_report.py` counts these `todo!()`
-//! bodies as *stubbed*, not *ported*, so scaffolding does not inflate
-//! coverage.
+//! Ported logic: [`Process_compareByKey_Base`] (the per-field sort
+//! switch), the pure predicates [`Process_isKernelThread`],
+//! [`Process_isUserlandThread`], [`Process_isThread`], the pid/parent/tgid
+//! getters + setters, [`Process_init`], and the pure string/state helpers
+//! [`processStateChar`], [`findCommInCmdline`],
+//! [`matchCmdlinePrefixWithExeSuffix`], [`skipPotentialPath`]. C `const
+//! char*` + `size_t` helpers are modeled on `&[u8]` + `usize`;
+//! NUL-terminated reads treat any index at/after the slice length as the
+//! terminating NUL (`0`). Out-params are returned as tuples/`Option`.
+//!
+//! Still stubbed (need unported substrate): [`Process_compare`] and
+//! [`Process_compareByParent`] (read `settings->ss` / `ScreenSettings`),
+//! [`Process_getCommand`] (reads `host->settings`), and the
+//! writeField / init-display / syscall / filter functions. The `COMM`
+//! sort case in [`Process_compareByKey_Base`] delegates to the stubbed
+//! [`Process_getCommand`], so that one case is not exercisable until the
+//! `Settings` substrate lands (every other case is pure and tested).
+//! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
+//! *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
+
+use crate::ported::object::{Object, ObjectClass};
+use crate::ported::row::{spaceship_number, Row, Row_class, Row_init};
+use crate::ported::xutils::compareRealNumbers;
+use core::any::Any;
+use core::ffi::c_void;
+
+/// Port of `#define SPACESHIP_NULLSTR(a, b)` from `Macros.h:37`:
+/// `strcmp((a) ? (a) : "", (b) ? (b) : "")`. NULL operands (`None`)
+/// compare as the empty string. Only the sign is significant for
+/// sorting; `[u8]::cmp` is lexicographic on unsigned bytes, matching
+/// `strcmp`'s sign.
+macro_rules! spaceship_nullstr {
+    ($a:expr, $b:expr) => {{
+        let a: &[u8] = $a.unwrap_or(b"");
+        let b: &[u8] = $b.unwrap_or(b"");
+        match a.cmp(b) {
+            core::cmp::Ordering::Less => -1,
+            core::cmp::Ordering::Equal => 0,
+            core::cmp::Ordering::Greater => 1,
+        }
+    }};
+}
+
+/// Port of `#define SPACESHIP_DEFAULTSTR(a, b, s)` from `Macros.h:41`:
+/// `strcmp((a) ? (a) : (s), (b) ? (b) : (s))`. NULL operands (`None`)
+/// fall back to the default `s` instead of the empty string.
+macro_rules! spaceship_defaultstr {
+    ($a:expr, $b:expr, $s:expr) => {{
+        let a: &[u8] = $a.unwrap_or($s);
+        let b: &[u8] = $b.unwrap_or($s);
+        match a.cmp(b) {
+            core::cmp::Ordering::Less => -1,
+            core::cmp::Ordering::Equal => 0,
+            core::cmp::Ordering::Greater => 1,
+        }
+    }};
+}
+
+/// Port of `static const char* const kthreadID = "KTHREAD"` from
+/// `Process.c:41` — the placeholder comm/exe used for kernel threads
+/// that expose no command string.
+const kthreadID: &[u8] = b"KTHREAD";
 
 /// Port of `enum ProcessState_` from `Process.h:41`. Discriminants match
 /// the C enum exactly (`UNKNOWN = 1`, the rest ascending).
@@ -40,6 +96,252 @@ pub enum ProcessState {
     DEFUNCT,
     IDLE,
     SLEEPING,
+}
+
+/// Port of `enum Tristate_` from `Process.h:31`. A three-state flag;
+/// discriminants match the C enum exactly (`TRI_OFF = -1`,
+/// `TRI_INITIAL = 0`, `TRI_ON = 1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(i8)]
+#[allow(non_camel_case_types)]
+pub enum Tristate {
+    /// C `TRI_OFF = -1`.
+    TRI_OFF = -1,
+    /// C `TRI_INITIAL = 0` — the default, un-probed state.
+    #[default]
+    TRI_INITIAL = 0,
+    /// C `TRI_ON = 1`.
+    TRI_ON = 1,
+}
+
+/// Port of `struct ProcessCmdlineHighlight_` from `Process.h:63`. A
+/// region of the merged command string to color.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProcessCmdlineHighlight {
+    /// C `size_t offset` — first character to highlight.
+    pub offset: usize,
+    /// C `size_t length` — characters to highlight, zero if unused.
+    pub length: usize,
+    /// C `int attr` — the highlight attributes.
+    pub attr: i32,
+    /// C `int flags` — selective-highlight flags (`CMDLINE_HIGHLIGHT_FLAG_*`).
+    pub flags: i32,
+}
+
+/// Port of `struct ProcessMergedCommand_` from `Process.h:74`. Populated
+/// by `Process_makeCommandStr` (stubbed) with the merged Command string
+/// and the highlight regions `Process_writeCommand` uses to color it.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessMergedCommand {
+    /// C `uint64_t lastUpdate` — settings-marker for cache invalidation.
+    pub lastUpdate: u64,
+    /// C `char* str` — the merged command string; `None` (C `NULL`) for
+    /// kernel threads and zombies.
+    pub str: Option<String>,
+    /// C `size_t highlightCount` — active entries in `highlights`.
+    pub highlightCount: usize,
+    /// C `ProcessCmdlineHighlight highlights[8]`.
+    pub highlights: [ProcessCmdlineHighlight; 8],
+}
+
+/// Port of the `ReservedFields` enum from `RowField.h:12` (the process
+/// field / column-id list). `Process.h:249` aliases `typedef int32_t
+/// ProcessField`; this models the fixed reserved set with the exact C
+/// discriminants (note the intentional gaps — e.g. `9`, `11`, `13`–`17`
+/// are platform-specific fields defined per-platform in
+/// `${platform}/ProcessField.h`, not part of the generic set).
+///
+/// Platform-specific fields (Linux `UTIME`, `RBYTES`, … `= 11, 14, …`)
+/// and runtime dynamic columns are *not* enumerated here; in htop they
+/// are handled by each platform's `*_compareByKey` before it falls
+/// through to [`Process_compareByKey_Base`], which only ever sees the
+/// reserved fields below (plus the `_` default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+#[allow(non_camel_case_types)]
+pub enum ProcessField {
+    /// C `NULL_FIELD = 0`.
+    NULL_FIELD = 0,
+    PID = 1,
+    COMM = 2,
+    STATE = 3,
+    PPID = 4,
+    PGRP = 5,
+    SESSION = 6,
+    TTY = 7,
+    TPGID = 8,
+    MINFLT = 10,
+    MAJFLT = 12,
+    PRIORITY = 18,
+    NICE = 19,
+    STARTTIME = 21,
+    PROCESSOR = 38,
+    M_VIRT = 39,
+    M_RESIDENT = 40,
+    ST_UID = 46,
+    PERCENT_CPU = 47,
+    PERCENT_MEM = 48,
+    USER = 49,
+    TIME = 50,
+    NLWP = 51,
+    TGID = 52,
+    PERCENT_NORM_CPU = 53,
+    ELAPSED = 54,
+    SCHEDULERPOLICY = 55,
+    PROC_COMM = 124,
+    PROC_EXE = 125,
+    CWD = 126,
+}
+
+/// Port of `struct Process_` from `Process.h:81`. "Extends" [`Row`] via
+/// the embedded `super` field (htop's emulated single-inheritance), and
+/// carries the full per-process field set.
+///
+/// Field-type mapping:
+/// - C `Row super;` — [`super_`](Process::super_), the embedded base
+///   (raw identifier so the field name matches C's `super`). Accessed
+///   through the pid/parent/tgid getters below, mirroring
+///   `Process_getPid` et al.
+/// - Owned C strings (`char* cmdline/tty_name/procComm/procExe/procCwd`)
+///   → `Option<String>` (`None` = C `NULL`). The borrowed C `const char*
+///   user` (which points into the users cache, not owned by `Process`)
+///   is likewise modeled as `Option<String>` for a self-contained struct;
+///   the ownership difference is noted here and does not affect any
+///   ported comparison, which only reads the bytes.
+/// - `uid_t st_uid` → `u32`; `time_t starttime_ctime` → `i64`;
+///   `unsigned long`/`unsigned long long` counters → `u64`; `long`
+///   memory sizes / priority / nlwp → `i64`; `char starttime_show[8]`
+///   → `[u8; 8]`.
+#[derive(Debug, Clone, Default)]
+pub struct Process {
+    /// C `Row super` — the embedded base class.
+    pub super_: Row,
+
+    /// C `int pgrp` — process group id.
+    pub pgrp: i32,
+    /// C `int session` — session id.
+    pub session: i32,
+    /// C `int tpgid` — foreground group of the controlling terminal.
+    pub tpgid: i32,
+
+    /// C `bool isKernelThread`.
+    pub isKernelThread: bool,
+    /// C `bool isUserlandThread`.
+    pub isUserlandThread: bool,
+    /// C `Tristate isRunningInContainer`.
+    pub isRunningInContainer: Tristate,
+
+    /// C `unsigned long int tty_nr` — controlling terminal id.
+    pub tty_nr: u64,
+    /// C `char* tty_name` — controlling terminal name.
+    pub tty_name: Option<String>,
+
+    /// C `uid_t st_uid` — user id.
+    pub st_uid: u32,
+    /// C `const char* user` — user name (borrowed in C; see struct docs).
+    pub user: Option<String>,
+
+    /// C `Tristate elevated_priv` — non-root with elevated privileges.
+    pub elevated_priv: Tristate,
+
+    /// C `unsigned long long int time` — runtime in hundredths of a second.
+    pub time: u64,
+
+    /// C `char* cmdline` — process name including arguments.
+    pub cmdline: Option<String>,
+    /// C `size_t cmdlineBasenameEnd`.
+    pub cmdlineBasenameEnd: usize,
+    /// C `size_t cmdlineBasenameStart`.
+    pub cmdlineBasenameStart: usize,
+
+    /// C `char* procComm` — the process' "command" name.
+    pub procComm: Option<String>,
+    /// C `char* procExe` — the main process executable.
+    pub procExe: Option<String>,
+    /// C `char* procCwd` — the working directory.
+    pub procCwd: Option<String>,
+    /// C `size_t procExeBasenameOffset` — offset of the basename in `procExe`.
+    pub procExeBasenameOffset: usize,
+    /// C `bool procExeDeleted`.
+    pub procExeDeleted: bool,
+    /// C `bool usesDeletedLib`.
+    pub usesDeletedLib: bool,
+
+    /// C `int processor` — CPU last executed on.
+    pub processor: i32,
+    /// C `float percent_cpu` — CPU usage last cycle.
+    pub percent_cpu: f32,
+    /// C `float percent_mem` — memory usage last cycle.
+    pub percent_mem: f32,
+
+    /// C `long int priority` — scheduling priority.
+    pub priority: i64,
+    /// C `int nice` — nice value.
+    pub nice: i32,
+    /// C `long int nlwp` — thread count.
+    pub nlwp: i64,
+
+    /// C `time_t starttime_ctime` — start time (epoch seconds).
+    pub starttime_ctime: i64,
+    /// C `char starttime_show[8]` — cached formatted start time.
+    pub starttime_show: [u8; 8],
+
+    /// C `long m_virt` — total program size (KiB).
+    pub m_virt: i64,
+    /// C `long m_resident` — resident set size (KiB).
+    pub m_resident: i64,
+    /// C `unsigned long int minflt` — minor page faults.
+    pub minflt: u64,
+    /// C `unsigned long int majflt` — major page faults.
+    pub majflt: u64,
+
+    /// C `ProcessState state`.
+    pub state: ProcessState,
+    /// C `int scheduling_policy`.
+    pub scheduling_policy: i32,
+
+    /// C `ProcessMergedCommand mergedCommand`.
+    pub mergedCommand: ProcessMergedCommand,
+}
+
+impl Default for ProcessState {
+    /// No C default (the field is set by `*ProcessTable_readProcess`);
+    /// `UNKNOWN` is the safe sentinel (the C enum's first value, `1`) for
+    /// a freshly-constructed [`Process`]. Note C's zero-initialization
+    /// would leave an invalid `0`, so an explicit default is required.
+    fn default() -> Self {
+        ProcessState::UNKNOWN
+    }
+}
+
+/// Port of `const ProcessClass Process_class` from `Process.c:1113`.
+/// Its object-class super chain is `.extends = Class(Row)` with
+/// `.compare = Process_compare`; only the base-class link is modeled by
+/// [`ObjectClass`], and the compare slot is realized by the
+/// [`Object::compare`] impl below. The `RowClass`/`ProcessClass` vtable
+/// slots (`writeField`, `compareByKey`, …) live in stubbed functions.
+pub static Process_class: ObjectClass = ObjectClass {
+    extends: Some(&Row_class),
+};
+
+impl Object for Process {
+    /// C `this->super.super.klass` set to `&Process_class`.
+    fn klass(&self) -> &'static ObjectClass {
+        &Process_class
+    }
+
+    /// C `Process_class.super.super.compare = Process_compare`. Downcasts
+    /// the trait object back to `Process` (the safe-Rust analog of the C
+    /// `const void*` cast) and delegates to [`Process_compare`] — which
+    /// is stubbed pending the `Settings` substrate, so this dispatches to
+    /// a `todo!()` for now, matching the C wiring.
+    fn compare(&self, other: &dyn Object) -> i32 {
+        let any: &dyn Any = other;
+        let o = any
+            .downcast_ref::<Process>()
+            .expect("Process_compare called across incompatible classes");
+        Process_compare(self, o)
+    }
 }
 
 /// Port of `#define TASK_COMM_LEN 16` from `Process.c:65`.
@@ -254,9 +556,16 @@ pub fn Process_done() {
     todo!("port of Process.c:795")
 }
 
-/// TODO: port of `const char* Process_getCommand(const Process* this` from `Process.c:808`.
-pub fn Process_getCommand() {
-    todo!("port of Process.c:808")
+/// TODO: port of `const char* Process_getCommand(const Process* this)`
+/// from `Process.c:808`. Not portable yet: reads
+/// `this->super.host->settings->showThreadNames` — the unported
+/// `Machine` / `Settings` substrate ([`Row::host`](crate::ported::row::Row::host)
+/// is an opaque pointer). Signature is set so the `COMM` case of
+/// [`Process_compareByKey_Base`] can call it faithfully; the body stays a
+/// stub. Returns the command bytes (C `const char*`).
+pub fn Process_getCommand(this: &Process) -> Option<&[u8]> {
+    let _ = this;
+    todo!("port of Process.c:808 — needs Machine/Settings substrate")
 }
 
 /// TODO: port of `static const char* Process_getSortKey(const Process* this` from `Process.c:818`.
@@ -299,9 +608,16 @@ pub fn Process_rowMatchesFilter() {
     todo!("port of Process.c:872")
 }
 
-/// TODO: port of `void Process_init(Process* this, const Machine* host` from `Process.c:878`.
-pub fn Process_init() {
-    todo!("port of Process.c:878")
+/// Port of `void Process_init(Process* this, const Machine* host)` from
+/// `Process.c:878`. Runs the base [`Row_init`] then sets the two
+/// process-specific defaults the C body assigns
+/// (`cmdlineBasenameEnd = 0`, `st_uid = (uid_t)-1`). Pure — `host` is
+/// only stored, never dereferenced.
+pub fn Process_init(this: &mut Process, host: *const c_void) {
+    Row_init(&mut this.super_, host);
+
+    this.cmdlineBasenameEnd = 0;
+    this.st_uid = u32::MAX; // (uid_t)-1
 }
 
 /// TODO: port of `static bool Process_setPriority(Process* this, int priority` from `Process.c:885`.
@@ -324,19 +640,207 @@ pub fn Process_rowSendSignal() {
     todo!("port of Process.c:908")
 }
 
-/// TODO: port of `int Process_compare(const void* v1, const void* v2` from `Process.c:914`.
-pub fn Process_compare() {
-    todo!("port of Process.c:914")
+/// TODO: port of `int Process_compare(const void* v1, const void* v2)`
+/// from `Process.c:914`. Not portable yet: reads
+/// `p1->super.host->settings->ss` and calls
+/// `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
+/// — the unported `Settings` / `ScreenSettings` substrate. The per-field
+/// comparison it dispatches to *is* ported (see
+/// [`Process_compareByKey_Base`]); only the active-key/direction lookup
+/// is missing. Signature matches the two-`Process` C comparator.
+pub fn Process_compare(p1: &Process, p2: &Process) -> i32 {
+    let _ = (p1, p2);
+    todo!("port of Process.c:914 — needs Settings/ScreenSettings substrate")
 }
 
-/// TODO: port of `int Process_compareByParent(const Row* r1, const Row* r2` from `Process.c:931`.
+/// TODO: port of `int Process_compareByParent(const Row* r1, const Row* r2)`
+/// from `Process.c:931`. The group-or-parent prefix is pure, but the
+/// tie-break calls [`Process_compare`] (which needs the `Settings`
+/// substrate), so the whole function stays stubbed until that lands.
 pub fn Process_compareByParent() {
-    todo!("port of Process.c:931")
+    todo!("port of Process.c:931 — tie-break needs Process_compare (Settings)")
 }
 
-/// TODO: port of `int Process_compareByKey_Base(const Process* p1, const Process* p2, ProcessField key` from `Process.c:943`.
-pub fn Process_compareByKey_Base() {
-    todo!("port of Process.c:943")
+/// Port of `int Process_compareByKey_Base(const Process* p1, const
+/// Process* p2, ProcessField key)` from `Process.c:943`. The per-field
+/// sort comparator: for each column id it compares the corresponding
+/// field with `SPACESHIP_NUMBER` / `SPACESHIP_NULLSTR` /
+/// `SPACESHIP_DEFAULTSTR` / [`compareRealNumbers`], line-for-line with
+/// the C switch.
+///
+/// The `COMM` case delegates to [`Process_getCommand`] (stubbed — needs
+/// the `Settings` substrate), so only that one arm is not yet
+/// exercisable; every other arm is pure. The C `default:` (an
+/// `assert(0)` "should never be reached" path that still returns a PID
+/// compare) maps to the `_` arm.
+pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) -> i32 {
+    match key {
+        ProcessField::PERCENT_CPU | ProcessField::PERCENT_NORM_CPU => {
+            compareRealNumbers(p1.percent_cpu as f64, p2.percent_cpu as f64)
+        }
+        ProcessField::PERCENT_MEM => spaceship_number!(p1.m_resident, p2.m_resident),
+        ProcessField::COMM => {
+            spaceship_nullstr!(Process_getCommand(p1), Process_getCommand(p2))
+        }
+        ProcessField::PROC_COMM => {
+            let comm1: &[u8] = match &p1.procComm {
+                Some(c) => c.as_bytes(),
+                None => {
+                    if Process_isKernelThread(p1) {
+                        kthreadID
+                    } else {
+                        b""
+                    }
+                }
+            };
+            let comm2: &[u8] = match &p2.procComm {
+                Some(c) => c.as_bytes(),
+                None => {
+                    if Process_isKernelThread(p2) {
+                        kthreadID
+                    } else {
+                        b""
+                    }
+                }
+            };
+            spaceship_nullstr!(Some(comm1), Some(comm2))
+        }
+        ProcessField::PROC_EXE => {
+            let exe1: &[u8] = match &p1.procExe {
+                Some(e) => &e.as_bytes()[p1.procExeBasenameOffset..],
+                None => {
+                    if Process_isKernelThread(p1) {
+                        kthreadID
+                    } else {
+                        b""
+                    }
+                }
+            };
+            let exe2: &[u8] = match &p2.procExe {
+                Some(e) => &e.as_bytes()[p2.procExeBasenameOffset..],
+                None => {
+                    if Process_isKernelThread(p2) {
+                        kthreadID
+                    } else {
+                        b""
+                    }
+                }
+            };
+            spaceship_nullstr!(Some(exe1), Some(exe2))
+        }
+        ProcessField::CWD => spaceship_nullstr!(
+            p1.procCwd.as_deref().map(str::as_bytes),
+            p2.procCwd.as_deref().map(str::as_bytes)
+        ),
+        ProcessField::ELAPSED => {
+            let r = -spaceship_number!(p1.starttime_ctime, p2.starttime_ctime);
+            if r != 0 {
+                r
+            } else {
+                spaceship_number!(Process_getPid(p1), Process_getPid(p2))
+            }
+        }
+        ProcessField::MAJFLT => spaceship_number!(p1.majflt, p2.majflt),
+        ProcessField::MINFLT => spaceship_number!(p1.minflt, p2.minflt),
+        ProcessField::M_RESIDENT => spaceship_number!(p1.m_resident, p2.m_resident),
+        ProcessField::M_VIRT => spaceship_number!(p1.m_virt, p2.m_virt),
+        ProcessField::NICE => spaceship_number!(p1.nice, p2.nice),
+        ProcessField::NLWP => spaceship_number!(p1.nlwp, p2.nlwp),
+        ProcessField::PGRP => spaceship_number!(p1.pgrp, p2.pgrp),
+        ProcessField::PID => spaceship_number!(Process_getPid(p1), Process_getPid(p2)),
+        ProcessField::PPID => spaceship_number!(Process_getParent(p1), Process_getParent(p2)),
+        ProcessField::PRIORITY => spaceship_number!(p1.priority, p2.priority),
+        ProcessField::PROCESSOR => spaceship_number!(p1.processor, p2.processor),
+        ProcessField::SCHEDULERPOLICY => {
+            spaceship_number!(p1.scheduling_policy, p2.scheduling_policy)
+        }
+        ProcessField::SESSION => spaceship_number!(p1.session, p2.session),
+        ProcessField::STARTTIME => {
+            let r = spaceship_number!(p1.starttime_ctime, p2.starttime_ctime);
+            if r != 0 {
+                r
+            } else {
+                spaceship_number!(Process_getPid(p1), Process_getPid(p2))
+            }
+        }
+        ProcessField::STATE => spaceship_number!(p1.state as i32, p2.state as i32),
+        ProcessField::ST_UID => spaceship_number!(p1.st_uid, p2.st_uid),
+        ProcessField::TIME => spaceship_number!(p1.time, p2.time),
+        ProcessField::TGID => {
+            spaceship_number!(Process_getThreadGroup(p1), Process_getThreadGroup(p2))
+        }
+        ProcessField::TPGID => spaceship_number!(p1.tpgid, p2.tpgid),
+        ProcessField::TTY => {
+            /* Order no tty last */
+            spaceship_defaultstr!(
+                p1.tty_name.as_deref().map(str::as_bytes),
+                p2.tty_name.as_deref().map(str::as_bytes),
+                b"\x7f"
+            )
+        }
+        ProcessField::USER => spaceship_nullstr!(
+            p1.user.as_deref().map(str::as_bytes),
+            p2.user.as_deref().map(str::as_bytes)
+        ),
+        // C default: `assert(0)` "should never be reached" — returns a
+        // PID compare. Reached only for NULL_FIELD or a non-reserved key.
+        _ => spaceship_number!(Process_getPid(p1), Process_getPid(p2)),
+    }
+}
+
+/// Port of `pid_t Process_getPid(const Process* this)` from
+/// `Process.h:258`: `(pid_t)this->super.id`.
+pub fn Process_getPid(this: &Process) -> i32 {
+    this.super_.id
+}
+
+/// Port of `pid_t Process_getParent(const Process* this)` from
+/// `Process.h:274`: `(pid_t)this->super.parent`.
+pub fn Process_getParent(this: &Process) -> i32 {
+    this.super_.parent
+}
+
+/// Port of `pid_t Process_getThreadGroup(const Process* this)` from
+/// `Process.h:266`: `(pid_t)this->super.group`.
+pub fn Process_getThreadGroup(this: &Process) -> i32 {
+    this.super_.group
+}
+
+/// Port of `void Process_setPid(Process* this, pid_t pid)` from
+/// `Process.h:254`: `this->super.id = pid`.
+pub fn Process_setPid(this: &mut Process, pid: i32) {
+    this.super_.id = pid;
+}
+
+/// Port of `void Process_setThreadGroup(Process* this, pid_t pid)` from
+/// `Process.h:262`: `this->super.group = pid`.
+pub fn Process_setThreadGroup(this: &mut Process, pid: i32) {
+    this.super_.group = pid;
+}
+
+/// Port of `void Process_setParent(Process* this, pid_t pid)` from
+/// `Process.h:270`: `this->super.parent = pid`.
+pub fn Process_setParent(this: &mut Process, pid: i32) {
+    this.super_.parent = pid;
+}
+
+/// Port of `bool Process_isKernelThread(const Process* this)` from
+/// `Process.h:282`: returns the `isKernelThread` flag.
+pub fn Process_isKernelThread(this: &Process) -> bool {
+    this.isKernelThread
+}
+
+/// Port of `bool Process_isUserlandThread(const Process* this)` from
+/// `Process.h:286`: returns the `isUserlandThread` flag.
+pub fn Process_isUserlandThread(this: &Process) -> bool {
+    this.isUserlandThread
+}
+
+/// Port of `bool Process_isThread(const Process* this)` from
+/// `Process.h:290`: `Process_isUserlandThread(this) ||
+/// Process_isKernelThread(this)`.
+pub fn Process_isThread(this: &Process) -> bool {
+    Process_isUserlandThread(this) || Process_isKernelThread(this)
 }
 
 /// TODO: port of `void Process_updateComm(Process* this, const char* comm` from `Process.c:1020`.
@@ -566,5 +1070,273 @@ mod tests {
         let (matchLen, base) = matchCmdlinePrefixWithExeSuffix(cmdline, 4, exe, 9, 3);
         assert_eq!(matchLen, 0);
         assert_eq!(base, 4); // in-param passes through unchanged
+    }
+
+    // ── Process data model: struct, predicates, getters, compare ──────
+
+    #[test]
+    fn tristate_discriminants_match_c() {
+        assert_eq!(Tristate::TRI_OFF as i8, -1);
+        assert_eq!(Tristate::TRI_INITIAL as i8, 0);
+        assert_eq!(Tristate::TRI_ON as i8, 1);
+        assert_eq!(Tristate::default(), Tristate::TRI_INITIAL);
+    }
+
+    #[test]
+    fn process_field_discriminants_match_c() {
+        // A few spot checks against RowField.h ReservedFields values.
+        assert_eq!(ProcessField::PID as i32, 1);
+        assert_eq!(ProcessField::COMM as i32, 2);
+        assert_eq!(ProcessField::ST_UID as i32, 46);
+        assert_eq!(ProcessField::PROC_COMM as i32, 124);
+        assert_eq!(ProcessField::CWD as i32, 126);
+    }
+
+    #[test]
+    fn process_default_state_is_unknown() {
+        // C zero-init would give an invalid 0; our Default picks UNKNOWN.
+        let p = Process::default();
+        assert_eq!(p.state, ProcessState::UNKNOWN);
+    }
+
+    #[test]
+    fn process_init_runs_row_init_and_sets_defaults() {
+        let mut p = Process::default();
+        let host = 0xBEEF_usize as *const c_void;
+        Process_init(&mut p, host);
+        // Process-specific defaults from the C body.
+        assert_eq!(p.st_uid, u32::MAX); // (uid_t)-1
+        assert_eq!(p.cmdlineBasenameEnd, 0);
+        // Row_init ran on the embedded base.
+        assert_eq!(p.super_.host, host);
+        assert!(p.super_.show);
+        assert!(p.super_.showChildren);
+    }
+
+    // Getters/setters route through the embedded Row (super).
+    #[test]
+    fn pid_parent_tgid_getters_and_setters() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 4321);
+        Process_setParent(&mut p, 1);
+        Process_setThreadGroup(&mut p, 4000);
+        assert_eq!(Process_getPid(&p), 4321);
+        assert_eq!(Process_getParent(&p), 1);
+        assert_eq!(Process_getThreadGroup(&p), 4000);
+        // They map to the exact Row fields.
+        assert_eq!(p.super_.id, 4321);
+        assert_eq!(p.super_.parent, 1);
+        assert_eq!(p.super_.group, 4000);
+    }
+
+    #[test]
+    fn thread_predicates() {
+        let mut p = Process::default();
+        assert!(!Process_isKernelThread(&p));
+        assert!(!Process_isUserlandThread(&p));
+        assert!(!Process_isThread(&p));
+
+        p.isKernelThread = true;
+        assert!(Process_isKernelThread(&p));
+        assert!(Process_isThread(&p)); // kernel => thread
+
+        p.isKernelThread = false;
+        p.isUserlandThread = true;
+        assert!(Process_isUserlandThread(&p));
+        assert!(Process_isThread(&p)); // userland => thread
+    }
+
+    // Comparison helpers.
+    fn proc() -> Process {
+        Process::default()
+    }
+
+    #[test]
+    fn compare_pid_numeric() {
+        let mut a = proc();
+        let mut b = proc();
+        Process_setPid(&mut a, 100);
+        Process_setPid(&mut b, 200);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::PID), -1);
+        assert_eq!(Process_compareByKey_Base(&b, &a, ProcessField::PID), 1);
+        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::PID), 0);
+    }
+
+    #[test]
+    fn compare_percent_cpu_float_and_nan() {
+        let mut a = proc();
+        let mut b = proc();
+        a.percent_cpu = 1.0;
+        b.percent_cpu = 2.0;
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_CPU),
+            -1
+        );
+        // PERCENT_NORM_CPU compares the same field.
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_NORM_CPU),
+            -1
+        );
+        // NaN is ordered less than any value (compareRealNumbers).
+        a.percent_cpu = f32::NAN;
+        b.percent_cpu = 1.0;
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_CPU),
+            -1
+        );
+    }
+
+    #[test]
+    fn compare_percent_mem_uses_resident_set() {
+        // C compares m_resident for PERCENT_MEM, not percent_mem.
+        let mut a = proc();
+        let mut b = proc();
+        a.m_resident = 500;
+        b.m_resident = 1000;
+        a.percent_mem = 99.0; // must be ignored
+        b.percent_mem = 1.0;
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_MEM),
+            -1
+        );
+    }
+
+    #[test]
+    fn compare_state_by_enum_order() {
+        let mut a = proc();
+        let mut b = proc();
+        a.state = ProcessState::RUNNING; // 3
+        b.state = ProcessState::SLEEPING; // 14
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::STATE), -1);
+        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::STATE), 0);
+    }
+
+    #[test]
+    fn compare_proc_comm_string() {
+        let mut a = proc();
+        let mut b = proc();
+        a.procComm = Some("alpha".to_string());
+        b.procComm = Some("beta".to_string());
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PROC_COMM),
+            -1
+        );
+    }
+
+    #[test]
+    fn compare_proc_comm_kthread_fallback() {
+        // No procComm + kernel thread => uses kthreadID "KTHREAD".
+        let mut a = proc();
+        a.isKernelThread = true; // procComm None => "KTHREAD"
+        let mut b = proc();
+        b.procComm = Some("aaa".to_string());
+        // "KTHREAD" (K=0x4B) < "aaa" (a=0x61) => -1.
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PROC_COMM),
+            -1
+        );
+        // Non-kernel with no procComm => "" which sorts before "aaa".
+        let c = proc(); // not kernel, procComm None => ""
+        assert_eq!(
+            Process_compareByKey_Base(&c, &b, ProcessField::PROC_COMM),
+            -1
+        );
+    }
+
+    #[test]
+    fn compare_starttime_tie_breaks_on_pid() {
+        let mut a = proc();
+        let mut b = proc();
+        a.starttime_ctime = 100;
+        b.starttime_ctime = 100;
+        Process_setPid(&mut a, 5);
+        Process_setPid(&mut b, 9);
+        // Equal starttime => tie-break by pid: 5 < 9 => -1.
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::STARTTIME),
+            -1
+        );
+        // Distinct starttime dominates.
+        b.starttime_ctime = 200;
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::STARTTIME),
+            -1
+        );
+    }
+
+    #[test]
+    fn compare_elapsed_negates_starttime() {
+        // ELAPSED: r = -SPACESHIP(starttime); later start => less elapsed.
+        let mut a = proc();
+        let mut b = proc();
+        a.starttime_ctime = 200; // started later => smaller elapsed
+        b.starttime_ctime = 100;
+        // SPACESHIP(200,100)=1 => r=-1.
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED),
+            -1
+        );
+        // Equal starttime => tie-break by pid.
+        b.starttime_ctime = 200;
+        Process_setPid(&mut a, 3);
+        Process_setPid(&mut b, 8);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED),
+            -1
+        );
+    }
+
+    #[test]
+    fn compare_tty_orders_no_tty_last() {
+        // TTY uses SPACESHIP_DEFAULTSTR(..., "\x7f"): a missing tty
+        // defaults to 0x7F so it sorts after any real tty name.
+        let mut a = proc();
+        a.tty_name = Some("tty1".to_string());
+        let b = proc(); // no tty_name => "\x7f"
+        // "tty1" (t=0x74) < "\x7f" => real tty sorts first.
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::TTY), -1);
+        // Two missing ttys compare equal (both "\x7f").
+        let c = proc();
+        assert_eq!(Process_compareByKey_Base(&b, &c, ProcessField::TTY), 0);
+    }
+
+    #[test]
+    fn compare_user_nullstr() {
+        let mut a = proc();
+        let mut b = proc();
+        a.user = Some("alice".to_string());
+        b.user = Some("bob".to_string());
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::USER), -1);
+        // NULL user compares as "" (sorts first).
+        let c = proc();
+        assert_eq!(Process_compareByKey_Base(&c, &a, ProcessField::USER), -1);
+    }
+
+    #[test]
+    fn compare_default_arm_falls_back_to_pid() {
+        // NULL_FIELD hits the `_` (C default/assert) arm => pid compare.
+        let mut a = proc();
+        let mut b = proc();
+        Process_setPid(&mut a, 1);
+        Process_setPid(&mut b, 2);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::NULL_FIELD),
+            -1
+        );
+    }
+
+    #[test]
+    fn process_klass_chain_extends_row() {
+        // Process_class -> Row_class -> Object_class.
+        let p = proc();
+        assert!(core::ptr::eq(p.klass(), &Process_class));
+        assert!(crate::ported::object::Object_isA(
+            Some(&p as &dyn Object),
+            &Process_class
+        ));
+        assert!(crate::ported::object::Object_isA(
+            Some(&p as &dyn Object),
+            &Row_class
+        ));
     }
 }

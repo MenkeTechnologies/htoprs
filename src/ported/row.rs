@@ -1,6 +1,14 @@
-//! Partial port of `Row.c`.
+//! Partial port of `Row.c` + `Row.h`.
 //!
-//! Ported: the `RichString` number formatters
+//! Ported data model: the [`Row`] struct (every `Row.h` field), its
+//! [`Object`] trait impl (the C `Row_class` vtable, whose only non-NULL
+//! slot is `.compare = Row_compare`), and the pure lifecycle /
+//! comparison / predicate logic — [`Row_init`], [`Row_done`],
+//! [`Row_isTomb`], [`Row_toggleTag`], [`Row_compare`],
+//! [`Row_compareByParent_Base`], [`Row_getGroupOrParent`],
+//! [`Row_isChildOf`].
+//!
+//! Ported formatters: the `RichString` number formatters
 //! `Row_print{KBytes,Bytes,Count,Time,Nanoseconds,Rate,LeftAlignedField}`
 //! (they write styled digits into a [`RichString`], choosing a
 //! `CRT_colors[...]` attribute per magnitude band), plus the pure
@@ -8,24 +16,36 @@
 //! the merged `richstring` + `crt` substrate.
 //!
 //! Still stubbed (`todo!()`, named after their real htop C function so
-//! the port-purity gate accepts the module): `Row_init` / `Row_done` /
-//! `Row_display` / `Row_compare` / the field-title and width helpers —
-//! they need the unported `Row` / `Machine` / `Settings` structs and the
-//! ncurses draw layer. Replace each stub with a faithful port of the C
-//! body, updating the signature and the doc comment to
-//! `Port of `Row.c`:<line>.` as you go. `gen_port_report.py` counts
-//! `todo!()` bodies as *stubbed*, not *ported*, so scaffolding does not
-//! inflate coverage.
+//! the port-purity gate accepts the module): [`Row_isNew`],
+//! [`Row_display`], and the field-title / column-width helpers — they
+//! need the unported `Machine` / `Settings` structs (e.g. `Row_isNew`
+//! reads `host->monotonicMs` and `settings->highlightDelaySecs`) and the
+//! ncurses draw layer. `gen_port_report.py` counts `todo!()` bodies as
+//! *stubbed*, not *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use crate::ported::crt::ColorElements::*;
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendChr, RichString_appendnAscii,
     RichString_appendnWideColumns,
 };
+use core::any::Any;
+use core::ffi::c_void;
+
+/// Port of `#define SPACESHIP_NUMBER(a, b) (((a) > (b)) - ((a) < (b)))`
+/// from `Macros.h:33`. A three-way comparison collapsing to `-1`/`0`/`1`
+/// (kept as a macro, matching the C text-substitution macro; it is not a
+/// function in C either, so no port-gate fn name is introduced).
+macro_rules! spaceship_number {
+    ($a:expr, $b:expr) => {
+        (($a > $b) as i32 - ($a < $b) as i32)
+    };
+}
+pub(crate) use spaceship_number;
 
 // Unit-size constants from `Row.h:107-116`.
 /// `#define ONE_K 1024UL` (`Row.h:107`).
@@ -83,24 +103,164 @@ pub enum PercentageAttr {
     Unchanged,
 }
 
-/// TODO: port of `void Row_init(Row* this, const Machine* host` from `Row.c:35`.
-pub fn Row_init() {
-    todo!("port of Row.c:35")
+/// Port of `struct Row_` from `Row.h:41`. htop's base class for every
+/// entity displayable in the process-table half of the screen (Process,
+/// and platform rows). Field names, order, and widths mirror the C
+/// struct exactly.
+///
+/// Field-type mapping:
+/// - C `Object super;` — modeled by the [`Object`] trait impl below
+///   (`Row_class`), not a struct field; htop's emulated-OOP `super` is a
+///   vtable pointer, which in Rust is the trait + [`klass`](Object::klass).
+/// - C `const struct Machine_* host;` — [`host`](Row::host), a raw
+///   `*const c_void`. `Machine` is not a ported module; the field is
+///   kept as an opaque pointer (the faithful representation of a
+///   `const Machine*` back-reference) so lifecycle code can store it
+///   without the unported `Machine` struct. Code that must *dereference*
+///   `host` (`Row_isNew`, `Row_display`) stays stubbed.
+/// - `pid_t`/`uid_t` widths are handled by the callers; the struct's
+///   `id`/`group`/`parent` are `int` as in C.
+#[derive(Debug, Clone)]
+pub struct Row {
+    /// C `const struct Machine_* host` — opaque back-reference to the
+    /// owning `Machine` (unported; see struct docs).
+    pub host: *const c_void,
+    /// C `int id`.
+    pub id: i32,
+    /// C `int group`.
+    pub group: i32,
+    /// C `int parent`.
+    pub parent: i32,
+    /// C `bool isRoot` — has no known parent.
+    pub isRoot: bool,
+    /// C `bool tag` — tagged by the user.
+    pub tag: bool,
+    /// C `bool show` — whether to display this row.
+    pub show: bool,
+    /// C `bool wasShown` — shown last cycle.
+    pub wasShown: bool,
+    /// C `bool showChildren` — show children in tree-mode.
+    pub showChildren: bool,
+    /// C `bool updated` — updated during the last scan.
+    pub updated: bool,
+    /// C `int32_t indent` — tree-mode internal state.
+    pub indent: i32,
+    /// C `unsigned int tree_depth`.
+    pub tree_depth: u32,
+    /// C `uint64_t seenStampMs` — for showing new processes.
+    pub seenStampMs: u64,
+    /// C `uint64_t tombStampMs` — for showing exited processes.
+    pub tombStampMs: u64,
 }
 
-/// TODO: port of `void Row_done(Row* this` from `Row.c:44`.
-pub fn Row_done() {
-    todo!("port of Row.c:44")
+impl Default for Row {
+    /// Models htop's `calloc`-zeroed `Row` allocation: all fields zero /
+    /// `false`, `host` a null pointer. [`Row_init`] then overwrites the
+    /// subset the C initializer sets.
+    fn default() -> Self {
+        Row {
+            host: core::ptr::null(),
+            id: 0,
+            group: 0,
+            parent: 0,
+            isRoot: false,
+            tag: false,
+            show: false,
+            wasShown: false,
+            showChildren: false,
+            updated: false,
+            indent: 0,
+            tree_depth: 0,
+            seenStampMs: 0,
+            tombStampMs: 0,
+        }
+    }
 }
 
-/// TODO: port of `static inline bool Row_isNew(const Row* this` from `Row.c:49`.
+/// Port of `const RowClass Row_class` from `Row.c:560`:
+/// `{ .super = { .extends = Class(Object), .compare = Row_compare } }`.
+///
+/// Only the base-class link is modeled by [`ObjectClass`] (see
+/// `object.rs`); the `.compare = Row_compare` slot is realized by the
+/// [`Object::compare`] impl below. The `RowClass`-specific vtable slots
+/// (`isHighlighted`, `writeField`, …) are all NULL in the C initializer,
+/// so nothing else is set. Declared `static` for stable-address class
+/// identity, matching C's `const ObjectClass` globals.
+pub static Row_class: ObjectClass = ObjectClass {
+    extends: Some(&Object_class),
+};
+
+impl Object for Row {
+    /// C `this->super.klass` set to `&Row_class` by `Object_setClass`.
+    fn klass(&self) -> &'static ObjectClass {
+        &Row_class
+    }
+
+    /// C `Row_class.super.compare = Row_compare`. Dispatches to
+    /// [`Row_compare`]; the `const void*` args in C become a downcast of
+    /// the trait object back to `Row` (via `Any`), the safe-Rust analog
+    /// of the C cast.
+    fn compare(&self, other: &dyn Object) -> i32 {
+        let any: &dyn Any = other;
+        let o = any
+            .downcast_ref::<Row>()
+            .expect("Row_compare called across incompatible classes");
+        Row_compare(self, o)
+    }
+}
+
+/// Port of `void Row_init(Row* this, const Machine* host)` from
+/// `Row.c:35`. Stores the `host` back-reference and sets the display
+/// defaults. Only these fields are assigned (matching the C body); the
+/// rest keep their zero-init values (see [`Row::default`]).
+pub fn Row_init(this: &mut Row, host: *const c_void) {
+    this.host = host;
+    this.tag = false;
+    this.showChildren = true;
+    this.show = true;
+    this.wasShown = false;
+    this.updated = false;
+}
+
+/// Port of `int Row_getGroupOrParent(const Row* this)` from `Row.h:172`.
+/// Returns `parent` when the row is its own group leader
+/// (`group == id`), otherwise `group`. Used by the tree view and by
+/// [`Row_compareByParent_Base`].
+pub fn Row_getGroupOrParent(this: &Row) -> i32 {
+    if this.group == this.id {
+        this.parent
+    } else {
+        this.group
+    }
+}
+
+/// Port of `bool Row_isChildOf(const Row* this, int id)` from
+/// `Row.h:176`. True when `id` is this row's group-or-parent.
+pub fn Row_isChildOf(this: &Row, id: i32) -> bool {
+    id == Row_getGroupOrParent(this)
+}
+
+/// Port of `void Row_done(Row* this)` from `Row.c:44`. The C body is
+/// `assert(this != NULL); (void) this;` — a no-op teardown; the
+/// non-null precondition is guaranteed by the `&Row` reference.
+pub fn Row_done(this: &Row) {
+    let _ = this;
+}
+
+/// TODO: port of `static inline bool Row_isNew(const Row* this)` from
+/// `Row.c:49`. Not portable yet: reads `host->monotonicMs` and
+/// `host->settings->highlightDelaySecs` — both live in the unported
+/// `Machine` / `Settings` substrate ([`Row::host`] is an opaque
+/// pointer). Stays a stub until those modules exist.
 pub fn Row_isNew() {
-    todo!("port of Row.c:49")
+    todo!("port of Row.c:49 — needs Machine/Settings substrate")
 }
 
-/// TODO: port of `static inline bool Row_isTomb(const Row* this` from `Row.c:58`.
-pub fn Row_isTomb() {
-    todo!("port of Row.c:58")
+/// Port of `static inline bool Row_isTomb(const Row* this)` from
+/// `Row.c:58`. True once the row has an exit timestamp
+/// (`tombStampMs > 0`). Pure — no substrate dereference.
+pub fn Row_isTomb(this: &Row) -> bool {
+    this.tombStampMs > 0
 }
 
 /// TODO: port of `void Row_display(const Object* cast, RichString* out` from `Row.c:62`.
@@ -683,19 +843,33 @@ pub fn Row_printPercentage(mut val: f32, n: usize, width: u8, attr: &mut Percent
     format!("{:>width$.precision$} ", "N/A", width = w, precision = w)
 }
 
-/// TODO: port of `void Row_toggleTag(Row* this` from `Row.c:534`.
-pub fn Row_toggleTag() {
-    todo!("port of Row.c:534")
+/// Port of `void Row_toggleTag(Row* this)` from `Row.c:534`. Flips the
+/// user-tag flag.
+pub fn Row_toggleTag(this: &mut Row) {
+    this.tag = !this.tag;
 }
 
-/// TODO: port of `int Row_compare(const void* v1, const void* v2` from `Row.c:538`.
-pub fn Row_compare() {
-    todo!("port of Row.c:538")
+/// Port of `int Row_compare(const void* v1, const void* v2)` from
+/// `Row.c:538`. Orders rows by `id` (the default row comparator; the
+/// C `const void*` args become `&Row`).
+pub fn Row_compare(v1: &Row, v2: &Row) -> i32 {
+    spaceship_number!(v1.id, v2.id)
 }
 
-/// TODO: port of `int Row_compareByParent_Base(const void* v1, const void* v2` from `Row.c:545`.
-pub fn Row_compareByParent_Base() {
-    todo!("port of Row.c:545")
+/// Port of `int Row_compareByParent_Base(const void* v1, const void* v2)`
+/// from `Row.c:545`. Orders by group-or-parent (roots sort as `0`),
+/// tie-breaking with [`Row_compare`] — the stable tree-mode ordering.
+pub fn Row_compareByParent_Base(v1: &Row, v2: &Row) -> i32 {
+    let result = spaceship_number!(
+        if v1.isRoot { 0 } else { Row_getGroupOrParent(v1) },
+        if v2.isRoot { 0 } else { Row_getGroupOrParent(v2) }
+    );
+
+    if result != 0 {
+        return result;
+    }
+
+    Row_compare(v1, v2)
 }
 
 #[cfg(test)]
@@ -1205,5 +1379,168 @@ mod tests {
         let mut r = RichString::new();
         Row_printLeftAlignedField(&mut r, 0, b"x", 4);
         assert_eq!(text(&r), "x    ");
+    }
+
+    // ── Row data model: lifecycle, comparison, predicates ─────────────
+
+    /// A `Row` with a given `id`; all else defaulted.
+    fn row_id(id: i32) -> Row {
+        Row {
+            id,
+            ..Row::default()
+        }
+    }
+
+    #[test]
+    fn row_init_sets_display_defaults_and_host() {
+        let mut r = Row::default();
+        let host = 0x1234_usize as *const c_void;
+        Row_init(&mut r, host);
+        assert_eq!(r.host, host);
+        assert!(!r.tag);
+        assert!(r.showChildren); // C sets this true
+        assert!(r.show); // C sets this true
+        assert!(!r.wasShown);
+        assert!(!r.updated);
+        // Fields the C body does NOT touch keep their zero-init values.
+        assert_eq!(r.id, 0);
+        assert_eq!(r.tombStampMs, 0);
+    }
+
+    #[test]
+    fn row_done_is_a_noop() {
+        // Faithful to C `(void) this;` — no observable effect.
+        let r = row_id(7);
+        Row_done(&r);
+        assert_eq!(r.id, 7);
+    }
+
+    #[test]
+    fn row_toggle_tag_flips() {
+        let mut r = Row::default();
+        assert!(!r.tag);
+        Row_toggleTag(&mut r);
+        assert!(r.tag);
+        Row_toggleTag(&mut r);
+        assert!(!r.tag);
+    }
+
+    #[test]
+    fn row_is_tomb_tracks_exit_stamp() {
+        let mut r = Row::default();
+        assert!(!Row_isTomb(&r)); // 0 => not a tomb
+        r.tombStampMs = 1;
+        assert!(Row_isTomb(&r));
+        r.tombStampMs = u64::MAX;
+        assert!(Row_isTomb(&r));
+    }
+
+    #[test]
+    fn row_compare_orders_by_id() {
+        assert_eq!(Row_compare(&row_id(1), &row_id(2)), -1);
+        assert_eq!(Row_compare(&row_id(2), &row_id(1)), 1);
+        assert_eq!(Row_compare(&row_id(5), &row_id(5)), 0);
+        // Negative ids order correctly (SPACESHIP is signed).
+        assert_eq!(Row_compare(&row_id(-3), &row_id(4)), -1);
+    }
+
+    #[test]
+    fn row_compare_dispatches_through_object_trait() {
+        // The Row_class.compare slot: Object::compare must reach
+        // Row_compare via the trait, ordering identically.
+        let a = row_id(1);
+        let b = row_id(2);
+        assert_eq!(a.compare(&b), -1);
+        assert_eq!(b.compare(&a), 1);
+        assert_eq!(a.compare(&row_id(1)), 0);
+    }
+
+    #[test]
+    fn row_get_group_or_parent_picks_parent_when_own_leader() {
+        // group == id => use parent; else use group.
+        let r = Row {
+            id: 10,
+            group: 10,
+            parent: 3,
+            ..Row::default()
+        };
+        assert_eq!(Row_getGroupOrParent(&r), 3);
+        let r2 = Row {
+            id: 10,
+            group: 7,
+            parent: 3,
+            ..Row::default()
+        };
+        assert_eq!(Row_getGroupOrParent(&r2), 7);
+    }
+
+    #[test]
+    fn row_is_child_of_matches_group_or_parent() {
+        let r = Row {
+            id: 10,
+            group: 7,
+            parent: 3,
+            ..Row::default()
+        };
+        assert!(Row_isChildOf(&r, 7));
+        assert!(!Row_isChildOf(&r, 3)); // parent not used (group != id)
+        assert!(!Row_isChildOf(&r, 10));
+    }
+
+    #[test]
+    fn row_compare_by_parent_orders_by_group_then_id() {
+        // Distinct group-or-parent: ordered by it, ignoring id.
+        let a = Row {
+            id: 99,
+            group: 1,
+            parent: 1,
+            ..Row::default()
+        };
+        let b = Row {
+            id: 2,
+            group: 5,
+            parent: 5,
+            ..Row::default()
+        };
+        assert_eq!(Row_compareByParent_Base(&a, &b), -1); // 1 < 5
+        assert_eq!(Row_compareByParent_Base(&b, &a), 1);
+    }
+
+    #[test]
+    fn row_compare_by_parent_ties_break_on_id() {
+        // Same group-or-parent (both 4) => tie-break by id.
+        let a = Row {
+            id: 10,
+            group: 4,
+            parent: 4,
+            ..Row::default()
+        };
+        let b = Row {
+            id: 20,
+            group: 4,
+            parent: 4,
+            ..Row::default()
+        };
+        assert_eq!(Row_compareByParent_Base(&a, &b), -1); // ids 10 < 20
+    }
+
+    #[test]
+    fn row_compare_by_parent_roots_sort_as_zero() {
+        // isRoot => group-or-parent treated as 0.
+        let root = Row {
+            id: 50,
+            group: 999,
+            parent: 999,
+            isRoot: true,
+            ..Row::default()
+        };
+        let child = Row {
+            id: 3,
+            group: 7,
+            parent: 7,
+            ..Row::default()
+        };
+        // root's key = 0, child's key = 7 => root sorts first.
+        assert_eq!(Row_compareByParent_Base(&root, &child), -1);
     }
 }
