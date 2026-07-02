@@ -49,10 +49,6 @@
 //!   filter path, which calls the [`updateWeakPanel`] stub; porting a subset
 //!   that skips the filter refresh would gut filter mode, so it stays a whole
 //!   honest stub.
-//! - [`IncSet_synthesizeEvent`] (`:327`) returns the sentinel
-//!   `KEY_MOUSE_BAR_CLICK` (`#define … (KEY_MAX + 50)`, `Panel.h:93`), a
-//!   Panel-owned constant not yet ported in `panel.rs`; it belongs to that
-//!   module, not this one, so it is escalated rather than duplicated here.
 //! - [`IncSet_delete`] (`:77`) is a pure teardown chain; the owned
 //!   `FunctionBar`s and `Option<History>` are released by `Drop` (and
 //!   `History_delete` is itself a `Drop` no-op), so there is no algorithm.
@@ -66,9 +62,9 @@
 //!   of the two modes is active), avoiding a self-referential borrow.
 //! - C `Panel* panel` back-pointer (`IncSet.h:33`) and `History* history` are
 //!   omitted: the back-pointer would alias a `&mut Panel` owned elsewhere, so
-//!   the functions that use it ([`IncSet_activate`], [`IncSet_drawBar`], and —
-//!   once its constant is ported — `IncSet_synthesizeEvent`) thread the panel
-//!   as a parameter instead; both their call sites have it in scope.
+//!   the functions that use it ([`IncSet_activate`], [`IncSet_drawBar`], and
+//!   [`IncSet_synthesizeEvent`]) thread the panel as a parameter instead; all
+//!   their call sites have it in scope.
 //! - C `FunctionBar* defaultBar` → owned `Option<FunctionBar>`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
@@ -79,7 +75,8 @@ use std::io::{self, Write};
 
 use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F};
 use crate::ported::functionbar::{
-    FunctionBar, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_new, Ncurses,
+    FunctionBar, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_getWidth, FunctionBar_new,
+    FunctionBar_synthesizeEvent, Ncurses,
 };
 use crate::ported::history::{History, History_new, History_resetPosition, History_save};
 use crate::ported::lineeditor::{
@@ -89,6 +86,7 @@ use crate::ported::lineeditor::{
 use crate::ported::listitem::ListItem;
 use crate::ported::panel::{
     Panel, Panel_get, Panel_getSelectedIndex, Panel_setDefaultBar, Panel_setSelected, Panel_size,
+    KEY_MOUSE_BAR_CLICK,
 };
 use crate::ported::xutils::String_contains_i;
 
@@ -446,17 +444,32 @@ pub fn IncSet_drawBar(this: &mut IncSet, panel: &mut Panel, attr: i32) {
     }
 }
 
-/// TODO: port of `IncSet.c:327`. Turns a bar x-coordinate into a synthesized
+/// Port of `IncSet.c:327`. Turns a bar x-coordinate into a synthesized
 /// event via `FunctionBar_synthesizeEvent`, returning `KEY_MOUSE_BAR_CLICK`
 /// (and stashing `x` in `panel->lastMouseBarClickX`) for a click in the input
-/// area. The `Panel*` back-pointer is no longer the gap (the panel would be
-/// threaded as a parameter, as [`IncSet_activate`]/[`IncSet_drawBar`] now do),
-/// but the returned sentinel `KEY_MOUSE_BAR_CLICK` (`#define KEY_MOUSE_BAR_CLICK
-/// (KEY_MAX + 50)`, `Panel.h:93`) is a Panel-owned constant not yet ported in
-/// `panel.rs`; it belongs to that module, not this one, so it is escalated
-/// rather than duplicated here, and this stays a stub until Panel exposes it.
-pub fn IncSet_synthesizeEvent() {
-    todo!("port of IncSet.c:327 — needs Panel-owned KEY_MOUSE_BAR_CLICK (Panel.h:93), not yet ported in panel.rs")
+/// area, else the slot event (or the default bar's event when no mode is
+/// active).
+///
+/// The C `this->panel->lastMouseBarClickX = x` write goes through the panel
+/// threaded as a parameter (the `Panel*` back-pointer is not modeled — see
+/// [`IncSet_activate`]/[`IncSet_drawBar`]); the only field mutated is the
+/// panel's, so `this` stays `&IncSet`. `this->active->bar` resolves through
+/// `active: Option<IncType>` into `modes[..].bar`. The C else branch
+/// dereferences `this->defaultBar` unconditionally; `as_ref().unwrap()`
+/// reproduces that non-NULL dereference (same idiom as `search`).
+pub fn IncSet_synthesizeEvent(this: &IncSet, panel: &mut Panel, x: i32) -> i32 {
+    if let Some(active) = this.active {
+        let bar = &this.modes[active as usize].bar;
+        let ev = FunctionBar_synthesizeEvent(bar, x);
+        /* Click in the input area: synthesize a bar-click event */
+        if ev == ERR && x >= FunctionBar_getWidth(bar) {
+            panel.lastMouseBarClickX = x;
+            return KEY_MOUSE_BAR_CLICK;
+        }
+        ev
+    } else {
+        FunctionBar_synthesizeEvent(this.defaultBar.as_ref().unwrap(), x)
+    }
 }
 
 /// Port of `IncSet.h:40` (`static inline IncSet_filter`). Returns the filter

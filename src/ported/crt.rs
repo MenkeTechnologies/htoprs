@@ -52,13 +52,17 @@
 //!     save/restore array (`OLD_SIG_HANDLER`). `HTOP_PCP` is undefined so
 //!     the `SIGPIPE`-via-`sigaction` branch is taken.
 //!
+//! Also ported:
+//!   * `print_backtrace` (`CRT.c:1360`) — the execinfo `backtrace(3)` /
+//!     `backtrace_symbols_fd(3)` branch, on `libc::backtrace` /
+//!     `libc::backtrace_symbols_fd` (present for macOS and Linux-gnu). The
+//!     libunwind branch is omitted (no libunwind crate), matching an
+//!     execinfo-only build.
+//!
 //! Still stubbed (`todo!()`) — each with its specific blocker:
 //!   * `CRT_debug_impl` (`CRT.c:1056`) — a C variadic (`...`) `vfprintf`
 //!     shim; Rust has no stable variadic `fn`, so the faithful analog is
 //!     a macro, not the `pub fn` the port gate requires.
-//!   * `print_backtrace` (`CRT.c:1360`) — libunwind / `backtrace(3)`
-//!     (execinfo) walking of the stack; external C unwinding libs,
-//!     `PRINT_BACKTRACE`-gated.
 //!   * `CRT_handleSIGSEGV` (`CRT.c:1420`) — the SIGSEGV handler body; needs
 //!     `Settings_write` (still a `todo!()` in `settings.rs`) and the
 //!     `program` global (unmodeled). Given the `extern "C"` signature
@@ -2004,14 +2008,39 @@ pub fn CRT_enableDelay() {
     CRT_nodelay.store(false, Ordering::Relaxed);
 }
 
-/// TODO: port of `static void print_backtrace(void)` from `CRT.c:1360`.
+/// Port of `static void print_backtrace(void)` from `CRT.c:1360`.
 ///
-/// Stubbed: the C body walks the stack with libunwind
-/// (`unw_getcontext`/`unw_step`/`unw_get_proc_name`) or the execinfo
-/// `backtrace(3)`/`backtrace_symbols_fd(3)` fallback — external C unwinding
-/// libraries with no `std` equivalent, and `PRINT_BACKTRACE`-gated in the C.
+/// The C selects one of two `PRINT_BACKTRACE` branches at configure time: the
+/// libunwind branch (`HAVE_LIBUNWIND_H && HAVE_LOCAL_UNWIND`) or the execinfo
+/// `backtrace(3)`/`backtrace_symbols_fd(3)` branch
+/// (`HAVE_EXECINFO_H && BACKTRACE_RETURN_TYPE`, `CRT.c:1403`). This ports the
+/// execinfo branch — the one taken on a build without libunwind, and the
+/// branch whose substrate exists here (`libc::backtrace`/
+/// `libc::backtrace_symbols_fd` on both macOS and Linux-gnu; `full_write_str`).
+/// The libunwind branch is omitted (no libunwind crate), exactly as an
+/// execinfo-only autoconf run would drop it.
 pub fn print_backtrace() {
-    todo!("port of CRT.c:1360")
+    // void* backtraceArray[256];
+    let mut backtrace_array: [*mut libc::c_void; 256] = [core::ptr::null_mut(); 256];
+
+    // BACKTRACE_RETURN_TYPE nptrs = backtrace(backtraceArray, ARRAYSIZE(backtraceArray));
+    // BACKTRACE_RETURN_TYPE is `c_int` on both target platforms.
+    let nptrs = unsafe {
+        libc::backtrace(
+            backtrace_array.as_mut_ptr(),
+            backtrace_array.len() as libc::c_int,
+        )
+    };
+    if nptrs > 0 {
+        unsafe {
+            libc::backtrace_symbols_fd(backtrace_array.as_ptr(), nptrs, libc::STDERR_FILENO);
+        }
+    } else {
+        full_write_str(
+            libc::STDERR_FILENO,
+            "[No backtrace information available from libc]\n",
+        );
+    }
 }
 
 /// TODO: port of `void CRT_handleSIGSEGV(int signal)` from `CRT.c:1420`.

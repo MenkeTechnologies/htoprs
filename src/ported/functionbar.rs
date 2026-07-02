@@ -21,12 +21,9 @@
 //!   `crt::ResolvedColor`). The pure column/cursor arithmetic each fn
 //!   computes is factored into gate-skipped helper methods and unit
 //!   tested; the terminal side-effects are not (headless CI has no TTY).
-//!
-//! # What stays a stub
-//!
-//! * [`FunctionBar_delete`] — a pure `free()` chain (`FunctionBar.c:67`);
-//!   in Rust the owned `Vec<String>` fields are released by `Drop`, so
-//!   there is no algorithm to port.
+//! * Lifecycle: [`FunctionBar_delete`] — the C `free()` chain
+//!   (`FunctionBar.c:67`) ported as take-by-value + drop-at-scope-end,
+//!   the same idiom as `Affinity_delete`/`Hashtable_delete`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -163,11 +160,19 @@ pub fn FunctionBar_new(
     }
 }
 
-/// TODO: port of `void FunctionBar_delete(FunctionBar* this)` from
-/// `FunctionBar.c:67`. Pure `free()` chain — the owned `Vec<String>`
-/// fields are released by `Drop`, so there is no algorithm to port.
-pub fn FunctionBar_delete() {
-    todo!("port of FunctionBar.c:67 — Drop releases the owned Vec fields")
+/// Port of `void FunctionBar_delete(FunctionBar* this)` from
+/// `FunctionBar.c:67`. C loops the `functions` array freeing each label
+/// (and, when `!staticData`, each `keys.keys[i]`), then frees `functions`,
+/// the `keys`/`events` arrays (again only when `!staticData`), and finally
+/// the struct. Taking `this` by value is the faithful analog of the final
+/// `free(this)`: the moved-in [`FunctionBar`] — and its owned `Vec<String>`
+/// `functions`/`keys` and `Vec<i32>` `events` — drops at end of scope,
+/// which *is* the C `free` chain. The `staticData` branch is a no-op in
+/// Rust because the static F1..F10 tables the C shares by pointer are
+/// per-instance owned `Vec` copies here, so dropping them is correct in
+/// either case. Same idiom as `Affinity_delete`/`Hashtable_delete`.
+pub fn FunctionBar_delete(this: FunctionBar) {
+    let _ = this;
 }
 
 /// Port of `void FunctionBar_setLabel(FunctionBar* this, int event, const char* text)`

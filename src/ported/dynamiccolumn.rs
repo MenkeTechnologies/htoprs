@@ -24,24 +24,24 @@
 //!   `Platform_dynamicColumnName` (ported now, Linux stub).
 //! - `DynamicColumn_writeField` (`DynamicColumn.c:74`) — thin wrapper over
 //!   `Platform_dynamicColumnWriteField` (ported now, Linux stub).
-//!
-//! Stubbed (deliberate non-ports — kept as documented `todo!()`):
 //! - `DynamicColumns_delete` (`DynamicColumn.c:29`) — a `*_delete` teardown:
-//!   calls `Platform_dynamicColumnsDone` (Linux no-op) then
-//!   `Hashtable_delete` (itself a deliberate teardown stub in `hashtable.rs`;
-//!   `Drop` frees the owned `Vec`/`Box` fields). Kept stubbed per rule 3.
+//!   null-guards then calls `Platform_dynamicColumnsDone` (Linux no-op) and
+//!   `Hashtable_delete` (both ported now); the moved-in `Hashtable` drops,
+//!   which is C's `free(dynamics)`.
 //! - `DynamicColumn_done` (`DynamicColumn.c:40`) — a `*_done` teardown that
-//!   `free()`s `heading`, `caption`, `description`. No faithful safe-Rust
-//!   analog: a `DynamicColumn` owns its `String` fields, so `Drop` frees them
-//!   automatically (same precedent as `History_delete`). Kept stubbed per
-//!   rule 3.
+//!   `free()`s `heading`, `caption`, `description`; setting each owned
+//!   `Option<String>` to `None` drops it (C's `free`) without freeing the
+//!   struct, same precedent as `Table_done`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)] // preserve the C-style class name `DynamicColumn_class`
 #![allow(dead_code)]
 
-use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get, Hashtable_new};
+use crate::ported::hashtable::{
+    Hashtable, Hashtable_delete, Hashtable_foreach, Hashtable_get, Hashtable_new,
+};
 use crate::ported::linux::platform::{
     Platform_dynamicColumnName, Platform_dynamicColumnWriteField, Platform_dynamicColumns,
+    Platform_dynamicColumnsDone,
 };
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::process::Process;
@@ -134,9 +134,21 @@ pub fn DynamicColumns_new() -> Hashtable {
     Platform_dynamicColumns().unwrap_or_else(|| Hashtable_new(0, true))
 }
 
-/// TODO: port of `void DynamicColumns_delete(Hashtable* dynamics` from `DynamicColumn.c:29`.
-pub fn DynamicColumns_delete() {
-    todo!("port of DynamicColumn.c:29")
+/// Port of `void DynamicColumns_delete(Hashtable* dynamics)` from
+/// `DynamicColumn.c:29`. C null-guards the pointer (`if (dynamics)`) then
+/// runs the platform teardown ([`Platform_dynamicColumnsDone`], a Linux
+/// no-op) before [`Hashtable_delete`]. The C `Hashtable*` maps to
+/// `Option<Hashtable>`: `None` is C `NULL` (no-op), and passing the owned
+/// `Hashtable` by value into `Hashtable_delete` is the faithful analog of
+/// C's `free(dynamics)`.
+pub fn DynamicColumns_delete(dynamics: Option<Hashtable>) {
+    // C: if (dynamics) {
+    if let Some(dynamics) = dynamics {
+        // C: Platform_dynamicColumnsDone(dynamics);
+        Platform_dynamicColumnsDone(&dynamics);
+        // C: Hashtable_delete(dynamics);
+        Hashtable_delete(dynamics);
+    }
 }
 
 /// Port of `DynamicColumn.c:36`. Thin wrapper over
@@ -146,9 +158,20 @@ pub fn DynamicColumn_name(key: u32) -> Option<&'static str> {
     Platform_dynamicColumnName(key)
 }
 
-/// TODO: port of `void DynamicColumn_done(DynamicColumn* this` from `DynamicColumn.c:40`.
-pub fn DynamicColumn_done() {
-    todo!("port of DynamicColumn.c:40")
+/// Port of `void DynamicColumn_done(DynamicColumn* this)` from
+/// `DynamicColumn.c:40`. C `free()`s the three owned heap strings
+/// (`heading`, `caption`, `description`) without freeing the struct
+/// itself. The safe-Rust analog sets each `Option<String>` to `None`:
+/// dropping the owned `String` is C's `free`, and leaving `this` intact
+/// mirrors that `_done` releases fields but not the object storage (same
+/// precedent as [`Table_done`](crate::ported::table::Table_done)).
+pub fn DynamicColumn_done(this: &mut DynamicColumn) {
+    // C: free(this->heading);
+    this.heading = None;
+    // C: free(this->caption);
+    this.caption = None;
+    // C: free(this->description);
+    this.description = None;
 }
 
 /// Port of `DynamicColumn.c:61`. Scans the registry for a column whose

@@ -15,11 +15,14 @@
 //! (need the process-typed `ProcessTable_getProcess`/`_add`, still stubbed in
 //! `processtable.rs`); `updateUser` (opaque `usersTable`); `readIoFile`
 //! (`saturatingSub` unported); `readMaps` + `calcLibSize_helper` (`Hashtable`
-//! unported); `readSmapsFile` (`skipEndOfLine` unported); `readCGroupFile` /
+//! is ported, but `Hashtable_get` is immutable so the in-place `libdata->size`
+//! aggregate can't be updated, and `LibraryData` isn't modeled as an
+//! `Object`); `readSmapsFile` (`skipEndOfLine` unported); `readCGroupFile` /
 //! `readSecattrData` (`Row_updateFieldWidth` stub + Linux `RowField` ids);
 //! `updateTtyDevice` (`major`/`minor` macros unported); `ProcessTable_delete`
-//! (pure `free()` teardown → `Drop`); and `readOpenVZData` (absent from the
-//! vendored 3.5.1 SPEC).
+//! (pure `free()` teardown → `Drop`); and `readOpenVZData` (`#ifdef
+//! HAVE_OPENVZ` reader needing `skipEndOfLine` + unmodeled `ctid`/`vpid`
+//! fields).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -872,25 +875,36 @@ pub fn LinuxProcessTable_readIoFile() {
 
 /// TODO: port of `static void LinuxProcessTable_calcLibSize_helper(
 /// ATTR_UNUSED ht_key_t key, void* value, void* data)` from
-/// `LinuxProcessTable.c:727`. Blocked: this is a `Hashtable_foreach`
-/// callback (`typedef void (*Hashtable_PairFunction)(ht_key_t, void*,
-/// void*)`) invoked by [`LinuxProcessTable_readMaps`] over a `Hashtable` of
-/// `LibraryData`; the `Hashtable` container is not ported (no Rust value to
-/// iterate), so the callback has nothing to be wired to. Stays stubbed with
-/// `readMaps`.
+/// `LinuxProcessTable.c:727`. This is a `Hashtable_foreach` callback
+/// (`Hashtable_PairFunction`) invoked by [`LinuxProcessTable_readMaps`] over a
+/// `Hashtable` of the file-local `LibraryData` (`{ uint64_t size; bool exec }`)
+/// type. `Hashtable` itself *is* ported now, but two pieces are still missing:
+/// (1) `LibraryData` is not modeled as an [`Object`](crate::ported::object::Object)
+/// (the value type the ported `Hashtable` stores), and (2) the ported
+/// `Hashtable_foreach` takes a `&mut dyn FnMut(u32, &dyn Object)` closure, so a
+/// free-standing `(ht_key_t, void*, void*)` callback has no matching slot —
+/// it is expressed as the closure body inside `readMaps` instead. Stays
+/// stubbed with `readMaps`.
 pub fn LinuxProcessTable_calcLibSize_helper() {
-    todo!("port of LinuxProcessTable.c:727 — Hashtable_foreach callback; Hashtable not ported")
+    todo!("port of LinuxProcessTable.c:727 — foreach-closure model; LibraryData not an Object")
 }
 
 /// TODO: port of `static void LinuxProcessTable_readMaps(LinuxProcess*
 /// process, openat_arg_t procFd, const LinuxMachine* host, bool calcSize,
-/// bool checkDeletedLib)` from `LinuxProcessTable.c:745`. Blocked: the
-/// `calcSize` path aggregates per-inode library sizes in a
-/// `Hashtable` (`Hashtable_new`/`_get`/`_put`/`_foreach`/`_delete`), which is
-/// not ported as a reachable container, so the size-accounting cannot be
-/// expressed faithfully. Stays stubbed until `Hashtable` lands.
+/// bool checkDeletedLib)` from `LinuxProcessTable.c:745`. `Hashtable` *is*
+/// ported now, but the `calcSize` path still cannot be expressed faithfully:
+/// the C does `LibraryData* libdata = Hashtable_get(ht, inode); ...
+/// libdata->size += map_end - map_start;` — an in-place mutation through the
+/// pointer returned by `Hashtable_get`. The ported
+/// [`Hashtable_get`](crate::ported::hashtable::Hashtable_get) returns an
+/// *immutable* `&dyn Object` and there is no htop `Hashtable_getMut` to port
+/// (C mutates through the non-owning `void*` directly), so the aggregate
+/// cannot be updated in place; additionally the file-local `LibraryData` type
+/// is not modeled as an [`Object`](crate::ported::object::Object) (the value
+/// the ported table stores). Stays stubbed until a mutable accessor + an
+/// `Object`-modeled `LibraryData` exist.
 pub fn LinuxProcessTable_readMaps() {
-    todo!("port of LinuxProcessTable.c:745 — needs Hashtable container ported")
+    todo!("port of LinuxProcessTable.c:745 — Hashtable_get is immutable; LibraryData not an Object")
 }
 
 /// Port of `LinuxProcessTable.c:840`. Reads `/proc/<pid>/statm`
@@ -980,13 +994,16 @@ pub fn LinuxProcessTable_readSmapsFile() {
 }
 
 /// TODO: port of `static void LinuxProcessTable_readOpenVZData(LinuxProcess*
-/// process, openat_arg_t procFd)` (an `#ifdef HAVE_OPENVZ` reader in older
-/// htop). Kept stubbed: this function is absent from the vendored htop 3.5.1
-/// SPEC (`vendor/htop/linux/LinuxProcessTable.c` has no OpenVZ reader), so
-/// there is no C body to port faithfully — the fn name survives only in the
-/// port-purity name list. Nothing to port here.
+/// process, openat_arg_t procFd)` from `LinuxProcessTable.c:934` (guarded by
+/// `#ifdef HAVE_OPENVZ`; only reached from the equally-guarded call site in
+/// `recurseProcTree`). Blocked on three counts: (1) the partial-line handling
+/// calls `skipEndOfLine(FILE*)` (`generic`/`FileUtils`), which is not ported;
+/// (2) it reads/writes `process->ctid` (a `char*`) and `process->vpid`, but
+/// neither field is modeled on [`LinuxProcess`] (only `m_lrs` et al. exist);
+/// and (3) this build has not committed to the `HAVE_OPENVZ` variant. Stays
+/// stubbed until those land.
 pub fn LinuxProcessTable_readOpenVZData() {
-    todo!("port of LinuxProcessTable_readOpenVZData — not present in vendored htop 3.5.1 source")
+    todo!("port of LinuxProcessTable.c:934 — needs skipEndOfLine + ctid/vpid fields + HAVE_OPENVZ")
 }
 
 /// TODO: port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess*

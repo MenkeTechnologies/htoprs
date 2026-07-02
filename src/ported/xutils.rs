@@ -4,11 +4,14 @@
 //! `non_snake_case` is allowed for the whole module — matching the
 //! spec name-for-name is the point of the port.
 //!
-//! The C allocation wrappers (`xMalloc`/`xCalloc`/`xRealloc`/… and
-//! `fail`), `strnlen`, the varargs formatters (`xAsprintf`,
-//! `xSnprintf`), `full_write`, and `String_freeArray` have no
-//! faithful safe-Rust analog (Rust owns its allocation, bounds, and
-//! lifetimes), so they are intentionally not ported here.
+//! The C allocation wrappers (`xMalloc`/`xCalloc`/`xRealloc`/…), the
+//! string-duplication helpers (`xStrdup`/`xStrndup`/
+//! `free_and_xStrdup`), the varargs formatters (`xAsprintf`,
+//! `xSnprintf`), `full_write`, `String_readLine`, and
+//! `String_freeArray` have no faithful safe-Rust analog (Rust owns its
+//! allocation, bounds, and lifetimes), so they are intentionally not
+//! ported here. `fail` (aborts after [`crate::ported::crt::CRT_done`])
+//! and `strnlen` (a pure byte scan) are ported below.
 //!
 //! Deferred (blocked, not faithfully addable yet): the `static inline`
 //! header helpers `String_stripControlChars`, `Char_isControl`, and
@@ -22,6 +25,15 @@
 //! editing the allowlist are out of scope for this port, so these
 //! stay deferred rather than break `cargo build`.
 #![allow(non_snake_case)]
+
+/// Port of `void fail(void)` from `XUtils.c:27`. Restores the terminal
+/// via [`crate::ported::crt::CRT_done`] and aborts the process. The C
+/// `_exit(1)` after `abort()` is unreachable; the `-> !` return type
+/// captures the no-return contract.
+pub fn fail() -> ! {
+    crate::ported::crt::CRT_done();
+    std::process::abort();
+}
 
 /// Port of `String_cat(const char* s1, const char* s2)` from
 /// `XUtils.c:125`. Returns the concatenation of `s1` and `s2`. The C
@@ -161,6 +173,20 @@ pub fn String_safeStrncpy(dest: &mut [u8], src: &[u8]) -> usize {
     dest[i] = 0;
 
     i
+}
+
+/// Port of `size_t strnlen(const char* str, size_t maxLen)` from
+/// `XUtils.c:252` (the `!HAVE_STRNLEN` fallback). Returns the length of
+/// the NUL-terminated C string `str` (modeled as a byte slice, as
+/// [`String_safeStrncpy`] does), stopping at the first NUL byte or at
+/// `max_len`, whichever comes first.
+pub fn strnlen(str: &[u8], max_len: usize) -> usize {
+    for len in 0..max_len {
+        if str[len] == 0 {
+            return len;
+        }
+    }
+    max_len
 }
 
 /// Port of `compareRealNumbers(double a, double b)` from
@@ -351,6 +377,22 @@ mod tests {
         let mut buf = [0u8; 2];
         assert_eq!(String_safeStrncpy(&mut buf, "á".as_bytes()), 1);
         assert_eq!(&buf, &[0xC3u8, 0x00]);
+    }
+
+    #[test]
+    fn strnlen_stops_at_nul_or_cap() {
+        // NUL before the cap -> length up to the NUL
+        assert_eq!(strnlen(b"hello\0world", 11), 5);
+        // no NUL within the cap -> the cap
+        assert_eq!(strnlen(b"hello", 3), 3);
+        // NUL exactly at the cap boundary is not scanned -> cap
+        assert_eq!(strnlen(b"abc\0", 3), 3);
+        // NUL just inside the cap
+        assert_eq!(strnlen(b"abc\0", 4), 3);
+        // empty scan (cap 0) -> 0
+        assert_eq!(strnlen(b"abc", 0), 0);
+        // leading NUL -> 0
+        assert_eq!(strnlen(b"\0abc", 4), 0);
     }
 
     #[test]

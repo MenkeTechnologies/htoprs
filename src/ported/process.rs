@@ -25,8 +25,11 @@
 //! NUL-terminated reads treat any index at/after the slice length as the
 //! terminating NUL (`0`). Out-params are returned as tuples/`Option`.
 //!
-//! Still stubbed (need unported substrate): [`Process_compare`] and
-//! [`Process_compareByParent`] (read `settings->ss` / `ScreenSettings`),
+//! Still stubbed (need unported substrate): [`Process_compare`] (reads
+//! `settings->ss` / `ScreenSettings` via the opaque host pointer;
+//! [`Process_compareByParent`] *is* ported — its group/parent prefix is
+//! pure and it tie-breaks into this stub, matching the
+//! [`Process_getSortKey`] → [`Process_getCommand`] precedent),
 //! [`Process_getCommand`] (reads `host->settings->showThreadNames` — the
 //! ported `Settings` subset has no `showThreadNames` field and `Row::host`
 //! is an opaque pointer), [`Process_makeCommandStr`] (every branch is
@@ -46,7 +49,7 @@
 #![allow(dead_code)]
 
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
-use crate::ported::row::{spaceship_number, Row, Row_class, Row_init};
+use crate::ported::row::{spaceship_number, Row, Row_class, Row_getGroupOrParent, Row_init};
 use crate::ported::settings::Settings_isReadonly;
 use crate::ported::xutils::compareRealNumbers;
 use core::any::Any;
@@ -849,12 +852,45 @@ pub fn Process_compare(p1: &Process, p2: &Process) -> i32 {
     todo!("port of Process.c:914 — needs Settings/ScreenSettings substrate")
 }
 
-/// TODO: port of `int Process_compareByParent(const Row* r1, const Row* r2)`
-/// from `Process.c:931`. The group-or-parent prefix is pure, but the
-/// tie-break calls [`Process_compare`] (which needs the `Settings`
-/// substrate), so the whole function stays stubbed until that lands.
-pub fn Process_compareByParent() {
-    todo!("port of Process.c:931 — tie-break needs Process_compare (Settings)")
+/// Port of `int Process_compareByParent(const Row* r1, const Row* r2)`
+/// from `Process.c:931`. Orders by group-or-parent (roots sort as `0`
+/// via [`Row_getGroupOrParent`]), tie-breaking with [`Process_compare`]
+/// — the stable tree-mode ordering. The two C `Row*` are cast to
+/// `Process*`; here the `Object_isA` guard + `Any` downcast idiom (as in
+/// [`Process_rowGetSortKey`]) yields the `Process` views, the Row-level
+/// group/parent read goes through the embedded `super_`, and the
+/// tie-break passes those views to [`Process_compare`] (still stubbed
+/// pending the `Settings`/`ScreenSettings` substrate, so a tie panics
+/// through that `todo!()`; the wiring itself is faithful, matching the
+/// [`Process_getSortKey`] → [`Process_getCommand`] precedent).
+pub fn Process_compareByParent(r1: &dyn Object, r2: &dyn Object) -> i32 {
+    debug_assert!(Object_isA(Some(r1), &Process_class));
+    debug_assert!(Object_isA(Some(r2), &Process_class));
+    let p1 = (r1 as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Process_compareByParent: row is not a Process");
+    let p2 = (r2 as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Process_compareByParent: row is not a Process");
+
+    let result = spaceship_number!(
+        if p1.super_.isRoot {
+            0
+        } else {
+            Row_getGroupOrParent(&p1.super_)
+        },
+        if p2.super_.isRoot {
+            0
+        } else {
+            Row_getGroupOrParent(&p2.super_)
+        }
+    );
+
+    if result != 0 {
+        return result;
+    }
+
+    Process_compare(p1, p2)
 }
 
 /// Port of `int Process_compareByKey_Base(const Process* p1, const

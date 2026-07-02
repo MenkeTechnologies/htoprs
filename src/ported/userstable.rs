@@ -33,15 +33,14 @@
 //!
 //! # Ported
 //! - `UsersTable_new` (`UsersTable.c:20`)
+//! - `UsersTable_delete` (`UsersTable.c:27`) — `Hashtable_delete(users)` +
+//!   `free(this)`, a pure teardown. Ported by taking `this` by value
+//!   (move-in + `Drop` is the C `free`), following the `Hashtable_delete`
+//!   convention: the moved-in `UsersTable` and its owning `HashMap` drop
+//!   at end of scope, which is the inner `Hashtable_delete` (owner-free of
+//!   each cached `String`) plus the outer `free(this)`.
 //! - `UsersTable_getRef` (`UsersTable.c:32`)
 //! - `UsersTable_foreach` (`UsersTable.c:49`, `inline`)
-//!
-//! # Stubbed
-//! - `UsersTable_delete` (`UsersTable.c:27`) — `Hashtable_delete(users)` +
-//!   `free(this)`, a pure teardown. `UsersTable` owns its `HashMap` (and
-//!   each `String`), so `Drop` frees them automatically; there is no
-//!   faithful free-everything body to port (same as `Hashtable_delete` /
-//!   `History_delete`). Left a `todo!()` stub.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -67,15 +66,18 @@ pub fn UsersTable_new() -> UsersTable {
     }
 }
 
-/// TODO: port of `void UsersTable_delete(UsersTable* this)` from
-/// `UsersTable.c:27`. Frees the `users` hashtable (and, being an owner
-/// table, every cached username) then frees the struct. `UsersTable` owns
-/// its `HashMap<u32, String>`, so `Drop` frees the map and every `String`
-/// automatically; there is no faithful free-everything body to port. Left
-/// as a stub (same as `Hashtable_delete` / `History_delete`).
-pub fn UsersTable_delete() {
-    todo!("port of UsersTable.c:27")
-}
+/// Port of `void UsersTable_delete(UsersTable* this)` from
+/// `UsersTable.c:27`. Frees the `users` hashtable (C
+/// `Hashtable_delete(this->users)`) then frees the struct (C
+/// `free(this)`). Taking `this` by value is the faithful analog of
+/// `free(this)`, following the [`Hashtable_delete`] port: the moved-in
+/// `UsersTable` — and its owning `HashMap<u32, String>`, hence every
+/// cached username `String` — drops at end of scope, which *is* the
+/// inner `Hashtable_delete` (owner-free of each `char*`) plus the outer
+/// `free(this)`.
+///
+/// [`Hashtable_delete`]: crate::ported::hashtable::Hashtable_delete
+pub fn UsersTable_delete(_this: UsersTable) {}
 
 /// Port of `char* UsersTable_getRef(UsersTable* this, unsigned int uid)`
 /// from `UsersTable.c:32`. Looks up the cached username for `uid`; on a

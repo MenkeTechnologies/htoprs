@@ -68,6 +68,9 @@
 //!   `Vector_compact` (`Vector.c:258`), `Vector_moveUp` (`Vector.c:282`),
 //!   `Vector_moveDown` (`Vector.c:294`), `Vector_set` (`Vector.c:306`),
 //!   `Vector_add` (`Vector.c:342`).
+//! - `Vector_isConsistent` (`Vector.c:50`) — the debug consistency check
+//!   (`items <= arraySize`, `!isDirty`), translated to `debug_assert!`s
+//!   over `Vec`'s length/capacity invariant and the `isDirty` flag.
 //! - The sort/search core the container delegates to: `swap`
 //!   (`Vector.c:98`), `partition` (`Vector.c:106`), `quickSort`
 //!   (`Vector.c:121`), `insertionSort` (`Vector.c:154`), and
@@ -92,11 +95,10 @@
 //!   through comments.
 //! - `combSort` (`Vector.c:134`) — likewise COMMENTED OUT in the C
 //!   source; porting it would be faithful to a comment, not to behavior.
-//! - `Vector_resizeIfNecessary` (`Vector.c:184`) and `Vector_isConsistent`
-//!   (`Vector.c:50`) are `static` C helpers with no faithful body in this
-//!   model: capacity growth is `Vec`'s job, and the consistency invariant
-//!   (`items <= arraySize`, `!isDirty`) is what `Vec` bounds + the
-//!   `isDirty` flag already enforce.
+//! - `Vector_resizeIfNecessary` (`Vector.c:184`) is a `static` C helper
+//!   with no faithful body in this model: it manipulates the
+//!   `arraySize`/`growthRate` fields and reallocs the array, but capacity
+//!   growth is `Vec`'s job and those fields are deliberately absent.
 //!
 //! The C `assert(...)` calls on struct/`Object`-type consistency, index
 //! non-negativity, and non-`NULL` slots are represented as `debug_assert!`
@@ -276,6 +278,21 @@ pub fn Vector_new(type_: &'static ObjectClass, owner: bool, size: c_int) -> Vect
 /// `History_delete` precedent). Left as a stub.
 pub fn Vector_delete() {
     todo!("port of Vector.c:36 — Drop frees the array and (owned) elements")
+}
+
+/// Port of `static bool Vector_isConsistent(const Vector* this)` from
+/// `Vector.c:50`. Debug consistency check (C guards it under
+/// `#ifndef NDEBUG`; the sibling debug-block ports —
+/// [`Vector_countEquals`]/[`Vector_get`]/[`Vector_size`] — keep no cfg
+/// guard, so this doesn't either). C asserts `items <= arraySize` and
+/// `!isDirty`, then returns `true`. `items` is `array.len()` and
+/// `arraySize` is the `Vec`'s `capacity()`, so the first assert is the
+/// `Vec` length/capacity invariant; the second maps directly to the
+/// `isDirty` flag.
+fn Vector_isConsistent(this: &Vector) -> bool {
+    debug_assert!(this.array.len() <= this.array.capacity());
+    debug_assert!(!this.isDirty);
+    true
 }
 
 /// Port of `bool Vector_countEquals(const Vector* this, unsigned int

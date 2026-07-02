@@ -23,11 +23,10 @@
 //! Still stubbed (`todo!()`, named after their real htop C function so
 //! the port-purity gate accepts the module); each names its blocker in
 //! its own doc-comment:
-//! - [`Row_isNew`], [`Row_display`] — dereference `host` (an opaque
-//!   `*const c_void`) into the `Machine` / `Settings` structs; the ported
-//!   `Settings` (`settings.rs`) has none of the fields they read
-//!   (`highlightDelaySecs`, `ss->fields`, `highlightChanges`), and
-//!   `Row_display` also needs the `writeField` vtable dispatch.
+//! - [`Row_display`] — dereferences `host` into `Settings`, walks
+//!   `settings->ss->fields` and dispatches through the `RowClass.writeField`
+//!   / `Row_isHighlighted` vtable slots, none of which are modeled (only
+//!   `ObjectClass` is realized, not `RowClass`).
 //! - [`Row_resetFieldWidths`], [`alignedTitleProcessField`] — need the
 //!   unported platform `Process_fields[]` (`ProcessFieldData`) table.
 //! - [`Row_updateFieldWidth`], [`Row_resetFieldWidths`] — need the
@@ -49,6 +48,7 @@
 
 use crate::ported::crt::ColorElements::*;
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendChr, RichString_appendnAscii,
@@ -160,8 +160,9 @@ pub enum PercentageAttr {
 ///   `*const c_void`. `Machine` is not a ported module; the field is
 ///   kept as an opaque pointer (the faithful representation of a
 ///   `const Machine*` back-reference) so lifecycle code can store it
-///   without the unported `Machine` struct. Code that must *dereference*
-///   `host` (`Row_isNew`, `Row_display`) stays stubbed.
+///   without the unported `Machine` struct. [`Row_isNew`] dereferences it
+///   via the crate's `host as *const Machine` cast; [`Row_display`], which
+///   also needs the `RowClass` vtable, stays stubbed.
 /// - `pid_t`/`uid_t` widths are handled by the callers; the struct's
 ///   `id`/`group`/`parent` are `int` as in C.
 #[derive(Debug, Clone)]
@@ -291,13 +292,31 @@ pub fn Row_done(this: &Row) {
     let _ = this;
 }
 
-/// TODO: port of `static inline bool Row_isNew(const Row* this)` from
-/// `Row.c:49`. Not portable yet: reads `host->monotonicMs` and
-/// `host->settings->highlightDelaySecs` — both live in the unported
-/// `Machine` / `Settings` substrate ([`Row::host`] is an opaque
-/// pointer). Stays a stub until those modules exist.
-pub fn Row_isNew() {
-    todo!("port of Row.c:49 — needs Machine/Settings substrate")
+/// Port of `static inline bool Row_isNew(const Row* this)` from
+/// `Row.c:49`. True when the row was first seen within the last
+/// `highlightDelaySecs` seconds (used to flash newly-appeared rows).
+///
+/// Signature mapping: the opaque `host` (`*const c_void`) is cast back to
+/// `*const Machine` — the same cast the crate uses elsewhere on a `Row`'s
+/// `host` (`linuxprocesstable.rs:1465`). The C reads `host->monotonicMs`
+/// and `host->settings` (a `const Settings*`, unconditionally
+/// dereferenced); `Machine.settings` is an `Option`, so the non-null
+/// precondition is realized with `.expect`, matching `Table_cleanupRow`'s
+/// pattern (`table.rs`). The C `1000 * (uint64_t)settings->highlightDelaySecs`
+/// keeps the `int → uint64_t` cast semantics as `i32 as u64` (identical
+/// wrapping on a negative value, though the flag is nonnegative in
+/// practice).
+pub fn Row_isNew(this: &Row) -> bool {
+    let host = unsafe { &*(this.host as *const Machine) };
+    if host.monotonicMs < this.seenStampMs {
+        return false;
+    }
+
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Row_isNew: host->settings is NULL");
+    host.monotonicMs - this.seenStampMs <= 1000 * settings.highlightDelaySecs as u64
 }
 
 /// Port of `static inline bool Row_isTomb(const Row* this)` from

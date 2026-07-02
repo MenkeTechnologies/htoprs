@@ -75,30 +75,40 @@
 //! - `Hashtable_get` (`Hashtable.c:302`)
 //! - `Hashtable_foreach` (`Hashtable.c:330`)
 //! - `Hashtable_count` (`Hashtable.c:79`, under `#ifndef NDEBUG`)
+//! - `Hashtable_delete` (`Hashtable.c:132`)
+//! - `Hashtable_dump` (`Hashtable.c:42`, `static`, under `#ifndef NDEBUG`)
+//! - `Hashtable_isConsistent` (`Hashtable.c:67`, `static`, under
+//!   `#ifndef NDEBUG`)
 //! - `nextPrime` + its `OEISprimes` table (pure prime-table math)
 //!
-//! # Stubbed
-//! - `Hashtable_delete` (`Hashtable.c:132`) — `Hashtable_clear` +
-//!   `free(buckets)` + `free(this)`. `Hashtable` owns its `Vec`/`Box`
-//!   fields, so `Drop` frees them automatically; there is no faithful
-//!   free-everything body to port (same as `History_delete`). Left a
-//!   `todo!()` stub.
+//! ## `Hashtable_delete` under owned fields
 //!
-//! # Omitted (debug-only, no behavior)
-//! - `Hashtable_dump` (`Hashtable.c:42`, `static`) and
-//!   `Hashtable_isConsistent` (`Hashtable.c:67`, `static`) exist only
-//!   under `#ifndef NDEBUG`: `dump` prints the table to stderr and
-//!   `isConsistent` recomputes `items` for the `assert(...)` guards
-//!   sprinkled through the C. Like the `Vector.c` port's dropped asserts
-//!   (`vector.rs`), the consistency asserts are omitted — they check the
-//!   port's own bookkeeping, which Rust's owned `Vec`/`Option` maintain
-//!   structurally. The public `Hashtable_count` (which recomputes the
-//!   live count and `assert`s it equals `items`) IS ported, and the tests
-//!   below call it to pin exactly the invariant `isConsistent` guards.
-//!   `CRT_fatalError` (`Hashtable.c:114`, `:235`) is rendered as `panic!`
-//!   with the C message, matching the `nextPrime` port's choice — the
-//!   real `CRT_fatalError` (`crt.rs`) restores the terminal and exits,
-//!   which is untestable and unwanted for a pure container.
+//! The C teardown is `Hashtable_clear(this)` + `free(this->buckets)` +
+//! `free(this)`. `Hashtable` owns its `Vec<HashtableItem>` (and each
+//! `Box<dyn Object>` value), so taking `this` by value is the faithful
+//! analog of `free(this)`: the moved-in struct drops at end of scope,
+//! which is the two C `free`s. The explicit `Hashtable_clear` call
+//! mirrors the C's first line verbatim.
+//!
+//! ## The debug helpers `Hashtable_dump` / `Hashtable_isConsistent`
+//!
+//! Both are `static` and compiled only under `#ifndef NDEBUG`: `dump`
+//! prints the table to stderr, and `isConsistent` recomputes `items` for
+//! the `assert(Hashtable_isConsistent(this))` guards sprinkled through
+//! the C. They are ported verbatim (`fprintf(stderr, …)` → `eprintln!`),
+//! but — like the `Vector.c` port's dropped asserts (`vector.rs`) — the
+//! `isConsistent` assert *call sites* inside the already-ported functions
+//! are NOT re-added: they check the port's own bookkeeping, which Rust's
+//! owned `Vec`/`Option` maintain structurally, and re-adding them would
+//! mean editing ported functions. So `isConsistent` (and, transitively,
+//! `dump`, which only `isConsistent` calls) is unused — carried under
+//! `#[allow(dead_code)]` as a faithful debug helper, exactly as the
+//! public `Hashtable_count` (which recomputes the live count and
+//! `assert`s it equals `items`) pins the same invariant from the tests
+//! below. `CRT_fatalError` (`Hashtable.c:114`, `:235`) is rendered as
+//! `panic!` with the C message, matching the `nextPrime` port's choice —
+//! the real `CRT_fatalError` (`crt.rs`) restores the terminal and exits,
+//! which is untestable and unwanted for a pure container.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)] // preserve the C table name `OEISprimes` verbatim
 
@@ -199,6 +209,70 @@ pub struct Hashtable {
     owner: bool,
 }
 
+/// Port of `static void Hashtable_dump(const Hashtable* this)` from
+/// `Hashtable.c:42` (defined under `#ifndef NDEBUG`). Prints a header
+/// line, one line per bucket, and a footer to stderr — the faithful
+/// analog of the C's three `fprintf(stderr, …)` groups. The C `%p`
+/// pointer prints map to Rust `{:p}`: `(const void*)this` becomes
+/// `this as *const Hashtable`, and each bucket's `void* value` becomes
+/// the underlying object's data pointer (`std::ptr::null()` for an empty
+/// bucket, matching C's `NULL`). Only reached from
+/// [`Hashtable_isConsistent`] on a bookkeeping mismatch, so it is
+/// `#[allow(dead_code)]` (see the module note on the debug helpers).
+#[allow(dead_code)]
+fn Hashtable_dump(this: &Hashtable) {
+    eprintln!(
+        "Hashtable {:p}: size={} items={} owner={}",
+        this as *const Hashtable,
+        this.size,
+        this.items,
+        if this.owner { "yes" } else { "no" }
+    );
+
+    let mut items = 0;
+    for i in 0..this.size {
+        let value_ptr: *const () = this.buckets[i]
+            .value
+            .as_deref()
+            .map_or(std::ptr::null(), |v| v as *const dyn Object as *const ());
+        eprintln!(
+            "  item {:5}: key = {:5} probe = {:2} value = {:p}",
+            i, this.buckets[i].key, this.buckets[i].probe, value_ptr
+        );
+
+        if this.buckets[i].value.is_some() {
+            items += 1;
+        }
+    }
+
+    eprintln!(
+        "Hashtable {:p}: items={} counted={}",
+        this as *const Hashtable, this.items, items
+    );
+}
+
+/// Port of `static bool Hashtable_isConsistent(const Hashtable* this)`
+/// from `Hashtable.c:67` (defined under `#ifndef NDEBUG`). Recomputes the
+/// live-entry count by walking every bucket, returns whether it equals
+/// the maintained `items`, and dumps the table via [`Hashtable_dump`] on
+/// a mismatch. In the C this backs the `assert(Hashtable_isConsistent(…))`
+/// guards; those assert call sites are not re-added to the ported
+/// functions (see the module note), so this is `#[allow(dead_code)]`.
+#[allow(dead_code)]
+fn Hashtable_isConsistent(this: &Hashtable) -> bool {
+    let mut items = 0;
+    for i in 0..this.size {
+        if this.buckets[i].value.is_some() {
+            items += 1;
+        }
+    }
+    let res = items == this.items;
+    if !res {
+        Hashtable_dump(this);
+    }
+    res
+}
+
 /// Port of `size_t Hashtable_count(const Hashtable* this)` from
 /// `Hashtable.c:79` (defined under `#ifndef NDEBUG`). Walks every bucket,
 /// counts the filled ones, `assert`s the tally equals the maintained
@@ -239,14 +313,15 @@ pub fn Hashtable_new(size: usize, owner: bool) -> Hashtable {
     }
 }
 
-/// TODO: port of `void Hashtable_delete(Hashtable* this)` from
-/// `Hashtable.c:132`. Clears the table then frees the bucket array and
-/// the struct. `Hashtable` owns its `Vec<HashtableItem>` (and each
-/// `Box<dyn Object>` value), so `Drop` frees them automatically; there is
-/// no faithful free-everything body to port. Left as a stub (same as
-/// `History_delete`).
-pub fn Hashtable_delete() {
-    todo!("port of Hashtable.c:132")
+/// Port of `void Hashtable_delete(Hashtable* this)` from `Hashtable.c:132`.
+/// Clears the table (C `Hashtable_clear(this)`) then frees the bucket
+/// array and the struct (C `free(this->buckets)` + `free(this)`). Taking
+/// `this` by value is the faithful analog of `free(this)`: the moved-in
+/// `Hashtable` — and its `Vec<HashtableItem>` / each `Box<dyn Object>` —
+/// drops at end of scope, which *is* the two C `free`s. The explicit
+/// `Hashtable_clear` call mirrors the C's first line.
+pub fn Hashtable_delete(mut this: Hashtable) {
+    Hashtable_clear(&mut this);
 }
 
 /// Port of `void Hashtable_clear(Hashtable* this)` from `Hashtable.c:139`.

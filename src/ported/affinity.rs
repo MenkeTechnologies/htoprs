@@ -14,13 +14,11 @@
 //!   pointer needs no `unsafe`; only dereferencing it would.
 //! - `Affinity_add` (`Affinity.c:45`) — append, doubling capacity when
 //!   the array is full.
-//!
-//! Stubbed (cannot be ported faithfully yet):
-//! - `Affinity_delete` (`Affinity.c:40`) is a `free(this->cpus); free(this)`
-//!   heap-teardown with no faithful safe-Rust analog — Rust owns the
-//!   `cpus` allocation and drops it automatically (`Vec` + `Drop`); `host`
-//!   is a borrowed pointer that C's `free` does not touch either. Left
-//!   stubbed, matching the `History_delete` precedent.
+//! - `Affinity_delete` (`Affinity.c:40`) — `free(this->cpus); free(this)`
+//!   heap-teardown, ported as a by-value drop (the moved-in `Affinity` and
+//!   its `Vec<u32>` `cpus` drop at end of scope, which *is* the two
+//!   `free`s); `host` is a borrowed pointer C's `free` never touches, and a
+//!   raw pointer is not dropped, matching the `Hashtable_delete` precedent.
 //!
 //! Ported, Linux-only (`#[cfg(target_os = "linux")]`): htop compiles the
 //! affinity read/set path only under `HAVE_LIBHWLOC || HAVE_AFFINITY`
@@ -82,9 +80,15 @@ pub fn Affinity_new(host: *mut Machine) -> Affinity {
     }
 }
 
-/// TODO: port of `void Affinity_delete(Affinity* this` from `Affinity.c:40`.
-pub fn Affinity_delete() {
-    todo!("port of Affinity.c:40")
+/// Port of `void Affinity_delete(Affinity* this)` from `Affinity.c:40`.
+/// C frees the backing `cpus` array then the struct (`free(this->cpus)` +
+/// `free(this)`). Taking `this` by value is the faithful analog of
+/// `free(this)`: the moved-in [`Affinity`] — and its `Vec<u32>` `cpus` —
+/// drops at end of scope, which *is* the two C `free`s. `host` is a
+/// borrowed raw pointer C's `free` never touches, and a raw pointer is not
+/// dropped, so it is left alone here too. Same idiom as `Hashtable_delete`.
+pub fn Affinity_delete(this: Affinity) {
+    let _ = this;
 }
 
 /// Port of `Affinity_add(Affinity* this, unsigned int id)` from

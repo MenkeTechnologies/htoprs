@@ -34,6 +34,12 @@
 //!   through the `Any` supertrait — the exact idiom `ColumnsPanel.c`'s
 //!   port uses (`columnspanel.rs`), and the safe-Rust analog of the C
 //!   `(Row*)` cast.
+//! - `tagAllChildren` (`Action.c:137`) — same `panel.items` index +
+//!   `Any`-downcast idiom as `expandCollapse`. The C `Row* parent` (a
+//!   pointer into `panel`) is modeled as its `panel.items` index so the
+//!   recursive walk never needs to alias `&mut Panel`.
+//! - `Action_setUserOnly` (`Action.c:127`) — `getpwnam` via the crate's
+//!   `libc` dep, mirroring `userstable.rs`'s `getpwuid` FFI idiom.
 //!
 //! # Stubbed (genuinely blocked; grouped by the missing substrate)
 //!
@@ -64,14 +70,10 @@
 //!   These reach `st->mainPanel`, which the minimal `State` does not model,
 //!   and several need mutable panel accessors the ported `Panel` API does
 //!   not expose.
-//! - **`tagAllChildren` (`Action.c:137`):** its `Row* parent` argument
-//!   aliases an element of the same `Panel` it then recursively walks and
-//!   mutates. That shared-mutable aliasing has no safe-Rust analog under
-//!   the C signature, so it stays a stub rather than deviate the signature.
-//! - **Syscalls without a libc dependency:** `Action_setUserOnly`
-//!   (`getpwnam`) and `actionKill` (signal delivery). The crate has no
-//!   `libc`/`nix` dependency and no FFI precedent, and adding one is out of
-//!   scope (Cargo.toml is off-limits).
+//! - **`actionKill` (`Action.c:524`):** signal delivery is available via
+//!   the crate's `nix`/`libc` deps, but the handler reaches `st->mainPanel`
+//!   (`Panel_setHeader`/`Panel_draw`/`MainPanel_foreachRow`) which the
+//!   minimal `State` does not model, so it stays stubbed on that ground.
 //! - **Child screens (each its own unported InfoScreen subclass):**
 //!   `actionLsof`, `actionStrace`, `actionShowLocks`, `actionShowEnvScreen`,
 //!   `actionShowCommandScreen`, `actionBacktrace`, `actionSetAffinity`,
@@ -89,7 +91,7 @@
 
 use crate::ported::object::Object;
 use crate::ported::panel::{Panel, Panel_setSelected, Panel_size};
-use crate::ported::row::{Row, Row_getGroupOrParent};
+use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf};
 
 /// Port of the `Htop_Reaction` enum from `Action.h:21`.
 ///
@@ -153,14 +155,72 @@ pub fn addUserToVector() {
     todo!("port of Action.c:121")
 }
 
-/// TODO: port of `bool Action_setUserOnly(const char* userName, uid_t* userId` from `Action.c:127`.
-pub fn Action_setUserOnly() {
-    todo!("port of Action.c:127")
+/// Port of `bool Action_setUserOnly(const char* userName, uid_t* userId)`
+/// from `Action.c:127`. Resolves `userName` to its uid via `getpwnam`
+/// (the same `unsafe { libc::* }` idiom `userstable.rs` uses for
+/// `getpwuid`): on a hit it writes `pw_uid` and returns `true`; on a NULL
+/// lookup it writes `(uid_t)-1` (`u32::MAX`, matching `process.rs`'s
+/// `(uid_t)-1` idiom) and returns `false`. The C `const char*` is taken
+/// as `&str` and marshalled through a `CString`; an interior NUL — which
+/// a C NUL-terminated string could never carry — is treated as a failed
+/// lookup.
+pub fn Action_setUserOnly(userName: &str, userId: &mut libc::uid_t) -> bool {
+    let c_userName = match std::ffi::CString::new(userName) {
+        Ok(s) => s,
+        Err(_) => {
+            *userId = libc::uid_t::MAX;
+            return false;
+        }
+    };
+    // C `const struct passwd* user = getpwnam(userName);`
+    let user = unsafe { libc::getpwnam(c_userName.as_ptr()) };
+    if !user.is_null() {
+        // C `*userId = user->pw_uid; return true;`
+        *userId = unsafe { (*user).pw_uid };
+        return true;
+    }
+    // C `*userId = (uid_t)-1; return false;`
+    *userId = libc::uid_t::MAX;
+    false
 }
 
-/// TODO: port of `static void tagAllChildren(Panel* panel, Row* parent` from `Action.c:137`.
-pub fn tagAllChildren() {
-    todo!("port of Action.c:137")
+/// Port of `static void tagAllChildren(Panel* panel, Row* parent)` from
+/// `Action.c:137`. Sets the parent row's `tag`, then recursively tags
+/// every untagged row that [`Row_isChildOf`] the parent's `id`. In C
+/// `parent` is a `Row*` aliasing an element of `panel`; safe Rust cannot
+/// hold that `&mut Row` while it also mutably walks `panel`, so — exactly
+/// as `expandCollapse`/`collapseIntoParent` model `Panel_getSelected`'s
+/// `(Row*)` — the parent is identified by its `panel.items` index and the
+/// two `(Row*)` casts become scoped `Any` downcasts, keeping the borrows
+/// non-overlapping while preserving the C recursion order verbatim.
+pub fn tagAllChildren(panel: &mut Panel, parent_idx: i32) {
+    // C `parent->tag = true; int parent_id = parent->id;`
+    let parent_id = {
+        let obj: &mut dyn Object = panel.items[parent_idx as usize].as_mut();
+        let any: &mut dyn core::any::Any = obj;
+        let parent = any
+            .downcast_mut::<Row>()
+            .expect("tagAllChildren operates on the mainPanel, whose items are Rows");
+        parent.tag = true;
+        parent.id
+    };
+
+    let size = Panel_size(panel);
+    for i in 0..size {
+        // C `Row* row = Panel_get(panel, i);
+        //    if (!row->tag && Row_isChildOf(row, parent_id))`
+        let recurse = {
+            let obj: &dyn Object = panel.items[i as usize].as_ref();
+            let any: &dyn core::any::Any = obj;
+            let row = any
+                .downcast_ref::<Row>()
+                .expect("tagAllChildren operates on the mainPanel, whose items are Rows");
+            !row.tag && Row_isChildOf(row, parent_id)
+        };
+        if recurse {
+            tagAllChildren(panel, i);
+        }
+    }
 }
 
 /// Port of `static bool expandCollapse(Panel* panel)` from `Action.c:148`.

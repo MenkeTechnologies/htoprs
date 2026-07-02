@@ -56,6 +56,8 @@
 //! - `BarMeterMode_draw` (`Meter.c:90`) — the bar renderer: caption,
 //!   brackets, per-item colored fill from `values`/`total`/`curAttributes`,
 //!   right-aligned `txtBuffer`. The C fill math is reproduced line-for-line.
+//! - `Meter_setCaption` (`Meter.c:521`) — replaces `caption` with an owned
+//!   copy (C `free_and_xStrdup` collapses to a `String` assignment).
 //! - `Meter_setMode` (`Meter.c:526`) — sets `mode`, looks up `Meter_modes`
 //!   for `draw`+`h`, resets `drawData`.
 //! - `Meter_toListItem` (`Meter.c:571`) — builds the setup-menu label
@@ -912,6 +914,17 @@ pub fn LEDMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
     RichString_delete(&mut text);
 
     Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
+}
+
+/// Port of `void Meter_setCaption(Meter* this, const char* caption)` from
+/// `Meter.c:521`. Replaces the meter's caption with a copy of `caption`.
+///
+/// The C `free_and_xStrdup(&this->caption, caption)` frees the old
+/// heap-allocated caption and stores a fresh `xStrdup` of the new one;
+/// the ported `Meter.caption` is an owned `String`, so the free-then-dup
+/// collapses to a single owned assignment (`caption.to_owned()`).
+pub fn Meter_setCaption(this: &mut Meter, caption: &str) {
+    this.caption = caption.to_owned();
 }
 
 /// Port of `void Meter_setMode(Meter* this, MeterModeId modeIndex)` from
