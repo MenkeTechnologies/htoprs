@@ -21,25 +21,38 @@
 //!   `cpus` allocation and drops it automatically (`Vec` + `Drop`); `host`
 //!   is a borrowed pointer that C's `free` does not touch either. Left
 //!   stubbed, matching the `History_delete` precedent.
-//! - `Affinity_get` (`Affinity.c:56`/`90`) calls `sched_getaffinity`
-//!   (`HAVE_AFFINITY`) or `hwloc_get_proc_cpubind` (`HAVE_LIBHWLOC`). Both
-//!   need a raw-syscall/FFI layer (`libc`/`nix`); the crate depends on
-//!   neither, and `sched_getaffinity` is Linux-only. Blocked on the
-//!   platform affinity syscall layer. `Process_getPid` and
-//!   `Machine::existingCPUs` are modeled, but the syscall itself is not
-//!   reachable.
-//! - `Affinity_set` (`Affinity.c:77`/`105`) — `sched_setaffinity` /
-//!   `hwloc_set_proc_cpubind`. Same syscall blocker as `Affinity_get`.
-//! - `Affinity_rowGet` (`Affinity.c:126`) casts `Row*`→`Process*`, asserts
-//!   `Object_isA(&Process_class)`, and delegates to `Affinity_get`.
-//!   Blocked transitively on `Affinity_get`.
-//! - `Affinity_rowSet` (`Affinity.c:120`) casts `Row*`→`Process*`, asserts,
-//!   and delegates to `Affinity_set`. Blocked transitively on
-//!   `Affinity_set`.
+//!
+//! Ported, Linux-only (`#[cfg(target_os = "linux")]`): htop compiles the
+//! affinity read/set path only under `HAVE_LIBHWLOC || HAVE_AFFINITY`
+//! (`Affinity.c:54`/`88`/`118`). This port takes the `HAVE_AFFINITY`
+//! branch (`Affinity.c:88`) — the Linux `sched_*` variant — via direct
+//! `libc` FFI (`sched_getaffinity` / `sched_setaffinity` plus the
+//! `CPU_ZERO` / `CPU_SET` / `CPU_ISSET` helpers), preserving htop's exact
+//! `sizeof(cpu_set_t)` (get) and `sizeof(unsigned long)` (set) size
+//! arguments — the latter a deliberate htop quirk kept verbatim. Those
+//! syscalls exist only on Linux, so — exactly like the C preprocessor that
+//! omits these functions entirely on platforms without affinity support —
+//! the four functions are cfg-gated to Linux and are simply absent on the
+//! darwin dev host. That absence is the faithful analog of the C `#if`
+//! omission, not a fake stub:
+//! - `Affinity_get` (`Affinity.c:90`), `Affinity_set` (`Affinity.c:105`),
+//!   `Affinity_rowGet` (`Affinity.c:126`), `Affinity_rowSet`
+//!   (`Affinity.c:120`). The `HAVE_LIBHWLOC` variants (`Affinity.c:56`/`77`)
+//!   are the mutually-exclusive alternative build and are not ported.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::machine::Machine;
+
+// Linux-only imports for the `sched_*` affinity path. Gated so the darwin
+// build (where these functions do not exist, matching the C `#if`) sees no
+// unused imports.
+#[cfg(target_os = "linux")]
+use crate::ported::object::{Arg, Object, Object_isA};
+#[cfg(target_os = "linux")]
+use crate::ported::process::{Process, Process_class, Process_getPid};
+#[cfg(target_os = "linux")]
+use core::any::Any;
 
 /// A growable set of CPU ids. Faithful to `struct Affinity_` in
 /// `Affinity.h:26`. `host` is the borrowed `Machine*` (raw pointer — the
@@ -89,24 +102,112 @@ pub fn Affinity_add(this: &mut Affinity, id: u32) {
     this.used += 1;
 }
 
-/// TODO: port of `static Affinity* Affinity_get(const Process* p, Machine* host` from `Affinity.c:56`.
-pub fn Affinity_get() {
-    todo!("port of Affinity.c:56")
+/// Port of `static Affinity* Affinity_get(const Process* p, Machine* host)`
+/// from `Affinity.c:90` (the `HAVE_AFFINITY` / Linux `sched_*` branch).
+/// Reads the process's CPU affinity mask via `sched_getaffinity` (passing
+/// htop's `sizeof(cpu_set_t)`); on failure returns `None` (C `NULL`),
+/// otherwise builds a fresh [`Affinity`] and appends every existing CPU id
+/// whose bit is set (`CPU_ISSET`), iterating `[0, host->existingCPUs)`.
+///
+/// Signature mapping: C `const Process* p` → `&Process`; C `Machine* host`
+/// → `*mut Machine` (the borrowed back-pointer [`Affinity_new`] stores);
+/// the C `Affinity*` / `NULL` return → `Option<Affinity>`. `host` is
+/// dereferenced for `existingCPUs` (the only field read), which needs
+/// `unsafe`; the `cpu_set_t` is zero-initialized before the syscall fills
+/// it (the C leaves it uninitialized, relying on the kernel write).
+#[cfg(target_os = "linux")]
+pub fn Affinity_get(p: &Process, host: *mut Machine) -> Option<Affinity> {
+    let mut cpuset: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+    let ok = unsafe {
+        libc::sched_getaffinity(
+            Process_getPid(p),
+            core::mem::size_of::<libc::cpu_set_t>(),
+            &mut cpuset,
+        )
+    } == 0;
+    if !ok {
+        return None;
+    }
+
+    let mut affinity = Affinity_new(host);
+    let existingCPUs = unsafe { (*host).existingCPUs };
+    for i in 0..existingCPUs {
+        if unsafe { libc::CPU_ISSET(i as usize, &cpuset) } {
+            Affinity_add(&mut affinity, i);
+        }
+    }
+    Some(affinity)
 }
 
-/// TODO: port of `static bool Affinity_set(Process* p, Arg arg` from `Affinity.c:77`.
-pub fn Affinity_set() {
-    todo!("port of Affinity.c:77")
+/// Port of `static bool Affinity_set(Process* p, Arg arg)` from
+/// `Affinity.c:105` (the `HAVE_AFFINITY` / Linux `sched_*` branch). Reads
+/// the [`Affinity`] out of `arg.v`, builds a `cpu_set_t` with `CPU_ZERO` +
+/// one `CPU_SET` per used CPU id, and applies it via `sched_setaffinity`,
+/// returning whether the call succeeded.
+///
+/// Signature mapping: C `Process* p` → `&Process`; C `Arg arg` → the
+/// ported [`Arg`] union (`arg.v` is the `Affinity*`, so the `Arg::V` arm
+/// carries it — the `Arg::I` arm is impossible here, matching the C's
+/// unconditional `arg.v` read). Dereferencing the type-erased pointer
+/// needs `unsafe`, as does the FFI. The `sizeof(unsigned long)` size
+/// argument is a deliberate htop quirk, kept verbatim as
+/// `size_of::<c_ulong>()`.
+#[cfg(target_os = "linux")]
+pub fn Affinity_set(p: &Process, arg: Arg) -> bool {
+    // Affinity* this = arg.v;
+    let this: &Affinity = match arg {
+        Arg::V(v) => unsafe { &*(v as *const Affinity) },
+        Arg::I(_) => panic!("Affinity_set: Arg must carry the Affinity* in arg.v"),
+    };
+
+    let mut cpuset: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+    unsafe { libc::CPU_ZERO(&mut cpuset) };
+    for i in 0..this.used {
+        unsafe { libc::CPU_SET(this.cpus[i as usize] as usize, &mut cpuset) };
+    }
+    let ok = unsafe {
+        libc::sched_setaffinity(
+            Process_getPid(p),
+            core::mem::size_of::<core::ffi::c_ulong>(),
+            &cpuset,
+        )
+    } == 0;
+    ok
 }
 
-/// TODO: port of `bool Affinity_rowSet(Row* row, Arg arg` from `Affinity.c:120`.
-pub fn Affinity_rowSet() {
-    todo!("port of Affinity.c:120")
+/// Port of `bool Affinity_rowSet(Row* row, Arg arg)` from `Affinity.c:120`
+/// (`HAVE_LIBHWLOC || HAVE_AFFINITY`). Casts the `Row*` to a `Process*`,
+/// asserts the object really is a [`Process`], and delegates to
+/// [`Affinity_set`].
+///
+/// Signature mapping: the C downcast `(Process*) row` + the
+/// `Object_isA(..., &Process_class)` assert becomes `row: &dyn Object`
+/// (the actual object implements [`Object`]), the ported [`Object_isA`]
+/// guard, and an `Any` downcast to `Process` — the safe-Rust analog of the
+/// C pointer cast validated by the same assert.
+#[cfg(target_os = "linux")]
+pub fn Affinity_rowSet(row: &dyn Object, arg: Arg) -> bool {
+    // Process* p = (Process*) row;
+    assert!(Object_isA(Some(row), &Process_class));
+    let p = (row as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Affinity_rowSet: row is not a Process");
+    Affinity_set(p, arg)
 }
 
-/// TODO: port of `Affinity* Affinity_rowGet(const Row* row, Machine* host` from `Affinity.c:126`.
-pub fn Affinity_rowGet() {
-    todo!("port of Affinity.c:126")
+/// Port of `Affinity* Affinity_rowGet(const Row* row, Machine* host)` from
+/// `Affinity.c:126` (`HAVE_LIBHWLOC || HAVE_AFFINITY`). Casts the `Row*` to
+/// a `Process*`, asserts the object really is a [`Process`], and delegates
+/// to [`Affinity_get`]. Same `Row*`→`Process*` mapping as
+/// [`Affinity_rowSet`]; returns `Option<Affinity>` (C `Affinity*` / `NULL`).
+#[cfg(target_os = "linux")]
+pub fn Affinity_rowGet(row: &dyn Object, host: *mut Machine) -> Option<Affinity> {
+    // const Process* p = (const Process*) row;
+    assert!(Object_isA(Some(row), &Process_class));
+    let p = (row as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Affinity_rowGet: row is not a Process");
+    Affinity_get(p, host)
 }
 
 #[cfg(test)]
@@ -186,5 +287,104 @@ mod tests {
             assert_eq!(a.cpus[id as usize], 1000 + id);
         }
         assert_eq!(a.cpus[8], 9999);
+    }
+
+    // ── Linux-only `sched_*` affinity path ────────────────────────────
+    //
+    // These exercise the real `sched_getaffinity` / `sched_setaffinity`
+    // syscalls, so they only compile (and run) on Linux — mirroring htop's
+    // `#if defined(HAVE_AFFINITY)` gate. On darwin the four functions do
+    // not exist, so the tests are cfg'd out and the module's `cargo test`
+    // reduces to the platform-independent `Affinity_new`/`Affinity_add`
+    // cases above.
+    #[cfg(target_os = "linux")]
+    use crate::ported::machine::Machine;
+    #[cfg(target_os = "linux")]
+    use crate::ported::object::{Arg, Object};
+    #[cfg(target_os = "linux")]
+    use crate::ported::process::{Process, Process_setPid};
+
+    /// A `Machine` whose `existingCPUs` is the online CPU count — the
+    /// `[0, existingCPUs)` bound `Affinity_get` iterates. Returns the
+    /// machine plus a raw pointer to it (what `Affinity_*` take as `host`).
+    #[cfg(target_os = "linux")]
+    fn online_host() -> Machine {
+        let ncpu = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+        let existing = if ncpu > 0 { ncpu as u32 } else { 1 };
+        let mut host = Machine::default();
+        host.existingCPUs = existing;
+        host
+    }
+
+    /// A `Process` targeting the calling thread: pid 0 makes
+    /// `sched_getaffinity` / `sched_setaffinity` operate on the current
+    /// thread, so the syscalls always have a valid target.
+    #[cfg(target_os = "linux")]
+    fn current_thread_process() -> Process {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 0);
+        p
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn affinity_get_reports_current_thread_cpus() {
+        let mut host = online_host();
+        let existing = host.existingCPUs;
+        let hp: *mut Machine = &mut host;
+        let p = current_thread_process();
+
+        let aff = Affinity_get(&p, hp).expect("sched_getaffinity(0) must succeed");
+        // The calling thread runs on at least one allowed CPU.
+        assert!(aff.used >= 1);
+        // `host` is stored verbatim by `Affinity_new`.
+        assert_eq!(aff.host, hp);
+        // Every reported id is within the existing-CPU range the loop scans.
+        for k in 0..aff.used as usize {
+            assert!(aff.cpus[k] < existing);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn affinity_set_roundtrips_current_mask() {
+        let mut host = online_host();
+        let hp: *mut Machine = &mut host;
+        let p = current_thread_process();
+
+        // Read the current mask, then write the same set back: a subset of
+        // the allowed CPUs, so `sched_setaffinity` must succeed.
+        let mut aff = Affinity_get(&p, hp).expect("get must succeed");
+        let arg = Arg::V(&mut aff as *mut Affinity as *mut core::ffi::c_void);
+        assert!(Affinity_set(&p, arg));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn affinity_rowget_and_rowset_delegate_through_object_isa() {
+        let mut host = online_host();
+        let hp: *mut Machine = &mut host;
+        let p = current_thread_process();
+
+        // rowGet: the `Row*`→`Process*` cast + Object_isA guard + delegation.
+        let mut aff = Affinity_rowGet(&p as &dyn Object, hp).expect("rowGet must succeed");
+        assert!(aff.used >= 1);
+
+        // rowSet: same guard, delegating to Affinity_set with the mask read back.
+        let arg = Arg::V(&mut aff as *mut Affinity as *mut core::ffi::c_void);
+        assert!(Affinity_rowSet(&p as &dyn Object, arg));
+    }
+
+    /// The `assert(Object_isA(..., &Process_class))` guard must reject an
+    /// object that is a bare `Row` (its class chain is Row → Object, never
+    /// Process), mirroring the C assert firing on a bad `(Process*)` cast.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[should_panic]
+    fn affinity_rowget_rejects_non_process_row() {
+        let row = crate::ported::row::Row::default();
+        let mut host = Machine::default();
+        let hp: *mut Machine = &mut host;
+        let _ = Affinity_rowGet(&row as &dyn Object, hp);
     }
 }

@@ -130,13 +130,13 @@ mod tests {
     }
 
     /// Build a `Meter` carrying the given `values` (the only field the
-    /// display functions read); the remaining fields are inert.
+    /// display functions read); the remaining fields are inert
+    /// (`..Meter::empty()`, the Rust-only bootstrap helper).
     fn meter(values: Vec<f64>) -> Meter {
         Meter {
             values,
-            curItems: 0,
             mode: BAR_METERMODE,
-            supportedModes: 0,
+            ..Meter::empty()
         }
     }
 

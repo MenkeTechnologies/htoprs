@@ -24,13 +24,25 @@
 //! - The four event handlers `ScreenTabsPanel_eventHandler` (`:68`),
 //!   `ScreenNamesPanel_eventHandlerRenaming` (`:215`),
 //!   `ScreenNamesPanel_eventHandlerNormal` (`:306`) and
-//!   `ScreenNamesPanel_eventHandler` (`:350`) all return `HandlerResult`
-//!   (`Panel.h:23`), an enum owned by `Panel.h` and not modeled anywhere in
-//!   the ported tree; they also call the still-stubbed
-//!   `Panel_selectByTyping` (`Panel.c:468`) and rely on holding a
-//!   `ListItem*` alias into the panel's item vector (`renamingItem`), which
-//!   the `Vec<Box<dyn Object>>` panel model forbids. Blocked on that
-//!   substrate.
+//!   `ScreenNamesPanel_eventHandler` (`:350`). Their historical blockers —
+//!   the `HandlerResult` bitmask (`Panel.h:23`) and `Panel_selectByTyping`
+//!   (`Panel.c:507`) — are now available in `panel.rs`, but each handler
+//!   still cannot be ported faithfully: (a) the `ScreenNamesPanel` /
+//!   `ScreenTabsPanel` subclass structs (`ScreenTabsPanel.h:20` / `:36`,
+//!   `Panel super` plus the raw-pointer fields `names`/`ds`/`renamingItem`/
+//!   `saved`) are not modeled here; (b) their core branches call the
+//!   still-stubbed leaf fns `ScreenNamesPanel_fill` (`:37`), `addNewScreen`
+//!   (`:296`), `startRenaming` (`:276`) and `renameScreenSettings` (`:204`),
+//!   each blocked on the unmodeled `Settings.screens[]`/`nScreens`/
+//!   `lastUpdate`, `ScreenSettings.heading`/`dynamic`, `DynamicScreen.heading`
+//!   and the stubbed `Settings_newScreen`/`Settings_newDynamicScreen`
+//!   (`Settings.c:263`/`:286`); (c) `_eventHandlerRenaming` additionally
+//!   needs the unported `LineEditor_getCursor` (`LineEditor.h`) — the
+//!   `LineEditor.cursor` field is private to `lineeditor.rs` — and the
+//!   `renamingItem`/`saved` `ListItem*`/`char*` aliasing into the item
+//!   vector, which the `Vec<Box<dyn Object>>` panel model forbids.
+//!   (Precedent: `MainPanel_eventHandler` is likewise still a stub in
+//!   `mainpanel.rs` even though the `MainPanel` struct is modeled.)
 //! - `ScreenNamesPanel_fill` (`:37`) — iterates `settings->nScreens` /
 //!   `settings->screens[]` and reads `ss->dynamic` / `ss->heading`; none of
 //!   those `Settings`/`ScreenSettings` fields exist in the ported `Settings`
@@ -98,9 +110,13 @@ pub fn ScreenTabsPanel_delete() {
 }
 
 /// TODO: port of `static HandlerResult ScreenTabsPanel_eventHandler(Panel* super, int ch` from `ScreenTabsPanel.c:68`.
-/// Blocked: returns `HandlerResult` (`Panel.h:23`, not modeled), calls the
-/// stubbed `Panel_selectByTyping` (`Panel.c:468`) and the still-stubbed
-/// `ScreenNamesPanel_eventHandlerNormal` below.
+/// Blocked: needs the unmodeled `ScreenTabsPanel` struct (`ScreenTabsPanel.h:36`,
+/// for `this->names`), and its `if (result == HANDLED)` tail casts
+/// `Panel_getSelected` to `ScreenTabListItem*` to read `focus->ds` and calls
+/// the still-stubbed `ScreenNamesPanel_fill` (`:37`) and
+/// `ScreenNamesPanel_eventHandlerNormal` (`:306`). `HandlerResult`
+/// (`Panel.h:23`) and `Panel_selectByTyping` (`Panel.c:507`) are now in
+/// `panel.rs` and no longer block it.
 pub fn ScreenTabsPanel_eventHandler() {
     todo!("port of ScreenTabsPanel.c:68")
 }
@@ -170,9 +186,13 @@ pub fn renameScreenSettings() {
 }
 
 /// TODO: port of `static HandlerResult ScreenNamesPanel_eventHandlerRenaming(Panel* super, int ch` from `ScreenTabsPanel.c:215`.
-/// Blocked: returns `HandlerResult` (`Panel.h:23`, not modeled), aliases
-/// `renamingItem->value` onto the live `LineEditor` buffer, and calls the
-/// stubbed `renameScreenSettings` above.
+/// Blocked: needs the unmodeled `ScreenNamesPanel` struct
+/// (`ScreenTabsPanel.h:20`) with the `renamingItem` (`ListItem*`) / `saved`
+/// (`char*`) aliases into the item vector; its default branch reads the
+/// unported `LineEditor_getCursor` (`LineEditor.h`; `LineEditor.cursor` is
+/// private to `lineeditor.rs`) and its finish branch calls the stubbed
+/// `renameScreenSettings` (`:204`). `HandlerResult` (`Panel.h:23`) is now
+/// modeled in `panel.rs` and no longer blocks it.
 pub fn ScreenNamesPanel_eventHandlerRenaming() {
     todo!("port of ScreenTabsPanel.c:215")
 }
@@ -195,17 +215,23 @@ pub fn addNewScreen() {
 }
 
 /// TODO: port of `static HandlerResult ScreenNamesPanel_eventHandlerNormal(Panel* super, int ch` from `ScreenTabsPanel.c:306`.
-/// Blocked: returns `HandlerResult` (`Panel.h:23`, not modeled), calls the
-/// stubbed `Panel_selectByTyping` (`Panel.c:468`), `addNewScreen` and
-/// `startRenaming` above, and downcasts items to `ScreenNameListItem`.
+/// Blocked: needs the unmodeled `ScreenNamesPanel` struct
+/// (`ScreenTabsPanel.h:20`, for `this->ds`); its `KEY_F(5)`/`KEY_CTRL('N')`
+/// arm calls the stubbed `addNewScreen` (`:296`) and `startRenaming`
+/// (`:276`) — the whole new-screen path — so the port would gut its core.
+/// `HandlerResult` (`Panel.h:23`) and `Panel_selectByTyping` (`Panel.c:507`)
+/// are now in `panel.rs` and no longer block it.
 pub fn ScreenNamesPanel_eventHandlerNormal() {
     todo!("port of ScreenTabsPanel.c:306")
 }
 
 /// TODO: port of `static HandlerResult ScreenNamesPanel_eventHandler(Panel* super, int ch` from `ScreenTabsPanel.c:350`.
-/// Blocked: returns `HandlerResult` (`Panel.h:23`, not modeled) and dispatches
-/// to the stubbed `ScreenNamesPanel_eventHandlerNormal` /
-/// `ScreenNamesPanel_eventHandlerRenaming` based on the `renamingItem` alias.
+/// Blocked: needs the unmodeled `ScreenNamesPanel` struct
+/// (`ScreenTabsPanel.h:20`) to read `this->renamingItem`, and routes to the
+/// still-stubbed `ScreenNamesPanel_eventHandlerNormal` (`:306`) /
+/// `ScreenNamesPanel_eventHandlerRenaming` (`:215`) — so both dispatch
+/// targets are unavailable. `HandlerResult` (`Panel.h:23`) is now modeled in
+/// `panel.rs` and no longer blocks it.
 pub fn ScreenNamesPanel_eventHandler() {
     todo!("port of ScreenTabsPanel.c:350")
 }

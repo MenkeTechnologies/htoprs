@@ -14,20 +14,31 @@
 //! faithful safe-Rust analogs (`memmove` → `slice::copy_within`,
 //! `strncpy`/`strnlen` inlined against the fixed byte array).
 //!
-//! `LineEditor_getText` (LineEditor.h:37) and `LineEditor_handleKey`
-//! (:118) are also ported: `handleKey` dispatches on the ncurses `KEY_*`
+//! The pure accessors `LineEditor_getText` (LineEditor.h:37) and
+//! `LineEditor_getCursor` (LineEditor.h:42) are ported as struct reads,
+//! and `LineEditor_handleKey` (:118) dispatches on the ncurses `KEY_*`
 //! integers (reproduced verbatim in `crt.rs`) to the cursor-movement and
 //! edit primitives above, so it needs no drawing substrate.
 //!
-//! `LineEditor_draw` (:209) and `LineEditor_click` (:235) depend on
-//! ncurses drawing (`attrset`, `mvaddnstr`, `LINES`, …) — that substrate
-//! is not ported, so those two remain `todo!()` stubs.
+//! `LineEditor_draw` (:209) is ported through the `Ncurses` crossterm
+//! emit shim owned by `functionbar.rs` (the same shim `panel.rs` and
+//! `screenmanager.rs` draw through): `attrset`/`mvaddnstr`/`mvaddch` map
+//! to the shim methods, `CRT_colors[FUNCTION_BAR]` to
+//! `ColorElements::FUNCTION_BAR.packed(ColorScheme::active())`, and
+//! `LINES` to `Ncurses::lines()`. `LineEditor_click` (:235) is pure
+//! cursor arithmetic over `scroll`/`len` and needs no draw substrate.
+//!
+//! Nothing in `LineEditor.c`/`.h` remains stubbed.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use std::io::{self, Write};
+
 use crate::ported::crt::{
-    KEY_BACKSPACE, KEY_CTRL, KEY_DC, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KEY_SLEFT, KEY_SRIGHT,
+    ColorElements, ColorScheme, KEY_BACKSPACE, KEY_CTRL, KEY_DC, KEY_END, KEY_HOME, KEY_LEFT,
+    KEY_RIGHT, KEY_SLEFT, KEY_SRIGHT,
 };
+use crate::ported::functionbar::Ncurses;
 
 /// Port of `#define LINEEDITOR_MAX 128` from `LineEditor.h:14`.
 pub const LINEEDITOR_MAX: usize = 128;
@@ -127,6 +138,15 @@ pub fn LineEditor_setText(this: &mut LineEditor, text: &str) {
 /// `LineEditor_setText` degrades to `""` rather than panicking.
 pub fn LineEditor_getText(this: &LineEditor) -> &str {
     std::str::from_utf8(&this.buffer[..this.len]).unwrap_or("")
+}
+
+/// Port of `LineEditor_getCursor` from `LineEditor.h:42`
+/// (`static inline size_t LineEditor_getCursor(LineEditor* this) { return this->cursor; }`).
+///
+/// Pure struct read of the `cursor` byte position (`0..=len`). Used by
+/// `ScreenTabsPanel`/`ScreensPanel` rename handlers to place the cursor.
+pub fn LineEditor_getCursor(this: &LineEditor) -> usize {
+    this.cursor
 }
 
 /// Port of `moveCursorLeft` from `LineEditor.c:51`.
@@ -360,14 +380,70 @@ pub fn LineEditor_updateScroll(this: &mut LineEditor, fieldWidth: i32) {
     }
 }
 
-/// TODO: port of `int LineEditor_draw(LineEditor* this, int startX, int fieldWidth, int attr` from `LineEditor.c:209`.
-pub fn LineEditor_draw() {
-    todo!("port of LineEditor.c:209")
+/// Port of `LineEditor_draw` from `LineEditor.c:209`.
+///
+/// Emits through the `Ncurses` crossterm shim (`functionbar.rs`): the
+/// C `attrset(CRT_colors[FUNCTION_BAR])` for `attr == -1` maps to
+/// `ColorElements::FUNCTION_BAR.packed(ColorScheme::active())`, an
+/// explicit `attr` is passed straight through, `LINES - 1` is
+/// `Ncurses::lines() - 1`, and the bottom line is painted with
+/// `mvaddnstr` (the visible buffer window) then `mvaddch` space-padding.
+/// Returns the screen column `startX + (cursor - scroll)` where the
+/// caller should place the cursor.
+pub fn LineEditor_draw(this: &LineEditor, startX: i32, fieldWidth: i32, attr: i32) -> i32 {
+    let mut out = io::stdout().lock();
+
+    if attr == -1 {
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+        );
+    } else {
+        Ncurses::attrset(&mut out, attr);
+    }
+
+    let line = Ncurses::lines() - 1;
+
+    // Display the visible portion of the buffer.
+    let mut visibleLen = this.len as i32 - this.scroll as i32;
+    if visibleLen < 0 {
+        visibleLen = 0;
+    }
+    if visibleLen > fieldWidth {
+        visibleLen = fieldWidth;
+    }
+    // `visibleStart = buffer + scroll`, bounded to `visibleLen` bytes;
+    // the clamp above keeps `scroll + visibleLen <= len`, so the slice is
+    // always within the live text region.
+    let end = this.scroll + visibleLen as usize;
+    let visibleStart = std::str::from_utf8(&this.buffer[this.scroll..end]).unwrap_or("");
+    Ncurses::mvaddnstr(&mut out, line, startX, visibleStart, visibleLen);
+
+    // Pad remaining field with spaces.
+    for i in visibleLen..fieldWidth {
+        Ncurses::mvaddch(&mut out, line, startX + i, ' ');
+    }
+
+    let _ = out.flush();
+
+    startX + (this.cursor as i32 - this.scroll as i32)
 }
 
-/// TODO: port of `void LineEditor_click(LineEditor* this, int clickX, int fieldStartX` from `LineEditor.c:235`.
-pub fn LineEditor_click() {
-    todo!("port of LineEditor.c:235")
+/// Port of `LineEditor_click` from `LineEditor.c:235`.
+///
+/// Pure cursor arithmetic: translate a screen-column click to a byte
+/// position by adding the display `scroll` offset, clamping the negative
+/// pre-field region to `0` and the tail past the text to `len`.
+pub fn LineEditor_click(this: &mut LineEditor, clickX: i32, fieldStartX: i32) {
+    let mut offset = clickX - fieldStartX;
+    if offset < 0 {
+        offset = 0;
+    }
+    let mut newCursor = this.scroll + offset as usize;
+    if newCursor > this.len {
+        newCursor = this.len;
+    }
+    this.cursor = newCursor;
 }
 
 #[cfg(test)]
@@ -702,6 +778,53 @@ mod tests {
         assert!(LineEditor_handleKey(&mut e, KEY_CTRL(b'W' as i32)));
         assert_eq!(text(&e), "foo ");
         assert_eq!(e.cursor, 4);
+    }
+
+    #[test]
+    fn getCursor_reads_cursor_position() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        assert_eq!(LineEditor_getCursor(&e), 0);
+        LineEditor_setText(&mut e, "hello"); // cursor moves to end
+        assert_eq!(LineEditor_getCursor(&e), 5);
+        moveCursorWordLeft(&mut e); // back to start of "hello"
+        assert_eq!(LineEditor_getCursor(&e), 0);
+    }
+
+    #[test]
+    fn click_maps_column_to_cursor_with_scroll() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "abcdef"); // len 6
+        e.scroll = 0;
+        // Click at column 3 in a field starting at column 0 -> cursor 3.
+        LineEditor_click(&mut e, 3, 0);
+        assert_eq!(e.cursor, 3);
+        // Click before the field start clamps offset to 0 -> cursor = scroll.
+        e.scroll = 2;
+        LineEditor_click(&mut e, 1, 5); // offset -4 -> 0
+        assert_eq!(e.cursor, 2); // scroll + 0
+        // Scroll offset is added to the in-field offset.
+        LineEditor_click(&mut e, 8, 5); // offset 3, scroll 2 -> 5
+        assert_eq!(e.cursor, 5);
+        // Clicking past the text clamps to len.
+        LineEditor_click(&mut e, 100, 5);
+        assert_eq!(e.cursor, 6); // len
+    }
+
+    #[test]
+    fn draw_returns_cursor_screen_column() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "hello"); // cursor at 5
+        e.scroll = 0;
+        // cursorX = startX + (cursor - scroll) = 10 + (5 - 0).
+        let cursor_x = LineEditor_draw(&e, 10, 20, -1);
+        assert_eq!(cursor_x, 15);
+        // With a scroll offset the returned column shifts left accordingly.
+        e.scroll = 2;
+        let cursor_x = LineEditor_draw(&e, 10, 20, 0);
+        assert_eq!(cursor_x, 13); // 10 + (5 - 2)
     }
 
     #[test]
