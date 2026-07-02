@@ -14,12 +14,20 @@
 //! faithful safe-Rust analogs (`memmove` → `slice::copy_within`,
 //! `strncpy`/`strnlen` inlined against the fixed byte array).
 //!
-//! `LineEditor_handleKey` (:118), `LineEditor_draw` (:209), and
-//! `LineEditor_click` (:235) depend on ncurses drawing / ncurses key
-//! constants (`KEY_LEFT`, `attrset`, `mvaddnstr`, `LINES`, …) — that
-//! substrate is not ported, so those three remain `todo!()` stubs.
+//! `LineEditor_getText` (LineEditor.h:37) and `LineEditor_handleKey`
+//! (:118) are also ported: `handleKey` dispatches on the ncurses `KEY_*`
+//! integers (reproduced verbatim in `crt.rs`) to the cursor-movement and
+//! edit primitives above, so it needs no drawing substrate.
+//!
+//! `LineEditor_draw` (:209) and `LineEditor_click` (:235) depend on
+//! ncurses drawing (`attrset`, `mvaddnstr`, `LINES`, …) — that substrate
+//! is not ported, so those two remain `todo!()` stubs.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+
+use crate::ported::crt::{
+    KEY_BACKSPACE, KEY_CTRL, KEY_DC, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KEY_SLEFT, KEY_SRIGHT,
+};
 
 /// Port of `#define LINEEDITOR_MAX 128` from `LineEditor.h:14`.
 pub const LINEEDITOR_MAX: usize = 128;
@@ -107,6 +115,18 @@ pub fn LineEditor_setText(this: &mut LineEditor, text: &str) {
         .unwrap_or(this.maxLen);
     this.cursor = this.len;
     this.scroll = 0;
+}
+
+/// Port of `LineEditor_getText` from `LineEditor.h:37`
+/// (`static inline char* LineEditor_getText(LineEditor* this) { return this->buffer; }`).
+///
+/// The C returns the raw `char*` to the NUL-terminated buffer; the Rust
+/// analog returns the live text region `buffer[..len]` as `&str`. The
+/// editor only ever stores ASCII (`insertChar` gates on `isprint`), so the
+/// UTF-8 decode never fails in practice; a non-UTF-8 buffer set via
+/// `LineEditor_setText` degrades to `""` rather than panicking.
+pub fn LineEditor_getText(this: &LineEditor) -> &str {
+    std::str::from_utf8(&this.buffer[..this.len]).unwrap_or("")
 }
 
 /// Port of `moveCursorLeft` from `LineEditor.c:51`.
@@ -201,9 +221,126 @@ pub fn insertChar(this: &mut LineEditor, ch: u8) -> bool {
     true
 }
 
-/// TODO: port of `bool LineEditor_handleKey(LineEditor* this, int ch` from `LineEditor.c:118`.
-pub fn LineEditor_handleKey() {
-    todo!("port of LineEditor.c:118")
+// Ctrl-key codes `LineEditor_handleKey` matches. `crt::KEY_CTRL` is a
+// `const fn`; binding its results as `const`s makes them usable as match
+// patterns (a const-fn call is not itself a pattern) without adding any
+// top-level `fn` (mirrors the same idiom in `panel.rs`).
+const LE_CTRL_B: i32 = KEY_CTRL(b'B' as i32);
+const LE_CTRL_F: i32 = KEY_CTRL(b'F' as i32);
+const LE_CTRL_A: i32 = KEY_CTRL(b'A' as i32);
+const LE_CTRL_E: i32 = KEY_CTRL(b'E' as i32);
+const LE_CTRL_W: i32 = KEY_CTRL(b'W' as i32);
+const LE_CTRL_K: i32 = KEY_CTRL(b'K' as i32);
+const LE_CTRL_U: i32 = KEY_CTRL(b'U' as i32);
+
+/// Port of `LineEditor_handleKey` from `LineEditor.c:118`.
+///
+/// Faithful transcription of the C `switch (ch)`. The ncurses `KEY_*`
+/// integers are the ones reproduced verbatim in `crt.rs`. `isspace` is
+/// inlined as the same C-locale test used by the word-movement helpers
+/// above; `isprint` is inlined as the C-locale ASCII printable range
+/// `0x20..=0x7e` (bytes `>= 0x80` are locale-dependent in C and rejected
+/// here, matching the C locale). Returns `true` when the text content
+/// changed.
+pub fn LineEditor_handleKey(this: &mut LineEditor, ch: i32) -> bool {
+    match ch {
+        KEY_LEFT | LE_CTRL_B => {
+            moveCursorLeft(this);
+            false
+        }
+
+        KEY_RIGHT | LE_CTRL_F => {
+            moveCursorRight(this);
+            false
+        }
+
+        KEY_HOME | LE_CTRL_A => {
+            this.cursor = 0;
+            false
+        }
+
+        KEY_END | LE_CTRL_E => {
+            this.cursor = this.len;
+            false
+        }
+
+        KEY_SLEFT => {
+            // Shift+Left (ncurses stock) and Ctrl+Left (htop home grown)
+            moveCursorWordLeft(this);
+            false
+        }
+
+        KEY_SRIGHT => {
+            // Shift+Right (ncurses stock) and Ctrl+Right (htop home grown)
+            moveCursorWordRight(this);
+            false
+        }
+
+        KEY_DC => deleteCharAt(this), // Delete
+
+        KEY_BACKSPACE | 127 => deleteCharBefore(this), // DEL / Backspace in some terminals
+
+        LE_CTRL_W => {
+            // Delete word before cursor (like bash Ctrl-W)
+            let end = this.cursor;
+            // skip whitespace before cursor
+            while this.cursor > 0
+                && matches!(
+                    this.buffer[this.cursor - 1],
+                    b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'
+                )
+            {
+                this.cursor -= 1;
+            }
+            // skip non-whitespace
+            while this.cursor > 0
+                && !matches!(
+                    this.buffer[this.cursor - 1],
+                    b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'
+                )
+            {
+                this.cursor -= 1;
+            }
+            if this.cursor == end {
+                return false;
+            }
+            let deleted = end - this.cursor;
+            // memmove(buffer + cursor, buffer + end, len - end + 1)
+            this.buffer.copy_within(end..this.len + 1, this.cursor);
+            this.len -= deleted;
+            true
+        }
+
+        LE_CTRL_K => {
+            // Delete from cursor to end of line
+            if this.cursor >= this.len {
+                return false;
+            }
+            this.buffer[this.cursor] = b'\0';
+            this.len = this.cursor;
+            true
+        }
+
+        LE_CTRL_U => {
+            // Delete from start of line to cursor
+            if this.cursor == 0 {
+                return false;
+            }
+            // memmove(buffer, buffer + cursor, len - cursor + 1)
+            this.buffer.copy_within(this.cursor..this.len + 1, 0);
+            this.len -= this.cursor;
+            this.cursor = 0;
+            true
+        }
+
+        _ => {
+            if ch > 0 && ch < 256 && matches!(ch as u8, 0x20..=0x7e) {
+                insertChar(this, ch as u8)
+            } else {
+                false
+            }
+        }
+    }
 }
 
 /// Port of `LineEditor_updateScroll` from `LineEditor.c:197`.
@@ -480,5 +617,106 @@ mod tests {
         e.scroll = 2;
         LineEditor_updateScroll(&mut e, 5); // 2 <= 4 < 7
         assert_eq!(e.scroll, 2);
+    }
+
+    #[test]
+    fn getText_returns_buffer_text() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        assert_eq!(LineEditor_getText(&e), "");
+        LineEditor_setText(&mut e, "hello world");
+        assert_eq!(LineEditor_getText(&e), "hello world");
+        // Reflects edits: delete the trailing 'd'.
+        e.cursor = e.len;
+        assert!(deleteCharBefore(&mut e));
+        assert_eq!(LineEditor_getText(&e), "hello worl");
+    }
+
+    #[test]
+    fn handleKey_printable_inserts_and_advances_cursor() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        // A printable char inserts and returns true (content changed).
+        assert!(LineEditor_handleKey(&mut e, b'a' as i32));
+        assert!(LineEditor_handleKey(&mut e, b'b' as i32));
+        assert_eq!(text(&e), "ab");
+        assert_eq!(e.len, 2);
+        assert_eq!(e.cursor, 2); // cursor advanced past each insert
+        // A non-printable control byte (that has no dedicated arm) is ignored.
+        assert!(!LineEditor_handleKey(&mut e, 0x01_000)); // out of 0..256 range
+        assert_eq!(text(&e), "ab");
+    }
+
+    #[test]
+    fn handleKey_backspace_deletes_before_cursor() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "abc"); // cursor at end (3)
+        assert!(LineEditor_handleKey(&mut e, KEY_BACKSPACE));
+        assert_eq!(text(&e), "ab");
+        assert_eq!(e.cursor, 2);
+        // 127 (DEL) is the same backspace path.
+        assert!(LineEditor_handleKey(&mut e, 127));
+        assert_eq!(text(&e), "a");
+        // At start, backspace is a no-op returning false.
+        e.cursor = 0;
+        assert!(!LineEditor_handleKey(&mut e, KEY_BACKSPACE));
+        assert_eq!(text(&e), "a");
+    }
+
+    #[test]
+    fn handleKey_delete_removes_char_at_cursor() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "abc");
+        e.cursor = 1;
+        assert!(LineEditor_handleKey(&mut e, KEY_DC)); // deletes 'b'
+        assert_eq!(text(&e), "ac");
+        assert_eq!(e.cursor, 1);
+    }
+
+    #[test]
+    fn handleKey_arrows_move_cursor_without_changing_text() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "abc"); // cursor 3
+        assert!(!LineEditor_handleKey(&mut e, KEY_LEFT)); // false: no content change
+        assert_eq!(e.cursor, 2);
+        assert!(!LineEditor_handleKey(&mut e, KEY_LEFT));
+        assert_eq!(e.cursor, 1);
+        assert!(!LineEditor_handleKey(&mut e, KEY_RIGHT));
+        assert_eq!(e.cursor, 2);
+        // HOME / END jump to the ends.
+        assert!(!LineEditor_handleKey(&mut e, KEY_HOME));
+        assert_eq!(e.cursor, 0);
+        assert!(!LineEditor_handleKey(&mut e, KEY_END));
+        assert_eq!(e.cursor, 3);
+        assert_eq!(text(&e), "abc"); // text untouched by movement
+    }
+
+    #[test]
+    fn handleKey_ctrl_w_deletes_word_before_cursor() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "foo bar"); // cursor at end
+        assert!(LineEditor_handleKey(&mut e, KEY_CTRL(b'W' as i32)));
+        assert_eq!(text(&e), "foo ");
+        assert_eq!(e.cursor, 4);
+    }
+
+    #[test]
+    fn handleKey_ctrl_k_and_ctrl_u_kill_line_regions() {
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "abcdef");
+        e.cursor = 3;
+        // Ctrl-K: delete from cursor to end -> "abc".
+        assert!(LineEditor_handleKey(&mut e, KEY_CTRL(b'K' as i32)));
+        assert_eq!(text(&e), "abc");
+        assert_eq!(e.len, 3);
+        // Ctrl-U: delete from start to cursor -> "" (cursor still at 3).
+        assert!(LineEditor_handleKey(&mut e, KEY_CTRL(b'U' as i32)));
+        assert_eq!(text(&e), "");
+        assert_eq!(e.cursor, 0);
     }
 }

@@ -1331,6 +1331,13 @@ pub static CRT_degreeSign: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 /// set by [`CRT_init`] from `TERM` (20 for the linux console, else 5).
 pub static CRT_scrollHAmount: AtomicI32 = AtomicI32::new(5);
 
+/// Port of `int CRT_scrollWheelVAmount = 10;` (CRT.c:956, declared
+/// `extern int CRT_scrollWheelVAmount;` at CRT.h:211) — the number of rows
+/// a mouse-wheel notch scrolls vertically. A plain global in C (mutated by
+/// nothing in the default build); an `AtomicI32` here so the future
+/// `Panel_onKey` wheel arms can read it without a `&mut` handle.
+pub static CRT_scrollWheelVAmount: AtomicI32 = AtomicI32::new(10);
+
 /// Models htop's `CRT_retainScreenOnExit` — when set, the alternate
 /// screen is not entered/left so htop's final frame stays on the
 /// terminal after exit.

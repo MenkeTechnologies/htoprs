@@ -186,6 +186,17 @@ pub fn Panel_init(this: &mut Panel, x: i32, y: i32, w: i32, h: i32, fuBar: Optio
     this.selectionColorId = ColorElements::PANEL_SELECTION_FOCUS;
 }
 
+/// Port of the `Panel_setDefaultBar` macro from `Panel.h:86`:
+/// `do { (this_)->currentBar = (this_)->defaultBar; } while (0)`.
+///
+/// C aliases the two `FunctionBar*` pointers to the one shared bar; the
+/// `Vec`-model owns each bar via `Option<FunctionBar>`, so `currentBar`
+/// takes a clone of `defaultBar` — reproducing the observable draw exactly
+/// as [`Panel_init`] already does when it seeds both from `fuBar`.
+pub fn Panel_setDefaultBar(this: &mut Panel) {
+    this.currentBar = this.defaultBar.clone();
+}
+
 /// TODO: port of `void Panel_done(Panel* this)` from `Panel.c:73`.
 /// Frees `eventHandlerState`/`items`/`defaultBar`/`header` — all released
 /// by `Drop` in Rust, so there is no algorithm to port.
@@ -820,6 +831,31 @@ mod tests {
         assert_eq!((p.w, p.h), (10, 5));
         assert!(p.items.is_empty());
         assert!(p.needsRedraw);
+    }
+
+    #[test]
+    fn set_default_bar_restores_current_from_default() {
+        let default_bar = FunctionBar {
+            functions: vec!["DEFAULT".into()],
+            keys: vec!["F1".into()],
+            events: vec![1],
+            staticData: false,
+        };
+        let mut p = Panel_new(0, 0, 10, 5, Some(default_bar));
+        // Swap currentBar out to a different bar (as an IncSet would).
+        p.currentBar = Some(FunctionBar {
+            functions: vec!["SEARCH".into()],
+            keys: vec!["Esc".into()],
+            events: vec![2],
+            staticData: false,
+        });
+        Panel_setDefaultBar(&mut p);
+        // currentBar is now the defaultBar's content again.
+        assert_eq!(
+            p.currentBar.as_ref().unwrap().functions,
+            vec!["DEFAULT".to_string()]
+        );
+        assert!(p.defaultBar.is_some());
     }
 
     // ── list ops ──────────────────────────────────────────────────────
