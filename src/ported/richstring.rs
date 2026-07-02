@@ -32,34 +32,44 @@
 //! `cchar_t` vs. plain `chtype`) have identical observable behavior — the
 //! wide variant is the primary and is what is ported.
 //!
-//! # Unicode substrate (documented approximations, no new dependency)
+//! # Unicode substrate
 //!
-//! htop leans on three libc primitives this crate has no dependency for:
+//! htop leans on three libc primitives:
 //!
+//! - `wcwidth`: display-column width, needed by
+//!   [`RichString_appendnWideColumns`]. Ported faithfully in [`wcwidth`]
+//!   via the `unicode-width` crate (a pure-Rust, vendorable Unicode
+//!   width-table implementation): wide CJK/emoji code points count as 2
+//!   columns, combining / zero-width marks as 0, normal characters as 1,
+//!   and control characters as `-1` — reproducing libc `wcwidth(3)` in a
+//!   UTF-8 (non-CJK) locale. So `RichString_appendnWideColumns` breaks on
+//!   the real column budget for wide text, matching htop: a `'世'`
+//!   (`wcwidth == 2`) consumes two columns and is skipped when only one
+//!   column remains, exactly as the C loop's `cwidth > *columns` test
+//!   dictates.
 //! - `iswprint` / `isprint`: character-printability classification used to
 //!   replace non-printable input with `U+FFFD`. `isprint` is ported
 //!   exactly (C-locale printable range `0x20..=0x7e`). `iswprint` is
-//!   approximated as `!char::is_control()`, which matches glibc for the
-//!   C0/C1 control range that htop's replacement targets (control bytes in
-//!   process names, meter text, etc.); it diverges from glibc only for
-//!   exotic unassigned / format code points, which do not occur in htop's
-//!   real input paths.
-//! - `wcwidth`: display-column width, needed by
-//!   [`RichString_appendnWideColumns`]. A faithful `wcwidth` requires
-//!   Unicode East-Asian-Width tables that are unavailable without adding a
-//!   dependency, so — per the port brief — the char-append structure is
-//!   ported faithfully and the column count uses a width of 1 per
-//!   (post-replacement, printable) character. This is exact for narrow
-//!   text (the overwhelming majority of htop's meter/column output) and
-//!   diverges only for wide (CJK/emoji, `wcwidth == 2`) and combining
-//!   (`wcwidth == 0`) code points. Nothing is invented: the column count
-//!   is precisely "characters written", documented here and at the call.
+//!   approximated as `!char::is_control()`. The `unicode-width` crate was
+//!   evaluated as a tightening: its `width()` returns `None` for exactly
+//!   the Unicode `Cc` control range — the same set as `char::is_control()`
+//!   — so `width().is_some()` is identical to `!char::is_control()` and
+//!   offers no fidelity gain (verified against v0.2.2: NUL, C0, and C1
+//!   controls all map to `None`; space, ASCII, combining marks, PUA, wide
+//!   CJK, emoji, and noncharacters all map to `Some(_)`). Both
+//!   approximations agree with glibc for the C0/C1 control range htop's
+//!   replacement targets and diverge only for exotic unassigned /
+//!   noncharacter code points that do not occur in htop's real input
+//!   paths. `iswprint` is therefore left unchanged (no regression), not
+//!   switched to a table that would classify identically.
 //!
 //! `mbstowcs_nonfatal` (the multibyte→wide decode) is ported faithfully:
 //! it decodes UTF-8, emits exactly one `U+FFFD` per contiguous run of
 //! invalid bytes, and stops at a NUL — mirroring the `mbrtowc` loop.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+
+use unicode_width::UnicodeWidthChar;
 
 /// `RICHSTRING_MAXLEN` from `RichString.h:40`. The size (minus the
 /// terminator slot) of htop's inline `chstr` buffer and the threshold at
@@ -108,20 +118,6 @@ impl RichString {
         }
     }
 
-    /// Rust analog of the `RichString_setChar(this, at, ch)` macro
-    /// (`RichString.h:30`): `chptr[at] = { .chars = { ch, 0 } }`, i.e. the
-    /// cell's attribute is zeroed. Grows the owned buffer so index `at`
-    /// exists — in C this is always in-bounds because `chstr` is physically
-    /// `RICHSTRING_MAXLEN + 1` cells and `extendLen` sizes the heap buffer;
-    /// here the buffer grows on demand, filling any gap with null cells
-    /// (which callers overwrite before reading).
-    fn set_char(&mut self, at: usize, ch: char) {
-        if at >= self.chptr.len() {
-            self.chptr.resize(at + 1, RichCell::default());
-        }
-        self.chptr[at] = RichCell { chars: ch, attr: 0 };
-    }
-
     /// Approximation of the libc `iswprint(3)` call sites in
     /// `RichString.c` (lines 112, 130): treats every non-control character
     /// as printable. See the module docs for the precise divergence from
@@ -136,21 +132,70 @@ impl RichString {
     fn isprint(b: u8) -> bool {
         (0x20..=0x7e).contains(&b)
     }
-
-    /// Column width used by [`RichString_appendnWideColumns`] in place of
-    /// libc `wcwidth(3)` (`RichString.c:131`). Returns 1 for every
-    /// character: after the `iswprint` replacement all cells hold printable
-    /// code points, and a faithful multi-width `wcwidth` needs Unicode
-    /// East-Asian-Width tables unavailable without a dependency. Exact for
-    /// narrow text; see the module docs for the wide/combining divergence.
-    fn column_width(_c: char) -> i32 {
-        1
-    }
 }
 
 impl Default for RichString {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Port of the `RichString_setChar(this, at, ch)` macro (`RichString.h:30`,
+/// `HAVE_LIBNCURSESW` variant): `this->chptr[at] = (CharType){ .chars = {
+/// ch, 0 } }`, i.e. the cell's attribute is zeroed. Exposed as a free fn
+/// because `RichString_setChar` appears in the C-name snapshot (invoked in
+/// `RichString.c` and `Meter.c`), so the meter/panel draw layer calls it by
+/// this exact name.
+///
+/// Grows the owned buffer so index `at` exists — in C this is always
+/// in-bounds because `chstr` is physically `RICHSTRING_MAXLEN + 1` cells and
+/// `extendLen` sizes the heap buffer; here the buffer grows on demand,
+/// filling any gap with null cells (which callers overwrite before reading).
+pub fn RichString_setChar(this: &mut RichString, at: usize, ch: char) {
+    if at >= this.chptr.len() {
+        this.chptr.resize(at + 1, RichCell::default());
+    }
+    this.chptr[at] = RichCell { chars: ch, attr: 0 };
+}
+
+/// Port of the `RichString_getCharVal(this, i)` macro (`RichString.h:29`,
+/// `HAVE_LIBNCURSESW` variant): `(this).chptr[i].chars[0]` — the primary
+/// code point of cell `i`. Exposed as a free fn because `RichString_getCharVal`
+/// appears in the C-name snapshot (invoked in `Meter.c` and `Table.c`).
+pub fn RichString_getCharVal(this: &RichString, i: usize) -> char {
+    this.chptr[i].chars
+}
+
+/// Port of the `RichString_size(this)` macro (`RichString.h:14`):
+/// `(this)->chlen`. Exposed as a free fn because `RichString_size` appears in
+/// the C-name snapshot (invoked in `Panel.c`, `Process.c`, `Row.c`,
+/// `Table.c`). In C this macro takes a pointer; the value-taking companion is
+/// [`RichString_sizeVal`]. That pointer-vs-value distinction has no analog in
+/// safe Rust, so both take `&RichString` and return `chlen`.
+pub fn RichString_size(this: &RichString) -> i32 {
+    this.chlen
+}
+
+/// Port of the `RichString_sizeVal(this)` macro (`RichString.h:15`):
+/// `(this).chlen`. Exposed as a free fn because `RichString_sizeVal` appears
+/// in the C-name snapshot (invoked in `Meter.c` and `Panel.c`). Identical
+/// body to [`RichString_size`]; see that fn for the pointer-vs-value note.
+pub fn RichString_sizeVal(this: &RichString) -> i32 {
+    this.chlen
+}
+
+/// Port of the libc `wcwidth(3)` call at `RichString.c:131`
+/// (`int cwidth = wcwidth(c);`). Reproduces `wcwidth` in a UTF-8 (non-CJK)
+/// locale via the `unicode-width` crate's Unicode width tables:
+/// `UnicodeWidthChar::width` returns `None` for control characters (mapped
+/// to `-1`, as libc does for non-printable input), `Some(0)` for combining /
+/// zero-width marks, `Some(2)` for wide CJK/emoji code points, and `Some(1)`
+/// for normal characters. Exposed as a free fn because `wcwidth` appears in
+/// the C-name snapshot (invoked in `RichString.c`).
+pub fn wcwidth(wc: char) -> i32 {
+    match UnicodeWidthChar::width(wc) {
+        Some(w) => w as i32,
+        None => -1,
     }
 }
 
@@ -160,9 +205,9 @@ impl Default for RichString {
 /// between the inline `chstr` buffer and a `xMalloc`/`xRealloc` heap buffer
 /// (with `memcpy`/`free` bookkeeping); the owned `Vec` subsumes both, so
 /// those branches collapse into the single buffer growth done by
-/// `RichString::set_char`.
+/// [`RichString_setChar`].
 pub fn RichString_extendLen(this: &mut RichString, len: usize) {
-    this.set_char(len, '\0');
+    RichString_setChar(this, len, '\0');
     this.chlen = len as i32;
 }
 
@@ -172,7 +217,7 @@ pub fn RichString_extendLen(this: &mut RichString, len: usize) {
 /// `chlen`. Otherwise defer to [`RichString_extendLen`].
 pub fn RichString_setLen(this: &mut RichString, len: usize) {
     if len < RICHSTRING_MAXLEN && (this.chlen as usize) < RICHSTRING_MAXLEN {
-        this.set_char(len, '\0');
+        RichString_setChar(this, len, '\0');
         this.chlen = len as i32;
     } else {
         RichString_extendLen(this, len);
@@ -301,13 +346,13 @@ pub fn RichString_writeFromWide(
 /// budget. Sets `*columns` to the number of columns written and returns the
 /// number of characters written.
 ///
-/// The `wcwidth`-based column accounting is ported structurally, but the
-/// per-character width uses `RichString::column_width` (a fixed 1) rather
-/// than libc `wcwidth` — a faithful multi-width `wcwidth` needs Unicode
-/// East-Asian-Width tables unavailable without a dependency. So `*columns`
-/// is exactly "characters written" here: identical to htop for narrow
-/// text, diverging only for wide/combining code points. See the module
-/// docs.
+/// The `wcwidth`-based column accounting is ported line-for-line: each
+/// decoded (post-`iswprint`-replacement) code point's display width comes
+/// from [`wcwidth`], the loop breaks before a character whose width exceeds
+/// the remaining budget (`cwidth > *columns`), the string is truncated to
+/// what fit, and `*columns` returns the number of columns written. Wide
+/// (CJK/emoji, width 2) and combining (width 0) code points are accounted
+/// exactly as htop does.
 pub fn RichString_appendnWideColumns(
     this: &mut RichString,
     attrs: i32,
@@ -331,7 +376,7 @@ pub fn RichString_appendnWideColumns(
         } else {
             '\u{FFFD}'
         };
-        let cwidth = RichString::column_width(c);
+        let cwidth = wcwidth(c);
         if cwidth > *columns {
             break;
         }
@@ -402,10 +447,7 @@ pub fn RichString_appendChr(this: &mut RichString, attrs: i32, c: char, count: i
     let new_len = from + count;
     RichString_setLen(this, new_len as usize);
     for i in (from as usize)..(new_len as usize) {
-        this.chptr[i] = RichCell {
-            chars: c,
-            attr: attrs,
-        };
+        this.chptr[i] = RichCell { chars: c, attr: attrs };
     }
 }
 
@@ -701,7 +743,23 @@ mod tests {
         assert_eq!(mbstowcs_nonfatal(&[0xed, 0xa0, 0x80]), vec!['\u{FFFD}']);
     }
 
-    // ── appendnWideColumns (char-width fallback: 1 col per char) ───────
+    // ── wcwidth (faithful, via unicode-width) ─────────────────────────
+
+    #[test]
+    fn wcwidth_narrow_wide_combining_control() {
+        assert_eq!(wcwidth('A'), 1); // ASCII narrow
+        assert_eq!(wcwidth(' '), 1);
+        assert_eq!(wcwidth('é'), 1); // precomposed, narrow
+        assert_eq!(wcwidth('世'), 2); // wide CJK
+        assert_eq!(wcwidth('本'), 2);
+        assert_eq!(wcwidth('\u{1F600}'), 2); // emoji, wide
+        assert_eq!(wcwidth('\u{0301}'), 0); // combining acute accent
+        assert_eq!(wcwidth('\u{200B}'), 0); // zero-width space
+        assert_eq!(wcwidth('\n'), -1); // control -> non-printable
+        assert_eq!(wcwidth('\0'), -1);
+    }
+
+    // ── appendnWideColumns (faithful wcwidth column accounting) ────────
 
     #[test]
     fn append_wide_columns_respects_budget_narrow_text() {
@@ -733,6 +791,87 @@ mod tests {
         assert_eq!(n, 5);
         assert_eq!(cols, 5);
         assert_eq!(text(&r), "hello");
+    }
+
+    #[test]
+    fn append_wide_columns_wide_char_costs_two_columns() {
+        // "世" is 2 columns wide; a 4-column budget fits "世界" (2 chars, 4 cols)
+        let mut r = RichString::new();
+        let mut cols = 4;
+        let n = RichString_appendnWideColumns(&mut r, 0, "世界".as_bytes(), 6, &mut cols);
+        assert_eq!(n, 2); // 2 characters written
+        assert_eq!(cols, 4); // 4 columns consumed
+        assert_eq!(text(&r), "世界");
+    }
+
+    #[test]
+    fn append_wide_columns_wide_char_breaks_on_odd_budget() {
+        // 3-column budget: "世" (2) fits leaving 1, next "界" (2) > 1 -> break.
+        let mut r = RichString::new();
+        let mut cols = 3;
+        let n = RichString_appendnWideColumns(&mut r, 0, "世界".as_bytes(), 6, &mut cols);
+        assert_eq!(n, 1); // only the first wide char fit
+        assert_eq!(cols, 2); // 2 columns written (not 3)
+        assert_eq!(text(&r), "世");
+        assert_eq!(r.chlen, 1);
+    }
+
+    #[test]
+    fn append_wide_columns_wide_char_needs_two_columns_min() {
+        // 1-column budget can't hold a width-2 char at all.
+        let mut r = RichString::new();
+        let mut cols = 1;
+        let n = RichString_appendnWideColumns(&mut r, 0, "世".as_bytes(), 3, &mut cols);
+        assert_eq!(n, 0);
+        assert_eq!(cols, 0);
+        assert_eq!(r.chlen, 0);
+    }
+
+    #[test]
+    fn append_wide_columns_combining_mark_costs_zero() {
+        // "e" (1) + U+0301 combining acute (0) = 1 column for 2 chars.
+        let mut r = RichString::new();
+        let mut cols = 1;
+        let n = RichString_appendnWideColumns(&mut r, 0, "e\u{0301}".as_bytes(), 3, &mut cols);
+        assert_eq!(n, 2); // both code points written
+        assert_eq!(cols, 1); // only 1 column consumed
+        assert_eq!(text(&r), "e\u{0301}");
+    }
+
+    // ── setChar / getCharVal / size / sizeVal accessors ───────────────
+
+    #[test]
+    fn set_char_writes_cell_and_zeroes_attr() {
+        let mut r = ascii("abc");
+        r.chptr[1].attr = 99; // dirty the attr first
+        RichString_setChar(&mut r, 1, 'Z');
+        assert_eq!(r.chptr[1].chars, 'Z');
+        assert_eq!(r.chptr[1].attr, 0); // setChar zeroes the attribute
+    }
+
+    #[test]
+    fn set_char_grows_buffer_on_demand() {
+        let mut r = RichString::new();
+        RichString_setChar(&mut r, 500, 'q'); // index past current buffer
+        assert!(r.chptr.len() >= 501);
+        assert_eq!(r.chptr[500].chars, 'q');
+    }
+
+    #[test]
+    fn get_char_val_returns_primary_codepoint() {
+        let mut r = RichString::new();
+        RichString_appendWide(&mut r, 0, "a世b".as_bytes());
+        assert_eq!(RichString_getCharVal(&r, 0), 'a');
+        assert_eq!(RichString_getCharVal(&r, 1), '世');
+        assert_eq!(RichString_getCharVal(&r, 2), 'b');
+    }
+
+    #[test]
+    fn size_and_size_val_return_chlen() {
+        let r = ascii("hello");
+        assert_eq!(RichString_size(&r), 5);
+        assert_eq!(RichString_sizeVal(&r), 5);
+        assert_eq!(RichString_size(&RichString::new()), 0);
     }
 
     // ── rewind / length management ────────────────────────────────────

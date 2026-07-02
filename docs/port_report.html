@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T07:02:02Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T07:31:41Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">119</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">498</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">127</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">490</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">10.89%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">11.62%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">67</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -89,7 +89,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>BacktraceScreen.c</code></td><td>3</td><td>14</td><td>17</td><td>18%</td></tr>
           <tr><td><code>BatteryMeter.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
           <tr><td><code>CPUMeter.c</code></td><td>1</td><td>17</td><td>18</td><td>6%</td></tr>
-          <tr><td><code>CRT.c</code></td><td>2</td><td>17</td><td>19</td><td>11%</td></tr>
+          <tr><td><code>CRT.c</code></td><td>10</td><td>9</td><td>19</td><td>53%</td></tr>
           <tr><td><code>CategoriesPanel.c</code></td><td>0</td><td>9</td><td>9</td><td>0%</td></tr>
           <tr><td><code>ColorsPanel.c</code></td><td>0</td><td>3</td><td>3</td><td>0%</td></tr>
           <tr><td><code>ColumnsPanel.c</code></td><td>0</td><td>7</td><td>7</td><td>0%</td></tr>
@@ -154,12 +154,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-02T07:02:02Z",
+  "generated": "2026-07-02T07:31:41Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1093,
-  "ported": 119,
-  "stubbed": 498,
-  "coverage_pct": 10.89,
+  "ported": 127,
+  "stubbed": 490,
+  "coverage_pct": 11.62,
   "files_started": 67,
   "per_file": [
     {
@@ -212,8 +212,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "CRT.c",
-      "ported": 2,
-      "stubbed": 17,
+      "ported": 10,
+      "stubbed": 9,
       "defined": 19
     },
     {
