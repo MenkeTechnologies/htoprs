@@ -219,7 +219,12 @@ mod tests {
     fn meter(name: &'static str, existingCPUs: u32) -> Meter {
         Meter {
             name,
-            host: Machine { existingCPUs },
+            uiName: name,
+            param: 0,
+            host: Machine {
+                existingCPUs,
+                settings: Settings { countCPUsFromOne: false },
+            },
         }
     }
 
