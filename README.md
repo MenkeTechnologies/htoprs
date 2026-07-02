@@ -66,9 +66,12 @@ state char), `LineEditor.c` (text-buffer editing and cursor motion),
 `Row.c` (`Row_printPercentage`). Functions that need still-unported substrate
 (ncurses/`RichString` drawing, `CRT` colors, `Panel`, `Object` vtables,
 syscalls) remain honest `todo!()` stubs; the rest of the C source is likewise
-scaffolded with stubs so the full surface is laid out. Overall and per-file
-coverage — real ports vs stubs — lives in `docs/port_report.html` (derived
-from source at run time — nothing hardcoded).
+scaffolded with stubs so the full surface is laid out. Further parallel passes
+have filled in the pure-logic functions of more files — meter sum/mode math,
+`FunctionBar` widths, `Object_isA`, and `Settings`/`Action`/`Scheduling`/
+`Machine`/`GPUMeter` helpers among them — each verified against the port gate
+and unit tests. Overall and per-file coverage — real ports vs stubs — lives in
+`docs/port_report.html` (derived from source at run time — nothing hardcoded).
 
 **`XUtils.c`** — string / math utilities:
 

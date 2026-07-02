@@ -66,6 +66,38 @@ pub fn Meter_humanUnit(mut value: f64) -> String {
     format!("{:.*}{}", precision, value, UNIT_PREFIXES[i])
 }
 
+/// A minimal model of htop's `struct Meter_` (`Meter.h:111`) holding only
+/// the two fields [`Meter_computeSum`] reads: `values` (the per-item value
+/// array, C `double* values`) and `curItems` (C `uint8_t curItems`, the
+/// number of live entries at the front of `values`). Every other field of
+/// the C struct — `super`, `draw`, `host`, `caption`, `mode`, `param`,
+/// `drawData`, `h`, `columnWidthCount`, `curAttributes`, `txtBuffer`,
+/// `total`, `meterData` — is omitted; it is substrate this pure-math port
+/// does not touch.
+pub struct Meter {
+    pub values: Vec<f64>,
+    pub curItems: u8,
+}
+
+/// Port of `static double Meter_computeSum(const Meter* this)` from
+/// `Meter.c:51`. Sums the strictly-positive live values
+/// (`sumPositiveValues(this->values, this->curItems)`) and clamps the
+/// result to `DBL_MAX` so IEEE-754 rounding cannot yield infinity.
+///
+/// The C `assert(this->curItems > 0)` and `assert(this->values)` are
+/// debug-only preconditions (not input validation), so they are dropped —
+/// the same treatment [`Meter_humanUnit`] gives its `assert`.
+pub fn Meter_computeSum(this: &Meter) -> f64 {
+    let sum = crate::ported::xutils::sumPositiveValues(&this.values[..this.curItems as usize]);
+    // Prevent rounding to infinity in IEEE 754. `MINIMUM(DBL_MAX, sum)`
+    // expands to `((DBL_MAX) < (sum) ? (DBL_MAX) : (sum))` (`Macros.h:17`).
+    if f64::MAX < sum {
+        f64::MAX
+    } else {
+        sum
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +155,36 @@ mod tests {
         // with prefix 'Q'; 5000 > 99.9 => prec 0 => "5000Q".
         let v = 5000.0 * f64::powi(1024.0, 9);
         assert_eq!(Meter_humanUnit(v), "5000Q");
+    }
+
+    #[test]
+    fn compute_sum_ignores_negatives_and_nan() {
+        // sumPositiveValues skips values <= 0 and NaN: 5 + 2 = 7.
+        let m = Meter {
+            values: vec![5.0, -3.0, f64::NAN, 2.0],
+            curItems: 4,
+        };
+        assert_eq!(Meter_computeSum(&m), 7.0);
+    }
+
+    #[test]
+    fn compute_sum_honors_cur_items() {
+        // Only the first curItems entries are summed; trailing 100.0 unused.
+        let m = Meter {
+            values: vec![1.0, 2.0, 100.0],
+            curItems: 2,
+        };
+        assert_eq!(Meter_computeSum(&m), 3.0);
+    }
+
+    #[test]
+    fn compute_sum_clamps_to_dbl_max() {
+        // Two DBL_MAX positives overflow to +inf; MINIMUM(DBL_MAX, inf)
+        // picks DBL_MAX since DBL_MAX < inf.
+        let m = Meter {
+            values: vec![f64::MAX, f64::MAX],
+            curItems: 2,
+        };
+        assert_eq!(Meter_computeSum(&m), f64::MAX);
     }
 }

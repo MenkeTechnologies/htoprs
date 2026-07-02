@@ -1,15 +1,75 @@
-//! Stub scaffold for `Action.c` — NOT yet ported.
+//! Partial port of `Action.c` — htop's keybinding action handlers.
 //!
-//! Every `pub fn` below is a placeholder (`todo!()`) named after a real
-//! htop C function so the port-purity gate accepts the module and the
-//! port surface is laid out. Replace each stub with a faithful port of
-//! the C body, updating the signature and the doc comment to `Port of
-//! `Action.c`:<line>.` as you go. `gen_port_report.py` counts these
-//! `todo!()` bodies as *stubbed*, not *ported*, so scaffolding does not
-//! inflate coverage.
+//! C names are preserved verbatim (htop uses `CamelCase_snake` and
+//! `camelCase`), so `non_snake_case` is allowed for the whole module —
+//! matching the spec name-for-name is the point of the port.
+//!
+//! `Action.c` is almost entirely UI glue: nearly every `actionXxx`
+//! handler drives a `Panel`/`ScreenManager`, mutates a `Settings`/
+//! `Machine`/`Table`, calls ncurses (`clear`, `attrset`, `refresh`,
+//! `beep`, `napms`), spawns child screens (lsof/strace/env/command),
+//! or issues syscalls (`getpwnam`, signals). None of that substrate is
+//! ported, so those handlers stay as their exact `todo!()` stubs.
+//!
+//! What *is* faithfully portable in safe Rust:
+//! - The `Htop_Reaction` bit-flag set from `Action.h:21` (pure data).
+//! - `State`'s three `bool` fields (`Action.h:41`), which two toggle
+//!   handlers flip. `State` is modeled as a minimal plain struct
+//!   holding only those fields; the omitted members are the substrate
+//!   pointers `host` (`Machine*`), `mainPanel` (`MainPanel*`), `header`
+//!   (`Header*`) and `failedUpdate` (`const char*`), none of which the
+//!   ported handlers touch.
+//! - `actionQuit`, whose `State*` argument is `ATTR_UNUSED` — its full
+//!   behavior is returning the `HTOP_QUIT` constant.
+//!
+//! `gen_port_report.py` counts remaining `todo!()` bodies as *stubbed*,
+//! not *ported*, so the scaffold does not inflate coverage.
 #![allow(non_snake_case)]
+#![allow(non_camel_case_types)] // `Htop_Reaction` mirrors the C type name verbatim
 #![allow(dead_code)]
 
+/// Port of the `Htop_Reaction` enum from `Action.h:21`.
+///
+/// The C enum's members are OR-combined at every `return` site
+/// (`return HTOP_RESIZE | HTOP_KEEP_FOLLOWING;`), so it is used as a
+/// bit-flag set rather than a discriminant. A C `enum` has type `int`;
+/// all defined values are non-negative and fit in a byte, so a `u32`
+/// alias reproduces the arithmetic exactly while keeping the OR
+/// semantics.
+pub type Htop_Reaction = u32;
+
+/// `HTOP_OK = 0x00` — `Action.h:22`.
+pub const HTOP_OK: Htop_Reaction = 0x00;
+/// `HTOP_REFRESH = 0x01` — `Action.h:23`.
+pub const HTOP_REFRESH: Htop_Reaction = 0x01;
+/// `HTOP_RECALCULATE = 0x02 | HTOP_REFRESH` — `Action.h:24`.
+pub const HTOP_RECALCULATE: Htop_Reaction = 0x02 | HTOP_REFRESH;
+/// `HTOP_SAVE_SETTINGS = 0x04` — `Action.h:25`.
+pub const HTOP_SAVE_SETTINGS: Htop_Reaction = 0x04;
+/// `HTOP_KEEP_FOLLOWING = 0x08` — `Action.h:26`.
+pub const HTOP_KEEP_FOLLOWING: Htop_Reaction = 0x08;
+/// `HTOP_QUIT = 0x10` — `Action.h:27`.
+pub const HTOP_QUIT: Htop_Reaction = 0x10;
+/// `HTOP_REDRAW_BAR = 0x20` — `Action.h:28`.
+pub const HTOP_REDRAW_BAR: Htop_Reaction = 0x20;
+/// `HTOP_UPDATE_PANELHDR = 0x40 | HTOP_REFRESH` — `Action.h:29`.
+pub const HTOP_UPDATE_PANELHDR: Htop_Reaction = 0x40 | HTOP_REFRESH;
+/// `HTOP_RESIZE = 0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR`
+/// — `Action.h:30`.
+pub const HTOP_RESIZE: Htop_Reaction =
+    0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
+
+/// Minimal model of `State` from `Action.h:35`.
+///
+/// Only the three `bool` fields are modeled, because the ported
+/// handlers touch nothing else. Omitted (substrate) members:
+/// `host: *mut Machine`, `mainPanel: *mut MainPanel`,
+/// `header: *mut Header`, `failedUpdate: *const c_char`.
+pub struct State {
+    pub pauseUpdate: bool,
+    pub hideSelection: bool,
+    pub hideMeters: bool,
+}
 
 /// TODO: port of `Object* Action_pickFromVector(State* st, Panel* list, int x, bool follow` from `Action.c:59`.
 pub fn Action_pickFromVector() {
@@ -121,9 +181,14 @@ pub fn actionToggleTreeView() {
     todo!("port of Action.c:287")
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleHideMeters(State* st` from `Action.c:300`.
-pub fn actionToggleHideMeters() {
-    todo!("port of Action.c:300")
+/// Port of `static Htop_Reaction actionToggleHideMeters(State* st)` from
+/// `Action.c:300`. Flips the `State.hideMeters` flag and returns the
+/// resize reaction. The C reads/writes only `st->hideMeters`, so the
+/// minimal `State` model suffices; the returned value is the verbatim
+/// `HTOP_RESIZE | HTOP_KEEP_FOLLOWING` bit-or.
+pub fn actionToggleHideMeters(st: &mut State) -> Htop_Reaction {
+    st.hideMeters = !st.hideMeters;
+    HTOP_RESIZE | HTOP_KEEP_FOLLOWING
 }
 
 /// TODO: port of `static Htop_Reaction actionExpandOrCollapseAllBranches(State* st` from `Action.c:305`.
@@ -191,9 +256,12 @@ pub fn Action_setScreenTab() {
     todo!("port of Action.c:411")
 }
 
-/// TODO: port of `static Htop_Reaction actionQuit(ATTR_UNUSED State* st` from `Action.c:439`.
-pub fn actionQuit() {
-    todo!("port of Action.c:439")
+/// Port of `static Htop_Reaction actionQuit(ATTR_UNUSED State* st)` from
+/// `Action.c:439`. The `State*` argument is `ATTR_UNUSED`; the full
+/// behavior is returning the `HTOP_QUIT` constant. The parameter is
+/// kept (prefixed `_`) to mirror the C signature.
+pub fn actionQuit(_st: &State) -> Htop_Reaction {
+    HTOP_QUIT
 }
 
 /// TODO: port of `static Htop_Reaction actionSetAffinity(State* st` from `Action.c:443`.
@@ -256,9 +324,13 @@ pub fn actionRedraw() {
     todo!("port of Action.c:675")
 }
 
-/// TODO: port of `static Htop_Reaction actionTogglePauseUpdate(State* st` from `Action.c:681`.
-pub fn actionTogglePauseUpdate() {
-    todo!("port of Action.c:681")
+/// Port of `static Htop_Reaction actionTogglePauseUpdate(State* st)` from
+/// `Action.c:681`. Flips the `State.pauseUpdate` flag and returns the
+/// verbatim `HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING`
+/// bit-or. The C touches only `st->pauseUpdate`.
+pub fn actionTogglePauseUpdate(st: &mut State) -> Htop_Reaction {
+    st.pauseUpdate = !st.pauseUpdate;
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING
 }
 
 /// TODO: port of `static inline void addattrstr( int attr, const char* str` from `Action.c:746`.
@@ -294,4 +366,65 @@ pub fn actionShowCommandScreen() {
 /// TODO: port of `void Action_setBindings(Htop_Action* keys` from `Action.c:947`.
 pub fn Action_setBindings() {
     todo!("port of Action.c:947")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the `Htop_Reaction` composite values from `Action.h:24-30`.
+    /// These composites are OR-of-other-members, so a wrong base value
+    /// silently changes every handler's return — pin them explicitly.
+    #[test]
+    fn reaction_flag_composites_match_c() {
+        assert_eq!(HTOP_OK, 0x00);
+        assert_eq!(HTOP_REFRESH, 0x01);
+        assert_eq!(HTOP_RECALCULATE, 0x03); // 0x02 | 0x01
+        assert_eq!(HTOP_QUIT, 0x10);
+        assert_eq!(HTOP_UPDATE_PANELHDR, 0x41); // 0x40 | 0x01
+        // 0x80 | 0x01 | 0x20 | (0x40 | 0x01)
+        assert_eq!(HTOP_RESIZE, 0xE1);
+    }
+
+    /// `actionQuit` ignores its `ATTR_UNUSED` argument and returns
+    /// `HTOP_QUIT` (`Action.c:439-441`).
+    #[test]
+    fn action_quit_returns_htop_quit() {
+        let st = State { pauseUpdate: false, hideSelection: false, hideMeters: false };
+        assert_eq!(actionQuit(&st), HTOP_QUIT);
+        assert_eq!(actionQuit(&st), 0x10);
+    }
+
+    /// `actionToggleHideMeters` flips `hideMeters` and returns
+    /// `HTOP_RESIZE | HTOP_KEEP_FOLLOWING` (`Action.c:300-303`).
+    #[test]
+    fn action_toggle_hide_meters_flips_and_returns_resize() {
+        let mut st = State { pauseUpdate: false, hideSelection: false, hideMeters: false };
+        let r = actionToggleHideMeters(&mut st);
+        assert!(st.hideMeters);
+        assert_eq!(r, 0xE1 | 0x08); // HTOP_RESIZE | HTOP_KEEP_FOLLOWING
+        // Second toggle returns to the original state (pure boolean flip).
+        let r2 = actionToggleHideMeters(&mut st);
+        assert!(!st.hideMeters);
+        assert_eq!(r2, r);
+        // Only hideMeters is touched; the other fields are untouched.
+        assert!(!st.pauseUpdate);
+        assert!(!st.hideSelection);
+    }
+
+    /// `actionTogglePauseUpdate` flips `pauseUpdate` and returns
+    /// `HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING`
+    /// (`Action.c:681-684`).
+    #[test]
+    fn action_toggle_pause_update_flips_and_returns_refresh() {
+        let mut st = State { pauseUpdate: false, hideSelection: false, hideMeters: false };
+        let r = actionTogglePauseUpdate(&mut st);
+        assert!(st.pauseUpdate);
+        assert_eq!(r, 0x01 | 0x20 | 0x08);
+        let r2 = actionTogglePauseUpdate(&mut st);
+        assert!(!st.pauseUpdate);
+        assert_eq!(r2, r);
+        // hideMeters must not be affected by the pause toggle.
+        assert!(!st.hideMeters);
+    }
 }

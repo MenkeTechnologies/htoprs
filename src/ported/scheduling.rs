@@ -10,6 +10,21 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+// Linux `<sched.h>` scheduling-policy constants, used verbatim by
+// `Scheduling_formatPolicy` (the only member reproducible without
+// syscalls/UI substrate). Values match `libc` 0.2.186
+// (`unix/linux_like`): SCHED_OTHER=0, SCHED_FIFO=1, SCHED_RR=2,
+// SCHED_BATCH=3, SCHED_IDLE=5, SCHED_DEADLINE=6,
+// SCHED_RESET_ON_FORK=0x40000000. On the platforms where htop defines
+// `SCHEDULER_SUPPORT` these are all available, so every `#ifdef` arm of
+// the C switch is included.
+const SCHED_OTHER: i32 = 0;
+const SCHED_FIFO: i32 = 1;
+const SCHED_RR: i32 = 2;
+const SCHED_BATCH: i32 = 3;
+const SCHED_IDLE: i32 = 5;
+const SCHED_DEADLINE: i32 = 6;
+const SCHED_RESET_ON_FORK: i32 = 0x4000_0000;
 
 /// TODO: port of `Panel* Scheduling_newPolicyPanel(int preSelectedPolicy` from `Scheduling.c:42`.
 pub fn Scheduling_newPolicyPanel() {
@@ -36,9 +51,63 @@ pub fn Scheduling_rowSetPolicy() {
     todo!("port of Scheduling.c:124")
 }
 
-/// TODO: port of `const char* Scheduling_formatPolicy(int policy` from `Scheduling.c:130`.
-pub fn Scheduling_formatPolicy() {
-    todo!("port of Scheduling.c:130")
+/// Port of `Scheduling.c:130`.
+///
+/// `const char* Scheduling_formatPolicy(int policy)`. Strips the
+/// `SCHED_RESET_ON_FORK` bit, then maps the base policy id to its short
+/// display string, returning `"???"` for anything unrecognized. The C
+/// returns a `const char*` into static storage; Rust returns the
+/// equivalent `&'static str`.
+pub fn Scheduling_formatPolicy(policy: i32) -> &'static str {
+    let policy = policy & !SCHED_RESET_ON_FORK;
+
+    match policy {
+        SCHED_OTHER => "OTHER",
+        SCHED_FIFO => "FIFO",
+        SCHED_RR => "RR",
+        SCHED_BATCH => "BATCH",
+        SCHED_IDLE => "IDLE",
+        SCHED_DEADLINE => "EDF",
+        _ => "???",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_each_known_policy() {
+        assert_eq!(Scheduling_formatPolicy(SCHED_OTHER), "OTHER");
+        assert_eq!(Scheduling_formatPolicy(SCHED_FIFO), "FIFO");
+        assert_eq!(Scheduling_formatPolicy(SCHED_RR), "RR");
+        assert_eq!(Scheduling_formatPolicy(SCHED_BATCH), "BATCH");
+        assert_eq!(Scheduling_formatPolicy(SCHED_IDLE), "IDLE");
+        // SCHED_DEADLINE renders as "EDF", not "DEADLINE".
+        assert_eq!(Scheduling_formatPolicy(SCHED_DEADLINE), "EDF");
+    }
+
+    #[test]
+    fn unknown_policy_is_question_marks() {
+        assert_eq!(Scheduling_formatPolicy(4), "???");
+        assert_eq!(Scheduling_formatPolicy(7), "???");
+        assert_eq!(Scheduling_formatPolicy(-1), "???");
+    }
+
+    #[test]
+    fn reset_on_fork_bit_is_stripped_before_lookup() {
+        // The RESET_ON_FORK flag must not change the rendered policy name.
+        assert_eq!(
+            Scheduling_formatPolicy(SCHED_FIFO | SCHED_RESET_ON_FORK),
+            "FIFO"
+        );
+        assert_eq!(
+            Scheduling_formatPolicy(SCHED_OTHER | SCHED_RESET_ON_FORK),
+            "OTHER"
+        );
+        // Bare flag with no base policy masks down to SCHED_OTHER (0).
+        assert_eq!(Scheduling_formatPolicy(SCHED_RESET_ON_FORK), "OTHER");
+    }
 }
 
 /// TODO: port of `void Scheduling_readProcessPolicy(Process* proc` from `Scheduling.c:162`.
