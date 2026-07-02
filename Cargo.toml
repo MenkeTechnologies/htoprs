@@ -7,6 +7,7 @@ license = "GPL-2.0-or-later"
 authors = ["MenkeTechnologies"]
 repository = "https://github.com/MenkeTechnologies/htoprs"
 homepage = "https://menketechnologies.github.io/htoprs/"
+documentation = "https://docs.rs/htoprs"
 readme = "README.md"
 keywords = ["htop", "process", "monitor", "top", "terminal"]
 categories = ["command-line-utilities"]
