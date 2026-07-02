@@ -48,7 +48,12 @@ enforced mechanically, following the same precedent as `zshrs`.
 
 ## Current state
 
-Ported so far — `XUtils.c` (string / math utilities):
+The pure-logic layers are ported — string/math utilities, the container
+sort/search algorithms, the prime table, and the human-readable unit
+formatter. Overall and per-file coverage lives in `docs/port_report.html`
+(derived from source at run time — nothing hardcoded).
+
+**`XUtils.c`** — string / math utilities:
 
 | C function | notes |
 |---|---|
@@ -62,9 +67,38 @@ Ported so far — `XUtils.c` (string / math utilities):
 | `countDigits` | digit count in a given base, with overflow guard |
 | `countTrailingZeros` | mod-37 lowest-set-bit table |
 
+**`Vector.c`** — container sort / search core, ported as generics over a slice
+with a C-`int`-returning comparator (the `Object**` pointer array becomes a
+slice; signed `isize` indices preserve the C's below-`left` arithmetic):
+
+| C function | notes |
+|---|---|
+| `swap` | exchange two slots |
+| `partition` | Lomuto partition, pivot moved to `right` |
+| `quickSort` | recursive quicksort, pivot `left + (right - left) / 2` |
+| `insertionSort` | in-place insertion sort over `[left, right]` |
+| `Vector_indexOf` | linear search, C `-1` sentinel preserved |
+
+**`Hashtable.c`** — prime-table math:
+
+| C function | notes |
+|---|---|
+| `nextPrime` | smallest OEIS prime `>= n`; aborts (panics) if none fits |
+
+**`Meter.c`** — value formatting:
+
+| C function | notes |
+|---|---|
+| `Meter_humanUnit` | kibibytes → human-readable string (`K`…`Q`, `inf` cap) |
+
 The C allocation wrappers, null-terminated-string helpers, varargs formatters,
-and `String_freeArray` have no faithful safe-Rust analog (Rust owns its
-allocation, bounds, and lifetimes) and are intentionally not ported.
+and `String_freeArray` (XUtils.c); the `Object**` dynamic-array memory
+machinery — `Vector_new` / `_insert` / `_add` / `_resizeIfNecessary` and the
+rest (Vector.c); and the open-addressing bucket table — `Hashtable_new` /
+`_put` / `_get` / `_foreach` and the rest (Hashtable.c) — have no faithful
+safe-Rust analog (Rust's `Vec` / `HashMap` own allocation, bounds, probing,
+and lifetimes) and are intentionally not ported. `combSort` is commented-out
+dead code in `Vector.c` and is not ported.
 
 ## Build & test
 
