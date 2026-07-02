@@ -124,10 +124,10 @@ use crate::ported::lineeditor::{
 use crate::ported::listitem::{ListItem, ListItem_compare, ListItem_display, ListItem_new};
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED, HandlerResult, Panel, Panel_get,
-    Panel_getSelectedIndex, Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_onKey, Panel_remove,
-    Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelectionColor,
-    Panel_size,
+    HandlerResult, Panel, Panel_get, Panel_getSelectedIndex, Panel_moveSelectedDown,
+    Panel_moveSelectedUp, Panel_onKey, Panel_remove, Panel_selectByTyping,
+    Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelectionColor, Panel_size,
+    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::settings::{ScreenSettings, Settings};
@@ -950,7 +950,11 @@ mod tests {
     /// The display value of row `idx`.
     fn value_at(p: &ScreensPanel, idx: usize) -> String {
         let any: &dyn core::any::Any = p.super_.items[idx].as_ref();
-        any.downcast_ref::<ScreenListItem>().unwrap().super_.value.clone()
+        any.downcast_ref::<ScreenListItem>()
+            .unwrap()
+            .super_
+            .value
+            .clone()
     }
 
     /// Row `idx`'s modeled `ss` alias (`ssIndex`).
@@ -1202,7 +1206,10 @@ mod tests {
         let r = ScreensPanel_eventHandlerNormal(&mut p, KEY_ENTER);
         assert_eq!(r, HandlerResult::HANDLED);
         assert!(p.moving);
-        assert_eq!(p.super_.selectionColorId, ColorElements::PANEL_SELECTION_FOLLOW);
+        assert_eq!(
+            p.super_.selectionColorId,
+            ColorElements::PANEL_SELECTION_FOLLOW
+        );
         let any: &dyn core::any::Any = p.super_.items[0].as_ref();
         assert!(any.downcast_ref::<ScreenListItem>().unwrap().super_.moving);
         // result HANDLED => the ported ScreensPanel_update ran.

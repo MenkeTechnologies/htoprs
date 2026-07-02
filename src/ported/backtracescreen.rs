@@ -18,6 +18,13 @@
 //!   fixed "not implemented" message. The `HAVE_LIBUNWIND_PTRACE` branch
 //!   delegates to `UnwindPtrace_makeBacktrace` (unported
 //!   `generic/UnwindPtrace.c`), so it is not reproduced.
+//! - `BacktracePanel_eventHandler` (`:208`) — the key-dispatch switch;
+//!   `HandlerResult` is now ported, so the `'p'`/`F3` full-path-toggle arm
+//!   is live (relabels the bar, rebuilds the header). The `F5` refresh arm
+//!   prunes then calls the still-blocked `populateFrames` (below), so it
+//!   reaches that `todo!()` — the `ColumnsPanel_eventHandler` partial-port
+//!   precedent. The `HAVE_DEMANGLING` `F2` arm is omitted (the crate's
+//!   no-optional-dependency variant, as with `makeBacktrace`).
 //! - `BacktracePanelRow_displayError` (`:416`) — appends the row's own
 //!   error string in `CRT_colors[DEFAULT_COLOR]` via
 //!   [`RichString_appendAscii`].
@@ -45,8 +52,6 @@
 //!   `Object`s (`Panel_add`), but rows carry the `Process` /
 //!   `BacktracePanel` back-pointers above and so cannot be
 //!   `Box<dyn Object>`.
-//! - `BacktracePanel_eventHandler` (`:208`) — returns the unported
-//!   `HandlerResult` enum and, on refresh, calls `populateFrames` (blocked).
 //! - `BacktracePanel_new` (`:248`) — calls `populateFrames` (blocked) and
 //!   reads `settings->showProgramPath` (unmodeled `Settings` field).
 //! - `BacktracePanelRow_new` (`:444`) — its sole non-default action is
@@ -55,8 +60,9 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use crate::ported::crt::{ColorElements, ColorScheme};
-use crate::ported::panel::{Panel, Panel_setHeader};
+use crate::ported::crt::{ColorElements, ColorScheme, KEY_CTRL, KEY_F};
+use crate::ported::functionbar::FunctionBar_setLabel;
+use crate::ported::panel::{HandlerResult, Panel, Panel_prune, Panel_setHeader};
 use crate::ported::process::Process;
 use crate::ported::richstring::{RichString, RichString_appendAscii};
 use crate::ported::settings::Settings;
@@ -113,6 +119,16 @@ pub struct BacktracePanelRow {
 /// the bitmask stored in `BacktracePanel.displayOptions`.
 const DEMANGLE_NAME_FUNCTION: i32 = 1 << 0;
 const SHOW_FULL_PATH_OBJECT: i32 = 1 << 1;
+
+/// Key-code constants for the [`BacktracePanel_eventHandler`] dispatch.
+/// The C `switch` uses `KEY_F(3)` / `KEY_F(5)` / `KEY_CTRL('L')` / `'p'`
+/// directly, but Rust `match` patterns cannot contain `const fn` calls or
+/// casts, so they are bound to `const`s here (the same idiom `ColumnsPanel`
+/// uses for its `KEY_F7` / `KEY_F8` labels).
+const KEY_F3: i32 = KEY_F(3);
+const KEY_F5: i32 = KEY_F(5);
+const KEY_CTRL_L: i32 = KEY_CTRL(b'L' as i32);
+const KEY_LOWER_P: i32 = b'p' as i32;
 
 /// Model of `BacktracePanel` (`BacktraceScreen.h:40`). Embeds `Panel super`
 /// as `super_` (the Rust-keyword workaround the ported panels use). The C
@@ -299,12 +315,56 @@ pub fn BacktracePanel_populateFrames() {
     todo!("port of BacktraceScreen.c:168")
 }
 
-/// TODO: port of `static HandlerResult BacktracePanel_eventHandler(Panel*
-/// super, int ch)` from `BacktraceScreen.c:208`. Blocked: returns the
-/// unported `HandlerResult` enum, and its refresh arm calls
-/// `BacktracePanel_populateFrames` (itself blocked).
-pub fn BacktracePanel_eventHandler() {
-    todo!("port of BacktraceScreen.c:208")
+/// Port of `static HandlerResult BacktracePanel_eventHandler(Panel* super,
+/// int ch)` from `BacktraceScreen.c:208`. Dispatches keyboard input; the C
+/// always returns the initial `IGNORED` (no arm reassigns `result`), so this
+/// returns `HandlerResult::IGNORED`. The `HAVE_DEMANGLING`-gated `KEY_F(2)`
+/// arm is omitted — this crate compiles the no-optional-dependency variant
+/// (the same choice the ported [`BacktracePanel_makeBacktrace`] makes for
+/// `!HAVE_LIBUNWIND_PTRACE`), so `HAVE_DEMANGLING` is treated as undefined.
+/// The `'p'` / `KEY_F(3)` (full-path toggle) arm is fully ported: it flips
+/// [`SHOW_FULL_PATH_OBJECT`], relabels the function bar via the ported
+/// [`FunctionBar_setLabel`], marks the panel dirty, and rebuilds the header
+/// via [`BacktracePanel_displayHeader`]. The `KEY_CTRL('L')` / `KEY_F(5)`
+/// refresh arm prunes the panel (ported [`Panel_prune`]) and then calls
+/// [`BacktracePanel_populateFrames`], which is still a documented `todo!()`
+/// (below); that call therefore panics before returning — the honest
+/// transitive block, the same partial-port shape as `ColumnsPanel_eventHandler`.
+pub fn BacktracePanel_eventHandler(this: &mut BacktracePanel, ch: i32) -> HandlerResult {
+    let result = HandlerResult::IGNORED;
+
+    match ch {
+        // C: case 'p': case KEY_F(3):
+        KEY_LOWER_P | KEY_F3 => {
+            this.displayOptions ^= SHOW_FULL_PATH_OBJECT;
+
+            let showFullPathObject = (this.displayOptions & SHOW_FULL_PATH_OBJECT) != 0;
+            if let Some(bar) = this.super_.defaultBar.as_mut() {
+                FunctionBar_setLabel(
+                    bar,
+                    KEY_F(3),
+                    if showFullPathObject {
+                        "Basename "
+                    } else {
+                        "Full Path"
+                    },
+                );
+            }
+
+            this.super_.needsRedraw = true;
+            BacktracePanel_displayHeader(this);
+        }
+
+        // C: case KEY_CTRL('L'): case KEY_F(5):
+        KEY_CTRL_L | KEY_F5 => {
+            Panel_prune(&mut this.super_);
+            BacktracePanel_populateFrames();
+        }
+
+        _ => {}
+    }
+
+    result
 }
 
 /// TODO: port of `BacktracePanel* BacktracePanel_new(Vector* processes,

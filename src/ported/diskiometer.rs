@@ -145,7 +145,11 @@ pub fn DiskIORateMeter_display(out: &mut RichString) {
 
     match state.status {
         MeterRateStatus::RATESTATUS_NODATA => {
-            RichString_writeAscii(out, ColorElements::METER_VALUE_ERROR.packed(scheme), b"no data");
+            RichString_writeAscii(
+                out,
+                ColorElements::METER_VALUE_ERROR.packed(scheme),
+                b"no data",
+            );
             return;
         }
         MeterRateStatus::RATESTATUS_INIT => {
@@ -173,7 +177,11 @@ pub fn DiskIORateMeter_display(out: &mut RichString) {
         ColorElements::METER_VALUE_IOREAD.packed(scheme),
         state.cached_read_diff_str.as_bytes(),
     );
-    RichString_appendAscii(out, ColorElements::METER_VALUE_IOREAD.packed(scheme), b"iB/s");
+    RichString_appendAscii(
+        out,
+        ColorElements::METER_VALUE_IOREAD.packed(scheme),
+        b"iB/s",
+    );
 
     RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" write: ");
     RichString_appendAscii(
@@ -181,7 +189,11 @@ pub fn DiskIORateMeter_display(out: &mut RichString) {
         ColorElements::METER_VALUE_IOWRITE.packed(scheme),
         state.cached_write_diff_str.as_bytes(),
     );
-    RichString_appendAscii(out, ColorElements::METER_VALUE_IOWRITE.packed(scheme), b"iB/s");
+    RichString_appendAscii(
+        out,
+        ColorElements::METER_VALUE_IOWRITE.packed(scheme),
+        b"iB/s",
+    );
 }
 
 /// TODO: port of `static void DiskIOTimeMeter_updateValues(Meter* this)`
@@ -207,7 +219,11 @@ pub fn DiskIOTimeMeter_display(out: &mut RichString) {
 
     match state.status {
         MeterRateStatus::RATESTATUS_NODATA => {
-            RichString_writeAscii(out, ColorElements::METER_VALUE_ERROR.packed(scheme), b"no data");
+            RichString_writeAscii(
+                out,
+                ColorElements::METER_VALUE_ERROR.packed(scheme),
+                b"no data",
+            );
             return;
         }
         MeterRateStatus::RATESTATUS_INIT => {
@@ -332,13 +348,7 @@ mod tests {
     }
 
     /// Overwrite the whole file-scope cache for a test.
-    fn set_state(
-        status: MeterRateStatus,
-        read: &str,
-        write: &str,
-        util: f64,
-        disks: u64,
-    ) {
+    fn set_state(status: MeterRateStatus, read: &str, write: &str, util: f64, disks: u64) {
         let mut s = DISK_IO_METER_STATE.lock().unwrap();
         s.status = status;
         s.cached_read_diff_str = read.to_string();

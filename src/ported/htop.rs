@@ -1,16 +1,24 @@
-//! Stub scaffold for `htop.c` — NOT yet ported.
+//! Port of `htop.c` — the program entry point.
 //!
-//! Every `pub fn` below is a placeholder (`todo!()`) named after a real
-//! htop C function so the port-purity gate accepts the module and the
-//! port surface is laid out. Replace each stub with a faithful port of
-//! the C body, updating the signature and the doc comment to `Port of
-//! `htop.c`:<line>.` as you go. `gen_port_report.py` counts these
-//! `todo!()` bodies as *stubbed*, not *ported*, so scaffolding does not
-//! inflate coverage.
+//! The C file is tiny: a single `program` global and a `main` that
+//! delegates to `CommandLine_run`. `main` stays stubbed until
+//! `CommandLine_run` lands in `commandline.rs` (see below).
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-/// TODO: port of `int main(int argc, char** argv` from `htop.c:16`.
+/// Port of `htop.c:14` — `const char* program = PACKAGE;`.
+///
+/// `PACKAGE` is the autoconf package name, `"htop"` (config.h).
+pub static program: &str = "htop";
+
+/// Port of `htop.c:16` — `int main(int argc, char** argv)`.
+///
+/// The C body is `return CommandLine_run(argc, argv);`. That function is
+/// not yet ported (no `CommandLine_run` exists anywhere in the crate, only
+/// `printVersionFlag`/`printHelpFlag` in `commandline.rs`), so emitting the
+/// call would reference a nonexistent item and break the shared build.
+/// Kept stubbed per the consumer-file rule until the dependency lands.
 pub fn main() {
-    todo!("port of htop.c:16")
+    todo!("port of htop.c:16: needs commandline::CommandLine_run (not yet ported)")
 }

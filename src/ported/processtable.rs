@@ -110,7 +110,11 @@ impl ProcessTable {
 ///
 /// Signature mapping: the `klass` type tag is dropped (class identity is
 /// the Rust type; see `Table_init`). `pidMatchList` is an opaque handle.
-pub fn ProcessTable_init(this: &mut ProcessTable, host: *const Machine, pidMatchList: Option<usize>) {
+pub fn ProcessTable_init(
+    this: &mut ProcessTable,
+    host: *const Machine,
+    pidMatchList: Option<usize>,
+) {
     Table_init(&mut this.super_, host);
 
     this.pidMatchList = pidMatchList;

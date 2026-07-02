@@ -41,15 +41,35 @@
 
 use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get};
 use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::table::Table;
 
-/// Model of the C `DynamicColumn` struct (`DynamicColumn.h`). Only the
-/// `name` field is needed by [`DynamicColumn_compare`]; the C struct's
-/// other fields (`heading`, `caption`, `description`, `width`,
-/// `enabled`, `table`) are omitted because that callback never reads
-/// them.
+/// C `#define DYNAMIC_MAX_COLUMN_WIDTH 64` (`DynamicColumn.h:19`).
+pub const DYNAMIC_MAX_COLUMN_WIDTH: i32 = 64;
+/// C `#define DYNAMIC_DEFAULT_COLUMN_WIDTH -5` (`DynamicColumn.h:20`).
+pub const DYNAMIC_DEFAULT_COLUMN_WIDTH: i32 = -5;
+
+/// Model of the C `DynamicColumn` struct (`DynamicColumn.h:22`). This is
+/// a substrate type; the full C field set is modelled so downstream
+/// consumers (Row title rendering, the setup menu, the `Platform_*`
+/// column providers) can rely on it. [`DynamicColumn_compare`] itself
+/// only reads `name`.
 pub struct DynamicColumn {
     /// C `char name[32]` — unique, internal-only name.
     pub name: String,
+    /// C `char* heading` — displayed in the main screen.
+    pub heading: Option<String>,
+    /// C `char* caption` — displayed in the setup menu (short name).
+    pub caption: Option<String>,
+    /// C `char* description` — displayed in the setup menu (detail).
+    pub description: Option<String>,
+    /// C `int width` — display width, +/- for value alignment.
+    pub width: i32,
+    /// C `bool enabled` — false means ignore this column until enabled.
+    pub enabled: bool,
+    /// C `Table* table` — back-pointer to the owning DynamicScreen or
+    /// ProcessTable. A real back-pointer, exactly like `Table::host`
+    /// (`*const Machine`); null when not attached to a table.
+    pub table: *const Table,
 }
 
 /// Class descriptor for [`DynamicColumn`], present solely so a
@@ -205,6 +225,12 @@ mod tests {
     fn col(name: &str) -> DynamicColumn {
         DynamicColumn {
             name: name.to_string(),
+            heading: None,
+            caption: None,
+            description: None,
+            width: DYNAMIC_DEFAULT_COLUMN_WIDTH,
+            enabled: false,
+            table: core::ptr::null(),
         }
     }
 

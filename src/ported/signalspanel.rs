@@ -142,13 +142,29 @@ mod tests {
     /// list index equals its signal number — keeps assertions unambiguous.
     fn indexed_signals() -> Vec<SignalItem> {
         [
-            " 0 Cancel", " 1 SIGHUP", " 2 SIGINT", " 3 SIGQUIT", " 4 SIGILL", " 5 SIGTRAP",
-            " 6 SIGABRT", " 7 SIGEMT", " 8 SIGFPE", " 9 SIGKILL", "10 SIGBUS", "11 SIGSEGV",
-            "12 SIGSYS", "13 SIGPIPE", "14 SIGALRM", "15 SIGTERM",
+            " 0 Cancel",
+            " 1 SIGHUP",
+            " 2 SIGINT",
+            " 3 SIGQUIT",
+            " 4 SIGILL",
+            " 5 SIGTRAP",
+            " 6 SIGABRT",
+            " 7 SIGEMT",
+            " 8 SIGFPE",
+            " 9 SIGKILL",
+            "10 SIGBUS",
+            "11 SIGSEGV",
+            "12 SIGSYS",
+            "13 SIGPIPE",
+            "14 SIGALRM",
+            "15 SIGTERM",
         ]
         .iter()
         .enumerate()
-        .map(|(i, name)| SignalItem { name, number: i as c_int })
+        .map(|(i, name)| SignalItem {
+            name,
+            number: i as c_int,
+        })
         .collect()
     }
 
@@ -180,7 +196,10 @@ mod tests {
     fn function_bar_is_send_cancel() {
         let p = SignalsPanel_new(15, &indexed_signals());
         let bar = p.currentBar.as_ref().expect("currentBar set");
-        assert_eq!(bar.functions, vec!["Send   ".to_string(), "Cancel ".to_string()]);
+        assert_eq!(
+            bar.functions,
+            vec!["Send   ".to_string(), "Cancel ".to_string()]
+        );
         assert_eq!(bar.keys, vec!["Enter".to_string(), "Esc".to_string()]);
         assert_eq!(bar.events, vec![13, 27]);
     }
@@ -210,7 +229,10 @@ mod tests {
         // 15 is clamped down to the last valid index (size - 1). On Linux
         // the RT rows would raise the size, so compare against the clamp.
         let sigs: Vec<SignalItem> = (0..3)
-            .map(|i| SignalItem { name: " x", number: i })
+            .map(|i| SignalItem {
+                name: " x",
+                number: i,
+            })
             .collect();
         let p = SignalsPanel_new(-1, &sigs);
         assert_eq!(p.selected, 15.min(Panel_size(&p) - 1));

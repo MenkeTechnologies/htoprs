@@ -10,7 +10,15 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-/// TODO: port of `static void HostnameMeter_updateValues(Meter* this` from `HostnameMeter.c:21`.
+/// TODO: port of `static void HostnameMeter_updateValues(Meter* this)`
+/// from `HostnameMeter.c:21`. Blocked: the entire body is a single call
+/// `Platform_getHostname(this->txtBuffer, sizeof(this->txtBuffer))`, and
+/// `Platform_getHostname` (linux/Platform.h:97, a thin wrapper over
+/// `Generic_hostname`, generic/hostname.c:15) is not ported anywhere in
+/// the crate yet — there is no faithful call target. Reproducing the
+/// hostname read inline would be an adhoc reimplementation, not a
+/// function-for-function port, so this stays stubbed until the platform
+/// hostname reader lands.
 pub fn HostnameMeter_updateValues() {
-    todo!("port of HostnameMeter.c:21")
+    todo!("port of HostnameMeter.c:21: needs Platform_getHostname (linux/Platform.h) / Generic_hostname (generic/hostname.c)")
 }

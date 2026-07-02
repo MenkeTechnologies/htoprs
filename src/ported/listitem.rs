@@ -26,7 +26,7 @@
 use std::cmp::Ordering;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
-use crate::ported::crt::{ColorElements, ColorScheme, CRT_utf8};
+use crate::ported::crt::{CRT_utf8, ColorElements, ColorScheme};
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::richstring::{RichString, RichString_appendWide, RichString_writeWide};
 
@@ -143,6 +143,13 @@ pub fn ListItem_compare(cast1: &ListItem, cast2: &ListItem) -> i32 {
         Ordering::Equal => 0,
         Ordering::Greater => 1,
     }
+}
+
+/// Port of `static inline const char* ListItem_getRef(const ListItem* this)`
+/// from `ListItem.h:37`. The C body is `return this->value;` — a borrow of
+/// the item's owned `value` string, not a copy.
+pub fn ListItem_getRef(this: &ListItem) -> &str {
+    &this.value
 }
 
 #[cfg(test)]
@@ -298,6 +305,13 @@ mod tests {
 
         // Restore the shared global for other tests.
         CRT_utf8.store(false, AtomicOrdering::Relaxed);
+    }
+
+    #[test]
+    fn get_ref_borrows_value() {
+        let it = item("payload");
+        assert_eq!(ListItem_getRef(&it), "payload");
+        assert_eq!(ListItem_getRef(&item("")), "");
     }
 
     #[test]

@@ -89,6 +89,38 @@ macro_rules! spaceship_defaultstr {
 /// that expose no command string.
 const kthreadID: &[u8] = b"KTHREAD";
 
+/// Port of `#define PROCESS_FLAG_IO 0x00000001` from `Process.h:22` — the
+/// per-platform scan flag requesting the process I/O counters.
+pub const PROCESS_FLAG_IO: u32 = 0x00000001;
+/// Port of `#define PROCESS_FLAG_CWD 0x00000002` from `Process.h:23` — the
+/// scan flag requesting the working directory.
+pub const PROCESS_FLAG_CWD: u32 = 0x00000002;
+/// Port of `#define PROCESS_FLAG_SCHEDPOL 0x00000004` from `Process.h:24` —
+/// the scan flag requesting the scheduling policy.
+pub const PROCESS_FLAG_SCHEDPOL: u32 = 0x00000004;
+
+/// Port of `#define DEFAULT_HIGHLIGHT_SECS 5` from `Process.h:26` — how
+/// long a newly-changed value stays visually highlighted.
+pub const DEFAULT_HIGHLIGHT_SECS: i32 = 5;
+
+/// Port of `#define PROCESS_NICE_UNKNOWN (-INT_MAX)` from `Process.h:29` —
+/// sentinel niceness for a process whose value could not be read.
+pub const PROCESS_NICE_UNKNOWN: i32 = -i32::MAX;
+
+/// Port of the `CMDLINE_HIGHLIGHT_FLAG_*` selective-highlight flags from
+/// `Process.h:294`. Stored in [`ProcessCmdlineHighlight::flags`] by
+/// `Process_makeCommandStr` and consulted by `Process_writeCommand` to
+/// decide which regions of the merged command to color.
+pub const CMDLINE_HIGHLIGHT_FLAG_SEPARATOR: i32 = 0x00000001;
+/// Port of `#define CMDLINE_HIGHLIGHT_FLAG_BASENAME` from `Process.h:295`.
+pub const CMDLINE_HIGHLIGHT_FLAG_BASENAME: i32 = 0x00000002;
+/// Port of `#define CMDLINE_HIGHLIGHT_FLAG_COMM` from `Process.h:296`.
+pub const CMDLINE_HIGHLIGHT_FLAG_COMM: i32 = 0x00000004;
+/// Port of `#define CMDLINE_HIGHLIGHT_FLAG_DELETED` from `Process.h:297`.
+pub const CMDLINE_HIGHLIGHT_FLAG_DELETED: i32 = 0x00000008;
+/// Port of `#define CMDLINE_HIGHLIGHT_FLAG_PREFIXDIR` from `Process.h:298`.
+pub const CMDLINE_HIGHLIGHT_FLAG_PREFIXDIR: i32 = 0x00000010;
+
 /// Port of `enum ProcessState_` from `Process.h:41`. Discriminants match
 /// the C enum exactly (`UNKNOWN = 1`, the rest ascending).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -511,9 +543,15 @@ pub fn matchCmdlinePrefixWithExeSuffix(
     }
 }
 
-/// TODO: port of `void Process_fillStarttimeBuffer(Process* this` from `Process.c:43`.
+/// TODO: port of `void Process_fillStarttimeBuffer(Process* this)` from
+/// `Process.c:43`. Blocked on the `Machine` host deref: `now` comes from
+/// `this->super.host->realtime.tv_sec`, but
+/// [`Row::host`](crate::ported::row::Row::host) is an opaque
+/// `*const c_void` (no `Machine.realtime` reachable). The body also needs
+/// `localtime_r`/`strftime` to format into `starttime_show` — pure once
+/// `now` is available, but unreachable until the host is dereferenceable.
 pub fn Process_fillStarttimeBuffer() {
-    todo!("port of Process.c:43")
+    todo!("port of Process.c:43 — needs host->realtime.tv_sec (Row::host is an opaque pointer) + strftime")
 }
 
 /// Port of `static inline char* stpcpyWithNewlineConversion(char* dstStr,
@@ -552,12 +590,19 @@ pub fn Process_makeCommandStr() {
     todo!("port of Process.c:183 — needs Settings flags (showMergedCommand/showProgramPath/findCommInCmdline/stripExeFromCmdline/showThreadNames/shadowDistPathPrefix/lastUpdate) + CRT_treeStr + CMDLINE_HIGHLIGHT_FLAG_* + CRT_colors")
 }
 
-/// TODO: port of `void Process_writeCommand(const Process* this, int attr, int baseAttr, RichString* str` from `Process.c:471`.
+/// TODO: port of `void Process_writeCommand(const Process* this, int attr,
+/// int baseAttr, RichString* str)` from `Process.c:494`. Blocked on the
+/// unported ncurses draw layer: it builds a `RichString` via
+/// `RichString_appendWide` / `RichString_setAttrn` and reads
+/// `this->super.host->settings` (`highlightBaseName`,
+/// `highlightDeletedExe`, `showProgramPath`) — `RichString` is unported,
+/// [`Row::host`](crate::ported::row::Row::host) is an opaque pointer, and
+/// the `Settings` subset models none of those flags.
 pub fn Process_writeCommand() {
-    todo!("port of Process.c:471")
+    todo!("port of Process.c:494 — needs RichString + host->settings flags")
 }
 
-/// Port of `processStateChar(ProcessState state)` from `Process.c:545`.
+/// Port of `processStateChar(ProcessState state)` from `Process.c:568`.
 /// Maps a [`ProcessState`] to its single-character display code. The C
 /// `default: assert(0); return '!'` path is unreachable here — a valid
 /// `ProcessState` value covers every arm — so the match is exhaustive.
@@ -580,19 +625,32 @@ pub fn processStateChar(state: ProcessState) -> char {
     }
 }
 
-/// TODO: port of `static void Process_rowWriteField(const Row* super, RichString* str, RowField field` from `Process.c:567`.
+/// TODO: port of `static void Process_rowWriteField(const Row* super,
+/// RichString* str, RowField field)` from `Process.c:590`. Blocked on the
+/// unported ncurses draw layer (delegates into [`Process_writeField`],
+/// which builds a `RichString` and reads `CRT_colors[...]`).
 pub fn Process_rowWriteField() {
-    todo!("port of Process.c:567")
+    todo!("port of Process.c:590 — needs RichString + CRT_colors")
 }
 
-/// TODO: port of `void Process_writeField(const Process* this, RichString* str, RowField field` from `Process.c:573`.
+/// TODO: port of `void Process_writeField(const Process* this,
+/// RichString* str, RowField field)` from `Process.c:596`. Blocked on the
+/// unported ncurses draw layer: every arm formats into a `RichString`
+/// (`RichString_appendAscii` / `Row_printLeftAlignedField`) and colors it
+/// via the unported `CRT_colors[...]` palette, and several arms deref
+/// `this->super.host` (an opaque pointer) for `htopUserId` / settings.
 pub fn Process_writeField() {
-    todo!("port of Process.c:573")
+    todo!("port of Process.c:596 — needs RichString + CRT_colors + host deref")
 }
 
-/// TODO: port of `void Process_done(Process* this` from `Process.c:795`.
+/// Deliberate non-port (rule 3): `void Process_done(Process* this)` from
+/// `Process.c:818` is a pure `free()` teardown (`cmdline`, `procComm`,
+/// `procExe`, `procCwd`, `mergedCommand.str`, `tty_name`). Every one of
+/// those C `char*`s is an owned `Option<String>` on [`Process`], so Rust
+/// `Drop` reclaims them automatically — there is no faithful body to
+/// port. Kept as a `todo!()`.
 pub fn Process_done() {
-    todo!("port of Process.c:795")
+    todo!("deliberate non-port: pure free() teardown, handled by Drop (Process.c:818)")
 }
 
 /// TODO: port of `const char* Process_getCommand(const Process* this)`
@@ -613,48 +671,90 @@ pub fn Process_getCommand(this: &Process) -> Option<&[u8]> {
     todo!("port of Process.c:831 — needs settings->showThreadNames (Settings subset lacks the field; Row::host is an opaque pointer)")
 }
 
-/// TODO: port of `static const char* Process_getSortKey(const Process* this` from `Process.c:818`.
-pub fn Process_getSortKey() {
-    todo!("port of Process.c:818")
+/// Port of `static const char* Process_getSortKey(const Process* this)`
+/// from `Process.c:841`: `return Process_getCommand(this)`. A thin
+/// delegation to [`Process_getCommand`] (still stubbed pending the
+/// `Settings` substrate), so it panics through that `todo!()` when
+/// actually reached; the wiring itself is faithful. Returns the command
+/// bytes (C `const char*`).
+pub fn Process_getSortKey(this: &Process) -> Option<&[u8]> {
+    Process_getCommand(this)
 }
 
-/// TODO: port of `const char* Process_rowGetSortKey(Row* super` from `Process.c:822`.
-pub fn Process_rowGetSortKey() {
-    todo!("port of Process.c:822")
+/// Port of `const char* Process_rowGetSortKey(Row* super)` from
+/// `Process.c:845`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// guard + `Any` downcast idiom, matching the C `(const Process*) super`
+/// + `assert(Object_isA(...))`) and delegates to [`Process_getSortKey`].
+pub fn Process_rowGetSortKey(super_: &dyn Object) -> Option<&[u8]> {
+    debug_assert!(Object_isA(Some(super_), &Process_class));
+    let this = (super_ as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Process_rowGetSortKey: row is not a Process");
+    Process_getSortKey(this)
 }
 
-/// TODO: port of `static bool Process_isHighlighted(const Process* this` from `Process.c:829`.
-pub fn Process_isHighlighted() {
-    todo!("port of Process.c:829")
+/// TODO: port of `static bool Process_isHighlighted(const Process* this)`
+/// from `Process.c:852`. Blocked on the `Machine` host deref: the C body
+/// reads `this->super.host->settings->shadowOtherUsers` and
+/// `host->htopUserId`, but [`Row::host`](crate::ported::row::Row::host)
+/// is an opaque `*const c_void` (no `Machine`/`Settings` deref available)
+/// and the ported `Settings` subset carries no `shadowOtherUsers` field.
+/// Signature set so [`Process_rowIsHighlighted`] can delegate faithfully.
+pub fn Process_isHighlighted(this: &Process) -> bool {
+    let _ = this;
+    todo!("port of Process.c:852 — needs host->settings->shadowOtherUsers + host->htopUserId (Row::host is an opaque pointer; Settings subset lacks shadowOtherUsers)")
 }
 
-/// TODO: port of `bool Process_rowIsHighlighted(const Row* super` from `Process.c:835`.
-pub fn Process_rowIsHighlighted() {
-    todo!("port of Process.c:835")
+/// Port of `bool Process_rowIsHighlighted(const Row* super)` from
+/// `Process.c:858`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// guard + `Any` downcast idiom) and delegates to the still-stubbed
+/// [`Process_isHighlighted`]; the wiring is faithful.
+pub fn Process_rowIsHighlighted(super_: &dyn Object) -> bool {
+    debug_assert!(Object_isA(Some(super_), &Process_class));
+    let this = (super_ as &dyn Any)
+        .downcast_ref::<Process>()
+        .expect("Process_rowIsHighlighted: row is not a Process");
+    Process_isHighlighted(this)
 }
 
-/// TODO: port of `static bool Process_isVisible(const Process* p, const Settings* settings` from `Process.c:842`.
+/// TODO: port of `static bool Process_isVisible(const Process* p, const
+/// Settings* settings)` from `Process.c:865`. The body is pure —
+/// `settings->hideUserlandThreads ? !Process_isThread(p) : true` — but the
+/// ported `Settings` subset (`settings.rs`) carries no
+/// `hideUserlandThreads` field, so there is no faithful `&Settings` read
+/// to port yet.
 pub fn Process_isVisible() {
-    todo!("port of Process.c:842")
+    todo!("port of Process.c:865 — Settings subset lacks hideUserlandThreads")
 }
 
-/// TODO: port of `bool Process_rowIsVisible(const Row* super, const Table* table` from `Process.c:848`.
+/// TODO: port of `bool Process_rowIsVisible(const Row* super, const
+/// Table* table)` from `Process.c:871`. Blocked on the unported `Table`
+/// substrate: it reads `table->host->settings` to feed
+/// [`Process_isVisible`] (itself blocked). No `Table` type is modeled.
 pub fn Process_rowIsVisible() {
-    todo!("port of Process.c:848")
+    todo!("port of Process.c:871 — needs Table substrate")
 }
 
-/// TODO: port of `static bool Process_matchesFilter(const Process* this, const Table* table` from `Process.c:855`.
+/// TODO: port of `static bool Process_matchesFilter(const Process* this,
+/// const Table* table)` from `Process.c:878`. Blocked on the unported
+/// `Table`/`Machine`/`ProcessTable`/`Hashtable` substrate: it reads
+/// `table->host->userId`, `table->incFilter`, and the active
+/// `ProcessTable`'s `pidMatchList` (`Hashtable_get`), and calls
+/// `String_contains_i(Process_getCommand(this), ...)` — none modeled.
 pub fn Process_matchesFilter() {
-    todo!("port of Process.c:855")
+    todo!("port of Process.c:878 — needs Table/Machine/ProcessTable/Hashtable substrate")
 }
 
-/// TODO: port of `bool Process_rowMatchesFilter(const Row* super, const Table* table` from `Process.c:872`.
+/// TODO: port of `bool Process_rowMatchesFilter(const Row* super, const
+/// Table* table)` from `Process.c:895`. Blocked on the unported `Table`
+/// substrate: it downcasts then delegates to [`Process_matchesFilter`]
+/// (itself blocked). No `Table` type is modeled.
 pub fn Process_rowMatchesFilter() {
-    todo!("port of Process.c:872")
+    todo!("port of Process.c:895 — needs Table substrate")
 }
 
 /// Port of `void Process_init(Process* this, const Machine* host)` from
-/// `Process.c:878`. Runs the base [`Row_init`] then sets the two
+/// `Process.c:901`. Runs the base [`Row_init`] then sets the two
 /// process-specific defaults the C body assigns
 /// (`cmdlineBasenameEnd = 0`, `st_uid = (uid_t)-1`). Pure — `host` is
 /// only stored, never dereferenced.
@@ -666,7 +766,7 @@ pub fn Process_init(this: &mut Process, host: *const c_void) {
 }
 
 /// Port of `static bool Process_setPriority(Process* this, int priority)`
-/// from `Process.c:885`. Refuses in read-only mode ([`Settings_isReadonly`]),
+/// from `Process.c:908`. Refuses in read-only mode ([`Settings_isReadonly`]),
 /// then `setpriority(PRIO_PROCESS, pid, priority)`. On success, the cached
 /// `nice` is refreshed only when the kernel actually changed the value
 /// (`old_prio != getpriority(...)` re-read) — htop's guard against a no-op
@@ -692,7 +792,7 @@ pub fn Process_setPriority(this: &mut Process, priority: i32) -> bool {
 }
 
 /// Port of `bool Process_rowChangePriorityBy(Row* super, Arg delta)` from
-/// `Process.c:898`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// `Process.c:921`. Casts the `Row*` to `Process*` (the `Object_isA`
 /// guard + mutable `Any` downcast idiom), then nudges the priority by
 /// `delta.i` relative to the current `nice`. The C `(int)this->nice +
 /// delta.i` is `i32` arithmetic; `delta` is the [`Arg::I`] arm (the
@@ -712,7 +812,7 @@ pub fn Process_rowChangePriorityBy(super_: &mut dyn Object, delta: Arg) -> bool 
 }
 
 /// Port of `static bool Process_sendSignal(Process* this, Arg sgn)` from
-/// `Process.c:904`. A thin wrapper over `kill(pid, sgn.i)`, returning
+/// `Process.c:927`. A thin wrapper over `kill(pid, sgn.i)`, returning
 /// whether the syscall succeeded. `sgn` is the [`Arg::I`] arm carrying the
 /// signal number (the `Arg::V` arm is impossible, matching the C `sgn.i`
 /// union read).
@@ -725,7 +825,7 @@ pub fn Process_sendSignal(this: &Process, sgn: Arg) -> bool {
 }
 
 /// Port of `bool Process_rowSendSignal(Row* super, Arg sgn)` from
-/// `Process.c:908`. Casts the `Row*` to `Process*` (the `Object_isA` guard
+/// `Process.c:931`. Casts the `Row*` to `Process*` (the `Object_isA` guard
 /// + `Any` downcast) and delegates to [`Process_sendSignal`]. `sendSignal`
 /// only reads the pid, so a shared `&Process` suffices.
 pub fn Process_rowSendSignal(super_: &dyn Object, sgn: Arg) -> bool {
@@ -758,7 +858,7 @@ pub fn Process_compareByParent() {
 }
 
 /// Port of `int Process_compareByKey_Base(const Process* p1, const
-/// Process* p2, ProcessField key)` from `Process.c:943`. The per-field
+/// Process* p2, ProcessField key)` from `Process.c:966`. The per-field
 /// sort comparator: for each column id it compares the corresponding
 /// field with `SPACESHIP_NUMBER` / `SPACESHIP_NULLSTR` /
 /// `SPACESHIP_DEFAULTSTR` / [`compareRealNumbers`], line-for-line with
@@ -940,7 +1040,7 @@ pub fn Process_isThread(this: &Process) -> bool {
 }
 
 /// Port of `void Process_updateComm(Process* this, const char* comm)`
-/// from `Process.c:1020`. No-op when both the stored `procComm` and the
+/// from `Process.c:1043`. No-op when both the stored `procComm` and the
 /// new `comm` are `None` (C `NULL`), or when both are present and equal
 /// (`String_eq`, inlined as `==`). Otherwise it replaces `procComm`
 /// (`xStrdup(comm)` → an owned `String`, `NULL` → `None`) and resets the
@@ -964,7 +1064,7 @@ pub fn Process_updateComm(this: &mut Process, comm: Option<&str>) {
 }
 
 /// Port of `skipPotentialPath(const char* cmdline, size_t end)` from
-/// `Process.c:1033`. If `cmdline` starts with `/`, scans up to `end`
+/// `Process.c:1056`. If `cmdline` starts with `/`, scans up to `end`
 /// bytes and returns the offset just past the last `/` that begins a
 /// non-empty path component, stopping early at an unescaped space or a
 /// `": "` delimiter. Returns 0 when `cmdline` is not an absolute path.
@@ -1007,7 +1107,7 @@ pub fn skipPotentialPath(cmdline: &[u8], end: usize) -> usize {
 }
 
 /// Port of `void Process_updateCmdline(Process* this, const char* cmdline,
-/// size_t basenameStart, size_t basenameEnd)` from `Process.c:1054`.
+/// size_t basenameStart, size_t basenameEnd)` from `Process.c:1077`.
 ///
 /// No-op when both the stored and new `cmdline` are `None` (C `NULL`), or
 /// when both are present and equal (`String_eq`, inlined as `==`).
@@ -1065,7 +1165,7 @@ pub fn Process_updateCmdline(
 }
 
 /// Port of `void Process_updateExe(Process* this, const char* exe)` from
-/// `Process.c:1079`. No-op when both the stored `procExe` and the new
+/// `Process.c:1102`. No-op when both the stored `procExe` and the new
 /// `exe` are `None` (C `NULL`), or when both are present and equal
 /// (`String_eq`, inlined as `==`). Otherwise it replaces `procExe`
 /// (`xStrdup(exe)` → an owned `String`, `NULL` → `None`), recomputes the
@@ -1109,9 +1209,14 @@ pub fn Process_updateExe(this: &mut Process, exe: Option<&str>) {
     this.mergedCommand.lastUpdate = 0;
 }
 
-/// TODO: port of `void Process_updateCPUFieldWidths(float percentage` from `Process.c:1099`.
+/// TODO: port of `void Process_updateCPUFieldWidths(float percentage)`
+/// from `Process.c:1122`. The arithmetic is pure (`isgreaterequal`,
+/// `ceil(log10(...))`), but every branch writes the field-width table via
+/// [`Row_updateFieldWidth`](crate::ported::row::Row_updateFieldWidth) —
+/// which is itself a stub (its backing `Row_fieldWidths[LAST_RESERVED_FIELD]`
+/// global is not modeled). Stays a stub until that lands.
 pub fn Process_updateCPUFieldWidths() {
-    todo!("port of Process.c:1099")
+    todo!("port of Process.c:1122 — needs Row_updateFieldWidth (Row_fieldWidths global unported)")
 }
 
 #[cfg(test)]
@@ -1542,7 +1647,7 @@ mod tests {
         ));
     }
 
-    // ── Process_updateExe (Process.c:1079) ────────────────────────────
+    // ── Process_updateExe (Process.c:1102) ────────────────────────────
     #[test]
     fn update_exe_both_none_is_noop() {
         let mut p = proc();
@@ -1612,7 +1717,7 @@ mod tests {
         assert_eq!(p.mergedCommand.lastUpdate, 0);
     }
 
-    // ── Process_updateCmdline (Process.c:1054) ────────────────────────
+    // ── Process_updateCmdline (Process.c:1077) ────────────────────────
     #[test]
     fn update_cmdline_both_none_is_noop() {
         let mut p = proc();

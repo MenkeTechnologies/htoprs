@@ -29,8 +29,9 @@
 //!   `ProcessFieldData` table (its `.name`/`.flags`/`.defaultSortDesc`)
 //!   and `LAST_PROCESSFIELD`/`ROW_DYNAMIC_FIELDS`/`RowField`, none of
 //!   which is ported (`process.rs` has the `ProcessField` enum but not
-//!   the data table), plus `DynamicColumn_lookup`/`DynamicColumn_search`
-//!   which are still `todo!()` stubs in `dynamiccolumn.rs`.
+//!   the data table). (`DynamicColumn_lookup`/`DynamicColumn_search` are
+//!   now ported in `dynamiccolumn.rs`, but the `Process_fields[]` table
+//!   remains the blocker for this whole family.)
 //! * The screen constructors `Settings_newScreen` /
 //!   `Settings_newDynamicScreen` / `Settings_initScreenSettings` /
 //!   `Settings_defaultScreens` remain stubbed. The `Settings.screens`
@@ -104,14 +105,8 @@ pub fn HeaderLayout_getColumns(hLayout: HeaderLayout) -> usize {
     match hLayout {
         HF_ONE_100 => 1,
         HF_TWO_50_50 | HF_TWO_33_67 | HF_TWO_67_33 => 2,
-        HF_THREE_33_34_33
-        | HF_THREE_25_25_50
-        | HF_THREE_25_50_25
-        | HF_THREE_50_25_25
-        | HF_THREE_40_30_30
-        | HF_THREE_30_40_30
-        | HF_THREE_30_30_40
-        | HF_THREE_40_20_40 => 3,
+        HF_THREE_33_34_33 | HF_THREE_25_25_50 | HF_THREE_25_50_25 | HF_THREE_50_25_25
+        | HF_THREE_40_30_30 | HF_THREE_30_40_30 | HF_THREE_30_30_40 | HF_THREE_40_20_40 => 3,
         HF_FOUR_25_25_25_25 => 4,
         HF_INVALID | LAST_HEADER_LAYOUT => {
             panic!("HeaderLayout_getColumns: uninitialized layout {hLayout:?}")
@@ -455,7 +450,7 @@ pub fn writeFields() {
     todo!("port of Settings.c:575")
 }
 
-/// Port of `Settings.c:597`. Appends `list[0..len]` to `out`,
+/// Port of `Settings.c:603`. Appends `list[0..len]` to `out`,
 /// space-separated, followed by `separator`. Models the C `OutputFunc
 /// of` / `FILE* fp` sink as a `&mut String` buffer since the produced
 /// text is identical.
@@ -469,7 +464,7 @@ pub fn writeList(out: &mut String, list: &[String], len: usize, separator: char)
     out.push(separator);
 }
 
-/// Port of `Settings.c:607`. Writes column `column`'s meter names via
+/// Port of `Settings.c:613`. Writes column `column`'s meter names via
 /// [`writeList`] when it has meters, otherwise writes `!` then the
 /// separator.
 pub fn writeMeters(this: &Settings, out: &mut String, separator: char, column: usize) {
@@ -487,7 +482,7 @@ pub fn writeMeters(this: &Settings, out: &mut String, separator: char, column: u
     }
 }
 
-/// Port of `Settings.c:616`. Writes column `column`'s meter modes as
+/// Port of `Settings.c:622`. Writes column `column`'s meter modes as
 /// space-separated unsigned integers when it has meters, otherwise `!`;
 /// then the separator.
 pub fn writeMeterModes(this: &Settings, out: &mut String, separator: char, column: usize) {
@@ -564,7 +559,7 @@ pub struct ScreenSettings {
     pub stableTreeView: i32,
 }
 
-/// Port of `ScreenSettings_getActiveSortKey` (`Settings.h:121`, a pure
+/// Port of `ScreenSettings_getActiveSortKey` (`Settings.h:122`, a pure
 /// `static inline`). In tree view the active key is `treeSortKey`, unless
 /// `treeViewAlwaysByPID` forces the hardcoded `PID` field (`1`, per
 /// `RowField.h:14`); in flat view it is `sortKey`.
@@ -580,7 +575,7 @@ pub fn ScreenSettings_getActiveSortKey(this: &ScreenSettings) -> RowField {
     }
 }
 
-/// Port of `ScreenSettings_getActiveDirection` (`Settings.h:127`, a pure
+/// Port of `ScreenSettings_getActiveDirection` (`Settings.h:128`, a pure
 /// `static inline`). Returns `treeDirection` in tree view, else
 /// `direction`.
 pub fn ScreenSettings_getActiveDirection(this: &ScreenSettings) -> i32 {
@@ -591,7 +586,7 @@ pub fn ScreenSettings_getActiveDirection(this: &ScreenSettings) -> i32 {
     }
 }
 
-/// Port of `Settings.c:913`. Flips the active sort direction between `1`
+/// Port of `Settings.c:922`. Flips the active sort direction between `1`
 /// and `-1`: `treeDirection` when `treeView` is set, otherwise
 /// `direction`. Faithful to the C `(*attr == 1) ? -1 : 1`, so any value
 /// other than `1` becomes `1` (not negated).
@@ -611,24 +606,24 @@ pub fn ScreenSettings_setSortKey() {
     todo!("port of Settings.c:918")
 }
 
-/// The file-static `bool readonly` from `Settings.c:929`. A process-wide
+/// The file-static `bool readonly` from `Settings.c:938`. A process-wide
 /// latch, so it is a `static` `AtomicBool` here rather than a passed
 /// value.
 static READONLY: AtomicBool = AtomicBool::new(false);
 
-/// Port of `Settings.c:931`. Sets the process-wide `readonly` latch. The
+/// Port of `Settings.c:940`. Sets the process-wide `readonly` latch. The
 /// C `readonly = true` becomes an atomic store.
 pub fn Settings_enableReadonly() {
     READONLY.store(true, Ordering::Relaxed);
 }
 
-/// Port of `Settings.c:935`. Returns the current value of the
+/// Port of `Settings.c:944`. Returns the current value of the
 /// process-wide `readonly` latch.
 pub fn Settings_isReadonly() -> bool {
     READONLY.load(Ordering::Relaxed)
 }
 
-/// Port of `Settings.c:939`. Resizes `hColumns` to the new layout's
+/// Port of `Settings.c:948`. Resizes `hColumns` to the new layout's
 /// column count: grows with default (C `memset`-zeroed) columns, or
 /// drops trailing columns (Rust `Drop` frees their names/modes, matching
 /// the C `free` loop). Then updates `hLayout` and sets `changed`.
@@ -780,7 +775,12 @@ mod tests {
         );
         assert_eq!(
             s.hColumns[1].modes.as_deref().unwrap(),
-            [BAR_METERMODE, TEXT_METERMODE, TEXT_METERMODE, TEXT_METERMODE]
+            [
+                BAR_METERMODE,
+                TEXT_METERMODE,
+                TEXT_METERMODE,
+                TEXT_METERMODE
+            ]
         );
         assert!(Settings_validateMeters(&s));
     }

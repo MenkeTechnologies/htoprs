@@ -63,18 +63,19 @@
 //!   (`panel.rs:276`) takes a `Box<dyn Object>`, but the rows here are
 //!   owned `Row` values in `self.rows`, an object-model mismatch; (4)
 //!   the C stable-tree-view anchor state (`stableId`/`stableLastIdx`,
-//!   `Table.h:37`) is not on the Rust `Table` struct and
-//!   `ScreenSettings.stableTreeView` is not modeled in `settings.rs`;
+//!   `Table.h:37`) is now on the Rust `Table` struct, but its driver
+//!   `ScreenSettings.stableTreeView` is still not modeled in `settings.rs`;
 //!   (5) `Panel` has no `allowExcessScrollV` field yet (`panel.rs`).
 //! - `Table_printHeader` (`Table.c:289`) — writes the column header into
-//!   a `RichString` from the `ScreenSettings` field list. Blocked on:
-//!   `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
-//!   (not ported — only referenced in a `process.rs` doc comment);
-//!   `RowField_alignedTitle` (`todo!()` at `row.rs:302`); `CRT_treeStr`
-//!   with `TREE_STR_ASC`/`TREE_STR_DESC` (unported — see `crt.rs:1604`);
-//!   and the `settings.rs` `ScreenSettings` subset omits the `fields`
-//!   array and `treeViewAlwaysByPID`, with `Settings.showMergedCommand`
-//!   likewise unmodeled.
+//!   a `RichString` from the `ScreenSettings` field list. The sort-key
+//!   helpers `ScreenSettings_getActiveSortKey` /
+//!   `ScreenSettings_getActiveDirection` are now ported (`settings.rs`),
+//!   but the per-column loop is still blocked on: `RowField_alignedTitle`
+//!   (`todo!()` at `row.rs:404`); `CRT_treeStr` with
+//!   `TREE_STR_ASC`/`TREE_STR_DESC` (unported — see `crt.rs:1858`); and
+//!   the `settings.rs` `ScreenSettings` subset omits the `fields` array
+//!   and `treeViewAlwaysByPID`, with `Settings.showMergedCommand`
+//!   likewise unmodeled — so it stays a faithful stub.
 //!
 //! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
 //! *ported*, so scaffolding does not inflate coverage.
@@ -109,6 +110,12 @@ pub struct Table {
     pub needsSort: bool,
     /// C `int following` — `-1` or the id of the row being tracked.
     pub following: i32,
+    /// C `int stableId` (`Table.h:37`) — stable tree view: row id to keep
+    /// at a fixed screen position (`-1` = inactive).
+    pub stableId: i32,
+    /// C `int stableLastIdx` (`Table.h:38`) — panel index where the
+    /// `stableId` row was placed in the last rebuild.
+    pub stableLastIdx: i32,
     /// C `struct Panel_* panel` — opaque handle (ncurses `Panel`, never
     /// dereferenced by a ported fn).
     pub panel: Option<usize>,
@@ -130,6 +137,8 @@ impl Table {
             incFilter: None,
             needsSort: true,
             following: -1,
+            stableId: -1,
+            stableLastIdx: 0,
             panel: None,
             rows_isDirty: false,
         }
@@ -153,9 +162,10 @@ impl Table {
 }
 
 /// Port of `Table* Table_init(Table* this, const ObjectClass* klass,
-/// Machine* host)` from `Table.c:26`. Initializes the row/display
-/// vectors and the lookup table, sets `needsSort = true` and
-/// `following = -1`, and stores the `host` back-pointer.
+/// Machine* host)` from `Table.c:27`. Initializes the row/display
+/// vectors and the lookup table, sets `needsSort = true`,
+/// `following = -1`, `stableId = -1`, `stableLastIdx = 0`, and stores the
+/// `host` back-pointer.
 ///
 /// Signature mapping: the C `klass` argument selects the `Object` type
 /// tag for the two `Vector_new` calls — class identity in Rust is the
@@ -167,11 +177,13 @@ pub fn Table_init(this: &mut Table, host: *const Machine) {
     this.table = HashMap::new();
     this.needsSort = true;
     this.following = -1;
+    this.stableId = -1;
+    this.stableLastIdx = 0;
     this.host = host;
     this.rows_isDirty = false;
 }
 
-/// Port of `void Table_done(Table* this)` from `Table.c:36`. The C body
+/// Port of `void Table_done(Table* this)` from `Table.c:39`. The C body
 /// is `Hashtable_delete` + `Vector_delete` × 2; Rust `Drop` releases the
 /// owned fields, so clearing them reproduces the observable teardown.
 pub fn Table_done(this: &mut Table) {
@@ -188,13 +200,13 @@ pub fn Table_delete() {
 }
 
 /// Port of `void Table_setPanel(Table* this, Panel* panel)` from
-/// `Table.c:48`. Stores the panel handle (opaque; the ncurses `Panel` is
+/// `Table.c:51`. Stores the panel handle (opaque; the ncurses `Panel` is
 /// never dereferenced by a ported fn).
 pub fn Table_setPanel(this: &mut Table, panel: usize) {
     this.panel = Some(panel);
 }
 
-/// Port of `void Table_add(Table* this, Row* row)` from `Table.c:52`.
+/// Port of `void Table_add(Table* this, Row* row)` from `Table.c:55`.
 /// Stamps the row's `seenStampMs` from `host->monotonicMs`, appends it to
 /// `rows`, and registers it in the lookup table.
 ///
@@ -226,22 +238,26 @@ pub fn Table_add(this: &mut Table, mut row: Row) {
 }
 
 /// Port of `static void Table_removeIndex(Table* this, const Row* row,
-/// int idx)` from `Table.c:72`. Removes the row's id from the lookup
+/// int idx)` from `Table.c:75`. Removes the row's id from the lookup
 /// table and soft-removes it from `rows` (leaving a `None` hole marked
 /// dirty for [`Table_compact`]). If the removed row was being followed,
-/// clears `following`.
+/// clears `following`. If the removed row is the stable-tree-view anchor,
+/// walks the anchor up to its parent (or clears it).
 ///
 /// Signature mapping: the C `const Row* row` is redundant with `idx`
-/// (`row == Vector_get(rows, idx)`), so only `idx` is taken; the id is
-/// read back from the slot. The C `Panel_setSelectionColor(panel,
-/// PANEL_SELECTION_FOCUS)` on the follow-reset path is a side-effect on
-/// the unported ncurses `Panel` and is omitted (the pure state change,
-/// `following = -1`, is applied).
+/// (`row == Vector_get(rows, idx)`), so only `idx` is taken; the id and
+/// the pre-removal `Row_getGroupOrParent(row)` (`rowparent`) are read back
+/// from the slot before it is cleared. The C `Panel_setSelectionColor(
+/// panel, PANEL_SELECTION_FOCUS)` on the follow-reset path is a
+/// side-effect on the unported ncurses `Panel` and is omitted (the pure
+/// state change, `following = -1`, is applied).
 fn Table_removeIndex(this: &mut Table, idx: usize) {
-    let rowid = this.rows[idx]
+    let row = this.rows[idx]
         .as_ref()
-        .expect("Table_removeIndex: slot already NULL")
-        .id;
+        .expect("Table_removeIndex: slot already NULL");
+    let rowid = row.id;
+    // save before row is freed
+    let rowparent = Row_getGroupOrParent(row);
 
     debug_assert!(this.table.contains_key(&rowid));
 
@@ -257,11 +273,20 @@ fn Table_removeIndex(this: &mut Table, idx: usize) {
         // — ncurses Panel side-effect, applied by the UI layer.
     }
 
+    // When the stable-tree-view anchor exits, walk up to its parent.
+    if this.stableId != -1 && this.stableId == rowid {
+        if rowparent != 0 && rowparent != rowid && this.table.contains_key(&rowparent) {
+            this.stableId = rowparent;
+        } else {
+            this.stableId = -1;
+        }
+    }
+
     debug_assert!(!this.table.contains_key(&rowid));
 }
 
 /// Port of `static void Table_buildTreeBranch(Table* this, int rowid,
-/// unsigned int level, int32_t indent, bool show)` from `Table.c:90`.
+/// unsigned int level, int32_t indent, bool show)` from `Table.c:104`.
 /// Appends the children of `rowid` (and, recursively, their subtrees) to
 /// `displayList` in tree order, setting each row's `indent`, `show`, and
 /// `tree_depth`.
@@ -348,7 +373,7 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
 }
 
 /// Port of `static int compareRowByKnownParentThenNatural(const void*
-/// v1, const void* v2)` from `Table.c:140`. The C dispatches through the
+/// v1, const void* v2)` from `Table.c:154`. The C dispatches through the
 /// `Row_compareByParent` macro (`As_Row(r1)->compareByParent ? ... :
 /// Row_compareByParent_Base(r1, r2)`); the base `Table` rows have no
 /// override, so this calls [`Row_compareByParent_Base`] directly. (A
@@ -359,7 +384,7 @@ fn compareRowByKnownParentThenNatural(v1: &Row, v2: &Row) -> i32 {
     Row_compareByParent_Base(v1, v2)
 }
 
-/// Port of `static void Table_buildTree(Table* this)` from `Table.c:145`.
+/// Port of `static void Table_buildTree(Table* this)` from `Table.c:159`.
 /// Builds a sorted tree from scratch: marks root rows (self-parented,
 /// parentless, or parent-unknown), sorts `rows` by known parent then id,
 /// then walks each root emitting its subtree into `displayList` via
@@ -376,6 +401,9 @@ pub fn Table_buildTree(this: &mut Table) {
             (row.id, Row_getGroupOrParent(row))
         };
 
+        // Faithful mirror of the C's two separate `continue` branches
+        // (Table.c:169-181); keep them distinct rather than merging.
+        #[allow(clippy::if_same_then_else)]
         let is_root = if id == parent {
             true
         } else if parent == 0 {
@@ -418,7 +446,7 @@ pub fn Table_buildTree(this: &mut Table) {
 }
 
 /// Port of `void Table_updateDisplayList(Table* this)` from
-/// `Table.c:194`. In tree view, rebuilds the tree when `needsSort`;
+/// `Table.c:208`. In tree view, rebuilds the tree when `needsSort`;
 /// otherwise insertion-sorts `rows` (when `needsSort`) and copies them
 /// straight into `displayList`. Clears `needsSort`.
 ///
@@ -454,29 +482,25 @@ pub fn Table_updateDisplayList(this: &mut Table) {
     this.needsSort = false;
 }
 
-/// Port of `void Table_expandTree(Table* this)` from `Table.c:211`. Sets
+/// Port of `void Table_expandTree(Table* this)` from `Table.c:225`. Sets
 /// `showChildren = true` on every row (expand-all).
 pub fn Table_expandTree(this: &mut Table) {
-    for slot in this.rows.iter_mut() {
-        if let Some(row) = slot {
-            row.showChildren = true;
-        }
+    for row in this.rows.iter_mut().flatten() {
+        row.showChildren = true;
     }
 }
 
 /// Port of `void Table_collapseAllBranches(Table* this)` from
-/// `Table.c:220`. Rebuilds the tree to refresh `tree_depth`, forces a
+/// `Table.c:234`. Rebuilds the tree to refresh `tree_depth`, forces a
 /// re-sort, then collapses every non-root row (`tree_depth > 0 && id >
 /// 1`, so PID 0/1 stay expanded on platforms where init has depth 1).
 pub fn Table_collapseAllBranches(this: &mut Table) {
     Table_buildTree(this); // Update `tree_depth` fields of the rows
     this.needsSort = true; // Table is sorted by parent now, force new sort
-    for slot in this.rows.iter_mut() {
-        if let Some(row) = slot {
-            // FreeBSD has pid 0 = kernel and pid 1 = init, so init has tree_depth = 1
-            if row.tree_depth > 0 && row.id > 1 {
-                row.showChildren = false;
-            }
+    for row in this.rows.iter_mut().flatten() {
+        // FreeBSD has pid 0 = kernel and pid 1 = init, so init has tree_depth = 1
+        if row.tree_depth > 0 && row.id > 1 {
+            row.showChildren = false;
         }
     }
 }
@@ -487,42 +511,44 @@ pub fn Table_collapseAllBranches(this: &mut Table) {
 /// `row.rs`); this module models `panel` as an opaque `Option<usize>`
 /// (cannot drive a real `Panel`); `Panel_set` (`panel.rs:276`) takes a
 /// `Box<dyn Object>` while the rows here are owned `Row` values
-/// (object-model mismatch); the stable-tree-view anchor state
-/// (`stableId`/`stableLastIdx`, `Table.h:37`; `ScreenSettings.stableTreeView`)
-/// is not modeled; and `Panel` has no `allowExcessScrollV` field. See
+/// (object-model mismatch); the stable-tree-view driver
+/// (`ScreenSettings.stableTreeView`; the `stableId`/`stableLastIdx`
+/// anchor state at `Table.h:37` is now modeled) is not modeled; and
+/// `Panel` has no `allowExcessScrollV` field. See
 /// the module header for the full list.
 pub fn Table_rebuildPanel() {
-    todo!("port of Table.c:232 — needs Panel drive/Row_isVisible/Row_matchesFilter/stable-view state")
+    todo!(
+        "port of Table.c:232 — needs Panel drive/Row_isVisible/Row_matchesFilter/stable-view state"
+    )
 }
 
 /// TODO: port of `void Table_printHeader(const Settings* settings,
 /// RichString* header)` from `Table.c:289`. A pure function (never
-/// touches `Table`), but still blocked on unported callees:
-/// `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
-/// (unported), `RowField_alignedTitle` (`todo!()` at `row.rs:302`),
-/// `CRT_treeStr` with `TREE_STR_ASC`/`TREE_STR_DESC` (unported, see
-/// `crt.rs:1604`), plus the `settings.rs` `ScreenSettings` subset lacks
-/// the `fields` array and `treeViewAlwaysByPID` and `Settings` lacks
+/// touches `Table`). `ScreenSettings_getActiveSortKey` /
+/// `ScreenSettings_getActiveDirection` are now ported (`settings.rs`),
+/// but the column loop is still blocked on unported callees:
+/// `RowField_alignedTitle` (`todo!()` at `row.rs:404`), `CRT_treeStr`
+/// with `TREE_STR_ASC`/`TREE_STR_DESC` (unported, see `crt.rs:1858`),
+/// plus the `settings.rs` `ScreenSettings` subset lacks the `fields`
+/// array and `treeViewAlwaysByPID` and `Settings` lacks
 /// `showMergedCommand`. See the module header for detail.
 pub fn Table_printHeader() {
-    todo!("port of Table.c:289 — needs getActiveSortKey/RowField_alignedTitle/CRT_treeStr + Settings fields")
+    todo!("port of Table.c:289 — needs RowField_alignedTitle/CRT_treeStr + ScreenSettings.fields/treeViewAlwaysByPID + Settings.showMergedCommand")
 }
 
-/// Port of `void Table_prepareEntries(Table* this)` from `Table.c:322`.
+/// Port of `void Table_prepareEntries(Table* this)` from `Table.c:401`.
 /// Resets per-scan row flags before a refresh: `updated = false`,
 /// `wasShown = show`, `show = true`.
 pub fn Table_prepareEntries(this: &mut Table) {
-    for slot in this.rows.iter_mut() {
-        if let Some(row) = slot {
-            row.updated = false;
-            row.wasShown = row.show;
-            row.show = true;
-        }
+    for row in this.rows.iter_mut().flatten() {
+        row.updated = false;
+        row.wasShown = row.show;
+        row.show = true;
     }
 }
 
 /// Port of `Row* Table_cleanupRow(Table* table, Row* row, int idx)` from
-/// `Table.c:332`. Decides a row's fate after a refresh: a tombed row is
+/// `Table.c:411`. Decides a row's fate after a refresh: a tombed row is
 /// removed once its `tombStampMs` elapses; a not-updated row is either
 /// tombed (when `highlightChanges` and it was shown) or removed
 /// immediately; otherwise it is kept.
@@ -578,7 +604,7 @@ pub fn Table_cleanupRow(this: &mut Table, idx: usize) -> bool {
     true
 }
 
-/// Port of `void Table_cleanupEntries(Table* this)` from `Table.c:358`.
+/// Port of `void Table_cleanupEntries(Table* this)` from `Table.c:437`.
 /// Walks `rows` back-to-front applying [`Table_cleanupRow`], tracking the
 /// lowest removed index, then compacts from there.
 pub fn Table_cleanupEntries(this: &mut Table) {
@@ -597,7 +623,7 @@ pub fn Table_cleanupEntries(this: &mut Table) {
 }
 
 /// Port of `static inline void Table_compact(Table* this, int
-/// dirtyIndex)` from `Table.h:97`: `Vector_compact(this->rows,
+/// dirtyIndex)` from `Table.h:91`: `Vector_compact(this->rows,
 /// dirtyIndex)` then `this->needsSort = true`.
 ///
 /// `Vector_compact` (`Vector.c:258`) is inlined here because `vector.rs`
@@ -629,7 +655,7 @@ pub fn Table_compact(this: &mut Table, dirtyIndex: usize) {
 }
 
 /// Port of `static inline Row* Table_findRow(Table* this, int id)` from
-/// `Table.h:63`: `Hashtable_get(this->table, id)`. Returns the row with
+/// `Table.h:81`: `Hashtable_get(this->table, id)`. Returns the row with
 /// the given id, or `None` when absent.
 pub fn Table_findRow(this: &Table, id: i32) -> Option<&Row> {
     this.table.get(&id).and_then(|&i| this.rows[i].as_ref())

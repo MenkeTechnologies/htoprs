@@ -1162,7 +1162,7 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
 /// CRT_colors`) is `CRT_colorSchemes[CRT_colorScheme]`.
 pub static CRT_colorScheme: AtomicUsize = AtomicUsize::new(COLORSCHEME_DEFAULT as usize);
 
-/// Port of `void CRT_setColors(int colorScheme)` from `CRT.c:1334` —
+/// Port of `void CRT_setColors(int colorScheme)` from `CRT.c:1343` —
 /// the pure part: clamp an out-of-range scheme to `COLORSCHEME_DEFAULT`,
 /// store it in `CRT_colorScheme`, and select the active scheme row
 /// (`CRT_colors = CRT_colorSchemes[colorScheme]`). The `init_pair`
@@ -1330,7 +1330,7 @@ pub const fn KEY_F(n: i32) -> i32 {
     KEY_F0 + n
 }
 
-/// `#define KEY_CTRL(l) ((l)-'A'+1)` (Panel.h:88).
+/// `#define KEY_CTRL(l) ((l)-'A'+1)` (Panel.h:89).
 pub const fn KEY_CTRL(l: i32) -> i32 {
     l - b'A' as i32 + 1
 }
@@ -1398,7 +1398,7 @@ static CRT_nodelay: AtomicBool = AtomicBool::new(false);
 struct Crt;
 
 impl Crt {
-    /// CRT.c:1265 — `CRT_utf8 = allowUnicode && String_eq(nl_langinfo(CODESET), "UTF-8")`.
+    /// CRT.c:1279 — `CRT_utf8 = allowUnicode && String_eq(nl_langinfo(CODESET), "UTF-8")`.
     fn compute_utf8(allow_unicode: bool, codeset: &str) -> bool {
         allow_unicode && codeset == "UTF-8"
     }
@@ -1509,7 +1509,7 @@ impl Crt {
         }
     }
 
-    /// CRT.c:1311 — `fprintf(stderr, "%s: %s\n", note, sysMsg)`. Factored
+    /// CRT.c:1320 — `fprintf(stderr, "%s: %s\n", note, sysMsg)`. Factored
     /// so [`CRT_fatalError`]'s message is testable without exiting.
     fn fatal_error_message(note: &str, sys_msg: &str) -> String {
         format!("{note}: {sys_msg}\n")
@@ -1689,7 +1689,10 @@ pub fn dumpStderr() {
     }
 
     if header {
-        full_write_str(libc::STDERR_FILENO, "\n<<<<<<<<<< stderr output <<<<<<<<<<\n");
+        full_write_str(
+            libc::STDERR_FILENO,
+            "\n<<<<<<<<<< stderr output <<<<<<<<<<\n",
+        );
     }
 
     unsafe { libc::close(new_fd) };
@@ -1765,13 +1768,41 @@ pub fn CRT_installSignalHandlers() {
 /// [`OLD_SIG_HANDLER`] and returns INT/TERM/QUIT/USR1/USR2 to `SIG_DFL`.
 pub fn CRT_resetSignalHandlers() {
     unsafe {
-        libc::sigaction(libc::SIGSEGV, old_sig_slot!(libc::SIGSEGV), core::ptr::null_mut());
-        libc::sigaction(libc::SIGFPE, old_sig_slot!(libc::SIGFPE), core::ptr::null_mut());
-        libc::sigaction(libc::SIGILL, old_sig_slot!(libc::SIGILL), core::ptr::null_mut());
-        libc::sigaction(libc::SIGBUS, old_sig_slot!(libc::SIGBUS), core::ptr::null_mut());
-        libc::sigaction(libc::SIGPIPE, old_sig_slot!(libc::SIGPIPE), core::ptr::null_mut());
-        libc::sigaction(libc::SIGSYS, old_sig_slot!(libc::SIGSYS), core::ptr::null_mut());
-        libc::sigaction(libc::SIGABRT, old_sig_slot!(libc::SIGABRT), core::ptr::null_mut());
+        libc::sigaction(
+            libc::SIGSEGV,
+            old_sig_slot!(libc::SIGSEGV),
+            core::ptr::null_mut(),
+        );
+        libc::sigaction(
+            libc::SIGFPE,
+            old_sig_slot!(libc::SIGFPE),
+            core::ptr::null_mut(),
+        );
+        libc::sigaction(
+            libc::SIGILL,
+            old_sig_slot!(libc::SIGILL),
+            core::ptr::null_mut(),
+        );
+        libc::sigaction(
+            libc::SIGBUS,
+            old_sig_slot!(libc::SIGBUS),
+            core::ptr::null_mut(),
+        );
+        libc::sigaction(
+            libc::SIGPIPE,
+            old_sig_slot!(libc::SIGPIPE),
+            core::ptr::null_mut(),
+        );
+        libc::sigaction(
+            libc::SIGSYS,
+            old_sig_slot!(libc::SIGSYS),
+            core::ptr::null_mut(),
+        );
+        libc::sigaction(
+            libc::SIGABRT,
+            old_sig_slot!(libc::SIGABRT),
+            core::ptr::null_mut(),
+        );
 
         libc::signal(libc::SIGINT, libc::SIG_DFL);
         libc::signal(libc::SIGTERM, libc::SIG_DFL);
@@ -1885,7 +1916,7 @@ pub fn CRT_init(
     // colorScheme directly.
     CRT_setColors(color_scheme);
 
-    // CRT.c:1265  allowUnicode && nl_langinfo(CODESET) == "UTF-8"
+    // CRT.c:1279  allowUnicode && nl_langinfo(CODESET) == "UTF-8"
     let utf8 = Crt::compute_utf8(allow_unicode, &Crt::current_codeset());
     CRT_utf8.store(utf8, Ordering::Relaxed);
 
@@ -1894,7 +1925,7 @@ pub fn CRT_init(
     initDegreeSign();
 }
 
-/// Port of `void CRT_done(void)` from `CRT.c:1290`.
+/// Port of `void CRT_done(void)` from `CRT.c:1299`.
 ///
 /// Restores the terminal crossterm-side: show the cursor
 /// (`curs_set(1)`), disable mouse capture, leave the alternate screen
@@ -1912,7 +1943,7 @@ pub fn CRT_done() {
     let _ = terminal::disable_raw_mode();
 }
 
-/// Port of `void CRT_fatalError(const char* note)` from `CRT.c:1308`.
+/// Port of `void CRT_fatalError(const char* note)` from `CRT.c:1317`.
 ///
 /// Captures the current OS error (`strerror(errno)` via
 /// [`io::Error::last_os_error`]), restores the terminal with
@@ -1929,7 +1960,7 @@ pub fn CRT_fatalError(note: &str) -> ! {
     std::process::exit(2);
 }
 
-/// Port of `int CRT_readKey(void)` from `CRT.c:1315`.
+/// Port of `int CRT_readKey(void)` from `CRT.c:1324`.
 ///
 /// htop forces blocking input with the `halfdelay(settings->delay)`
 /// timeout, then calls `getch()`. Here: poll for an event up to the
@@ -1961,13 +1992,13 @@ pub fn CRT_readKey() -> i32 {
     }
 }
 
-/// Port of `void CRT_disableDelay(void)` from `CRT.c:1324`.
+/// Port of `void CRT_disableDelay(void)` from `CRT.c:1333`.
 /// ncurses `nodelay(stdscr, TRUE)` — make input non-blocking.
 pub fn CRT_disableDelay() {
     CRT_nodelay.store(true, Ordering::Relaxed);
 }
 
-/// Port of `void CRT_enableDelay(void)` from `CRT.c:1330`.
+/// Port of `void CRT_enableDelay(void)` from `CRT.c:1339`.
 /// ncurses `halfdelay(settings->delay)` — restore the timed blocking read.
 pub fn CRT_enableDelay() {
     CRT_nodelay.store(false, Ordering::Relaxed);

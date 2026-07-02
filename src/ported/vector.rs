@@ -303,12 +303,26 @@ pub fn Vector_size(this: &Vector) -> c_int {
 }
 
 /// Port of `void Vector_prune(Vector* this)` from `Vector.c:82`. Empties
-/// the vector: C frees every element when `owner` then `memset`s the
-/// array to `NULL` and zeroes `items`. `Vec::clear` drops every element
-/// (each dropped `Box` is the `Object_delete` of the `owner` case) and
-/// sets the length to 0 in one step; `isDirty` is cleared.
+/// the vector: the free of every element is guarded by `if (this->owner)`
+/// (C lines 84-90); a `!owner` vector just `memset`s its array to `NULL`
+/// (line 93) WITHOUT freeing, since it does not own its elements
+/// (module `owner` contract). So when `owner`, `Vec::clear` drops every
+/// element (each dropped `Box` is the `Object_delete`); when `!owner`,
+/// the slots are drained and the boxes `mem::forget`ted — the array is
+/// emptied without freeing, mirroring the bare `memset`. `isDirty` is
+/// cleared either way.
 pub fn Vector_prune(this: &mut Vector) {
-    this.array.clear();
+    if this.owner {
+        // owner: dropping each Box is the C Object_delete (lines 84-90).
+        this.array.clear();
+    } else {
+        // !owner: C memsets to NULL without freeing (line 93). Empty the
+        // Vec but forget each box so the container frees nothing — the
+        // elements are owned elsewhere.
+        for slot in this.array.drain(..) {
+            std::mem::forget(slot);
+        }
+    }
     this.isDirty = false;
 }
 
@@ -470,12 +484,16 @@ pub fn Vector_moveDown(this: &mut Vector, idx: c_int) {
 
 /// Port of `void Vector_set(Vector* this, int idx, void* data_)` from
 /// `Vector.c:306`. Stores `data` at `idx`. When `idx` is within
-/// `[0, items)` it replaces the existing slot (freeing the old element
-/// when `owner` — dropping the replaced `Box`). When `idx >= items` it
-/// extends the vector: C `xReallocArrayZero` grows `arraySize` and
-/// `items = idx + 1`, leaving the intermediate slots `NULL`; here that is
-/// pushing `None` holes up to `idx`, then the element — so the length
-/// becomes `idx + 1`. The `Object_isA(data, type)` assert is kept.
+/// `[0, items)` it replaces the existing slot; the free of the old
+/// element is guarded by `if (this->owner)` (C lines 316-321), and a
+/// `!owner` vector just overwrites the pointer (line 323) WITHOUT freeing
+/// (module `owner` contract) — so when `owner` the replaced `Box` is
+/// dropped (the C `Object_delete`), when `!owner` it is `mem::forget`ted
+/// so the container frees nothing. When `idx >= items` it extends the
+/// vector: C `xReallocArrayZero` grows `arraySize` and `items = idx + 1`,
+/// leaving the intermediate slots `NULL`; here that is pushing `None`
+/// holes up to `idx`, then the element — so the length becomes `idx + 1`.
+/// The `Object_isA(data, type)` assert is kept.
 pub fn Vector_set(this: &mut Vector, idx: c_int, data: Box<dyn Object>) {
     debug_assert!(idx >= 0);
     debug_assert!(Object_isA(Some(&*data), this.type_));
@@ -485,9 +503,15 @@ pub fn Vector_set(this: &mut Vector, idx: c_int, data: Box<dyn Object>) {
             this.array.push(None);
         }
         this.array.push(Some(data));
-    } else {
+    } else if this.owner {
         // owner: dropping the replaced Box is the C `Object_delete`.
         this.array[idx] = Some(data);
+    } else {
+        // !owner: C overwrites the pointer without freeing the old
+        // element (line 323). Take the old box out and forget it so the
+        // container frees nothing — it is owned elsewhere.
+        let old = this.array[idx].replace(data);
+        std::mem::forget(old);
     }
 }
 
@@ -848,7 +872,9 @@ mod tests {
             // descending: flip operands relative to the class compare
             b.compare(a)
         });
-        let got: Vec<i32> = (0..Vector_size(&v)).map(|i| val(Vector_get(&v, i as usize))).collect();
+        let got: Vec<i32> = (0..Vector_size(&v))
+            .map(|i| val(Vector_get(&v, i as usize)))
+            .collect();
         assert_eq!(got, vec![9, 6, 5, 4, 3, 2, 1, 1]);
 
         // insertionSort uses the class's own (ascending) compare.
@@ -857,7 +883,9 @@ mod tests {
             Vector_add(&mut w, obj(n));
         }
         Vector_insertionSort(&mut w);
-        let got2: Vec<i32> = (0..Vector_size(&w)).map(|i| val(Vector_get(&w, i as usize))).collect();
+        let got2: Vec<i32> = (0..Vector_size(&w))
+            .map(|i| val(Vector_get(&w, i as usize)))
+            .collect();
         assert_eq!(got2, vec![1, 1, 2, 3, 4, 5, 6, 9]);
     }
 }

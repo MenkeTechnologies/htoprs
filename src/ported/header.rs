@@ -369,7 +369,10 @@ mod tests {
     #[test]
     fn calculate_height_one_column() {
         // HF_ONE_100, meters h=[2,2], no margin, no tabs -> height 4.
-        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![meter("A", 2), meter("B", 2)]]);
+        let mut h = header(
+            HeaderLayout::HF_ONE_100,
+            vec![vec![meter("A", 2), meter("B", 2)]],
+        );
         assert_eq!(Header_calculateHeight(&mut h), 4);
         assert_eq!(h.height, 4);
         assert_eq!(h.pad, 0);
@@ -428,7 +431,10 @@ mod tests {
     #[test]
     fn calculate_height_screen_tabs_adds_one() {
         // Non-empty height 4, +1 for tabs = 5.
-        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![meter("A", 2), meter("B", 2)]]);
+        let mut h = header(
+            HeaderLayout::HF_ONE_100,
+            vec![vec![meter("A", 2), meter("B", 2)]],
+        );
         h.screenTabs = true;
         assert_eq!(Header_calculateHeight(&mut h), 5);
 
@@ -506,10 +512,7 @@ mod tests {
         // is non-blank and overlaps -> return 1.
         let h = header(
             HeaderLayout::HF_TWO_50_50,
-            vec![
-                vec![meter("A", 4)],
-                vec![blank(2), meter("C", 2)],
-            ],
+            vec![vec![meter("A", 4)], vec![blank(2), meter("C", 2)]],
         );
         // curMeter.h large enough that band extends past height 3.
         let cur = &h.columns[0][0];
@@ -577,7 +580,7 @@ mod tests {
     fn write_back_copies_names_modes_and_sets_layout() {
         // Header has 2 columns; settings starts at 1 column and must be
         // resized by the layout write.
-        let mut hm = |n: &str, mode: MeterModeId| HeaderMeter {
+        let hm = |n: &str, mode: MeterModeId| HeaderMeter {
             name: n.to_string(),
             mode,
             h: 2,

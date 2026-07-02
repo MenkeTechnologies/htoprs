@@ -296,7 +296,11 @@ pub fn MetersPanel_setMoving(this: &mut MetersPanel, moving: bool) {
 /// the same object, now living in the neighbor column. `Panel_remove`'s
 /// returned `Box` is dropped (freeing the old `ListItem`, exactly as the C
 /// owner-`Vector` frees it).
-pub fn moveToNeighbor(this: &mut MetersPanel, neighbor: Option<&mut MetersPanel>, selected: c_int) -> bool {
+pub fn moveToNeighbor(
+    this: &mut MetersPanel,
+    neighbor: Option<&mut MetersPanel>,
+    selected: c_int,
+) -> bool {
     if this.moving {
         if let Some(neighbor) = neighbor {
             if selected < Vector_size(&this.meters) {
@@ -626,7 +630,10 @@ mod tests {
         // currentBar is the default MetersFunctions bar.
         assert_eq!(
             m.super_.currentBar.as_ref().unwrap().functions,
-            MetersFunctions.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            MetersFunctions
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         );
         // The moving-mode bar static was lazily built.
         assert!(Meters_movingBar.lock().unwrap().is_some());
@@ -668,7 +675,7 @@ mod tests {
         assert_eq!(Vector_size(&this.meters), 0);
         assert_eq!(Panel_size(&this.super_), 0);
         assert!(!this.moving); // MetersPanel_setMoving(this, false)
-        // Meter + row arrived in `neighbor`.
+                               // Meter + row arrived in `neighbor`.
         assert_eq!(Vector_size(&neighbor.meters), 1);
         assert_eq!(Panel_size(&neighbor.super_), 1);
         assert_eq!(row_value(&neighbor, 0), "CPU");

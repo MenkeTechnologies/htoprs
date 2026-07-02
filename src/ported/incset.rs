@@ -24,6 +24,12 @@
 //!   now that `LineEditor_getText` reads the active editor text,
 //! - [`IncSet_deactivate`] (`:147`) — `Panel_setDefaultBar` + hide cursor +
 //!   `FunctionBar_draw`, all ported,
+//! - the draw/activate pair now that `LineEditor_draw`/`LineEditor_updateScroll`
+//!   and `FunctionBar_drawExtra` are ported: [`IncSet_drawBar`] (`:302`) and
+//!   [`IncSet_activate`] (`:136`). The C `this->panel` back-pointer has no safe
+//!   analog, so both thread the `Panel` as a parameter instead (see struct
+//!   mapping); `IncSet_drawBar` also takes `&mut IncSet` because
+//!   `LineEditor_updateScroll` mutates the active editor,
 //! - [`IncSet_filter`] (`IncSet.h:40`) — the filter-text accessor.
 //!
 //! # What stays a `todo!()` stub, and why
@@ -32,25 +38,21 @@
 //! the port rules the missing piece is escalated, never papered over with
 //! an ad-hoc reimplementation:
 //!
-//! - `LineEditor_draw` (`lineeditor.rs`, still a `todo!()` ncurses blit)
-//!   blocks [`IncSet_drawBar`] (`:302`), which also writes
-//!   `this->panel->cursorY`/`cursorX` through the omitted `Panel*`
-//!   back-pointer. [`IncSet_activate`] (`:136`) ends in `IncSet_drawBar`
-//!   and stores that same `this->panel = panel` back-pointer, so it is
-//!   stubbed too.
-//! - [`IncSet_synthesizeEvent`] (`:327`) writes `this->panel->lastMouseBarClickX`
-//!   through the omitted `Panel*` back-pointer.
-//! - [`IncSet_handleKey`] (`:177`) drives ported line-editor/`search`/
-//!   `IncMode_find`/`IncSet_deactivate` code, but also calls the three
-//!   stubs above plus `History_navigate` (`history.rs`, still `todo!()` —
-//!   the KEY_UP/KEY_DOWN arms), `LineEditor_click` (`lineeditor.rs`, still
-//!   `todo!()` — the KEY_MOUSE_BAR_CLICK arm), and [`updateWeakPanel`], so
-//!   the whole body cannot be assembled without gutting behavior.
-//! - [`updateWeakPanel`] (`:96`) takes a `Vector* lines`; `vector.rs` ports
-//!   only the sort core (no `Vector` container), and htop's "weak panel"
-//!   shares one `Object*` between `lines` and `panel` while `Panel_add`
-//!   takes an owned, non-`Clone` `Box<dyn Object>` — the shared-pointer
-//!   model has no analog.
+//! - [`updateWeakPanel`] (`:96`) — `vector.rs` now ports the `Vector`
+//!   container, so the `Vector* lines` type is no longer the gap, but htop's
+//!   "weak panel" shares one `Object*` between `lines` and `panel`
+//!   (`Panel_add(panel, (Object*)line)` aliases a `Vector`-owned pointer, and
+//!   `selected == line` is a raw-pointer identity test) while `Panel_add` takes
+//!   an owned, non-`Clone` `Box<dyn Object>` — the shared-pointer model has no
+//!   analog.
+//! - [`IncSet_handleKey`] (`:177`) now drives only ported code except its
+//!   filter path, which calls the [`updateWeakPanel`] stub; porting a subset
+//!   that skips the filter refresh would gut filter mode, so it stays a whole
+//!   honest stub.
+//! - [`IncSet_synthesizeEvent`] (`:327`) returns the sentinel
+//!   `KEY_MOUSE_BAR_CLICK` (`#define … (KEY_MAX + 50)`, `Panel.h:93`), a
+//!   Panel-owned constant not yet ported in `panel.rs`; it belongs to that
+//!   module, not this one, so it is escalated rather than duplicated here.
 //! - [`IncSet_delete`] (`:77`) is a pure teardown chain; the owned
 //!   `FunctionBar`s and `Option<History>` are released by `Drop` (and
 //!   `History_delete` is itself a `Drop` no-op), so there is no algorithm.
@@ -62,19 +64,27 @@
 //!
 //! - C `IncMode* active` (points into `modes[]`) → `Option<IncType>` (which
 //!   of the two modes is active), avoiding a self-referential borrow.
-//! - C `Panel* panel` back-pointer and `History* history` are omitted; the
-//!   only functions that use them are stubbed for the reasons above.
+//! - C `Panel* panel` back-pointer (`IncSet.h:33`) and `History* history` are
+//!   omitted: the back-pointer would alias a `&mut Panel` owned elsewhere, so
+//!   the functions that use it ([`IncSet_activate`], [`IncSet_drawBar`], and —
+//!   once its constant is ported — `IncSet_synthesizeEvent`) thread the panel
+//!   as a parameter instead; both their call sites have it in scope.
 //! - C `FunctionBar* defaultBar` → owned `Option<FunctionBar>`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
-use crate::ported::crt::{ERR, KEY_F};
-use crate::ported::functionbar::{FunctionBar, FunctionBar_draw, FunctionBar_new};
-use crate::ported::history::{History, History_new, History_save};
+use std::io::{self, Write};
+
+use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F};
+use crate::ported::functionbar::{
+    FunctionBar, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_new, Ncurses,
+};
+use crate::ported::history::{History, History_new, History_resetPosition, History_save};
 use crate::ported::lineeditor::{
-    LineEditor, LineEditor_getText, LineEditor_init, LineEditor_reset, LineEditor_setText,
+    LineEditor, LineEditor_draw, LineEditor_getText, LineEditor_init, LineEditor_reset,
+    LineEditor_setText, LineEditor_updateScroll,
 };
 use crate::ported::listitem::ListItem;
 use crate::ported::panel::{
@@ -248,15 +258,16 @@ pub fn IncSet_saveHistory(this: &IncSet) {
 
 /// TODO: port of `IncSet.c:96`. Rebuilds `panel` from the backing `lines`,
 /// keeping only items whose value matches the filter via `String_contains_i`.
-/// Blocked on two things: the `lines` parameter is a `Vector*` and
-/// `vector.rs` ports only the sort core (no `Vector` container / `Vector_get`
-/// / `Vector_size`); and htop's "weak panel" shares the same `Object*` between
-/// `lines` and `panel`, whereas `Panel_add` takes an *owned* `Box<dyn Object>`
-/// (not `Clone`), so items cannot be shared/duplicated from `lines` into the
-/// panel. (`LineEditor_getText` is now available, so the filter text itself is
-/// no longer a blocker.)
+/// `vector.rs` now ports the `Vector` container (`Vector_get`/`Vector_size`),
+/// so the `lines` type is no longer the gap; the remaining blocker is the
+/// "weak panel" model. htop shares the same `Object*` between `lines` and
+/// `panel` (`Panel_add(panel, (Object*)line)` aliases a `Vector`-owned pointer
+/// into a non-owning panel, and `selected == line` is a raw-pointer identity
+/// test), whereas the Rust `Panel_add` takes an *owned*, non-`Clone`
+/// `Box<dyn Object>` — so items cannot be aliased/duplicated from `lines` into
+/// the panel, and there is no owned analog for the shared-pointer identity.
 fn updateWeakPanel() {
-    todo!("port of IncSet.c:96 — needs Vector container (unported) + weak-panel shared Object* model")
+    todo!("port of IncSet.c:96 — weak-panel shares one Object* between lines and panel; owned Box<dyn Object> can't alias")
 }
 
 /// Port of `IncSet.c:124`. Walks the panel front-to-back and selects the
@@ -282,14 +293,30 @@ fn search(this: &mut IncSet, panel: &mut Panel, getPanelValue: IncMode_GetPanelV
     false
 }
 
-/// TODO: port of `IncSet.c:136`. Activates a mode (sets `active`,
-/// `panel->currentBar`, `cursorOn`, the `panel` back-pointer, resets history
-/// position) and ends in `IncSet_drawBar`. Blocked on the omitted `Panel*`
-/// back-pointer (`this->panel = panel`, which the Rust model drops) and on
-/// [`IncSet_drawBar`] being an unported stub (see its blockers). `History`
-/// and `History_resetPosition` are now ported, so those are no longer the gap.
-pub fn IncSet_activate() {
-    todo!("port of IncSet.c:136 — needs IncSet_drawBar (stub) + the omitted Panel back-pointer")
+/// Port of `IncSet.c:136`. Activates a mode: sets `active`, swaps the
+/// panel's `currentBar` to the mode's bar, turns the cursor on, resets the
+/// history browse position, and redraws the bar via [`IncSet_drawBar`].
+///
+/// The C `this->panel = panel` back-pointer (`IncSet.h:33`) has no safe-Rust
+/// analog (it would alias a `&mut Panel` owned elsewhere), so the panel is
+/// threaded as a parameter and forwarded to [`IncSet_drawBar`] instead — the
+/// only two call sites (this fn and `IncSet_handleKey`) both have the panel in
+/// scope, so the back-pointer is never needed. `panel->currentBar =
+/// this->active->bar` shares one `FunctionBar*` in C; the owned-`FunctionBar`
+/// model stores a clone (as `Panel_setDefaultBar`/`Panel_init` already do).
+pub fn IncSet_activate(this: &mut IncSet, type_: IncType, panel: &mut Panel) {
+    this.active = Some(type_);
+    panel.currentBar = Some(this.modes[type_ as usize].bar.clone());
+    panel.cursorOn = true;
+    /* Reset history browse position when starting a new search/filter */
+    if let Some(history) = &mut this.history {
+        History_resetPosition(history);
+    }
+    IncSet_drawBar(
+        this,
+        panel,
+        ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+    );
 }
 
 /// Port of `IncSet.c:147`. Clears `active` (`this->active = NULL` → `None`),
@@ -344,17 +371,17 @@ fn IncMode_find(
 
 /// TODO: port of `IncSet.c:177`. The key dispatcher (F3/next-prev, history
 /// up/down, Enter/Esc confirm-abort, mouse bar-click, and the line-editor
-/// char/backspace path). The line-editor primitives it drives are now ported
-/// (`LineEditor_getText`, `LineEditor_handleKey`), and so are `search` /
-/// `IncMode_find` / `IncSet_deactivate` above, but the whole body still cannot
-/// be assembled because it also calls: [`IncSet_drawBar`] (a stub — see its
-/// blockers), `History_navigate` (`history.rs`, still a `todo!()` — the
-/// KEY_UP/KEY_DOWN arms), `LineEditor_click` (`lineeditor.rs`, still a
-/// `todo!()` — the KEY_MOUSE_BAR_CLICK arm), and [`updateWeakPanel`] (Vector /
-/// weak-panel model). Porting a subset that skips those arms would gut
-/// behavior, so it stays a whole honest stub.
+/// char/backspace path). Nearly all of the primitives it drives are now
+/// ported — [`IncSet_drawBar`], `IncSet_deactivate`, `search`, `IncMode_find`,
+/// `LineEditor_getText`/`LineEditor_handleKey`/`LineEditor_click`, and the
+/// `History_*` navigation/save fns — but the filter path
+/// (`filterChanged && lines`) calls [`updateWeakPanel`], which is still a
+/// `todo!()` (the "weak panel" shares one `Object*` between the `Vector* lines`
+/// and the panel, and the owned-`Box<dyn Object>` model cannot alias it — see
+/// its note). Porting a subset that skips the filter refresh would silently gut
+/// filter mode, so it stays a whole honest stub.
 pub fn IncSet_handleKey() {
-    todo!("port of IncSet.c:177 — needs IncSet_drawBar + History_navigate + LineEditor_click + updateWeakPanel (all stubs)")
+    todo!("port of IncSet.c:177 — filter path needs updateWeakPanel (weak-panel shared-Object model, still a stub)")
 }
 
 /// Port of `IncSet.c:297`. The concrete `IncMode_GetPanelValue`: downcast the
@@ -370,20 +397,66 @@ pub fn IncSet_getListItemValue(panel: &Panel, i: i32) -> &str {
     }
 }
 
-/// TODO: port of `IncSet.c:302`. Draws the active mode's function bar and
-/// line editor. `FunctionBar_drawExtra` and `LineEditor_updateScroll` are now
-/// ported, but this still cannot: it calls `LineEditor_draw` (`lineeditor.rs`,
-/// still a `todo!()` ncurses blit) and writes `this->panel->cursorY`/`cursorX`
-/// through the omitted `Panel*` back-pointer, neither of which exists here.
-pub fn IncSet_drawBar() {
-    todo!("port of IncSet.c:302 — needs LineEditor_draw (stub) + the omitted Panel back-pointer")
+/// Port of `IncSet.c:302`. Draws the active mode's function bar and line
+/// editor, or the default bar when no mode is active. When searching with a
+/// non-empty, not-yet-found buffer the bar is drawn in `FAILED_SEARCH`.
+///
+/// Two faithful adaptations: the C `this->panel->cursorY`/`cursorX` writes go
+/// through the panel threaded as a parameter (the `Panel*` back-pointer is not
+/// modeled — see [`IncSet_activate`]); and `this` is `&mut` (not the C `const
+/// IncSet*`) because `LineEditor_updateScroll` mutates `this->active->editor`,
+/// which in C is reached through the non-const `IncMode* active` pointer but
+/// here through the `Option<IncType>` index, requiring `&mut self`. The C
+/// `this->active->editor.len > 0` test uses the (private) editor length; the
+/// equivalent `!LineEditor_getText(..).is_empty()` reads the same buffer.
+pub fn IncSet_drawBar(this: &mut IncSet, panel: &mut Panel, attr: i32) {
+    if let Some(active) = this.active {
+        let idx = active as usize;
+        let mut attr = attr;
+        if !this.modes[idx].isFilter
+            && !this.found
+            && !LineEditor_getText(&this.modes[idx].editor).is_empty()
+        {
+            attr = ColorElements::FAILED_SEARCH.packed(ColorScheme::active());
+        }
+
+        /* Draw the function keys and get the start of the input field */
+        let fieldStartX = FunctionBar_drawExtra(&this.modes[idx].bar, None, -1, false);
+
+        /* Update scroll so the cursor remains visible */
+        let mut fieldWidth = Ncurses::cols() - fieldStartX;
+        if fieldWidth < 1 {
+            fieldWidth = 1;
+        }
+        LineEditor_updateScroll(&mut this.modes[idx].editor, fieldWidth);
+
+        /* Draw the visible portion of the input text */
+        let cursorX = LineEditor_draw(&this.modes[idx].editor, fieldStartX, fieldWidth, attr);
+
+        {
+            let mut out = io::stdout().lock();
+            Ncurses::curs_set(&mut out, true);
+            let _ = out.flush();
+        }
+
+        panel.cursorY = Ncurses::lines() - 1;
+        panel.cursorX = cursorX;
+    } else if let Some(bar) = &this.defaultBar {
+        FunctionBar_draw(bar);
+    }
 }
 
 /// TODO: port of `IncSet.c:327`. Turns a bar x-coordinate into a synthesized
-/// event via `FunctionBar_synthesizeEvent`, writing
-/// `this->panel->lastMouseBarClickX` through the omitted `Panel*` back-pointer.
+/// event via `FunctionBar_synthesizeEvent`, returning `KEY_MOUSE_BAR_CLICK`
+/// (and stashing `x` in `panel->lastMouseBarClickX`) for a click in the input
+/// area. The `Panel*` back-pointer is no longer the gap (the panel would be
+/// threaded as a parameter, as [`IncSet_activate`]/[`IncSet_drawBar`] now do),
+/// but the returned sentinel `KEY_MOUSE_BAR_CLICK` (`#define KEY_MOUSE_BAR_CLICK
+/// (KEY_MAX + 50)`, `Panel.h:93`) is a Panel-owned constant not yet ported in
+/// `panel.rs`; it belongs to that module, not this one, so it is escalated
+/// rather than duplicated here, and this stays a stub until Panel exposes it.
 pub fn IncSet_synthesizeEvent() {
-    todo!("port of IncSet.c:327 — needs the omitted Panel back-pointer")
+    todo!("port of IncSet.c:327 — needs Panel-owned KEY_MOUSE_BAR_CLICK (Panel.h:93), not yet ported in panel.rs")
 }
 
 /// Port of `IncSet.h:40` (`static inline IncSet_filter`). Returns the filter
@@ -444,7 +517,10 @@ mod tests {
     fn init_search_bar_matches_c_tables() {
         let set = IncSet_new(None);
         let bar = &set.modes[IncType::INC_SEARCH as usize].bar;
-        assert_eq!(bar.functions, vec!["Next  ", "Prev   ", "Cancel ", " Search: "]);
+        assert_eq!(
+            bar.functions,
+            vec!["Next  ", "Prev   ", "Cancel ", " Search: "]
+        );
         assert_eq!(bar.keys, vec!["F3", "S-F3", "Esc", "  "]);
         assert_eq!(bar.events, vec![KEY_F(3), KEY_F(15), 27, ERR]);
         // functions+keys+events supplied -> owns per-slot copies.
@@ -625,7 +701,10 @@ mod tests {
     fn find_no_match_full_loop_returns_false() {
         let mut set = IncSet_new(None);
         let mut p = panel_of(&["bash", "zsh", "fish", "dash"]);
-        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "nomatch");
+        LineEditor_setText(
+            &mut set.modes[IncType::INC_SEARCH as usize].editor,
+            "nomatch",
+        );
         p.selected = 1;
         assert!(!IncMode_find(
             &mut set.modes[IncType::INC_SEARCH as usize],

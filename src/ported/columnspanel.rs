@@ -75,8 +75,9 @@ use crate::ported::crt::{
 use crate::ported::listitem::ListItem;
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    EVENT_PANEL_LOST_FOCUS, HandlerResult, Panel, Panel_getSelectedIndex, Panel_moveSelectedDown,
-    Panel_moveSelectedUp, Panel_remove, Panel_selectByTyping, Panel_setSelectionColor, Panel_size,
+    HandlerResult, Panel, Panel_getSelectedIndex, Panel_moveSelectedDown, Panel_moveSelectedUp,
+    Panel_remove, Panel_selectByTyping, Panel_setSelectionColor, Panel_size,
+    EVENT_PANEL_LOST_FOCUS,
 };
 
 // `KEY_F(n)`/char case labels from the C `switch` cannot appear as Rust match
@@ -268,7 +269,9 @@ pub fn ColumnsPanel_eventHandler(this: &mut ColumnsPanel, ch: i32) -> HandlerRes
 /// `heading`/`name`. The `Process_fields[]` table, `Hashtable_get`, and
 /// `DynamicColumn.heading` are all unported. Left as a stub.
 pub fn ColumnsPanel_add() {
-    todo!("port of ColumnsPanel.c:137 — needs Process_fields[], Hashtable_get, DynamicColumn.heading")
+    todo!(
+        "port of ColumnsPanel.c:137 — needs Process_fields[], Hashtable_get, DynamicColumn.heading"
+    )
 }
 
 /// TODO: port of `void ColumnsPanel_fill(ColumnsPanel* this,
@@ -441,7 +444,10 @@ mod tests {
     fn arrow_keys_without_move_mode_are_ignored() {
         // C: case KEY_UP/KEY_DOWN: if (!this->moving) break; -> IGNORED.
         let mut up = panel_with_moving_rows(3, false);
-        assert_eq!(ColumnsPanel_eventHandler(&mut up, KEY_UP), HandlerResult::IGNORED);
+        assert_eq!(
+            ColumnsPanel_eventHandler(&mut up, KEY_UP),
+            HandlerResult::IGNORED
+        );
         assert_eq!(up.super_.selected, 0);
 
         let mut down = panel_with_moving_rows(3, false);

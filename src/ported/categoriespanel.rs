@@ -88,9 +88,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use crate::ported::crt::{
-    KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_NPAGE, KEY_PPAGE, KEY_UP,
-};
+use crate::ported::crt::{KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_NPAGE, KEY_PPAGE, KEY_UP};
 use crate::ported::panel::{
     HandlerResult, Panel, Panel_getSelectedIndex, Panel_onKey, Panel_selectByTyping,
     EVENT_SET_SELECTED,
@@ -126,7 +124,9 @@ pub fn CategoriesPanel_makeMetersPage() {
 /// from `CategoriesPanel.c:65`. Blocked: `DisplayOptionsPanel_new` is a stub and
 /// it reads the unmodeled `scr`/`host` back-pointers.
 pub fn CategoriesPanel_makeDisplayOptionsPage() {
-    todo!("port of CategoriesPanel.c:65 — needs DisplayOptionsPanel_new + the scr/host back-pointers")
+    todo!(
+        "port of CategoriesPanel.c:65 — needs DisplayOptionsPanel_new + the scr/host back-pointers"
+    )
 }
 
 /// TODO: port of `static void CategoriesPanel_makeColorsPage(CategoriesPanel* this)`
@@ -155,7 +155,9 @@ pub fn CategoriesPanel_makeScreensPage() {
 /// from `CategoriesPanel.c:97`. Blocked: `HeaderOptionsPanel_new` is a stub and
 /// it reads the unmodeled `scr`/`host` back-pointers.
 pub fn CategoriesPanel_makeHeaderOptionsPage() {
-    todo!("port of CategoriesPanel.c:97 — needs HeaderOptionsPanel_new + the scr/host back-pointers")
+    todo!(
+        "port of CategoriesPanel.c:97 — needs HeaderOptionsPanel_new + the scr/host back-pointers"
+    )
 }
 
 /// Port of `static HandlerResult CategoriesPanel_eventHandler(Panel* super, int ch)`

@@ -90,9 +90,7 @@ use crate::ported::infoscreen::{InfoScreen, InfoScreen_init};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::Panel_new;
-use crate::ported::process::{
-    Process, Process_getPid, Process_getThreadGroup, Process_isThread,
-};
+use crate::ported::process::{Process, Process_getPid, Process_getThreadGroup, Process_isThread};
 use crate::ported::vector::Vector_new;
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -164,7 +162,9 @@ pub fn ProcessLocksScreen_new(process: &Process) -> ProcessLocksScreen {
 /// via `Drop`, no algorithm to port). Same class as `InfoScreen_done` /
 /// `History_delete`.
 pub fn ProcessLocksScreen_delete() {
-    todo!("port of ProcessLocksScreen.c:34 — free(InfoScreen_done(...)); Drop releases owned fields")
+    todo!(
+        "port of ProcessLocksScreen.c:34 — free(InfoScreen_done(...)); Drop releases owned fields"
+    )
 }
 
 /// TODO: port of `static void ProcessLocksScreen_draw(InfoScreen* this)` from

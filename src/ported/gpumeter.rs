@@ -4,14 +4,77 @@
 //! `non_snake_case` is allowed for the whole module — matching the
 //! spec name-for-name is the point of the port.
 //!
-//! `GPUMeter_updateValues` and `GPUMeter_display` depend on unported
-//! substrate (`Platform_setGPUValues`, the `Meter` `txtBuffer`/`values`
-//! fields, `RichString`, and `CRT_colors`), so they are left as their
-//! exact `todo!()` stubs.
+//! `GPUMeter_display` is now ported: its substrate (`RichString`,
+//! `CRT_colors`, the `Meter` `values` field, and this module's own
+//! `GPUMeter_engineData`/`totalUsage`/`totalGPUTimeDiff` file-statics) is
+//! available. `GPUMeter_updateValues` stays a `todo!()` stub: it is driven
+//! by `Platform_setGPUValues(this, &totalUsage, &totalGPUTimeDiff)`, whose
+//! Rust port (`linux/platform.rs`) is still a no-arg stub with no output
+//! params, so there is no faithful way to populate the statics.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::meter::Meter;
+use crate::ported::richstring::{
+    RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii,
+};
+
+/// Port of `struct GPUMeterEngineData` from `GPUMeter.h:15`. Per-engine GPU
+/// accounting row: `key` is the engine label (`const char*` owned by
+/// `LinuxMachine` in the C, modeled as an owned `Option<String>` — `None`
+/// reproduces the C `NULL` that terminates the `GPUMeter_display` loop),
+/// `timeDiff` is the busy-time delta in nanoseconds (`-1ULL`/`u64::MAX`
+/// meaning "unavailable"), and `percentage` is the utilisation.
+pub struct GPUMeterEngineData {
+    pub key: Option<String>,
+    pub timeDiff: u64,
+    pub percentage: f64,
+}
+
+/// Port of `struct GPUMeterEngineData GPUMeter_engineData[4]` from
+/// `GPUMeter.c:20`. htop's file-scope (extern) array of per-engine rows,
+/// written by the platform layer (`LinuxMachine`) and read by
+/// `GPUMeter_display`. Zero-initialized like the C static storage
+/// (`key = NULL`, `timeDiff = 0`, `percentage = 0.0`); held behind a
+/// `Mutex` because a Rust mutable static needs interior mutability (the C
+/// global is single-threaded and unlocked).
+pub static GPUMeter_engineData: Mutex<[GPUMeterEngineData; 4]> = Mutex::new([
+    GPUMeterEngineData {
+        key: None,
+        timeDiff: 0,
+        percentage: 0.0,
+    },
+    GPUMeterEngineData {
+        key: None,
+        timeDiff: 0,
+        percentage: 0.0,
+    },
+    GPUMeterEngineData {
+        key: None,
+        timeDiff: 0,
+        percentage: 0.0,
+    },
+    GPUMeterEngineData {
+        key: None,
+        timeDiff: 0,
+        percentage: 0.0,
+    },
+]);
+
+/// Port of `static double totalUsage = NAN` from `GPUMeter.c:21`. The
+/// aggregate GPU utilisation set by `GPUMeter_updateValues` and read by
+/// `GPUMeter_display`; behind a `Mutex` for interior mutability.
+static totalUsage: Mutex<f64> = Mutex::new(f64::NAN);
+
+/// Port of `static unsigned long long int totalGPUTimeDiff = -1ULL` from
+/// `GPUMeter.c:22`. The aggregate GPU busy-time delta (nanoseconds);
+/// `-1ULL` is `u64::MAX`, meaning "unavailable".
+static totalGPUTimeDiff: Mutex<u64> = Mutex::new(u64::MAX);
 
 /// Port of `static size_t activeMeters` from `GPUMeter.c:32`. htop's
 /// file-static counter of live GPU meters, mutated by `GPUMeter_init`
@@ -92,14 +155,74 @@ pub fn humanTimeUnit(mut value: u64) -> String {
     format!("{:3}d", value)
 }
 
-/// TODO: port of `static void GPUMeter_updateValues(Meter* this` from `GPUMeter.c:82`.
+/// TODO: port of `static void GPUMeter_updateValues(Meter* this)` from
+/// `GPUMeter.c:82`. Blocked on `Platform_setGPUValues(this, &totalUsage,
+/// &totalGPUTimeDiff)`: the Rust port of `Platform_setGPUValues`
+/// (`linux/platform.rs`) is still a no-arg `todo!()` stub with no output
+/// params, so it cannot populate `totalUsage`/`totalGPUTimeDiff`/`this`
+/// as the C signature does — there is no faithful data source to feed. The
+/// rest of the body (the `%.1f%%` / `N/A` `txtBuffer` write) is
+/// straightforward, but reproducing it against a stub that does nothing
+/// would be a fake port, not a faithful one.
 pub fn GPUMeter_updateValues() {
-    todo!("port of GPUMeter.c:82")
+    todo!("port of GPUMeter.c:82: needs Platform_setGPUValues output-param signature")
 }
 
-/// TODO: port of `static void GPUMeter_display(const Object* cast, RichString* out` from `GPUMeter.c:94`.
-pub fn GPUMeter_display() {
-    todo!("port of GPUMeter.c:94")
+/// Port of `static void GPUMeter_display(const Object* cast, RichString*
+/// out)` from `GPUMeter.c:94`. The C casts `cast` back to `const Meter*`
+/// and reads `this->values[i]`, so the down-cast collapses into the typed
+/// `&Meter` parameter (the `loadaveragemeter.rs` precedent). `CRT_colors[X]`
+/// is `ColorElements::X.packed(ColorScheme::active())`; the active scheme is
+/// read once (a process-global that does not change mid-call). Each
+/// `xSnprintf(buffer, ..., "%5.1f%%", v)` becomes `format!("{:5.1}%", v)`
+/// and the `written` byte count becomes `buffer.len()`; `humanTimeUnit`
+/// returns its owned `String` directly. `isNonnegative(x)` (`Macros.h:141`,
+/// `isgreaterequal(x, 0.0)`, false for NaN) is inlined as `x >= 0.0`.
+pub fn GPUMeter_display(this: &Meter, out: &mut RichString) {
+    let scheme = ColorScheme::active();
+    let meter_text = ColorElements::METER_TEXT.packed(scheme);
+    let meter_value = ColorElements::METER_VALUE.packed(scheme);
+
+    RichString_writeAscii(out, meter_text, b":");
+    let total_usage = *totalUsage.lock().unwrap();
+    if !(total_usage >= 0.0) {
+        RichString_appendAscii(out, meter_value, b" N/A");
+        return;
+    }
+
+    let buffer = format!("{:5.1}%", total_usage);
+    RichString_appendnAscii(out, meter_value, buffer.as_bytes(), buffer.len());
+    let total_time_diff = *totalGPUTimeDiff.lock().unwrap();
+    if total_time_diff != u64::MAX {
+        RichString_appendAscii(out, meter_text, b"(");
+        let buffer = humanTimeUnit(total_time_diff);
+        RichString_appendnAscii(out, meter_value, buffer.as_bytes(), buffer.len());
+        RichString_appendAscii(out, meter_text, b")");
+    }
+
+    let engine_data = GPUMeter_engineData.lock().unwrap();
+    for i in 0..engine_data.len() {
+        let key = match &engine_data[i].key {
+            Some(k) => k,
+            None => break,
+        };
+
+        RichString_appendAscii(out, meter_text, b" ");
+        RichString_appendAscii(out, meter_text, key.as_bytes());
+        RichString_appendAscii(out, meter_text, b":");
+        if this.values[i] >= 0.0 {
+            let buffer = format!("{:5.1}%", this.values[i]);
+            RichString_appendnAscii(out, meter_value, buffer.as_bytes(), buffer.len());
+        } else {
+            RichString_appendAscii(out, meter_value, b" N/A");
+        }
+        if engine_data[i].timeDiff != u64::MAX {
+            RichString_appendAscii(out, meter_text, b"(");
+            let buffer = humanTimeUnit(engine_data[i].timeDiff);
+            RichString_appendnAscii(out, meter_value, buffer.as_bytes(), buffer.len());
+            RichString_appendAscii(out, meter_text, b")");
+        }
+    }
 }
 
 /// Port of `static void GPUMeter_init(Meter* this ATTR_UNUSED)` from
@@ -175,6 +298,27 @@ mod tests {
         // 4 d = 100 h path: 3.6e14 ns -> 360000000 -> /1000 = 360000 -> /60 = 6000
         //   -> /60 = 100 (>=96) -> /24 = 4: "%3llud".
         assert_eq!(humanTimeUnit(360_000_000_000_000), "  4d");
+    }
+
+    /// Visible characters of the valid `[0, chlen)` range of `out`.
+    fn text(r: &RichString) -> String {
+        (0..r.chlen as usize).map(|i| r.chptr[i].chars).collect()
+    }
+
+    #[test]
+    fn display_na_when_total_usage_unavailable() {
+        // With the file-statics at their C defaults (totalUsage = NAN,
+        // engineData all-NULL), GPUMeter_display takes the `!isNonnegative`
+        // branch: ":" then " N/A", and never touches the engine loop. This
+        // test only reads the statics (GPUMeter_updateValues, the only
+        // writer, is stubbed and never runs), so it is order-independent.
+        let m = Meter {
+            values: vec![0.0; 5],
+            ..Meter::empty()
+        };
+        let mut out = RichString::new();
+        GPUMeter_display(&m, &mut out);
+        assert_eq!(text(&out), ": N/A");
     }
 
     #[test]

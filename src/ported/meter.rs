@@ -43,10 +43,10 @@
 //! stores an `Object*`.
 //!
 //! Ported:
-//! - `Meter_humanUnit` (`Meter.c:473`) — kibibytes → human-readable string.
-//! - `Meter_computeSum` (`Meter.c:51`) — `static`; sums the live positive
+//! - `Meter_humanUnit` (`Meter.c:474`) — kibibytes → human-readable string.
+//! - `Meter_computeSum` (`Meter.c:52`) — `static`; sums the live positive
 //!   values clamped to `DBL_MAX`.
-//! - `Meter_nextSupportedMode` (`Meter.c:556`) — pure bit op over
+//! - `Meter_nextSupportedMode` (`Meter.c:557`) — pure bit op over
 //!   `supportedModes`.
 //! - `Meter_displayBuffer` (`Meter.c:44`) — `static inline`; dispatches on
 //!   the `Object` display slot (`display` field) or writes `txtBuffer` in
@@ -64,6 +64,15 @@
 //!   as instance fields (see the [`Meter`] struct docs).
 //! - `BlankMeter_updateValues` (`Meter.c:592`) / `BlankMeter_display`
 //!   (`Meter.c:596`) — the Blank meter's trivial value/display hooks.
+//! - `LEDMeterMode_drawDigit` (`Meter.c:352`) / `LEDMeterMode_draw`
+//!   (`Meter.c:357`) — the seven-segment LED renderer: caption in `LED_COLOR`,
+//!   then each `Meter_displayBuffer` char blitted either as a 3-row / 4-col
+//!   digit cell (`0`–`9`) or a single character, through the crossterm
+//!   [`Ncurses`] shim. The `#ifdef HAVE_LIBNCURSESW` UTF-8 digit table + the
+//!   `mvadd_wch` branch collapse onto the unicode-native crossterm sink (the
+//!   same runtime-`CRT_utf8` selection `CRT.c`'s `CRT_degreeSign` uses), so the
+//!   ascii/utf8 split is a runtime table pick and both add-char branches map to
+//!   one `mvaddch`.
 //!
 //! Stubbed (honest `todo!()`, specific blocker each):
 //! - `GraphMeterMode_draw` (`Meter.c:221`) — needs the `Machine` host
@@ -72,16 +81,14 @@
 //!   value-recording half cannot be written faithfully. Referenced by the
 //!   `Meter_modes` table as a fn pointer (never called until a `Meter` is
 //!   actually drawn in Graph mode).
-//! - `LEDMeterMode_draw` (`Meter.c:357`) — out of this port's scope; needs
-//!   the LED digit tables, the `CRT_utf8` `mvadd_wch` branch, and a
-//!   per-digit cell blit. Referenced by `Meter_modes` as a fn pointer.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use std::io::Write;
+use std::sync::atomic::Ordering;
 
-use crate::ported::crt::{ColorElements, ColorScheme, CRT_colorSchemes};
+use crate::ported::crt::{CRT_colorSchemes, CRT_utf8, ColorElements, ColorScheme};
 use crate::ported::functionbar::Ncurses;
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::{Object, ObjectClass, Object_class};
@@ -103,7 +110,7 @@ const ONE_K: f64 = 1024.0;
 const DEFAULT_GRAPH_HEIGHT: i32 = 4;
 
 /// Port of `int Meter_humanUnit(char* buffer, double value, size_t size)`
-/// from `Meter.c:473`. Converts `value` in kibibytes into a human
+/// from `Meter.c:474`. Converts `value` in kibibytes into a human
 /// readable string (e.g. `"0K"`, `"1023K"`, `"98.7M"`, `"1.23G"`).
 ///
 /// Signature mapping: the C writes into the caller's `char* buffer`
@@ -327,10 +334,9 @@ pub struct MeterMode {
 
 /// Port of `static const MeterMode Meter_modes[]` from `Meter.c:416`. Index
 /// `0` is reserved (`{ NULL, 0, NULL }`); the real modes map to their
-/// renderer + default height. `GraphMeterMode_draw` / `LEDMeterMode_draw`
-/// are honest stubs (see the module docs) but are still wired here as fn
-/// pointers so `Meter_setMode` assigns the correct height and (eventual)
-/// renderer.
+/// renderer + default height. `GraphMeterMode_draw` is an honest stub (see
+/// the module docs) but is still wired here as a fn pointer so `Meter_setMode`
+/// assigns the correct height and (eventual) renderer.
 pub static Meter_modes: [MeterMode; LAST_METERMODE as usize] = [
     // [0] reserved
     MeterMode {
@@ -506,7 +512,7 @@ impl Object for Meter {
 }
 
 /// Port of `static double Meter_computeSum(const Meter* this)` from
-/// `Meter.c:51`. Sums the strictly-positive live values
+/// `Meter.c:52`. Sums the strictly-positive live values
 /// (`sumPositiveValues(this->values, this->curItems)`) and clamps the
 /// result to `DBL_MAX` so IEEE-754 rounding cannot yield infinity.
 ///
@@ -525,7 +531,7 @@ pub fn Meter_computeSum(this: &Meter) -> f64 {
 }
 
 /// Port of `MeterModeId Meter_nextSupportedMode(const Meter* this)` from
-/// `Meter.c:556`. Given the current `mode`, returns the next supported
+/// `Meter.c:557`. Given the current `mode`, returns the next supported
 /// mode id, cycling back to the lowest supported mode once the highest is
 /// passed. The selection is a pure bit operation over the
 /// `supportedModes` bitset: mask off every mode id `<= this->mode`
@@ -732,7 +738,14 @@ pub fn BarMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
             (start_pos + offset) as usize,
             block_sizes[i] as usize,
         );
-        RichString_printoffnVal(&mut out, &bar, y, x + offset, start_pos + offset, block_sizes[i]);
+        RichString_printoffnVal(
+            &mut out,
+            &bar,
+            y,
+            x + offset,
+            start_pos + offset,
+            block_sizes[i],
+        );
         offset += block_sizes[i];
     }
     if offset < w {
@@ -742,7 +755,14 @@ pub fn BarMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
             (start_pos + offset) as usize,
             (w - offset) as usize,
         );
-        RichString_printoffnVal(&mut out, &bar, y, x + offset, start_pos + offset, w - offset);
+        RichString_printoffnVal(
+            &mut out,
+            &bar,
+            y,
+            x + offset,
+            start_pos + offset,
+            w - offset,
+        );
     }
 
     RichString_delete(&mut bar);
@@ -763,13 +783,135 @@ pub fn GraphMeterMode_draw(_out: &mut dyn Write, _this: &mut Meter, _x: i32, _y:
     todo!("port of Meter.c:221 — needs Machine host, timespec, GraphData ring buffer")
 }
 
-/// TODO: port of `static void LEDMeterMode_draw(Meter* this, int x, int y,
-/// int w)` from `Meter.c:357`. Out of this port's scope: needs the
-/// `LEDMeterMode_digits` ASCII/UTF-8 tables, the `CRT_utf8` `mvadd_wch`
-/// branch, and a per-digit cell blit (`LEDMeterMode_drawDigit`). Wired into
-/// `Meter_modes` as a fn pointer.
-pub fn LEDMeterMode_draw(_out: &mut dyn Write, _this: &mut Meter, _x: i32, _y: i32, _w: i32) {
-    todo!("port of Meter.c:357 — needs LED digit tables, CRT_utf8 mvadd_wch branch")
+/// Port of `static const char* const LEDMeterMode_digitsAscii[]` from
+/// `Meter.c:334`: the 3-row × 10-digit seven-segment cells used when
+/// `CRT_utf8` is off. Row `r`, digit `n` is at index `r * 10 + n`.
+static LEDMeterMode_digitsAscii: [&str; 30] = [
+    " __ ", "    ", " __ ", " __ ", "    ", " __ ", " __ ", " __ ", " __ ", " __ ", "|  |", "   |",
+    " __|", " __|", "|__|", "|__ ", "|__ ", "   |", "|__|", "|__|", "|__|", "   |", "|__ ", " __|",
+    "   |", " __|", "|__|", "   |", "|__|", " __|",
+];
+
+/// Port of `static const char* const LEDMeterMode_digitsUtf8[]` from
+/// `Meter.c:342` (`#ifdef HAVE_LIBNCURSESW`): the box-drawing seven-segment
+/// cells used when `CRT_utf8` is on. The port commits to the unicode-capable
+/// build (crossterm renders UTF-8 natively), so both tables are present and
+/// selected at runtime by [`CRT_utf8`] — the same modeling `CRT.c`'s
+/// `CRT_degreeSign` uses.
+static LEDMeterMode_digitsUtf8: [&str; 30] = [
+    "┌──┐",
+    "  ┐ ",
+    "╶──┐",
+    "╶──┐",
+    "╷  ╷",
+    "┌──╴",
+    "┌──╴",
+    "╶──┐",
+    "┌──┐",
+    "┌──┐",
+    "│  │",
+    "  │ ",
+    "┌──┘",
+    " ──┤",
+    "└──┤",
+    "└──┐",
+    "├──┐",
+    "   │",
+    "├──┤",
+    "└──┤",
+    "└──┘",
+    "  ╵ ",
+    "└──╴",
+    "╶──┘",
+    "   ╵",
+    "╶──┘",
+    "└──┘",
+    "   ╵",
+    "└──┘",
+    "╶──┘",
+];
+
+/// Port of `static void LEDMeterMode_drawDigit(int x, int y, int n)` from
+/// `Meter.c:352`. Blits the three rows of seven-segment cell `n` at column
+/// `x`, rows `y`..`y+2`, through the crossterm [`Ncurses`] shim. The C reads
+/// the file-scope `LEDMeterMode_digits` pointer (set by [`LEDMeterMode_draw`]
+/// just before it calls this); that mutable global is threaded here as an
+/// explicit `digits` argument instead — the same signature-adaptation this
+/// module applies by threading the `out` sink — so no shared mutable static is
+/// needed.
+fn LEDMeterMode_drawDigit(mut out: &mut dyn Write, x: i32, y: i32, n: i32, digits: &[&str; 30]) {
+    for i in 0..3 {
+        Ncurses::mvaddstr(&mut out, y + i, x, digits[(i * 10 + n) as usize]);
+    }
+}
+
+/// Port of `static void LEDMeterMode_draw(Meter* this, int x, int y, int w)`
+/// from `Meter.c:357`. Draws the caption in `LED_COLOR`, then walks the
+/// `Meter_displayBuffer` text: each ASCII digit `'0'`–`'9'` is blitted as a
+/// 3-row / 4-column seven-segment cell (`LEDMeterMode_drawDigit`), advancing
+/// `xx` by 4; every other character is blitted as a single cell, advancing by
+/// 1. Both stop once the next cell would overrun the width. The trailing
+/// `RESET_COLOR` restore (C `end:` label) runs on every exit path.
+///
+/// The C `assert(x >= 0)` / `assert(w <= INT_MAX - x)` are debug-only
+/// preconditions and are dropped. `strnlen(caption, w)` becomes
+/// `min(caption bytes, w)` (a Rust `String` has no embedded NUL). The
+/// `#ifdef HAVE_LIBNCURSESW` `yText`/digit-table/`mvadd_wch` branches collapse
+/// onto the unicode-native crossterm sink: `yText` uses the `CRT_utf8`-true
+/// offset, the digit table is picked at runtime, and both the `mvadd_wch`
+/// (utf8) and `mvaddch` (ascii) add-char branches map to one `mvaddch`.
+pub fn LEDMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i32, w: i32) {
+    let scheme = ColorScheme::active();
+    let utf8 = CRT_utf8.load(Ordering::Relaxed);
+
+    let y_text = if utf8 { y + 1 } else { y + 2 };
+    Ncurses::attrset(&mut out, ColorElements::LED_COLOR.packed(scheme));
+
+    let caption = this.caption.clone();
+    if w > 0 {
+        Ncurses::mvaddnstr(&mut out, y_text, x, &caption, w);
+    }
+
+    let caption_width = if w > 0 {
+        (caption.len() as i32).min(w)
+    } else {
+        0
+    };
+    if w <= caption_width {
+        Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
+        return;
+    }
+    let mut xx = x + caption_width;
+
+    let digits: &[&str; 30] = if utf8 {
+        &LEDMeterMode_digitsUtf8
+    } else {
+        &LEDMeterMode_digitsAscii
+    };
+
+    let mut text = RichString::new();
+    Meter_displayBuffer(this, &mut text);
+
+    let len = RichString_sizeVal(&text);
+    for i in 0..len {
+        let c = RichString_getCharVal(&text, i as usize);
+        if c.is_ascii_digit() {
+            if xx > x + w - 4 {
+                break;
+            }
+            LEDMeterMode_drawDigit(&mut out, xx, y, (c as i32) - ('0' as i32), digits);
+            xx += 4;
+        } else {
+            if xx > x + w - 1 {
+                break;
+            }
+            Ncurses::mvaddch(&mut out, y_text, xx, c);
+            xx += 1;
+        }
+    }
+    RichString_delete(&mut text);
+
+    Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
 }
 
 /// Port of `void Meter_setMode(Meter* this, MeterModeId modeIndex)` from
@@ -793,7 +935,7 @@ pub fn Meter_setMode(this: &mut Meter, modeIndex: MeterModeId) {
     debug_assert!(supportedModes != 0);
     debug_assert!(supportedModes & (1 << 0) == 0);
 
-    debug_assert!(LAST_METERMODE <= 32);
+    const { assert!(LAST_METERMODE <= 32) };
     if modeIndex >= LAST_METERMODE || (supportedModes & (1u32 << modeIndex)) == 0 {
         return;
     }
@@ -1100,8 +1242,8 @@ mod tests {
         Meter_displayBuffer(&m, &mut out);
         assert_eq!(rich_text(&out), "hi");
         // colored with the resolved attribute for METER_VALUE.
-        let expect = CRT_colorSchemes[ColorScheme::active() as usize]
-            [ColorElements::METER_VALUE as usize];
+        let expect =
+            CRT_colorSchemes[ColorScheme::active() as usize][ColorElements::METER_VALUE as usize];
         assert_eq!(out.chptr[0].attr, expect & 0xffffff);
     }
 
@@ -1216,7 +1358,10 @@ mod tests {
     #[test]
     fn bar_meter_draw_non_percent_grows_total() {
         // Non-percent chart with sum > total: total grows to the sum.
-        static ATTRS: [i32; 2] = [ColorElements::CPU_NORMAL as i32, ColorElements::CPU_SYSTEM as i32];
+        static ATTRS: [i32; 2] = [
+            ColorElements::CPU_NORMAL as i32,
+            ColorElements::CPU_SYSTEM as i32,
+        ];
         let mut m = Meter {
             caption: "IO ".to_string(),
             txtBuffer: "".to_string(),
@@ -1254,6 +1399,58 @@ mod tests {
         // with the override without panicking.
         BarMeterMode_draw(&mut buf, &mut m, 0, 0, 20);
         assert!(printed_chars(&buf).contains('|'));
+    }
+
+    // ── LEDMeterMode_draw ─────────────────────────────────────────────
+
+    #[test]
+    fn led_meter_draw_renders_digit_cells_and_other_chars() {
+        // CRT_utf8 defaults to false → ascii digit table. txtBuffer "5%":
+        // '5' is blitted as a 3-row seven-segment cell, '%' as a single char.
+        static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
+        let mut m = Meter {
+            caption: "".to_string(),
+            txtBuffer: "5%".to_string(),
+            attributes: &ATTRS,
+            ..Meter::empty()
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        LEDMeterMode_draw(&mut buf, &mut m, 0, 0, 20);
+        let printed = printed_chars(&buf);
+        // digit 5 cells: rows " __ ", "|__ ", "|__|" → contains "__" and "|".
+        assert!(printed.contains("__"), "printed: {printed:?}");
+        assert!(printed.contains('|'), "printed: {printed:?}");
+        // the non-digit '%' is blitted verbatim.
+        assert!(printed.contains('%'), "printed: {printed:?}");
+    }
+
+    #[test]
+    fn led_meter_draw_prints_caption() {
+        static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
+        let mut m = Meter {
+            caption: "CPU".to_string(),
+            txtBuffer: "".to_string(),
+            attributes: &ATTRS,
+            ..Meter::empty()
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        LEDMeterMode_draw(&mut buf, &mut m, 0, 0, 20);
+        assert!(printed_chars(&buf).contains("CPU"));
+    }
+
+    #[test]
+    fn led_meter_draw_width_equals_caption_skips_value() {
+        // w <= captionWidth → early return after caption, no digit cells.
+        static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
+        let mut m = Meter {
+            caption: "CPU".to_string(),
+            txtBuffer: "5".to_string(),
+            attributes: &ATTRS,
+            ..Meter::empty()
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        LEDMeterMode_draw(&mut buf, &mut m, 0, 0, 3);
+        assert_eq!(printed_chars(&buf), "CPU");
     }
 
     // ── Meter_setMode ─────────────────────────────────────────────────
@@ -1547,7 +1744,10 @@ mod tests {
         assert_eq!(Meter_modes[TEXT_METERMODE as usize].uiName, Some("Text"));
         assert_eq!(Meter_modes[TEXT_METERMODE as usize].h, 1);
         assert_eq!(Meter_modes[GRAPH_METERMODE as usize].uiName, Some("Graph"));
-        assert_eq!(Meter_modes[GRAPH_METERMODE as usize].h, DEFAULT_GRAPH_HEIGHT);
+        assert_eq!(
+            Meter_modes[GRAPH_METERMODE as usize].h,
+            DEFAULT_GRAPH_HEIGHT
+        );
         assert_eq!(Meter_modes[LED_METERMODE as usize].uiName, Some("LED"));
         assert_eq!(Meter_modes[LED_METERMODE as usize].h, 3);
     }

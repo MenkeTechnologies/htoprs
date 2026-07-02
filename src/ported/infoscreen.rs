@@ -124,13 +124,13 @@
 use core::ffi::c_int;
 use std::io::{self, Write};
 
-use crossterm::terminal::{Clear, ClearType};
 use crossterm::queue;
+use crossterm::terminal::{Clear, ClearType};
 
-use crate::ported::crt::{ERR, KEY_F, KEY_RESIZE};
+use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F, KEY_RESIZE};
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new, FunctionBar_setLabel, Ncurses};
 use crate::ported::incset::{
-    IncSet, IncSet_activate, IncSet_drawBar, IncSet_filter, IncSet_handleKey, IncSet_new,
+    IncSet, IncSet_activate, IncSet_drawBar, IncSet_filter, IncSet_handleKey, IncSet_new, IncType,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
@@ -446,10 +446,21 @@ pub fn InfoScreen_run(this: &mut dyn InfoScreenClass) {
     let mut looping = true;
     while looping {
         // C: Panel_draw(panel, false, true, true, false);
-        Panel_draw(&mut this.super_InfoScreen().display, false, true, true, false);
+        Panel_draw(
+            &mut this.super_InfoScreen().display,
+            false,
+            true,
+            true,
+            false,
+        );
 
         // C: IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR]);
-        IncSet_drawBar(); // routed to the incset.rs stub (see fn docs)
+        let screen = this.super_InfoScreen();
+        IncSet_drawBar(
+            &mut screen.inc,
+            &mut screen.display,
+            ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+        );
 
         // C: FunctionBar_setLabel(this->display->defaultBar, KEY_F(4),
         //        this->inc->filtering ? "FILTER " : "Filter ");
@@ -495,11 +506,13 @@ pub fn InfoScreen_run(this: &mut dyn InfoScreenClass) {
             ERR => continue,
             // C: case KEY_F(3): case '/': IncSet_activate(this->inc, INC_SEARCH, panel); break;
             F3 | SLASH => {
-                IncSet_activate(); // routed; C arg: INC_SEARCH
+                let screen = this.super_InfoScreen();
+                IncSet_activate(&mut screen.inc, IncType::INC_SEARCH, &mut screen.display);
             }
             // C: case KEY_F(4): case '\\': IncSet_activate(this->inc, INC_FILTER, panel); break;
             F4 | BACKSLASH => {
-                IncSet_activate(); // routed; C arg: INC_FILTER
+                let screen = this.super_InfoScreen();
+                IncSet_activate(&mut screen.inc, IncType::INC_FILTER, &mut screen.display);
             }
             // C: case KEY_F(5): clear();
             //        if (As_InfoScreen(this)->scan) { Vector_prune(this->lines); InfoScreen_scan(this); }
@@ -612,11 +625,7 @@ mod tests {
     #[test]
     fn init_uses_supplied_bar() {
         let mut this = InfoScreen::empty();
-        let custom = FunctionBar_new(
-            Some(&["Only "][..]),
-            Some(&["F1"][..]),
-            Some(&[1][..]),
-        );
+        let custom = FunctionBar_new(Some(&["Only "][..]), Some(&["F1"][..]), Some(&[1][..]));
         InfoScreen_init(&mut this, core::ptr::null(), Some(custom), 5, "H");
         assert_eq!(
             this.display.defaultBar.as_ref().unwrap().functions,

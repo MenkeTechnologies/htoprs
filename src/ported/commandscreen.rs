@@ -194,12 +194,7 @@ mod tests {
             .expect("default bar built");
         assert_eq!(bar.functions, INFO_FUNCTIONS.to_vec());
         // The IncSet received the same bar content (cloned + moved).
-        let inc_bar = cs
-            .super_
-            .inc
-            .defaultBar
-            .as_ref()
-            .expect("inc default bar");
+        let inc_bar = cs.super_.inc.defaultBar.as_ref().expect("inc default bar");
         assert_eq!(inc_bar.functions, INFO_FUNCTIONS.to_vec());
     }
 

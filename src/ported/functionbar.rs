@@ -57,8 +57,7 @@ const ERR: i32 = -1;
 
 /// Port of `FunctionBar_FKeys` (`FunctionBar.c:24`), minus the trailing
 /// `NULL` (Rust length is the terminator).
-const FunctionBar_FKeys: [&str; 10] =
-    ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"];
+const FunctionBar_FKeys: [&str; 10] = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"];
 
 /// Port of `FunctionBar_FLabels` (`FunctionBar.c:26`): ten six-space
 /// blank labels.
@@ -216,15 +215,24 @@ pub fn FunctionBar_drawExtra(
     let line = Ncurses::lines() - 1;
     let mut out = io::stdout().lock();
 
-    Ncurses::attrset(&mut out, ColorElements::FUNCTION_BAR.packed(ColorScheme::active()));
+    Ncurses::attrset(
+        &mut out,
+        ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+    );
     Ncurses::mvhline(&mut out, line, 0, ' ', Ncurses::cols());
     let mut x = 0i32;
     for i in 0..this.functions.len() {
         debug_assert!(i < FUNCTIONBAR_MAXEVENTS);
-        Ncurses::attrset(&mut out, ColorElements::FUNCTION_KEY.packed(ColorScheme::active()));
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::FUNCTION_KEY.packed(ColorScheme::active()),
+        );
         Ncurses::mvaddstr(&mut out, line, x, &this.keys[i]);
         x += this.keys[i].len() as i32;
-        Ncurses::attrset(&mut out, ColorElements::FUNCTION_BAR.packed(ColorScheme::active()));
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+        );
         Ncurses::mvaddstr(&mut out, line, x, &this.functions[i]);
         x += this.functions[i].len() as i32;
     }
@@ -239,7 +247,10 @@ pub fn FunctionBar_drawExtra(
         Ncurses::mvaddstr(&mut out, line, x, b);
     }
 
-    Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
+    Ncurses::attrset(
+        &mut out,
+        ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+    );
     Ncurses::curs_set(&mut out, setCursor);
     let _ = out.flush();
 
@@ -263,7 +274,10 @@ pub fn FunctionBar_append(buffer: &str, attr: i32) {
     };
     Ncurses::attrset(&mut out, a);
     Ncurses::mvaddstr(&mut out, line, cur + 1, buffer);
-    Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
+    Ncurses::attrset(
+        &mut out,
+        ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+    );
     let _ = out.flush();
 
     currentLen.store(cur + buffer.len() as i32 + 1, Ordering::Relaxed);
@@ -422,7 +436,7 @@ impl Ncurses {
         if y < 0 || x < 0 || n <= 0 {
             return;
         }
-        let run: String = std::iter::repeat(ch).take(n as usize).collect();
+        let run: String = std::iter::repeat_n(ch, n as usize).collect();
         let _ = queue!(out, MoveTo(x as u16, y as u16), Print(run));
     }
 
@@ -496,7 +510,10 @@ mod tests {
     fn new_enter_esc_builds_two_slots() {
         let b = FunctionBar_newEnterEsc("Done  ", "Cancel");
         assert!(!b.staticData);
-        assert_eq!(b.functions, vec!["Done  ".to_string(), "Cancel".to_string()]);
+        assert_eq!(
+            b.functions,
+            vec!["Done  ".to_string(), "Cancel".to_string()]
+        );
         assert_eq!(b.keys, vec!["Enter".to_string(), "Esc".to_string()]);
         assert_eq!(b.events, vec![13, 27]);
     }

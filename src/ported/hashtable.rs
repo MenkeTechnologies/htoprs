@@ -653,7 +653,11 @@ mod tests {
         assert_eq!(val_of(removed.as_deref().unwrap()), 18);
         assert!(Hashtable_get(&ht2, 18).is_none());
         for &k in &[5u32, 31, 44] {
-            assert_eq!(val_of(Hashtable_get(&ht2, k).unwrap()), k, "key {k} after shift");
+            assert_eq!(
+                val_of(Hashtable_get(&ht2, k).unwrap()),
+                k,
+                "key {k} after shift"
+            );
         }
         assert_eq!(Hashtable_count(&ht2), 3);
     }
@@ -699,7 +703,11 @@ mod tests {
 
         // every key survived the rehash(es)
         for k in 0..count {
-            assert_eq!(val_of(Hashtable_get(&ht, k).unwrap()), k, "key {k} lost in resize");
+            assert_eq!(
+                val_of(Hashtable_get(&ht, k).unwrap()),
+                k,
+                "key {k} lost in resize"
+            );
         }
         // load factor stays below 1: there is always an empty slot
         assert!(ht.size > ht.items);
@@ -736,7 +744,11 @@ mod tests {
             Hashtable_remove(&mut ht, k);
         }
         // now items is tiny relative to the grown size → shrunk
-        assert!(ht.size < grown, "expected shrink from {grown}, still {}", ht.size);
+        assert!(
+            ht.size < grown,
+            "expected shrink from {grown}, still {}",
+            ht.size
+        );
         assert_eq!(ht.items, 2);
         assert_eq!(Hashtable_count(&ht), 2);
         // survivors still resolve

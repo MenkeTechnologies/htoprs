@@ -327,8 +327,7 @@ pub fn TraceScreen_forkTracer(this: &mut TraceScreen) -> bool {
         target_os = "solaris"
     ))]
     let argv: Vec<*const core::ffi::c_char> = {
-        let mut v: Vec<*const core::ffi::c_char> =
-            argv_store.iter().map(|c| c.as_ptr()).collect();
+        let mut v: Vec<*const core::ffi::c_char> = argv_store.iter().map(|c| c.as_ptr()).collect();
         v.push(core::ptr::null());
         v
     };
@@ -383,11 +382,7 @@ pub fn TraceScreen_forkTracer(this: &mut TraceScreen) -> bool {
                 // Should never reach here, unless execvp fails ...
                 let message: &[u8] =
                     b"Could not execute 'truss'. Please make sure it is available in your $PATH.";
-                let _ = libc::write(
-                    libc::STDERR_FILENO,
-                    message.as_ptr().cast(),
-                    message.len(),
-                );
+                let _ = libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
             }
             #[cfg(target_os = "linux")]
             {
@@ -395,11 +390,7 @@ pub fn TraceScreen_forkTracer(this: &mut TraceScreen) -> bool {
                 // Should never reach here, unless execvp fails ...
                 let message: &[u8] =
                     b"Could not execute 'strace'. Please make sure it is available in your $PATH.";
-                let _ = libc::write(
-                    libc::STDERR_FILENO,
-                    message.as_ptr().cast(),
-                    message.len(),
-                );
+                let _ = libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
             }
             #[cfg(not(any(
                 target_os = "linux",
@@ -412,11 +403,7 @@ pub fn TraceScreen_forkTracer(this: &mut TraceScreen) -> bool {
             {
                 // HTOP_DARWIN, HTOP_PCP == HTOP_UNSUPPORTED
                 let message: &[u8] = b"Tracing unavailable on not supported system.";
-                let _ = libc::write(
-                    libc::STDERR_FILENO,
-                    message.as_ptr().cast(),
-                    message.len(),
-                );
+                let _ = libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len());
             }
 
             // C: _exit(127);

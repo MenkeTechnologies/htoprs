@@ -8,12 +8,12 @@
 //!
 //! # Ported
 //!
-//! None. This panel is a leaf of the meter/header UI stack, and every one
-//! of its functions bottoms out in substrate that is not yet ported. There
-//! is no pure-logic slice (as there was in e.g. `Panel.c`'s scroll math or
-//! `ListItem.c`'s compare) that can be faithfully translated in isolation
-//! without inventing the missing types — so, per the port rules, all eight
-//! functions stay honest `todo!()` stubs rather than faked bodies.
+//! - [`AvailableMetersPanel_addPlatformMeter`] (`AvailableMetersPanel.c:142`)
+//!   — appends one platform-meter chooser row. Reads `type->description ?
+//!   type->description : type->uiName` off a `const MeterClass*` (both fields
+//!   are now modeled on [`crate::ported::meter::MeterClass`]) and pushes a
+//!   [`ListItem_new`] keyed `offset << 16` via [`Panel_add`] — a self-contained
+//!   slice with every dependency present.
 //!
 //! # Stubbed (each blocked on specific unported substrate)
 //!
@@ -47,10 +47,6 @@
 //!   — drives `Hashtable_foreach` over `settings->dynamicMeters`;
 //!   `Hashtable_foreach` is not ported (`hashtable.rs` ports only the prime
 //!   math) and the `Settings` model has no `dynamicMeters` field.
-//! - [`AvailableMetersPanel_addPlatformMeter`] (`AvailableMetersPanel.c:142`)
-//!   — reads `type->description` / `type->uiName` off a `const MeterClass*`;
-//!   the `MeterClass` vtable type is not modeled (same blocker as
-//!   `addCPUMeters`).
 //! - [`AvailableMetersPanel_new`] (`AvailableMetersPanel.c:147`) — the
 //!   constructor. `FunctionBar_new`, `Panel_init`, and `Panel_setHeader` are
 //!   ported, but the body's core is a loop over `Platform_meterTypes[]` (not
@@ -59,6 +55,10 @@
 //!   the blocked `addDynamicMeters`/`addPlatformMeter`/`addCPUMeters` helpers.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+
+use crate::ported::listitem::ListItem_new;
+use crate::ported::meter::MeterClass;
+use crate::ported::panel::{Panel, Panel_add};
 
 /// TODO: port of `static void AvailableMetersPanel_delete(Object* object)`
 /// from `AvailableMetersPanel.c:34`. `free(meterPanels)` + `Panel_done` +
@@ -113,13 +113,25 @@ pub fn AvailableMetersPanel_addDynamicMeters() {
     todo!("port of AvailableMetersPanel.c:134 — needs unported Hashtable_foreach + Settings.dynamicMeters")
 }
 
-/// TODO: port of `static void AvailableMetersPanel_addPlatformMeter(Panel*
-/// super, const MeterClass* type, unsigned int offset)` from
-/// `AvailableMetersPanel.c:142`. Blocked: reads `type->description` /
-/// `type->uiName` off a `const MeterClass*`; the `MeterClass` vtable type is
-/// not modeled anywhere (same blocker as `addCPUMeters`).
-pub fn AvailableMetersPanel_addPlatformMeter() {
-    todo!("port of AvailableMetersPanel.c:142 — needs unmodeled MeterClass::description/uiName")
+/// Port of `static void AvailableMetersPanel_addPlatformMeter(Panel* super,
+/// const MeterClass* type, unsigned int offset)` from
+/// `AvailableMetersPanel.c:142`.
+///
+/// ```c
+/// const char* label = type->description ? type->description : type->uiName;
+/// Panel_add(super, (Object*) ListItem_new(label, offset << 16));
+/// ```
+///
+/// `type->description` is `NULL` for most meter classes and falls back to
+/// `type->uiName`; the ported [`MeterClass`] models `description` as an
+/// `Option<&'static str>`, so the C ternary is `unwrap_or(type_.uiName)`. The
+/// `offset << 16` key packs the platform-meter table index into the high half
+/// of the `ListItem` key (the low half holds the meter `param`, always 0 for
+/// a platform meter). The heap `ListItem*` becomes an owned `ListItem` boxed
+/// as `Object` for [`Panel_add`].
+pub fn AvailableMetersPanel_addPlatformMeter(super_: &mut Panel, type_: &MeterClass, offset: u32) {
+    let label = type_.description.unwrap_or(type_.uiName);
+    Panel_add(super_, Box::new(ListItem_new(label, (offset << 16) as i32)));
 }
 
 /// TODO: port of `AvailableMetersPanel* AvailableMetersPanel_new(Machine*
@@ -127,8 +139,83 @@ pub fn AvailableMetersPanel_addPlatformMeter() {
 /// ScreenManager* scr)` from `AvailableMetersPanel.c:147`. Blocked: the
 /// constructor's core loops over the unported `Platform_meterTypes[]` table,
 /// comparing each entry against `&CPUMeter_class` / `&DynamicMeter_class`
-/// (class-identity with no modeled `MeterClass`) and dispatching to the
-/// blocked `addDynamicMeters`/`addPlatformMeter`/`addCPUMeters`.
+/// (class-identity with no modeled `CPUMeter_class`/`DynamicMeter_class`) and
+/// dispatching to the blocked `addDynamicMeters`/`addCPUMeters` helpers
+/// (`addPlatformMeter` is now ported, but the driving loop and class-identity
+/// tests are not).
 pub fn AvailableMetersPanel_new() {
     todo!("port of AvailableMetersPanel.c:147 — needs Platform_meterTypes + MeterClass identity + blocked add* helpers")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ported::listitem::ListItem;
+    use crate::ported::object::{ObjectClass, Object_class};
+    use crate::ported::panel::{Panel_get, Panel_new, Panel_size};
+
+    // A minimal `MeterClass` with a chosen `uiName`/`description`. Every other
+    // slot is the empty/None/default the C `.super = { .extends = Class(Meter) }`
+    // initializers leave zero — none is read by `addPlatformMeter`.
+    fn mk_class(uiName: &'static str, description: Option<&'static str>) -> MeterClass {
+        MeterClass {
+            super_: ObjectClass {
+                extends: Some(&Object_class),
+            },
+            display: None,
+            init: None,
+            done: None,
+            updateMode: None,
+            updateValues: None,
+            draw: None,
+            getCaption: None,
+            getUiName: None,
+            defaultMode: 0,
+            supportedModes: 0,
+            total: 0.0,
+            attributes: &[],
+            name: "",
+            uiName,
+            caption: "",
+            description,
+            maxItems: 0,
+            isMultiColumn: false,
+            isPercentChart: false,
+        }
+    }
+
+    fn row(panel: &Panel, i: i32) -> &ListItem {
+        let any: &dyn core::any::Any = Panel_get(panel, i);
+        any.downcast_ref::<ListItem>()
+            .expect("addPlatformMeter row is not a ListItem")
+    }
+
+    #[test]
+    fn add_platform_meter_uses_description_when_present() {
+        let mut panel = Panel_new(1, 1, 1, 1, None);
+        let class = mk_class("Uptime", Some("System uptime"));
+
+        AvailableMetersPanel_addPlatformMeter(&mut panel, &class, 3);
+
+        assert_eq!(Panel_size(&panel), 1);
+        let item = row(&panel, 0);
+        // C: label = type->description ? type->description : type->uiName;
+        assert_eq!(item.value, "System uptime");
+        // C: key = offset << 16;
+        assert_eq!(item.key, 3 << 16);
+    }
+
+    #[test]
+    fn add_platform_meter_falls_back_to_ui_name() {
+        let mut panel = Panel_new(1, 1, 1, 1, None);
+        let class = mk_class("Hostname", None);
+
+        AvailableMetersPanel_addPlatformMeter(&mut panel, &class, 7);
+
+        assert_eq!(Panel_size(&panel), 1);
+        let item = row(&panel, 0);
+        // description == None (C NULL) => uiName.
+        assert_eq!(item.value, "Hostname");
+        assert_eq!(item.key, 7 << 16);
+    }
 }

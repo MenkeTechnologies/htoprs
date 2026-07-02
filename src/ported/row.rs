@@ -802,10 +802,14 @@ pub fn Row_printNanoseconds(str: &mut RichString, total_nanoseconds: u64, colori
 /// `void Row_printRate(RichString* str, double rate, bool coloring)`.
 ///
 /// Formats a transfer rate (bytes/second) as `"%7.2f X/s "` with a
-/// magnitude-scaled unit (`B`, `K`, `M`, `G`, `T`, `P`), coloring by band
-/// (`PROCESS_SHADOW` for sub-0.005 and invalid, `PROCESS` for B/K,
-/// `PROCESS_MEGABYTES` for M, `LARGE_NUMBER` for G and above). A negative
-/// or NaN rate renders `"        N/A "`.
+/// magnitude-scaled unit. The scale index `i` is found by a general loop
+/// dividing by `ONE_K` until below `ONE_K` (or `i` reaches the end of
+/// `unitPrefixes`), and the prefix is `'B'` for `i == 0` else
+/// `unitPrefixes[i - 1]` (`K`, `M`, `G`, `T`, `P`, `E`, `Z`, `Y`, `R`,
+/// `Q`). Coloring by band: `PROCESS_SHADOW` for sub-0.005 and invalid,
+/// `PROCESS` for `i` of 0/1 (B/K), `PROCESS_MEGABYTES` for `i == 2` (M),
+/// `LARGE_NUMBER` for `i >= 3` (G and above). A negative or NaN rate
+/// renders `"        N/A "`.
 ///
 /// `isNonnegative(rate)` (`Macros.h`) is `isgreaterequal(rate, 0.0)`,
 /// false for NaN; inlined as `rate >= 0.0` (Rust `>=` is quiet for NaN).
@@ -828,31 +832,31 @@ pub fn Row_printRate(str: &mut RichString, rate: f64, coloring: bool) {
 
     if !(rate >= 0.0) {
         RichString_appendAscii(str, shadow_color, b"        N/A ");
-    } else if rate < 0.005 {
-        let buf = format!("{:7.2} B/s ", rate);
-        RichString_appendnAscii(str, shadow_color, buf.as_bytes(), buf.len());
-    } else if rate < ONE_K as f64 {
-        let buf = format!("{:7.2} B/s ", rate);
-        RichString_appendnAscii(str, base_color, buf.as_bytes(), buf.len());
-    } else if rate < ONE_M as f64 {
-        let buf = format!("{:7.2} K/s ", rate / ONE_K as f64);
-        RichString_appendnAscii(str, base_color, buf.as_bytes(), buf.len());
-    } else if rate < ONE_G as f64 {
-        let buf = format!("{:7.2} M/s ", rate / ONE_M as f64);
-        RichString_appendnAscii(str, megabytes_color, buf.as_bytes(), buf.len());
-    } else if rate < ONE_T as f64 {
-        let buf = format!("{:7.2} G/s ", rate / ONE_G as f64);
-        RichString_appendnAscii(str, large_number_color, buf.as_bytes(), buf.len());
-    } else if rate < ONE_P as f64 {
-        let buf = format!("{:7.2} T/s ", rate / ONE_T as f64);
-        RichString_appendnAscii(str, large_number_color, buf.as_bytes(), buf.len());
-    } else {
-        let buf = format!("{:7.2} P/s ", rate / ONE_P as f64);
-        RichString_appendnAscii(str, large_number_color, buf.as_bytes(), buf.len());
+        return;
     }
+
+    let mut i: usize = 0;
+    let mut scaled = rate;
+    while scaled >= ONE_K as f64 && i < unitPrefixes.len() {
+        scaled /= ONE_K as f64;
+        i += 1;
+    }
+
+    let mut color = base_color;
+    if rate < 0.005 {
+        color = shadow_color;
+    } else if i == 2 {
+        color = megabytes_color;
+    } else if i >= 3 {
+        color = large_number_color;
+    }
+
+    let prefix = if i == 0 { b'B' } else { unitPrefixes[i - 1] };
+    let buf = format!("{:7.2} {}/s ", scaled, prefix as char);
+    RichString_appendnAscii(str, color, buf.as_bytes(), buf.len());
 }
 
-/// Port of `Row.c:501`.
+/// Port of `Row.c:500`.
 ///
 /// C signature:
 /// `void Row_printLeftAlignedField(RichString* str, int attr, const char* content, unsigned int width)`.
@@ -872,7 +876,7 @@ pub fn Row_printLeftAlignedField(str: &mut RichString, attr: i32, content: &[u8]
     RichString_appendChr(str, attr, ' ', width as i32 + 1 - columns);
 }
 
-/// Port of `Row.c:507`.
+/// Port of `Row.c:506`.
 ///
 /// C signature:
 /// `int Row_printPercentage(float val, char* buffer, size_t n, uint8_t width, int* attr)`.
@@ -949,26 +953,34 @@ pub fn Row_printPercentage(mut val: f32, n: usize, width: u8, attr: &mut Percent
     format!("{:>width$.precision$} ", "N/A", width = w, precision = w)
 }
 
-/// Port of `void Row_toggleTag(Row* this)` from `Row.c:534`. Flips the
+/// Port of `void Row_toggleTag(Row* this)` from `Row.c:533`. Flips the
 /// user-tag flag.
 pub fn Row_toggleTag(this: &mut Row) {
     this.tag = !this.tag;
 }
 
 /// Port of `int Row_compare(const void* v1, const void* v2)` from
-/// `Row.c:538`. Orders rows by `id` (the default row comparator; the
+/// `Row.c:537`. Orders rows by `id` (the default row comparator; the
 /// C `const void*` args become `&Row`).
 pub fn Row_compare(v1: &Row, v2: &Row) -> i32 {
     spaceship_number!(v1.id, v2.id)
 }
 
 /// Port of `int Row_compareByParent_Base(const void* v1, const void* v2)`
-/// from `Row.c:545`. Orders by group-or-parent (roots sort as `0`),
+/// from `Row.c:544`. Orders by group-or-parent (roots sort as `0`),
 /// tie-breaking with [`Row_compare`] — the stable tree-mode ordering.
 pub fn Row_compareByParent_Base(v1: &Row, v2: &Row) -> i32 {
     let result = spaceship_number!(
-        if v1.isRoot { 0 } else { Row_getGroupOrParent(v1) },
-        if v2.isRoot { 0 } else { Row_getGroupOrParent(v2) }
+        if v1.isRoot {
+            0
+        } else {
+            Row_getGroupOrParent(v1)
+        },
+        if v2.isRoot {
+            0
+        } else {
+            Row_getGroupOrParent(v2)
+        }
     );
 
     if result != 0 {

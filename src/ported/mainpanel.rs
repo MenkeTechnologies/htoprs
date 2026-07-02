@@ -46,9 +46,9 @@
 //!   `Panel_setSelected`; each item is downcast to [`Row`] via the `Any`
 //!   supertrait (the safe-Rust analog of the C `(Row*)Panel_get(...)`
 //!   cast).
-//! - [`MainPanel_selectedRow`] (`MainPanel.c:169`) — the selected row's
+//! - [`MainPanel_selectedRow`] (`MainPanel.c:175`) — the selected row's
 //!   `id`, or `-1` when the list is empty (`Panel_getSelected` → `Row`).
-//! - [`MainPanel_foreachRow`] (`MainPanel.c:174`) — applies `fn` to every
+//! - [`MainPanel_foreachRow`] (`MainPanel.c:180`) — applies `fn` to every
 //!   tagged row (falling back to the selected row when none are tagged),
 //!   AND-folding the results and reporting whether any were tagged. The
 //!   ported `Panel_get` hands back an immutable `&dyn Object`, so — like
@@ -58,9 +58,9 @@
 //!   not `Copy`, so [`MainPanel_foreachRowFn`] passes it by shared
 //!   reference (`&Arg`); the callbacks only ever read it, so this is
 //!   observationally identical to the C by-value pass.
-//! - [`MainPanel_setState`] (`MainPanel.c:244`) — stores the `State*`
+//! - [`MainPanel_setState`] (`MainPanel.c:250`) — stores the `State*`
 //!   back-pointer.
-//! - [`MainPanel_setFunctionBar`] (`MainPanel.c:248`) — points the panel's
+//! - [`MainPanel_setFunctionBar`] (`MainPanel.c:254`) — points the panel's
 //!   (and the `IncSet`'s) default bar at the read-only or process bar. C
 //!   aliases the one `FunctionBar*`; the `Vec`-model owns each bar via
 //!   `Option<FunctionBar>`, so the target bar is cloned into both slots —
@@ -81,10 +81,11 @@
 //!   `Action_setScreenTab` (both `action.rs` stubs), `RowField_keyAt`
 //!   (`row.rs` stub), the `ScreenSettings` sort-key helpers, the
 //!   `HandlerResult` enum, and the `keys[]` `Htop_Action` dispatch.
-//! - [`MainPanel_drawFunctionBar`] (`MainPanel.c:198`, `static`) — ends in
-//!   `IncSet_drawBar` (`incset.rs` stub, ncurses) and reads
-//!   `state->pauseUpdate`/`state->failedUpdate` (the latter omitted from
-//!   the minimal `action::State`).
+//! - [`MainPanel_drawFunctionBar`] (`MainPanel.c:198`, `static`) — reads
+//!   `state->pauseUpdate`/`state->failedUpdate`; the latter (a `const char*`
+//!   failure message) is omitted from the minimal `action::State`, so the
+//!   `else if (this->state->failedUpdate)` branch has no faithful body.
+//!   (`IncSet_drawBar` is now ported, so it is no longer a blocker.)
 //! - [`MainPanel_printHeader`] (`MainPanel.c:213`, `static`) —
 //!   `Table_printHeader` (`table.rs` stub) against `state->host->settings`
 //!   (`Machine*`, omitted from `action::State`).
@@ -112,9 +113,7 @@ use crate::ported::crt::KEY_F;
 use crate::ported::functionbar::{FunctionBar, FunctionBar_setLabel};
 use crate::ported::incset::IncSet;
 use crate::ported::object::{Arg, Object};
-use crate::ported::panel::{
-    Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size,
-};
+use crate::ported::panel::{Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size};
 use crate::ported::row::Row;
 
 /// Reduced model of the C `MainPanel` struct (`MainPanel.h:21`). See the
@@ -212,7 +211,7 @@ pub fn MainPanel_eventHandler() {
 }
 
 /// Port of `int MainPanel_selectedRow(MainPanel* this)` from
-/// `MainPanel.c:169`. Returns the selected row's `id`, or `-1` when the
+/// `MainPanel.c:175`. Returns the selected row's `id`, or `-1` when the
 /// list is empty (`Panel_getSelected` returns `None`) or the selected item
 /// is not a [`Row`] (the C `(const Row*)` cast; a `MainPanel` holds only
 /// rows).
@@ -228,7 +227,7 @@ pub fn MainPanel_selectedRow(this: &MainPanel) -> i32 {
 
 /// Port of `bool MainPanel_foreachRow(MainPanel* this,
 /// MainPanel_foreachRowFn fn, Arg arg, bool* wasAnyTagged)` from
-/// `MainPanel.c:174`. Applies `fn` to every tagged row, AND-folding the
+/// `MainPanel.c:180`. Applies `fn` to every tagged row, AND-folding the
 /// returned `bool`s into `ok`; if no row was tagged, applies `fn` to the
 /// selected row instead. Reports whether any row was tagged through the
 /// optional `wasAnyTagged` out-param (C `bool*`).
@@ -280,11 +279,12 @@ pub fn MainPanel_foreachRow(
 
 /// TODO: port of `static void MainPanel_drawFunctionBar(Panel* super,
 /// bool hideFunctionBar)` from `MainPanel.c:198`. Draws the incremental
-/// bar and appends the PAUSED/failed-read markers. Blocked on
-/// `IncSet_drawBar` (`incset.rs` stub, ncurses) and `state->failedUpdate`
-/// (omitted from the minimal `action::State`).
+/// bar and appends the PAUSED/failed-read markers. `IncSet_drawBar` is now
+/// ported, but the `else if (this->state->failedUpdate)` branch reads
+/// `State.failedUpdate` (a `const char*`), which the minimal `action::State`
+/// omits — so there is no faithful body yet.
 pub fn MainPanel_drawFunctionBar() {
-    todo!("port of MainPanel.c:198 — needs IncSet_drawBar (incset stub) + State.failedUpdate")
+    todo!("port of MainPanel.c:198 — needs State.failedUpdate (omitted from action::State)")
 }
 
 /// TODO: port of `static void MainPanel_printHeader(Panel* super)` from
@@ -305,13 +305,13 @@ pub fn MainPanel_new() {
 }
 
 /// Port of `void MainPanel_setState(MainPanel* this, State* state)` from
-/// `MainPanel.c:244`. Stores the shared-state back-pointer.
+/// `MainPanel.c:250`. Stores the shared-state back-pointer.
 pub fn MainPanel_setState(this: &mut MainPanel, state: *mut State) {
     this.state = state;
 }
 
 /// Port of `void MainPanel_setFunctionBar(MainPanel* this, bool readonly)`
-/// from `MainPanel.c:248`. Points the panel's default bar (and the
+/// from `MainPanel.c:254`. Points the panel's default bar (and the
 /// `IncSet`'s default bar) at the read-only or process bar.
 ///
 /// C aliases the one `FunctionBar*` into both `super.defaultBar` and
@@ -513,7 +513,7 @@ mod tests {
         assert!(ok);
         assert!(any_tagged);
         assert_eq!(count, 2); // rows 0 and 2 visited
-        // Visited rows stamped; the untagged middle row was not.
+                              // Visited rows stamped; the untagged middle row was not.
         let indent_of = |i: usize, mp: &mut MainPanel| -> i32 {
             let a: &mut dyn Any = mp.super_.items[i].as_mut();
             a.downcast_mut::<Row>().unwrap().indent

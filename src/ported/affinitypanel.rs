@@ -168,7 +168,9 @@ pub fn MaskItem_display(this: &MaskItem, out: &mut RichString) {
         // (TREE_STR_OPEN/SHUT); crt.rs is off-limits to this module, and
         // this branch is unreachable without libhwloc (only MaskItem_newMask
         // sets a non-NULL indent).
-        todo!("AffinityPanel.c:77: tree-node indent needs unported CRT_treeStr (TREE_STR_OPEN/SHUT)");
+        todo!(
+            "AffinityPanel.c:77: tree-node indent needs unported CRT_treeStr (TREE_STR_OPEN/SHUT)"
+        );
     }
     RichString_appendWide(out, check_text, this.text.as_bytes());
 }

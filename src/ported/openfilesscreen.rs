@@ -215,10 +215,7 @@ impl OpenFiles_ProcessData {
         loop {
             buf.clear();
             // C: char* line = String_readLine(fp); if (!line) break;
-            let n = match reader.read_until(b'\n', &mut buf) {
-                Ok(n) => n,
-                Err(_) => 0,
-            };
+            let n = reader.read_until(b'\n', &mut buf).unwrap_or_default();
             if n == 0 {
                 break;
             }
@@ -489,10 +486,7 @@ pub fn OpenFilesScreen_getProcessData(pid: i32) -> OpenFiles_ProcessData {
             libc::dup2(fdpair[1], libc::STDOUT_FILENO);
             libc::close(fdpair[1]);
             // C: int fdnull = open("/dev/null", O_WRONLY); if (fdnull < 0) _exit(1);
-            let fdnull = libc::open(
-                b"/dev/null\0".as_ptr() as *const c_char,
-                libc::O_WRONLY,
-            );
+            let fdnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
             if fdnull < 0 {
                 libc::_exit(1);
             }
@@ -838,7 +832,7 @@ mod tests {
         assert_eq!(pdata.cols[getIndexForType(b's')], 12); // widened
         assert_eq!(pdata.cols[getIndexForType(b'o')], 8); // "99" (len 2) < 8
         assert_eq!(pdata.cols[getIndexForType(b'i')], 8); // "7" (len 1) < 8
-        // A non-seeded column ('n') starts at 0 and grows to the field len.
+                                                          // A non-seeded column ('n') starts at 0 and grows to the field len.
         assert_eq!(pdata.cols[getIndexForType(b'n')], 0);
     }
 
@@ -941,9 +935,17 @@ mod tests {
         let p = Process::default();
         let s = OpenFilesScreen_new(&p);
         // NULL bar was passed, so InfoScreen_init built the default bar.
-        let bar = s.super_.display.defaultBar.as_ref().expect("default bar built");
+        let bar = s
+            .super_
+            .display
+            .defaultBar
+            .as_ref()
+            .expect("default bar built");
         // The InfoScreen bar labels/keys (Search/Filter/Refresh/Done).
-        assert_eq!(bar.functions, vec!["Search ", "Filter ", "Refresh", "Done   "]);
+        assert_eq!(
+            bar.functions,
+            vec!["Search ", "Filter ", "Refresh", "Done   "]
+        );
         assert_eq!(bar.keys, vec!["F3", "F4", "F5", "Esc"]);
     }
 

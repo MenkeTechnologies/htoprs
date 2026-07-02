@@ -1,9 +1,11 @@
 //! Partial port of `TasksMeter.c` — htop's task-counter meter.
 //!
-//! [`TasksMeter_updateValues`] is a faithful port. [`TasksMeter_display`]
-//! remains a `todo!()` stub: it drives `RichString`, `CRT_colors`, and
-//! `Settings` (curses/color substrate not yet ported), so it cannot be
-//! reproduced faithfully without inventing that substrate.
+//! Both [`TasksMeter_updateValues`] and [`TasksMeter_display`] are faithful
+//! ports. `display` drives the now-ported `RichString` / `CRT_colors`
+//! substrate; the two `Settings` flags it reads
+//! (`hideUserlandThreads`, `hideKernelThreads`) are modelled inline on the
+//! local minimal [`Settings`], the same minimal-model approach this module
+//! already takes for `ProcessTable`/`Machine`/`Meter`.
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake` for
 //! functions and `camelCase` for struct fields), so both the
@@ -11,6 +13,9 @@
 //! for the whole module — matching the spec name-for-name is the point.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+
+use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendnAscii};
 
 /// Minimal model of htop's `ProcessTable` — only the four counters
 /// [`TasksMeter_updateValues`] reads (`ProcessTable.h:25-28`, all
@@ -23,13 +28,24 @@ pub struct ProcessTable {
     pub kernelThreads: u32,
 }
 
+/// Minimal model of htop's `Settings` — only the two boolean flags
+/// [`TasksMeter_display`] reads (`Settings.h`, both `bool`):
+/// `hideUserlandThreads` and `hideKernelThreads`. Every other `Settings`
+/// field is omitted because this module never touches it.
+pub struct Settings {
+    pub hideUserlandThreads: bool,
+    pub hideKernelThreads: bool,
+}
+
 /// Minimal model of htop's `Machine` — only `activeCPUs`
-/// (`Machine.h:59`, `unsigned int`) and the `processTable` pointer that
-/// the ported function dereferences. All other `Machine` fields are
-/// omitted.
+/// (`Machine.h:59`, `unsigned int`), the `processTable` pointer that
+/// [`TasksMeter_updateValues`] dereferences, and the `settings`
+/// back-pointer (`Machine.h`, `const Settings*`) that
+/// [`TasksMeter_display`] reads. All other `Machine` fields are omitted.
 pub struct Machine {
     pub activeCPUs: u32,
     pub processTable: ProcessTable,
+    pub settings: Settings,
 }
 
 /// Minimal model of htop's `Meter` — the `values` output slots
@@ -73,9 +89,101 @@ pub fn TasksMeter_updateValues(this: &mut Meter) {
     );
 }
 
-/// TODO: port of `static void TasksMeter_display(const Object* cast, RichString* out` from `TasksMeter.c:41`.
-pub fn TasksMeter_display() {
-    todo!("port of TasksMeter.c:41")
+/// Port of `static void TasksMeter_display(const Object* cast,
+/// RichString* out)` from `TasksMeter.c:41`.
+///
+/// Appends the coloured task breakdown: `values[2]` (non-thread tasks) as
+/// `METER_VALUE`, then userland threads (` thr`) and kernel threads
+/// (` kthr`) — each dimmed to `METER_SHADOW` when the corresponding
+/// `Settings` hide-flag is set, else coloured `TASKS_RUNNING`/`METER_TEXT`
+/// — and finally the running count (`values[3]`) as `TASKS_RUNNING`.
+///
+/// The C `cast` back-cast to `const Meter*` is expressed as `this: &Meter`
+/// (same idiom as the other `*_display` ports). `(int)this->values[X]`
+/// truncates the `double` toward zero, so `as i32` matches. `CRT_colors[X]`
+/// is `ColorElements::X.packed(scheme)`; the active scheme is read once (a
+/// process-global that does not change mid-call), matching C's `CRT_colors`.
+pub fn TasksMeter_display(this: &Meter, out: &mut RichString) {
+    let scheme = ColorScheme::active();
+    let settings = &this.host.settings;
+
+    let buffer = format!("{}", this.values[2] as i32);
+    RichString_appendnAscii(
+        out,
+        ColorElements::METER_VALUE.packed(scheme),
+        buffer.as_bytes(),
+        buffer.len(),
+    );
+
+    RichString_appendAscii(
+        out,
+        if settings.hideUserlandThreads {
+            ColorElements::METER_SHADOW.packed(scheme)
+        } else {
+            ColorElements::METER_TEXT.packed(scheme)
+        },
+        b", ",
+    );
+    let buffer = format!("{}", this.values[1] as i32);
+    RichString_appendnAscii(
+        out,
+        if settings.hideUserlandThreads {
+            ColorElements::METER_SHADOW.packed(scheme)
+        } else {
+            ColorElements::TASKS_RUNNING.packed(scheme)
+        },
+        buffer.as_bytes(),
+        buffer.len(),
+    );
+    RichString_appendAscii(
+        out,
+        if settings.hideUserlandThreads {
+            ColorElements::METER_SHADOW.packed(scheme)
+        } else {
+            ColorElements::METER_TEXT.packed(scheme)
+        },
+        b" thr",
+    );
+
+    RichString_appendAscii(
+        out,
+        if settings.hideKernelThreads {
+            ColorElements::METER_SHADOW.packed(scheme)
+        } else {
+            ColorElements::METER_TEXT.packed(scheme)
+        },
+        b", ",
+    );
+    let buffer = format!("{}", this.values[0] as i32);
+    RichString_appendnAscii(
+        out,
+        if settings.hideKernelThreads {
+            ColorElements::METER_SHADOW.packed(scheme)
+        } else {
+            ColorElements::TASKS_RUNNING.packed(scheme)
+        },
+        buffer.as_bytes(),
+        buffer.len(),
+    );
+    RichString_appendAscii(
+        out,
+        if settings.hideKernelThreads {
+            ColorElements::METER_SHADOW.packed(scheme)
+        } else {
+            ColorElements::METER_TEXT.packed(scheme)
+        },
+        b" kthr",
+    );
+
+    RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b"; ");
+    let buffer = format!("{}", this.values[3] as i32);
+    RichString_appendnAscii(
+        out,
+        ColorElements::TASKS_RUNNING.packed(scheme),
+        buffer.as_bytes(),
+        buffer.len(),
+    );
+    RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" running");
 }
 
 #[cfg(test)]
@@ -100,8 +208,17 @@ mod tests {
                     userlandThreads,
                     kernelThreads,
                 },
+                settings: Settings {
+                    hideUserlandThreads: false,
+                    hideKernelThreads: false,
+                },
             },
         }
+    }
+
+    /// Visible characters of the valid `[0, chlen)` range of `out`.
+    fn text(r: &RichString) -> String {
+        (0..r.chlen as usize).map(|i| r.chptr[i].chars).collect()
     }
 
     #[test]
@@ -150,5 +267,38 @@ mod tests {
         TasksMeter_updateValues(&mut m);
         assert_eq!(m.values[2], 0.0);
         assert_eq!(m.txtBuffer, "0/64"); // MINIMUM(0,8)=0
+    }
+
+    #[test]
+    fn display_full_text() {
+        // values populated by updateValues: [kthr, thr, tasks, running].
+        let mut m = meter(100, 3, 40, 10, 8);
+        TasksMeter_updateValues(&mut m);
+        // values[2]=50, values[1]=40 thr, values[0]=10 kthr, values[3]=3.
+        let mut out = RichString::new();
+        TasksMeter_display(&m, &mut out);
+        assert_eq!(text(&out), "50, 40 thr, 10 kthr; 3 running");
+    }
+
+    #[test]
+    fn display_truncates_double_toward_zero() {
+        // Non-integral values are cast (int), truncating toward zero.
+        let mut m = meter(0, 0, 0, 0, 0);
+        m.values = [1.9, 2.9, 3.9, 4.9];
+        let mut out = RichString::new();
+        TasksMeter_display(&m, &mut out);
+        assert_eq!(text(&out), "3, 2 thr, 1 kthr; 4 running");
+    }
+
+    #[test]
+    fn display_text_unaffected_by_hide_flags() {
+        // Hide flags only change colour, never the emitted characters.
+        let mut m = meter(100, 3, 40, 10, 8);
+        m.host.settings.hideUserlandThreads = true;
+        m.host.settings.hideKernelThreads = true;
+        TasksMeter_updateValues(&mut m);
+        let mut out = RichString::new();
+        TasksMeter_display(&m, &mut out);
+        assert_eq!(text(&out), "50, 40 thr, 10 kthr; 3 running");
     }
 }

@@ -29,16 +29,20 @@
 //! - `History_resetPosition` (`History.c:149`) — parks the browse
 //!   cursor at "new input" and clears `saved`.
 //!
-//! Stubbed (cannot be ported faithfully yet):
+//! Ported (needs the now-ported `LineEditor`):
+//! - `History_navigate` (`History.c:120`) — moves the browse cursor
+//!   up/down the ring, saving the editor's current text into `saved`
+//!   when first entering history and restoring it when the cursor
+//!   returns to "new input". Uses `LineEditor_getText`
+//!   (`LineEditor.h:37`), which now lives in the ported `lineeditor`
+//!   module.
+//!
+//! Stubbed (deliberate non-port):
 //! - `History_delete` (`History.c:60`) — frees the heap array, the
 //!   `filename` string, and the struct itself. There is no faithful
 //!   safe-Rust analog: `History` owns its `Vec<String>`/`String`
 //!   fields, so `Drop` frees them automatically. A hand-written
 //!   free-everything routine has nothing to do.
-//! - `History_navigate` (`History.c:120`) — depends on `LineEditor`
-//!   (`LineEditor_getText`), which lives in `LineEditor.c`, an
-//!   as-yet-unported stub module. Porting it now would require inventing
-//!   substrate, so it stays a `todo!()` stub.
 //!
 //! Not replicated: the C reader uses a fixed `char line[LINEEDITOR_MAX +
 //! 2]` (130-byte) `fgets` buffer, which would split any file line longer
@@ -54,6 +58,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::os::unix::fs::OpenOptionsExt;
+
+use crate::ported::lineeditor::{LineEditor, LineEditor_getText};
 
 /// Port of `#define HISTORY_MAX_ENTRIES 512` from `History.h`.
 const HISTORY_MAX_ENTRIES: usize = 512;
@@ -231,13 +237,58 @@ pub fn History_add(this: &mut History, entry: &str) {
     this.saved.clear();
 }
 
-/// TODO: port of `const char* History_navigate(History* this,
-/// LineEditor* editor, bool back` from `History.c:120`. Depends on
-/// `LineEditor` (`LineEditor_getText`), which lives in the as-yet
-/// unported `LineEditor.c` stub module — cannot be ported faithfully
-/// without inventing substrate. Left as a stub.
-pub fn History_navigate() {
-    todo!("port of History.c:120")
+/// Port of `const char* History_navigate(History* this,
+/// LineEditor* editor, bool back)` from `History.c:120`. Returns `None`
+/// on an empty ring. Going `back` (up arrow): the first step out of "new
+/// input" saves the editor's current text into `saved` (C
+/// `strncpy(this->saved, LineEditor_getText(editor), LINEEDITOR_MAX)`
+/// then NUL-terminates at `LINEEDITOR_MAX`), then the cursor walks toward
+/// the oldest entry, returning `None` once already at the oldest. Going
+/// forward (down arrow): `None` when already at the newest, otherwise the
+/// cursor advances and — when it returns to "new input" — restores the
+/// `saved` text, else returns the entry at the new position. The returned
+/// `&str` borrows from `this` (either an entry or `saved`), matching the
+/// C `const char*` aliasing into the struct.
+pub fn History_navigate<'a>(
+    this: &'a mut History,
+    editor: &LineEditor,
+    back: bool,
+) -> Option<&'a str> {
+    if this.count == 0 {
+        return None;
+    }
+
+    if back {
+        // Going back (up arrow)
+        if this.position == this.count {
+            // Save current editor content before entering history.
+            // strncpy(..., LINEEDITOR_MAX) copies at most LINEEDITOR_MAX
+            // bytes; the buffer is then NUL-terminated at LINEEDITOR_MAX.
+            let text = LineEditor_getText(editor);
+            let mut end = text.len().min(LINEEDITOR_MAX);
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            this.saved.clear();
+            this.saved.push_str(&text[..end]);
+        }
+        if this.position > 0 {
+            this.position -= 1;
+            return Some(&this.entries[this.position]);
+        }
+        None // Already at oldest entry
+    } else {
+        // Going forward (down arrow)
+        if this.position >= this.count {
+            return None; // Already at newest
+        }
+        this.position += 1;
+        if this.position == this.count {
+            // Restore saved input
+            return Some(&this.saved);
+        }
+        Some(&this.entries[this.position])
+    }
 }
 
 /// Port of `void History_resetPosition(History* this)` from
@@ -431,6 +482,70 @@ mod tests {
         );
         assert_eq!(reloaded.count, 3);
         let _ = fs::remove_file(&save_path);
+    }
+
+    #[test]
+    fn navigate_empty_ring_returns_none() {
+        use crate::ported::lineeditor::{LineEditor, LineEditor_init};
+        let mut h = History_new(None);
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        assert_eq!(History_navigate(&mut h, &e, true), None);
+        assert_eq!(History_navigate(&mut h, &e, false), None);
+    }
+
+    #[test]
+    fn navigate_back_and_forward_walks_and_restores_saved() {
+        use crate::ported::lineeditor::{LineEditor, LineEditor_init, LineEditor_setText};
+        let mut h = History_new(None);
+        History_add(&mut h, "one");
+        History_add(&mut h, "two");
+        History_add(&mut h, "three");
+        // position parked at count (== 3).
+        assert_eq!(h.position, 3);
+
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "in-progress");
+
+        // Up arrow: saves editor text, walks toward oldest.
+        assert_eq!(History_navigate(&mut h, &e, true), Some("three"));
+        assert_eq!(h.saved, "in-progress");
+        assert_eq!(History_navigate(&mut h, &e, true), Some("two"));
+        assert_eq!(History_navigate(&mut h, &e, true), Some("one"));
+        // Already at oldest.
+        assert_eq!(History_navigate(&mut h, &e, true), None);
+        assert_eq!(h.position, 0);
+
+        // Down arrow: walks back toward newest.
+        assert_eq!(History_navigate(&mut h, &e, false), Some("two"));
+        assert_eq!(History_navigate(&mut h, &e, false), Some("three"));
+        // Returning to "new input" restores the saved text.
+        assert_eq!(History_navigate(&mut h, &e, false), Some("in-progress"));
+        assert_eq!(h.position, 3);
+        // Already at newest.
+        assert_eq!(History_navigate(&mut h, &e, false), None);
+    }
+
+    #[test]
+    fn navigate_saved_only_captured_on_first_step_back() {
+        use crate::ported::lineeditor::{LineEditor, LineEditor_init, LineEditor_setText};
+        let mut h = History_new(None);
+        History_add(&mut h, "a");
+        History_add(&mut h, "b");
+
+        let mut e = LineEditor::default();
+        LineEditor_init(&mut e);
+        LineEditor_setText(&mut e, "first");
+
+        assert_eq!(History_navigate(&mut h, &e, true), Some("b"));
+        assert_eq!(h.saved, "first");
+
+        // Change editor text; a deeper step back must NOT overwrite saved,
+        // because position != count now.
+        LineEditor_setText(&mut e, "changed");
+        assert_eq!(History_navigate(&mut h, &e, true), Some("a"));
+        assert_eq!(h.saved, "first");
     }
 
     #[test]

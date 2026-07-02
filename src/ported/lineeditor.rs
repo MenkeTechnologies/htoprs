@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(text(&e), "ab");
         assert_eq!(e.len, 2);
         assert_eq!(e.cursor, 2); // cursor advanced past each insert
-        // A non-printable control byte (that has no dedicated arm) is ignored.
+                                 // A non-printable control byte (that has no dedicated arm) is ignored.
         assert!(!LineEditor_handleKey(&mut e, 0x01_000)); // out of 0..256 range
         assert_eq!(text(&e), "ab");
     }
@@ -804,7 +804,7 @@ mod tests {
         e.scroll = 2;
         LineEditor_click(&mut e, 1, 5); // offset -4 -> 0
         assert_eq!(e.cursor, 2); // scroll + 0
-        // Scroll offset is added to the in-field offset.
+                                 // Scroll offset is added to the in-field offset.
         LineEditor_click(&mut e, 8, 5); // offset 3, scroll 2 -> 5
         assert_eq!(e.cursor, 5);
         // Clicking past the text clamps to len.

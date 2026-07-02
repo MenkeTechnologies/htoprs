@@ -324,11 +324,12 @@ pub fn drawTab(y: i32, x: &mut i32, l: i32, name: &str, cur: bool) -> bool {
 
     Ncurses::attrset(&mut out, border);
     Ncurses::mvaddch(&mut out, y, *x, ']');
-    *x += 1 + SCREEN_TAB_COLUMN_GAP;
     let _ = out.flush();
-    if *x >= l {
+    if *x >= l - (1 + SCREEN_TAB_COLUMN_GAP) {
+        *x = l;
         return false;
     }
+    *x += 1 + SCREEN_TAB_COLUMN_GAP;
     true
 }
 
@@ -458,7 +459,7 @@ mod tests {
         ScreenManager_insert(&mut sm, p, 10, 0);
         assert_eq!(sm.panelCount, 1);
         assert_eq!(sm.panels[0].w, 10); // explicit positive size kept
-        // height = LINES - y1 - header_height + y2 = LINES - 0 - 0 + (-1)
+                                        // height = LINES - y1 - header_height + y2 = LINES - 0 - 0 + (-1)
         assert_eq!(sm.panels[0].h, Ncurses::lines() - 1);
         assert_eq!((sm.panels[0].x, sm.panels[0].y), (0, 0));
         assert!(sm.panels[0].needsRedraw);
@@ -470,7 +471,7 @@ mod tests {
         sm.state = Some(state(false));
         let p = Panel_new(0, 0, 3, 5, None);
         ScreenManager_insert(&mut sm, p, 0, 0); // size <= 0 -> COLS - x1 + x2 - lastX
-        // lastX 0 (idx 0), so width = COLS.
+                                                // lastX 0 (idx 0), so width = COLS.
         assert_eq!(sm.panels[0].w, Ncurses::cols());
     }
 
@@ -534,7 +535,7 @@ mod tests {
         let mut sm = sm_with_panels(&[10, 20, 5]);
         let x_third_before = sm.panels[2].x; // 32
         ScreenManager_remove(&mut sm, 0); // removes w=10 panel
-        // remaining panels each shift left by 10
+                                          // remaining panels each shift left by 10
         assert_eq!(sm.panels[0].x, 11 - 10); // old second panel
         assert_eq!(sm.panels[1].x, x_third_before - 10);
     }
@@ -556,7 +557,10 @@ mod tests {
         let mut x = SCREEN_TAB_MARGIN_LEFT;
         let ok = drawTab(0, &mut x, 80, "main", true);
         assert!(ok);
-        assert_eq!(x, SCREEN_TAB_MARGIN_LEFT + 1 + 4 + 1 + SCREEN_TAB_COLUMN_GAP);
+        assert_eq!(
+            x,
+            SCREEN_TAB_MARGIN_LEFT + 1 + 4 + 1 + SCREEN_TAB_COLUMN_GAP
+        );
     }
 
     #[test]

@@ -109,17 +109,41 @@ struct SchedulingPolicy {
 /// `Scheduling_formatPolicy`).
 static policies: [SchedulingPolicy; 6] = [
     // [SCHED_OTHER == 0]
-    SchedulingPolicy { name: Some("Other"), id: SCHED_OTHER, prioritySupport: false },
+    SchedulingPolicy {
+        name: Some("Other"),
+        id: SCHED_OTHER,
+        prioritySupport: false,
+    },
     // [SCHED_FIFO == 1]
-    SchedulingPolicy { name: Some("FiFo"), id: SCHED_FIFO, prioritySupport: true },
+    SchedulingPolicy {
+        name: Some("FiFo"),
+        id: SCHED_FIFO,
+        prioritySupport: true,
+    },
     // [SCHED_RR == 2]
-    SchedulingPolicy { name: Some("RoundRobin"), id: SCHED_RR, prioritySupport: true },
+    SchedulingPolicy {
+        name: Some("RoundRobin"),
+        id: SCHED_RR,
+        prioritySupport: true,
+    },
     // [SCHED_BATCH == 3]
-    SchedulingPolicy { name: Some("Batch"), id: SCHED_BATCH, prioritySupport: false },
+    SchedulingPolicy {
+        name: Some("Batch"),
+        id: SCHED_BATCH,
+        prioritySupport: false,
+    },
     // [4] — the zero-initialized designated-initializer hole (C NULL name)
-    SchedulingPolicy { name: None, id: 0, prioritySupport: false },
+    SchedulingPolicy {
+        name: None,
+        id: 0,
+        prioritySupport: false,
+    },
     // [SCHED_IDLE == 5]
-    SchedulingPolicy { name: Some("Idle"), id: SCHED_IDLE, prioritySupport: false },
+    SchedulingPolicy {
+        name: Some("Idle"),
+        id: SCHED_IDLE,
+        prioritySupport: false,
+    },
 ];
 
 /// Port of `static bool reset_on_fork` from `Scheduling.c:38` (guarded by
@@ -153,7 +177,13 @@ pub struct SchedulingArg {
 /// reset-on-fork row prepended these differ by one, so a preselected
 /// policy highlights the row above its own. Ported verbatim (no fix).
 pub fn Scheduling_newPolicyPanel(preSelectedPolicy: i32) -> Panel {
-    let mut this = Panel_new(0, 0, 0, 0, Some(FunctionBar_newEnterEsc("Select ", "Cancel ")));
+    let mut this = Panel_new(
+        0,
+        0,
+        0,
+        0,
+        Some(FunctionBar_newEnterEsc("Select ", "Cancel ")),
+    );
     Panel_setHeader(&mut this, "New policy:");
 
     // #ifdef SCHED_RESET_ON_FORK
@@ -249,8 +279,13 @@ pub fn Scheduling_newPriorityPanel(policy: i32, preSelectedPriority: i32) -> Opt
             return None;
         }
 
-        let mut this =
-            Panel_new(0, 0, 0, 0, Some(FunctionBar_newEnterEsc("Select ", "Cancel ")));
+        let mut this = Panel_new(
+            0,
+            0,
+            0,
+            0,
+            Some(FunctionBar_newEnterEsc("Select ", "Cancel ")),
+        );
         Panel_setHeader(&mut this, "Priority:");
 
         for i in min..=max {
@@ -531,7 +566,10 @@ mod tests {
         // no-op body returns false; on Linux setting the current process to
         // its existing policy is exercised by the linux-only test below.
         let p = Process::default();
-        let arg = SchedulingArg { policy: SCHED_OTHER, priority: 0 };
+        let arg = SchedulingArg {
+            policy: SCHED_OTHER,
+            priority: 0,
+        };
         let obj: &dyn Object = &p;
         let r = Scheduling_rowSetPolicy(obj, &arg);
         #[cfg(not(target_os = "linux"))]
@@ -546,8 +584,15 @@ mod tests {
     fn row_set_policy_rejects_non_process() {
         // A ListItem is not a Process; Object_isA(&Process_class) is false,
         // so the debug_assert fires (the C assert()).
-        let item = ListItem { value: String::new(), key: 0, moving: false };
-        let arg = SchedulingArg { policy: SCHED_OTHER, priority: 0 };
+        let item = ListItem {
+            value: String::new(),
+            key: 0,
+            moving: false,
+        };
+        let arg = SchedulingArg {
+            policy: SCHED_OTHER,
+            priority: 0,
+        };
         let obj: &dyn Object = &item;
         let _ = Scheduling_rowSetPolicy(obj, &arg);
     }
@@ -599,7 +644,10 @@ mod tests {
         let mut proc_ = Process::default();
         proc_.super_.id = pid;
 
-        let arg = SchedulingArg { policy: SCHED_OTHER, priority: 0 };
+        let arg = SchedulingArg {
+            policy: SCHED_OTHER,
+            priority: 0,
+        };
         assert!(Scheduling_setPolicy(&proc_, &arg));
     }
 }

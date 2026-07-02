@@ -60,6 +60,19 @@
 //!   `ScreenTabListItem.ds`, and its `KEY_F(5)`/`KEY_CTRL('N')` arm delegates
 //!   to `ScreenNamesPanel_eventHandlerNormal` (transitively the stub above).
 //!
+//! Also ported:
+//! - `ScreenTabListItem_new` (`:121`) / `ScreenNameListItem_new` (`:167`) —
+//!   `AllocThis` list-item constructors, expressed as the owned-return idiom
+//!   already used by the ported `ListItem_new` (`ListItem_init` + the stashed
+//!   `DynamicScreen*` / `ScreenSettings*`-as-index back-pointer).
+//! - `startRenaming` (`:276`) — enters rename mode for the selected row
+//!   (records `renamingItem`/`saved`, seeds the `LineEditor`, switches to the
+//!   `PANEL_EDIT` color and clones the `ScreenNames_renamingBar` into
+//!   `currentBar`).
+//! - `ScreenNamesPanel_new` (`:366`) — builds the names panel: the default
+//!   `FunctionBar`, the lazily-built `ScreenNames_renamingBar`, `Panel_init`,
+//!   and one `ScreenNameListItem` per built-in (`ss->dynamic == NULL`) screen.
+//!
 //! Stubbed (cannot be ported faithfully yet — specific blocker per fn):
 //! - `ScreenTabsPanel_delete` (`:62`) / `ScreenNamesPanel_delete` (`:185`) —
 //!   a `Panel_done` + `free` chain; the owned fields are released by `Drop`
@@ -68,26 +81,17 @@
 //!   nulls each `ScreenNameListItem.ss` and restores `renamingItem->value =
 //!   this->saved` — bookkeeping that only matters for the C manual-free
 //!   protocol.
-//! - `startRenaming` (`:276`) — enters rename mode; only ever reached through
-//!   the stubbed `addNewScreen` (its sole caller adds a new screen first),
-//!   so it is left an honest stub with the new-screen path per the task
-//!   scope. Signature preserved so the `_eventHandlerNormal` call site is
-//!   faithful.
 //! - `addNewScreen` (`:296`) — allocates a `ScreenSettings` via the stubbed
 //!   `Settings_newScreen` / `Settings_newDynamicScreen` (`Settings.c:263` /
-//!   `:286`, both blocked on the platform `Process_fields[]` table) and
-//!   inserts a `ScreenNameListItem` via the stubbed constructor below.
-//! - `ScreenTabListItem_new` (`:121`) / `ScreenNameListItem_new` (`:167`) —
-//!   `AllocThis` constructors; construction is a struct literal and
-//!   destruction is `Drop` (so `AllocThis` has no safe-Rust free-fn analog,
-//!   as with the `ListItem_new` stub).
-//! - `addDynamicScreen` (`:128`) — a `Hashtable_foreach` callback reading
-//!   `screen->heading` (absent from the ported `DynamicScreen` model) and
-//!   building a `ScreenTabListItem` via the stubbed constructor above.
-//! - `ScreenTabsPanel_new` (`:138`) / `ScreenNamesPanel_new` (`:366`) —
-//!   construct the panels: they need `Hashtable_foreach` over
-//!   `settings->dynamicScreens`, the stubbed list-item constructors, and (for
-//!   `ScreenTabsPanel_new`) the stubbed `ScreenNamesPanel_new`.
+//!   `:286`, both blocked on the platform `Process_fields[]` table) before
+//!   inserting a (now-ported) `ScreenNameListItem_new` row.
+//! - `addDynamicScreen` (`:128`) — a `Hashtable_foreach` callback whose label
+//!   is `screen->heading ? screen->heading : screen->name`, but the ported
+//!   `DynamicScreen` model has no `heading` field to read.
+//! - `ScreenTabsPanel_new` (`:138`) — needs `Hashtable_foreach` over the
+//!   unmodeled `settings->dynamicScreens` `Hashtable` field plus the stubbed
+//!   `addDynamicScreen` (its `ScreenTabListItem_new` / `ScreenNamesPanel_new`
+//!   dependencies are now ported).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -99,19 +103,23 @@ use crate::ported::crt::{
     KEY_PPAGE, KEY_RECLICK, KEY_UP,
 };
 use crate::ported::dynamicscreen::DynamicScreen;
-use crate::ported::functionbar::FunctionBar;
+use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
 use crate::ported::lineeditor::{
     LineEditor, LineEditor_getCursor, LineEditor_getText, LineEditor_handleKey,
+    LineEditor_initWithMax, LineEditor_setText,
 };
-use crate::ported::listitem::{ListItem, ListItem_compare, ListItem_display, ListItem_new};
+use crate::ported::listitem::{
+    ListItem, ListItem_compare, ListItem_display, ListItem_init, ListItem_new,
+};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
-    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED, HandlerResult, Panel, Panel_add,
-    Panel_getSelectedIndex, Panel_onKey, Panel_prune, Panel_selectByTyping,
-    Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelectionColor,
+    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_new, Panel_onKey, Panel_prune,
+    Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setHeader,
+    Panel_setSelectionColor, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::screenmanager::ScreenManager;
+use crate::ported::screenspanel::SCREEN_NAME_LEN;
 use crate::ported::settings::Settings;
 use crate::ported::xutils::String_eq;
 
@@ -264,7 +272,39 @@ impl ScreenNamesPanel {
             item.value = value;
         }
     }
+
+    /// Read row `idx`'s display value (the C `char* name = item->value` read
+    /// in [`startRenaming`]). Gate-skipped associated fn — not a C function —
+    /// the read-side companion to [`set_item_value`], handling either concrete
+    /// row type the names panel can hold (`ScreenNameListItem` or plain
+    /// `ListItem`) via the same `Any` downcast the C `(ListItem*)` cast models.
+    fn item_value(&self, idx: usize) -> String {
+        let obj: &dyn core::any::Any = self.super_.items[idx].as_ref();
+        if let Some(item) = obj.downcast_ref::<ScreenNameListItem>() {
+            return item.super_.value.clone();
+        }
+        if let Some(item) = obj.downcast_ref::<ListItem>() {
+            return item.value.clone();
+        }
+        String::new()
+    }
 }
+
+/// Port of `static const char* const ScreenNamesFunctions[]`
+/// (`ScreenTabsPanel.c:172`), minus the trailing `NULL` (the Rust slice length
+/// is the terminator). The default bar of the names panel.
+const ScreenNamesFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "      ", "New   ", "      ", "      ", "      ", "      ",
+    "Done  ",
+];
+
+/// Port of `static const char* const ScreenNamesRenamingFunctions[]`
+/// (`ScreenTabsPanel.c:173`), minus the trailing `NULL`. The bar shown while a
+/// screen name is being edited (built once into [`ScreenNames_renamingBar`]).
+const ScreenNamesRenamingFunctions: [&str; 10] = [
+    "      ", "Cancel", "      ", "      ", "      ", "      ", "      ", "      ", "      ",
+    "Done  ",
+];
 
 /// Port of the file-static `static FunctionBar* ScreenNames_renamingBar = NULL;`
 /// (`ScreenTabsPanel.c:176`) — the process-wide renaming-mode bar, lazily
@@ -391,7 +431,7 @@ pub fn ScreenTabsPanel_eventHandler(this: &mut ScreenTabsPanel, ch: i32) -> Hand
             }
         }
         _ => {
-            if ch >= 0 && ch < 255 && (ch as u8).is_ascii_alphabetic() {
+            if (0..255).contains(&ch) && (ch as u8).is_ascii_alphabetic() {
                 result = Panel_selectByTyping(&mut this.super_, ch);
             }
             if result == HandlerResult::BREAK_LOOP {
@@ -430,34 +470,75 @@ pub fn ScreenTabsPanel_eventHandler(this: &mut ScreenTabsPanel, ch: i32) -> Hand
     result
 }
 
-/// TODO: port of `static ScreenTabListItem* ScreenTabListItem_new(const char* value, DynamicScreen* ds` from `ScreenTabsPanel.c:121`.
-/// Blocked: `AllocThis` constructor stashing a borrowed `DynamicScreen*`
-/// into a `ListItem` subclass — construction is a struct literal / destruction
-/// is `Drop` (no `AllocThis` analog, as with `ListItem_new`).
-pub fn ScreenTabListItem_new() {
-    todo!("port of ScreenTabsPanel.c:121")
+/// Port of `static ScreenTabListItem* ScreenTabListItem_new(const char* value,
+/// DynamicScreen* ds)` from `ScreenTabsPanel.c:121`:
+///
+/// ```c
+/// ScreenTabListItem* this = AllocThis(ScreenTabListItem);
+/// ListItem_init((ListItem*)this, value, 0);
+/// this->ds = ds;
+/// return this;
+/// ```
+///
+/// The C `AllocThis` heap allocation becomes the owned-return idiom (as with
+/// [`ListItem_new`]): build the embedded `ListItem`, [`ListItem_init`] it with
+/// `value` and key `0`, then stash the borrowed `DynamicScreen*` back-pointer.
+pub fn ScreenTabListItem_new(value: &str, ds: *mut DynamicScreen) -> ScreenTabListItem {
+    let mut this = ScreenTabListItem {
+        super_: ListItem {
+            value: String::new(),
+            key: 0,
+            moving: false,
+        },
+        ds,
+    };
+    ListItem_init(&mut this.super_, value, 0);
+    this
 }
 
 /// TODO: port of `static void addDynamicScreen(ATTR_UNUSED ht_key_t key, void* value, void* userdata` from `ScreenTabsPanel.c:128`.
-/// Blocked: `Hashtable_foreach` callback reading `screen->heading` (absent
-/// from the ported `DynamicScreen` model) and building a `ScreenTabListItem`
-/// via the stubbed constructor above.
+/// Blocked: a `Hashtable_foreach` callback whose name is `screen->heading ?
+/// screen->heading : screen->name` — but the ported [`DynamicScreen`] model has
+/// no `heading` field, so the faithful `heading`-with-`name`-fallback cannot be
+/// expressed. (The `ScreenTabListItem_new` constructor it calls is now ported.)
 pub fn addDynamicScreen() {
-    todo!("port of ScreenTabsPanel.c:128")
+    todo!("port of ScreenTabsPanel.c:128 — needs DynamicScreen.heading (unmodeled field)")
 }
 
 /// TODO: port of `ScreenTabsPanel* ScreenTabsPanel_new(Settings* settings` from `ScreenTabsPanel.c:138`.
-/// Blocked: needs `Hashtable_foreach` over `settings->dynamicScreens`, the
-/// stubbed `ScreenTabListItem_new`, and the stubbed `ScreenNamesPanel_new`.
+/// Blocked: iterates `settings->dynamicScreens` via `Hashtable_foreach` +
+/// [`addDynamicScreen`] (stubbed on the unmodeled `DynamicScreen.heading`), and
+/// `settings->dynamicScreens` is itself an unmodeled `Settings` `Hashtable`
+/// field. (`ScreenTabListItem_new` and `ScreenNamesPanel_new` are now ported.)
 pub fn ScreenTabsPanel_new() {
-    todo!("port of ScreenTabsPanel.c:138")
+    todo!("port of ScreenTabsPanel.c:138 — needs settings->dynamicScreens (unmodeled Settings field) + addDynamicScreen")
 }
 
-/// TODO: port of `ScreenNameListItem* ScreenNameListItem_new(const char* value, ScreenSettings* ss` from `ScreenTabsPanel.c:167`.
-/// Blocked: same as `ScreenTabListItem_new` — `AllocThis` constructor stashing
-/// a borrowed `ScreenSettings*` back-pointer; no safe free-fn analog.
-pub fn ScreenNameListItem_new() {
-    todo!("port of ScreenTabsPanel.c:167")
+/// Port of `ScreenNameListItem* ScreenNameListItem_new(const char* value,
+/// ScreenSettings* ss)` from `ScreenTabsPanel.c:167`:
+///
+/// ```c
+/// ScreenNameListItem* this = AllocThis(ScreenNameListItem);
+/// ListItem_init((ListItem*)this, value, 0);
+/// this->ss = ss;
+/// return this;
+/// ```
+///
+/// Same owned-return construction as [`ScreenTabListItem_new`]. The C
+/// `ScreenSettings* ss` back-pointer aliasing `settings->screens[i]` is modeled
+/// as the **index** into that `Vec` (see the module docs), so it arrives here
+/// as `Option<usize>` (`None` == C `NULL`).
+pub fn ScreenNameListItem_new(value: &str, ss: Option<usize>) -> ScreenNameListItem {
+    let mut this = ScreenNameListItem {
+        super_: ListItem {
+            value: String::new(),
+            key: 0,
+            moving: false,
+        },
+        ss,
+    };
+    ListItem_init(&mut this.super_, value, 0);
+    this
 }
 
 /// Port of `ScreenTabsPanel.c:178`. Tears down the process-wide renaming
@@ -545,7 +626,10 @@ pub fn renameScreenSettings(this: &mut ScreenNamesPanel, item: usize) {
 /// focus color/default bar, and calls [`renameScreenSettings`] before clearing
 /// `renamingItem`. The C `renamingItem` `ListItem*` is the row index
 /// ([`ScreenNamesPanel::renamingItem`]); `this->saved` is an owned `String`.
-pub fn ScreenNamesPanel_eventHandlerRenaming(this: &mut ScreenNamesPanel, ch: i32) -> HandlerResult {
+pub fn ScreenNamesPanel_eventHandlerRenaming(
+    this: &mut ScreenNamesPanel,
+    ch: i32,
+) -> HandlerResult {
     let mut do_finish = false;
 
     match ch {
@@ -621,23 +705,62 @@ pub fn ScreenNamesPanel_eventHandlerRenaming(this: &mut ScreenNamesPanel, ch: i3
     HandlerResult::HANDLED
 }
 
-/// TODO: port of `static void startRenaming(Panel* super` from `ScreenTabsPanel.c:276`.
-/// Enters rename mode for the selected row (records `renamingItem`/`saved`,
-/// seeds the `LineEditor`, switches to the `PANEL_EDIT` color and the
-/// `ScreenNames_renamingBar`). Its sole caller is the stubbed [`addNewScreen`]
-/// (renaming a screen it just created), so it is left an honest stub per the
-/// task scope; the signature is preserved so the
-/// [`ScreenNamesPanel_eventHandlerNormal`] call site is faithful.
+/// Port of `static void startRenaming(Panel* super)` from
+/// `ScreenTabsPanel.c:276`. Enters rename mode for the selected row:
+///
+/// ```c
+/// ListItem* item = (ListItem*) Panel_getSelected(super);
+/// if (item == NULL) return;
+/// this->renamingItem = item;
+/// super->cursorOn = true;
+/// char* name = item->value;
+/// this->saved = name;
+/// LineEditor_initWithMax(&this->editor, SCREEN_NAME_LEN - 1);
+/// LineEditor_setText(&this->editor, name);
+/// item->value = LineEditor_getText(&this->editor);
+/// Panel_setSelectionColor(super, PANEL_EDIT);
+/// super->selectedLen = LineEditor_getCursor(&this->editor);
+/// Panel_setCursorToSelection(super);
+/// super->currentBar = ScreenNames_renamingBar;
+/// ```
+///
+/// Returns early when the list is empty (C `item == NULL`). The C
+/// `renamingItem` `ListItem*` is the row index ([`ScreenNamesPanel::renamingItem`]);
+/// `this->saved` (which in C steals `item->value` and hands it back on cancel)
+/// is an owned copy of the row's original name. The row value is re-pointed at
+/// the live editor buffer via [`ScreenNamesPanel::set_item_value`], and the C
+/// `super->currentBar = ScreenNames_renamingBar` — sharing the one file-static
+/// bar pointer — becomes a clone of the [`ScreenNames_renamingBar`] payload
+/// into the owned `currentBar` (the `Panel_setDefaultBar` clone idiom).
 pub fn startRenaming(this: &mut ScreenNamesPanel) {
-    let _ = this;
-    todo!("port of ScreenTabsPanel.c:276 — reached only via the stubbed addNewScreen new-screen path")
+    // item = Panel_getSelected(super); if (item == NULL) return;
+    if this.super_.items.is_empty() {
+        return;
+    }
+    let idx = Panel_getSelectedIndex(&this.super_) as usize;
+    this.renamingItem = Some(idx);
+    this.super_.cursorOn = true;
+    // char* name = item->value; this->saved = name;
+    let name = this.item_value(idx);
+    this.saved = Some(name.clone());
+    // LineEditor_initWithMax(&editor, SCREEN_NAME_LEN - 1); setText(name).
+    LineEditor_initWithMax(&mut this.editor, SCREEN_NAME_LEN - 1);
+    LineEditor_setText(&mut this.editor, &name);
+    // item->value = LineEditor_getText(&this->editor) — draw the live buffer.
+    let text = LineEditor_getText(&this.editor).to_string();
+    this.set_item_value(idx, text);
+    Panel_setSelectionColor(&mut this.super_, ColorElements::PANEL_EDIT);
+    this.super_.selectedLen = LineEditor_getCursor(&this.editor);
+    Panel_setCursorToSelection(&mut this.super_);
+    // super->currentBar = ScreenNames_renamingBar;
+    this.super_.currentBar = ScreenNames_renamingBar.lock().unwrap().clone();
 }
 
 /// TODO: port of `static void addNewScreen(Panel* super, DynamicScreen* ds` from `ScreenTabsPanel.c:296`.
 /// Blocked: allocates a `ScreenSettings` via the stubbed `Settings_newScreen`
 /// / `Settings_newDynamicScreen` (`Settings.c:263` / `:286`, both blocked on
-/// the platform `Process_fields[]` table) and inserts a `ScreenNameListItem`
-/// built by the stubbed constructor above.
+/// the platform `Process_fields[]` table) before inserting the (now-ported)
+/// `ScreenNameListItem_new` row.
 pub fn addNewScreen(this: &mut ScreenNamesPanel, ds: *mut DynamicScreen) {
     let _ = (this, ds);
     todo!("port of ScreenTabsPanel.c:296 — needs Settings_newScreen/Settings_newDynamicScreen (Process_fields[]) + ScreenNameListItem_new")
@@ -690,7 +813,7 @@ pub fn ScreenNamesPanel_eventHandlerNormal(this: &mut ScreenNamesPanel, ch: i32)
             result = HandlerResult::HANDLED;
         }
         _ => {
-            if ch >= 0 && ch < 255 && (ch as u8).is_ascii_alphabetic() {
+            if (0..255).contains(&ch) && (ch as u8).is_ascii_alphabetic() {
                 result = Panel_selectByTyping(&mut this.super_, ch);
             }
             if result == HandlerResult::BREAK_LOOP {
@@ -724,12 +847,72 @@ pub fn ScreenNamesPanel_eventHandler(this: &mut ScreenNamesPanel, ch: i32) -> Ha
     }
 }
 
-/// TODO: port of `ScreenNamesPanel* ScreenNamesPanel_new(Settings* settings` from `ScreenTabsPanel.c:366`.
-/// Blocked: lazily builds `ScreenNames_renamingBar`, then iterates
-/// `settings->screens[]` building items via the stubbed `ScreenNameListItem_new`
-/// (`:167`, an `AllocThis` constructor with no safe analog).
-pub fn ScreenNamesPanel_new() {
-    todo!("port of ScreenTabsPanel.c:366")
+/// Port of `ScreenNamesPanel* ScreenNamesPanel_new(Settings* settings)` from
+/// `ScreenTabsPanel.c:366`. Builds the names panel: a `FunctionBar_new` default
+/// bar, the lazily-built process-wide [`ScreenNames_renamingBar`] (C `if
+/// (!ScreenNames_renamingBar) ScreenNames_renamingBar = FunctionBar_new(...)`),
+/// then `Panel_init` and the fixed field seeds, and finally one
+/// [`ScreenNameListItem`] per **built-in** screen in `settings->screens[]`
+/// (C skips `ss->dynamic` entries: `if (ss->dynamic) continue`).
+///
+/// The C `AllocThis` heap panel becomes the owned-return idiom (as with the
+/// other panel constructors); `settings` is the `*mut Settings` back-pointer
+/// (read below through an independent deref). The C `Panel_init(super, ...,
+/// Class(ListItem), true, fuBar)` drops the `Vector`-typing args here (the
+/// `Vec<Box<dyn Object>>` needs none), matching [`Panel_new`]. `scr` is
+/// zero-initialized (`NULL`) by the C `AllocThis`, so it starts `null_mut`.
+/// `ss->heading` is never `NULL` for a real screen; `unwrap_or("")` guards the
+/// modeled `None`.
+/// # Safety
+/// `settings` must be a valid, non-null pointer to a live [`Settings`] that
+/// outlives this call (it is dereferenced to enumerate `settings->screens`,
+/// mirroring the C which reads `settings->screens` directly).
+pub unsafe fn ScreenNamesPanel_new(settings: *mut Settings) -> ScreenNamesPanel {
+    let fuBar = FunctionBar_new(Some(&ScreenNamesFunctions), None, None);
+    // if (!ScreenNames_renamingBar) ScreenNames_renamingBar = FunctionBar_new(...)
+    {
+        let mut bar = ScreenNames_renamingBar.lock().unwrap();
+        if bar.is_none() {
+            *bar = Some(FunctionBar_new(
+                Some(&ScreenNamesRenamingFunctions),
+                None,
+                None,
+            ));
+        }
+    }
+
+    let mut this = ScreenNamesPanel {
+        super_: Panel_new(1, 1, 1, 1, Some(fuBar)),
+        scr: std::ptr::null_mut(),
+        settings,
+        editor: LineEditor::default(),
+        ds: std::ptr::null_mut(),
+        saved: None,
+        renamingItem: None,
+    };
+    // this->renamingItem = NULL; LineEditor_initWithMax(&editor, SCREEN_NAME_LEN - 1);
+    LineEditor_initWithMax(&mut this.editor, SCREEN_NAME_LEN - 1);
+    // this->ds = NULL; this->saved = NULL; super->cursorOn = false;
+    this.super_.cursorOn = false;
+    Panel_setHeader(&mut this.super_, "Screens");
+
+    // SAFETY: `settings` is the back-pointer supplied by the caller; the deref
+    // yields a reference independent of `this.super_`, so it does not alias the
+    // `&mut this.super_` borrow that `Panel_add` takes below.
+    let s: &Settings = unsafe { &*settings };
+    for i in 0..s.screens.len() {
+        let ss = &s.screens[i];
+        // initially show only the Processes (built-in) tabs.
+        if ss.dynamic.is_some() {
+            continue;
+        }
+        let heading = ss.heading.as_deref().unwrap_or("").to_string();
+        Panel_add(
+            &mut this.super_,
+            Box::new(ScreenNameListItem_new(&heading, Some(i))),
+        );
+    }
+    this
 }
 
 #[cfg(test)]
@@ -923,7 +1106,10 @@ mod tests {
             vec![("Pods".to_string(), 1), ("More Pods".to_string(), 3)]
         );
         // this->ds now points at the passed dynamic screen.
-        assert_eq!(panel.ds as *const DynamicScreen, &ds as *const DynamicScreen);
+        assert_eq!(
+            panel.ds as *const DynamicScreen,
+            &ds as *const DynamicScreen
+        );
     }
 
     #[test]
@@ -965,6 +1151,64 @@ mod tests {
         // dirty markers bumped.
         assert!(settings.changed);
         assert_eq!(settings.lastUpdate, 1);
+    }
+
+    // ── ScreenTabListItem_new / ScreenNameListItem_new ────────────────
+
+    #[test]
+    fn screen_tab_list_item_new_builds_row_with_ds_and_key_zero() {
+        let mut ds = DynamicScreen {
+            name: "pods".to_string(),
+        };
+        let item = ScreenTabListItem_new("Pods", &mut ds as *mut DynamicScreen);
+        assert_eq!(item.super_.value, "Pods");
+        assert_eq!(item.super_.key, 0); // ListItem_init(..., 0)
+        assert!(!item.super_.moving);
+        assert_eq!(item.ds, &mut ds as *mut DynamicScreen);
+    }
+
+    #[test]
+    fn screen_name_list_item_new_builds_row_with_ss_index() {
+        let item = ScreenNameListItem_new("Main", Some(3));
+        assert_eq!(item.super_.value, "Main");
+        assert_eq!(item.super_.key, 0);
+        assert_eq!(item.ss, Some(3));
+
+        // The C NULL back-pointer is the modeled None.
+        let item = ScreenNameListItem_new("New", None);
+        assert_eq!(item.ss, None);
+    }
+
+    // ── startRenaming ─────────────────────────────────────────────────
+
+    #[test]
+    fn start_renaming_enters_edit_mode_on_selected_row() {
+        let mut settings = settings_with(vec![builtin("Main")]);
+        let mut panel = names_panel(&mut settings);
+        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.selected = 0;
+
+        startRenaming(&mut panel);
+
+        assert_eq!(panel.renamingItem, Some(0));
+        assert_eq!(panel.saved.as_deref(), Some("Main")); // original preserved
+        assert!(panel.super_.cursorOn);
+        assert_eq!(LineEditor_getText(&panel.editor), "Main");
+        assert_eq!(name_value(&panel, 0), "Main"); // row points at editor buffer
+        assert_eq!(panel.super_.selectionColorId, ColorElements::PANEL_EDIT);
+        assert_eq!(panel.super_.selectedLen, 4); // cursor at end of "Main"
+    }
+
+    #[test]
+    fn start_renaming_on_empty_panel_is_a_noop() {
+        let mut settings = settings_with(Vec::new());
+        let mut panel = names_panel(&mut settings);
+
+        startRenaming(&mut panel);
+
+        assert_eq!(panel.renamingItem, None);
+        assert!(panel.saved.is_none());
+        assert!(!panel.super_.cursorOn);
     }
 
     // ── ScreenNamesPanel_eventHandlerRenaming ─────────────────────────
@@ -1154,12 +1398,18 @@ mod tests {
 
     #[test]
     fn tabs_event_set_selected_fills_names_with_builtin_screens() {
-        let mut settings =
-            settings_with(vec![builtin("Main"), dynamic("Pods", "pods"), builtin("I/O")]);
+        let mut settings = settings_with(vec![
+            builtin("Main"),
+            dynamic("Pods", "pods"),
+            builtin("I/O"),
+        ]);
         let mut names = names_panel(&mut settings);
         let mut tabs = tabs_panel(&mut names);
         // A single "Processes" tab (ds == NULL).
-        Panel_add(&mut tabs.super_, tab_item("Processes", std::ptr::null_mut()));
+        Panel_add(
+            &mut tabs.super_,
+            tab_item("Processes", std::ptr::null_mut()),
+        );
 
         let r = ScreenTabsPanel_eventHandler(&mut tabs, EVENT_SET_SELECTED);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1182,7 +1432,10 @@ mod tests {
             name: "pods".to_string(),
         };
         let mut tabs = tabs_panel(&mut names);
-        Panel_add(&mut tabs.super_, tab_item("Processes", std::ptr::null_mut()));
+        Panel_add(
+            &mut tabs.super_,
+            tab_item("Processes", std::ptr::null_mut()),
+        );
         Panel_add(
             &mut tabs.super_,
             tab_item("Pods", &mut ds_pods as *mut DynamicScreen),
@@ -1205,7 +1458,10 @@ mod tests {
         let mut names = names_panel(&mut settings);
         names.super_.items.push(name_item("Main", Some(0)));
         let mut tabs = tabs_panel(&mut names);
-        Panel_add(&mut tabs.super_, tab_item("Processes", std::ptr::null_mut()));
+        Panel_add(
+            &mut tabs.super_,
+            tab_item("Processes", std::ptr::null_mut()),
+        );
         let _ = ScreenTabsPanel_eventHandler(&mut tabs, KEY_F5);
     }
 }

@@ -104,12 +104,12 @@ pub fn DynamicScreen_compare(key: u32, value: &DynamicScreen, iter: &mut Dynamic
 
 /// TODO: port of `Hashtable* DynamicScreens_new(void` from `DynamicScreen.c:22`.
 pub fn DynamicScreens_new() {
-    todo!("port of DynamicScreen.c:22")
+    todo!("port of DynamicScreen.c:22: needs Platform_dynamicScreens (unported Platform layer)")
 }
 
 /// TODO: port of `void DynamicScreens_delete(Hashtable* screens` from `DynamicScreen.c:26`.
 pub fn DynamicScreens_delete() {
-    todo!("port of DynamicScreen.c:26")
+    todo!("port of DynamicScreen.c:26: needs Platform_dynamicScreensDone (unported Platform layer); Hashtable_delete is itself a Drop-based stub")
 }
 
 /// TODO: port of `void DynamicScreen_done(DynamicScreen* this` from `DynamicScreen.c:33`.

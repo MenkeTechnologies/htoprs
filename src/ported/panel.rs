@@ -31,10 +31,11 @@
 //!   `EVENT_SET_SELECTED`; base `drawFunctionBar`/`printHeader` are NULL);
 //!   subclass overrides (MainPanel follow-mode, printHeader) would need the
 //!   vtable and are noted at each site.
-//! - The `KEY_WHEELUP`/`KEY_WHEELDOWN` arms of [`Panel_onKey`] need
-//!   `CRT_scrollWheelVAmount` (`CRT.c:956`), which is NOT ported in
-//!   `crt.rs`; per the port rules that one path is stubbed rather than
-//!   inventing the missing global.
+//! - The `KEY_SR`/`KEY_SF` (shift-up/shift-down scroll) arms of
+//!   [`Panel_onKey`] are ported against module-local `KEY_SR`/`KEY_SF`
+//!   constants (their canonical ncurses codes `0o521`/`0o520`), since those
+//!   codes are not exported by `crt.rs`; `crt::CRT_readKey` does not yet emit
+//!   them, so the arms are structurally faithful but presently unreachable.
 //!
 //! Drawing ([`Panel_draw`]) is a behavioral crossterm port through the
 //! [`Ncurses`] emit shim: htop's `attrset`/`mvhline`/`RichString_printoffnVal`
@@ -73,6 +74,14 @@ const CTRL_A: i32 = KEY_CTRL(b'A' as i32);
 const CTRL_E: i32 = KEY_CTRL(b'E' as i32);
 const CARET: i32 = b'^' as i32;
 const DOLLAR: i32 = b'$' as i32;
+
+// ncurses `KEY_SR` (scroll one line backward) and `KEY_SF` (scroll one line
+// forward), matched by the `KEY_SR`/`KEY_SF` arms of `Panel_onKey`. `crt.rs`
+// does not export these codes, so they are bound here (as `const`s, not
+// `fn`s — the port-purity gate is unaffected) to their canonical ncurses
+// values so the two arms can be ported as real match patterns.
+const KEY_SR: i32 = 0o521; // ncurses.h: KEY_SR -> 337
+const KEY_SF: i32 = 0o520; // ncurses.h: KEY_SF -> 336
 
 /// Port of `typedef enum HandlerResult_` (`Panel.h:23`). In C this is an
 /// enum whose members are distinct bits (`0x01`..`0x80`) OR-ed together by
@@ -162,6 +171,11 @@ pub struct Panel {
     pub needsRedraw: bool,
     pub cursorOn: bool,
     pub wasFocus: bool,
+    /// Port of `bool allowExcessScrollV` (`Panel.h:79`). When true, `scrollV`
+    /// outside `[0, size-h]` is permitted so [`Panel_draw`] can render blank
+    /// lines above/below the list (used by stable tree-view hard mode, a
+    /// subclass). `false` for a base panel, so its scroll is always clamped.
+    pub allowExcessScrollV: bool,
     pub lastMouseBarClickX: i32,
     pub currentBar: Option<FunctionBar>,
     pub defaultBar: Option<FunctionBar>,
@@ -193,6 +207,7 @@ impl Panel {
             needsRedraw: true,
             cursorOn: false,
             wasFocus: false,
+            allowExcessScrollV: false,
             lastMouseBarClickX: 0,
             currentBar: None,
             defaultBar: None,
@@ -246,6 +261,7 @@ pub fn Panel_init(this: &mut Panel, x: i32, y: i32, w: i32, h: i32, fuBar: Optio
     this.needsRedraw = true;
     this.cursorOn = false;
     this.wasFocus = false;
+    this.allowExcessScrollV = false; // C: Panel.c:67
     this.lastMouseBarClickX = 0;
     this.header = RichString::new();
     this.defaultBar = fuBar.clone();
@@ -253,7 +269,7 @@ pub fn Panel_init(this: &mut Panel, x: i32, y: i32, w: i32, h: i32, fuBar: Optio
     this.selectionColorId = ColorElements::PANEL_SELECTION_FOCUS;
 }
 
-/// Port of the `Panel_setDefaultBar` macro from `Panel.h:86`:
+/// Port of the `Panel_setDefaultBar` macro from `Panel.h:87`:
 /// `do { (this_)->currentBar = (this_)->defaultBar; } while (0)`.
 ///
 /// C aliases the two `FunctionBar*` pointers to the one shared bar; the
@@ -264,14 +280,14 @@ pub fn Panel_setDefaultBar(this: &mut Panel) {
     this.currentBar = this.defaultBar.clone();
 }
 
-/// TODO: port of `void Panel_done(Panel* this)` from `Panel.c:73`.
+/// TODO: port of `void Panel_done(Panel* this)` from `Panel.c:74`.
 /// Frees `eventHandlerState`/`items`/`defaultBar`/`header` — all released
 /// by `Drop` in Rust, so there is no algorithm to port.
 pub fn Panel_done() {
-    todo!("port of Panel.c:73 — Drop releases the owned fields")
+    todo!("port of Panel.c:74 — Drop releases the owned fields")
 }
 
-/// Port of `Panel.c:82`.
+/// Port of `Panel.c:83`.
 ///
 /// ```c
 /// this->cursorY = this->y + this->selected - this->scrollV + 1;
@@ -285,13 +301,13 @@ pub fn Panel_setCursorToSelection(this: &mut Panel) {
     this.cursorX = this.x + (this.selectedLen as i32) - this.scrollH;
 }
 
-/// Port of `Panel.c:87`. Stores `colorId` into `selectionColorId`.
+/// Port of `Panel.c:88`. Stores `colorId` into `selectionColorId`.
 pub fn Panel_setSelectionColor(this: &mut Panel, colorId: ColorElements) {
     this.selectionColorId = colorId;
 }
 
 /// Port of `inline void Panel_setHeader(Panel* this, const char* header)`
-/// from `Panel.c:91`. Overwrites the header via `RichString_writeWide`
+/// from `Panel.c:92`. Overwrites the header via `RichString_writeWide`
 /// with `CRT_colors[PANEL_HEADER_FOCUS]` and marks the panel dirty.
 pub fn Panel_setHeader(this: &mut Panel, header: &str) {
     let attr = ColorElements::PANEL_HEADER_FOCUS.packed(ColorScheme::active());
@@ -299,21 +315,21 @@ pub fn Panel_setHeader(this: &mut Panel, header: &str) {
     this.needsRedraw = true;
 }
 
-/// Port of `Panel.c:96`. Sets the panel's top-left corner, marks it dirty.
+/// Port of `Panel.c:97`. Sets the panel's top-left corner, marks it dirty.
 pub fn Panel_move(this: &mut Panel, x: i32, y: i32) {
     this.x = x;
     this.y = y;
     this.needsRedraw = true;
 }
 
-/// Port of `Panel.c:104`. Sets the panel's width/height, marks it dirty.
+/// Port of `Panel.c:105`. Sets the panel's width/height, marks it dirty.
 pub fn Panel_resize(this: &mut Panel, w: i32, h: i32) {
     this.w = w;
     this.h = h;
     this.needsRedraw = true;
 }
 
-/// Port of `Panel.c:112`. Empties the item list and resets selection/
+/// Port of `Panel.c:113`. Empties the item list and resets selection/
 /// scroll state (C `Vector_prune` clears the vector).
 pub fn Panel_prune(this: &mut Panel) {
     this.items.clear();
@@ -322,35 +338,36 @@ pub fn Panel_prune(this: &mut Panel) {
     this.selected = 0;
     this.oldSelected = 0;
     this.needsRedraw = true;
+    this.allowExcessScrollV = false; // C: Panel.c:122
 }
 
-/// Port of `Panel.c:123`. Appends `o` to the item list.
+/// Port of `Panel.c:125`. Appends `o` to the item list.
 pub fn Panel_add(this: &mut Panel, o: Box<dyn Object>) {
     this.items.push(o);
     this.prevSelected = -1;
     this.needsRedraw = true;
 }
 
-/// Port of `Panel.c:131`. Inserts `o` at index `i`.
+/// Port of `Panel.c:133`. Inserts `o` at index `i`.
 pub fn Panel_insert(this: &mut Panel, i: i32, o: Box<dyn Object>) {
     this.items.insert(i as usize, o);
     this.prevSelected = -1;
     this.needsRedraw = true;
 }
 
-/// Port of `Panel.c:139`. Replaces the item at index `i` with `o`
+/// Port of `Panel.c:141`. Replaces the item at index `i` with `o`
 /// (C `Vector_set`).
 pub fn Panel_set(this: &mut Panel, i: i32, o: Box<dyn Object>) {
     this.items[i as usize] = o;
 }
 
-/// Port of `Panel.c:145`. Returns the item at index `i` (C `Vector_get`,
+/// Port of `Panel.c:147`. Returns the item at index `i` (C `Vector_get`,
 /// which asserts `i` in range).
 pub fn Panel_get(this: &Panel, i: i32) -> &dyn Object {
     this.items[i as usize].as_ref()
 }
 
-/// Port of `Panel.c:151`. Removes and returns the item at index `i`,
+/// Port of `Panel.c:153`. Removes and returns the item at index `i`,
 /// decrementing `selected` when it fell off the (now shorter) end.
 pub fn Panel_remove(this: &mut Panel, i: i32) -> Box<dyn Object> {
     this.needsRedraw = true;
@@ -362,7 +379,7 @@ pub fn Panel_remove(this: &mut Panel, i: i32) -> Box<dyn Object> {
     removed
 }
 
-/// Port of `Panel.c:164`. Returns the selected item, or `None` when the
+/// Port of `Panel.c:166`. Returns the selected item, or `None` when the
 /// list is empty.
 pub fn Panel_getSelected(this: &Panel) -> Option<&dyn Object> {
     if !this.items.is_empty() {
@@ -372,7 +389,7 @@ pub fn Panel_getSelected(this: &Panel) -> Option<&dyn Object> {
     }
 }
 
-/// Port of `Panel.c:174`. Swaps the selected item with the one above it
+/// Port of `Panel.c:176`. Swaps the selected item with the one above it
 /// (C `Vector_moveUp`), then decrements `selected`.
 pub fn Panel_moveSelectedUp(this: &mut Panel) {
     let idx = this.selected;
@@ -386,7 +403,7 @@ pub fn Panel_moveSelectedUp(this: &mut Panel) {
     }
 }
 
-/// Port of `Panel.c:184`. Swaps the selected item with the one below it
+/// Port of `Panel.c:186`. Swaps the selected item with the one below it
 /// (C `Vector_moveDown`), then increments `selected`.
 pub fn Panel_moveSelectedDown(this: &mut Panel) {
     let idx = this.selected;
@@ -401,17 +418,17 @@ pub fn Panel_moveSelectedDown(this: &mut Panel) {
     }
 }
 
-/// Port of `Panel.c:194`. Returns the current selection index.
+/// Port of `Panel.c:196`. Returns the current selection index.
 pub fn Panel_getSelectedIndex(this: &Panel) -> i32 {
     this.selected
 }
 
-/// Port of `Panel.c:200`. Returns the item count (C `Vector_size`).
+/// Port of `Panel.c:202`. Returns the item count (C `Vector_size`).
 pub fn Panel_size(this: &Panel) -> i32 {
     this.items.len() as i32
 }
 
-/// Port of `Panel.c:206`. Clamps `selected` into `[0, size)` and stores it.
+/// Port of `Panel.c:208`. Clamps `selected` into `[0, size)` and stores it.
 ///
 /// The C tail `if (Panel_eventHandlerFn(this)) Panel_eventHandler(this,
 /// EVENT_SET_SELECTED);` dispatches through the `PanelClass` vtable. The
@@ -432,14 +449,14 @@ pub fn Panel_setSelected(this: &mut Panel, selected: i32) {
 }
 
 /// TODO: port of `void Panel_splice(Panel* this, Vector* from)` from
-/// `Panel.c:222`. Takes a `Vector* from` — the unported `Vector` type has
+/// `Panel.c:224`. Takes a `Vector* from` — the unported `Vector` type has
 /// no analog in this `Vec`-backed model.
 pub fn Panel_splice() {
-    todo!("port of Panel.c:222 — needs the unported Vector type as the source")
+    todo!("port of Panel.c:224 — needs the unported Vector type as the source")
 }
 
 /// Port of `void Panel_draw(Panel* this, bool force_redraw, bool focus,
-/// bool highlightSelected, bool hideFunctionBar)` from `Panel.c:231`.
+/// bool highlightSelected, bool hideFunctionBar)` from `Panel.c:233`.
 ///
 /// Behavioral crossterm port. Reproduces htop's header line, the scroll
 /// clamp ("scroll follows selection", factored into
@@ -493,15 +510,21 @@ pub fn Panel_draw(
                 (header_len - scrollH).min(w),
             );
         }
-        Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+        );
         y += 1;
         h -= 1;
     }
 
     this.ensure_scroll(size, h);
 
-    let first = this.scrollV;
-    let up_to = (first + h).min(size);
+    // topPad: empty screen lines above the first row (non-zero only when
+    // allowExcessScrollV left scrollV negative). C: Panel.c:293-296.
+    let top_pad = if this.scrollV < 0 { -this.scrollV } else { 0 };
+    let first = this.scrollV + top_pad;
+    let up_to = (first + h - top_pad).min(size);
 
     let selection_color = if focus {
         this.selectionColorId.packed(ColorScheme::active())
@@ -512,6 +535,11 @@ pub fn Panel_draw(
     let mut item = RichString::new();
     if this.needsRedraw || force_redraw {
         let mut line = 0i32;
+        // Blank pad lines above the first row (C: Panel.c:305-308).
+        while line < top_pad {
+            Ncurses::mvhline(&mut out, y + line, x, ' ', w);
+            line += 1;
+        }
         let mut i = first;
         while line < h && i < up_to {
             let mut highlight_attr = 0i32;
@@ -540,7 +568,10 @@ pub fn Panel_draw(
                 Panel::print_offset(&mut out, y + line, x, &item, scrollH, amt);
             }
             if highlight_attr != 0 {
-                Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
+                Ncurses::attrset(
+                    &mut out,
+                    ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+                );
             }
             line += 1;
             i += 1;
@@ -550,19 +581,22 @@ pub fn Panel_draw(
             line += 1;
         }
     } else {
+        // C positions the two touched rows against scrollV directly
+        // (Panel.c:341/343/353/356), not the topPad-adjusted `first`.
+        let scroll_v = this.scrollV;
         let old_selected = this.oldSelected;
         {
             let old_obj: &dyn Object = this.items[old_selected as usize].as_ref();
             let sz = RichString_size(&item);
-                RichString_rewind(&mut item, sz);
+            RichString_rewind(&mut item, sz);
             old_obj.display(&mut item);
         }
         let old_len = RichString_sizeVal(&item);
-        Ncurses::mvhline(&mut out, y + old_selected - first, x, ' ', w);
+        Ncurses::mvhline(&mut out, y + old_selected - scroll_v, x, ' ', w);
         if scrollH < old_len {
             Panel::print_offset(
                 &mut out,
-                y + old_selected - first,
+                y + old_selected - scroll_v,
                 x,
                 &item,
                 scrollH,
@@ -574,26 +608,29 @@ pub fn Panel_draw(
         {
             let new_obj: &dyn Object = this.items[selected as usize].as_ref();
             let sz = RichString_size(&item);
-                RichString_rewind(&mut item, sz);
+            RichString_rewind(&mut item, sz);
             item.highlightAttr = 0;
             new_obj.display(&mut item);
         }
         let new_len = RichString_sizeVal(&item);
         this.selectedLen = new_len as usize;
         Ncurses::attrset(&mut out, selection_color);
-        Ncurses::mvhline(&mut out, y + selected - first, x, ' ', w);
+        Ncurses::mvhline(&mut out, y + selected - scroll_v, x, ' ', w);
         RichString_setAttr(&mut item, selection_color);
         if scrollH < new_len {
             Panel::print_offset(
                 &mut out,
-                y + selected - first,
+                y + selected - scroll_v,
                 x,
                 &item,
                 scrollH,
                 (new_len - scrollH).min(w),
             );
         }
-        Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
+        Ncurses::attrset(
+            &mut out,
+            ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+        );
     }
 
     if focus && (this.needsRedraw || force_redraw || !this.wasFocus) {
@@ -613,7 +650,7 @@ pub fn Panel_draw(
 }
 
 /// Port of `static int Panel_headerHeight(const Panel* this)` from
-/// `Panel.c:357`: `1` when the header is non-empty, else `0`.
+/// `Panel.c:374`: `1` when the header is non-empty, else `0`.
 pub fn Panel_headerHeight(this: &Panel) -> i32 {
     if RichString_sizeVal(&this.header) > 0 {
         1
@@ -622,16 +659,19 @@ pub fn Panel_headerHeight(this: &Panel) -> i32 {
     }
 }
 
-/// Port of `bool Panel_onKey(Panel* this, int key)` from `Panel.c:363`.
+/// Port of `bool Panel_onKey(Panel* this, int key)` from `Panel.c:380`.
 ///
 /// Navigation/scroll key handling. Ported faithfully against the item
-/// count and `CRT_scrollHAmount` (`crt.rs`). The `KEY_WHEELUP`/
-/// `KEY_WHEELDOWN` arms need `CRT_scrollWheelVAmount` (`CRT.c:956`), which
-/// is not ported in `crt.rs`, so those two arms are stubbed per the port
-/// rules. Returns `true` when `key` was handled, `false` for the default
-/// (unhandled) case.
+/// count, `CRT_scrollHAmount`, and `CRT_scrollWheelVAmount` (`crt.rs`).
+/// The `KEY_SR`/`KEY_SF` (single-line shift scroll) arms are ported against
+/// the module-local `KEY_SR`/`KEY_SF` constants (`crt.rs` does not export
+/// those ncurses codes); `availableHeight`/`maxScroll` (`Panel.c:384-385`)
+/// serve those two arms. Returns `true` when `key` was handled, `false` for
+/// the default (unhandled) case.
 pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
     let size = this.items.len() as i32;
+    let available_height = this.h - Panel_headerHeight(this); // C: Panel.c:384
+    let max_scroll = (size - available_height).max(0); // C: Panel.c:385
     let scroll_h_amount = crt::CRT_scrollHAmount.load(Ordering::Relaxed);
 
     match key {
@@ -660,10 +700,30 @@ pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
             this.panel_scroll(amt, size);
         }
         KEY_WHEELUP => {
-            todo!("Panel.c:415 — KEY_WHEELUP needs CRT_scrollWheelVAmount (CRT.c:956), not ported in crt.rs");
+            let amt = crt::CRT_scrollWheelVAmount.load(Ordering::Relaxed);
+            this.panel_scroll(-amt, size);
         }
         KEY_WHEELDOWN => {
-            todo!("Panel.c:419 — KEY_WHEELDOWN needs CRT_scrollWheelVAmount (CRT.c:956), not ported in crt.rs");
+            let amt = crt::CRT_scrollWheelVAmount.load(Ordering::Relaxed);
+            this.panel_scroll(amt, size);
+        }
+        KEY_SR => {
+            if this.scrollV > 0 {
+                // keep selection within the now-visible area
+                if this.selected < this.scrollV + available_height {
+                    this.scrollV -= 1;
+                    this.needsRedraw = true;
+                }
+            }
+        }
+        KEY_SF => {
+            if this.scrollV < max_scroll {
+                // keep selection within the now-visible area
+                if this.selected >= this.scrollV {
+                    this.scrollV += 1;
+                    this.needsRedraw = true;
+                }
+            }
         }
         KEY_HOME => {
             this.selected = 0;
@@ -812,7 +872,7 @@ pub fn Panel_selectByTyping(this: &mut Panel, ch: i32) -> HandlerResult {
     result
 }
 
-/// Port of `int Panel_getCh(Panel* this)` from `Panel.c:526`.
+/// Port of `int Panel_getCh(Panel* this)` from `Panel.c:565`.
 ///
 /// Behavioral crossterm port. Positions/shows the cursor when `cursorOn`
 /// (C `move`+`curs_set(1)`), else hides it, then reads a key via the
@@ -831,18 +891,23 @@ pub fn Panel_getCh(this: &Panel) -> i32 {
 }
 
 impl Panel {
-    /// Pure scroll clamp from `Panel_draw` (`Panel.c:265-280`): keeps the
+    /// Pure scroll clamp from `Panel_draw` (`Panel.c:272-291`): keeps the
     /// scroll area and the selection on screen, mutating `scrollV`/
     /// `needsRedraw`. Factored out so the "scroll follows selection"
     /// behavior is unit-testable without a TTY. `h` is the drawable row
-    /// count after the header adjustment.
+    /// count after the header adjustment. The `scrollV` clamp is skipped
+    /// when `allowExcessScrollV` is set (C guards it with
+    /// `if (!this->allowExcessScrollV)`); the selection-on-screen check is
+    /// always applied, matching the C control flow.
     fn ensure_scroll(&mut self, size: i32, h: i32) {
-        if self.scrollV < 0 {
-            self.scrollV = 0;
-            self.needsRedraw = true;
-        } else if self.scrollV > size - h {
-            self.scrollV = (size - h).max(0);
-            self.needsRedraw = true;
+        if !self.allowExcessScrollV {
+            if self.scrollV < 0 {
+                self.scrollV = 0;
+                self.needsRedraw = true;
+            } else if self.scrollV > size - h {
+                self.scrollV = (size - h).max(0);
+                self.needsRedraw = true;
+            }
         }
         if self.selected < self.scrollV {
             self.scrollV = self.selected;
@@ -853,7 +918,7 @@ impl Panel {
         }
     }
 
-    /// The `PANEL_SCROLL(amount)` macro body (`Panel.c:368`): shift the
+    /// The `PANEL_SCROLL(amount)` macro body (`Panel.c:387`): shift the
     /// selection and clamp `scrollV` into `[0, MAX(0, size - h - headerHeight)]`.
     fn panel_scroll(&mut self, amount: i32, size: i32) {
         self.selected += amount;
@@ -869,14 +934,7 @@ impl Panel {
     /// data (not re-implementing a `RichString` string op); the missing
     /// `RichString_printoffnVal` C macro is an ncurses blit with no ported
     /// analog, so the blit lives with the draw code that needs it.
-    fn print_offset<W: Write>(
-        out: &mut W,
-        y: i32,
-        x: i32,
-        item: &RichString,
-        off: i32,
-        n: i32,
-    ) {
+    fn print_offset<W: Write>(out: &mut W, y: i32, x: i32, item: &RichString, off: i32, n: i32) {
         for k in 0..n {
             let idx = (off + k) as usize;
             if idx >= item.chptr.len() {
@@ -1273,6 +1331,55 @@ mod tests {
     }
 
     #[test]
+    fn onkey_wheel_down_up_scrolls_by_wheel_amount() {
+        let mut p = blank();
+        fill(&mut p, 40);
+        p.h = 5; // no header -> headerHeight 0
+        let amt = crt::CRT_scrollWheelVAmount.load(Ordering::Relaxed);
+        assert!(Panel_onKey(&mut p, KEY_WHEELDOWN));
+        // selected += amt; scrollV clamped to [0, 40-5-0]=35 -> amt
+        assert_eq!(p.selected, amt);
+        assert_eq!(p.scrollV, amt);
+        assert!(Panel_onKey(&mut p, KEY_WHEELUP));
+        assert_eq!(p.selected, 0);
+        assert_eq!(p.scrollV, 0);
+    }
+
+    #[test]
+    fn onkey_shift_up_scrolls_one_line_without_moving_selection() {
+        let mut p = blank();
+        fill(&mut p, 20);
+        p.h = 5; // no header -> availableHeight 5
+        p.scrollV = 5;
+        p.selected = 5;
+        assert!(Panel_onKey(&mut p, KEY_SR));
+        // scrollV>0 and selected < scrollV+availableHeight -> scrollV--
+        assert_eq!(p.scrollV, 4);
+        assert_eq!(p.selected, 5);
+        // at scrollV 0, KEY_SR is a no-op
+        p.scrollV = 0;
+        assert!(Panel_onKey(&mut p, KEY_SR));
+        assert_eq!(p.scrollV, 0);
+    }
+
+    #[test]
+    fn onkey_shift_down_scrolls_one_line_without_moving_selection() {
+        let mut p = blank();
+        fill(&mut p, 20);
+        p.h = 5; // maxScroll = 20 - 5 = 15
+        p.scrollV = 0;
+        p.selected = 0;
+        assert!(Panel_onKey(&mut p, KEY_SF));
+        // scrollV<maxScroll and selected>=scrollV -> scrollV++
+        assert_eq!(p.scrollV, 1);
+        assert_eq!(p.selected, 0);
+        // at scrollV == maxScroll, KEY_SF is a no-op
+        p.scrollV = 15;
+        assert!(Panel_onKey(&mut p, KEY_SF));
+        assert_eq!(p.scrollV, 15);
+    }
+
+    #[test]
     fn onkey_unhandled_returns_false() {
         let mut p = blank();
         fill(&mut p, 3);
@@ -1352,13 +1459,22 @@ mod tests {
     fn typing_narrows_selection_as_chars_accumulate() {
         let mut p = with_items(&["bee", "banana", "bat"]);
         // 'b' -> first "b*" is "bee" (index 0)
-        assert_eq!(Panel_selectByTyping(&mut p, 'b' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'b' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(p.selected, 0);
         // "ba" -> "banana" (index 1)
-        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'a' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(p.selected, 1);
         // "bat" -> "bat" (index 2)
-        assert_eq!(Panel_selectByTyping(&mut p, 't' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 't' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(p.selected, 2);
         assert_eq!(search_buf(&p), "bat");
     }
@@ -1367,11 +1483,17 @@ mod tests {
     fn typing_is_case_insensitive() {
         let mut p = with_items(&["apple", "Banana", "cherry"]);
         // uppercase 'B' matches "Banana"; lowercase would too
-        assert_eq!(Panel_selectByTyping(&mut p, 'B' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'B' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(p.selected, 1);
 
         let mut q = with_items(&["apple", "Banana", "cherry"]);
-        assert_eq!(Panel_selectByTyping(&mut q, 'b' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut q, 'b' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(q.selected, 1);
     }
 
@@ -1397,10 +1519,16 @@ mod tests {
     fn retry_treats_last_char_as_start_of_new_word() {
         let mut p = with_items(&["apple", "xray"]);
         // 'z' -> no match; buffer "z"
-        assert_eq!(Panel_selectByTyping(&mut p, 'z' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'z' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(p.selected, 0);
         // 'x' -> buffer "zx" (no match on try 0), retry with just "x" -> "xray"
-        assert_eq!(Panel_selectByTyping(&mut p, 'x' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'x' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(p.selected, 1);
         // buffer was rewritten to the single retry char "x"
         assert_eq!(search_buf(&p), "x");
@@ -1426,7 +1554,10 @@ mod tests {
     #[test]
     fn q_after_text_is_a_normal_search_char() {
         let mut p = with_items(&["apple", "aqua"]);
-        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'a' as i32),
+            HandlerResult::HANDLED
+        );
         // buffer now "a"; 'q' extends it to "aq" -> matches "aqua"
         let r = Panel_selectByTyping(&mut p, 'q' as i32);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1451,7 +1582,10 @@ mod tests {
     #[test]
     fn nongraphic_char_clears_buffer_and_returns_ignored() {
         let mut p = with_items(&["apple", "banana"]);
-        assert_eq!(Panel_selectByTyping(&mut p, 'b' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'b' as i32),
+            HandlerResult::HANDLED
+        );
         assert_eq!(search_buf(&p), "b");
         // ASCII backspace (0x08) is non-graphic, != ERR -> clears the buffer
         let r = Panel_selectByTyping(&mut p, 0x08);
@@ -1462,7 +1596,10 @@ mod tests {
     #[test]
     fn enter_clears_buffer_and_breaks_loop() {
         let mut p = with_items(&["apple"]);
-        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'a' as i32),
+            HandlerResult::HANDLED
+        );
         let r = Panel_selectByTyping(&mut p, 13);
         assert_eq!(r, HandlerResult::BREAK_LOOP);
         assert_eq!(search_buf(&p), ""); // buffer cleared by the non-graphic branch
@@ -1471,7 +1608,10 @@ mod tests {
     #[test]
     fn err_is_ignored_and_leaves_buffer_intact() {
         let mut p = with_items(&["apple"]);
-        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        assert_eq!(
+            Panel_selectByTyping(&mut p, 'a' as i32),
+            HandlerResult::HANDLED
+        );
         let r = Panel_selectByTyping(&mut p, ERR);
         assert_eq!(r, HandlerResult::IGNORED);
         assert_eq!(search_buf(&p), "a"); // ERR does not clear the buffer
