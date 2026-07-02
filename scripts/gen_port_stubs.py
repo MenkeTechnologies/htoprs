@@ -75,10 +75,13 @@ def load_snapshot_names() -> set[str]:
     return names
 
 
-def c_defs_by_stem() -> dict[str, list[tuple[str, int, str]]]:
-    """C file stem -> ordered [(fn_name, line, signature_text)]."""
+def c_defs_by_stem(srcdir: Path) -> dict[str, list[tuple[str, int, str]]]:
+    """C file stem -> ordered [(fn_name, line, signature_text)] for `srcdir`
+    (non-recursive; platform subdirs are scaffolded one at a time so their
+    colliding stems, e.g. linux/Platform.c vs darwin/Platform.c, land in
+    separate mirrored module dirs)."""
     out: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
-    for c in sorted(HTOP_SRC.glob("*.c")):  # top-level only, mirrors port tree
+    for c in sorted(srcdir.glob("*.c")):
         stem = c.stem.lower()
         if not RE_VALID_IDENT.match(stem):
             continue  # e.g. `pcp-htop` — not a valid Rust module name
@@ -128,6 +131,13 @@ pub fn {name}() {{
 """
 
 
+def _subdir_arg() -> str | None:
+    for i, a in enumerate(sys.argv):
+        if a == "--subdir" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return None
+
+
 def main() -> int:
     dry = "--dry-run" in sys.argv
     if not HTOP_SRC.is_dir():
@@ -137,16 +147,35 @@ def main() -> int:
         print(f"ERROR: snapshot not found at {SNAPSHOT}", file=sys.stderr)
         return 1
 
-    snapshot = load_snapshot_names()
-    defs = c_defs_by_stem()
+    subdir = _subdir_arg()
+    # srcdir = the C directory to scan; outdir = the mirrored ported dir;
+    # modrs = the mod.rs that lists the generated modules.
+    if subdir:
+        if not RE_VALID_IDENT.match(subdir):
+            print(f"ERROR: --subdir {subdir!r} is not a valid Rust module name", file=sys.stderr)
+            return 1
+        srcdir = HTOP_SRC / subdir
+        outdir = PORTED / subdir
+        modrs = outdir / "mod.rs"
+        if not srcdir.is_dir():
+            print(f"ERROR: {srcdir} not found", file=sys.stderr)
+            return 1
+    else:
+        srcdir = HTOP_SRC
+        outdir = PORTED
+        modrs = PORTED / "mod.rs"
 
-    existing = {p.stem for p in PORTED.glob("*.rs") if p.stem != "mod"}
+    snapshot = load_snapshot_names()
+    defs = c_defs_by_stem(srcdir)
+
+    existing = {p.stem for p in outdir.glob("*.rs")} if outdir.is_dir() else set()
+    existing.discard("mod")
     created: list[tuple[str, int]] = []
 
     for stem, fns in sorted(defs.items()):
         if stem in existing:
             continue  # already has a module (real or partial port) — leave it
-        cfile = f"{next(iter([f for f in HTOP_SRC.glob('*.c') if f.stem.lower() == stem]))!s}".split("/")[-1]
+        cfile = next(f.name for f in srcdir.glob("*.c") if f.stem.lower() == stem)
         gated = [(n, ln, sig) for (n, ln, sig) in fns if n in snapshot]
         if not gated:
             continue
@@ -156,25 +185,37 @@ def main() -> int:
         text = "\n".join(body).rstrip() + "\n"
         created.append((stem, len(gated)))
         if not dry:
-            (PORTED / f"{stem}.rs").write_text(text)
+            outdir.mkdir(parents=True, exist_ok=True)
+            (outdir / f"{stem}.rs").write_text(text)
 
-    # Register the new modules in mod.rs without disturbing existing
-    # lines (the tree may be edited concurrently).
-    modrs = PORTED / "mod.rs"
-    src = modrs.read_text()
+    # Register the generated modules in the target mod.rs without
+    # disturbing existing lines (the tree may be edited concurrently).
+    header = "//! Ported htop platform modules.\n\n" if subdir else None
+    src = modrs.read_text() if modrs.exists() else (header or "")
     have = set(re.findall(r"^pub mod (\w+);", src, re.M))
     want = sorted(have | {stem for stem, _ in created})
     if want != sorted(have):
-        head = src.split("pub mod ")[0].rstrip() + "\n\n"
-        new_src = head + "".join(f"pub mod {m};\n" for m in want)
+        prefix = src.split("pub mod ")[0].rstrip()
+        prefix = (prefix + "\n\n") if prefix else (header or "")
+        new_src = prefix + "".join(f"pub mod {m};\n" for m in want)
         if not dry:
+            outdir.mkdir(parents=True, exist_ok=True)
             modrs.write_text(new_src)
+
+    # When scaffolding a subdir, make sure the parent mod.rs declares it.
+    if subdir:
+        parent = PORTED / "mod.rs"
+        psrc = parent.read_text()
+        if not re.search(rf"^pub mod {subdir};", psrc, re.M):
+            if not dry:
+                parent.write_text(psrc.rstrip() + f"\npub mod {subdir};\n")
 
     total_fns = sum(n for _, n in created)
     verb = "would create" if dry else "created"
-    print(f"{verb} {len(created)} stub module(s), {total_fns} stub fn(s)")
+    where = f"{subdir}/" if subdir else ""
+    print(f"{verb} {len(created)} stub module(s), {total_fns} stub fn(s) under {where or 'src/ported/'}")
     for stem, n in created:
-        print(f"  {stem}.rs  ({n} stubs)")
+        print(f"  {where}{stem}.rs  ({n} stubs)")
     return 0
 
 
