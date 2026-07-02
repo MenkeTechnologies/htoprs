@@ -21,3 +21,4 @@
 mod harness;
 
 mod cli_parity;
+mod xutils_parity;

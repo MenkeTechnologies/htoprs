@@ -56,7 +56,12 @@ mod version {
         }
         let r = run(&htoprs_bin(), &["--version"]);
         let canon = canon(&r.stdout);
-        assert_eq!(canon.trim_end(), "htop VERSION", "unexpected version banner: {:?}", r.stdout);
+        assert_eq!(
+            canon.trim_end(),
+            "htop VERSION",
+            "unexpected version banner: {:?}",
+            r.stdout
+        );
     }
 }
 

@@ -44,10 +44,15 @@ fn htop_ref_path() -> Option<PathBuf> {
         let p = PathBuf::from(p);
         return p.exists().then_some(p);
     }
-    ["/opt/homebrew/bin/htop", "/usr/local/bin/htop", "/usr/bin/htop", "/bin/htop"]
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|p| p.exists())
+    [
+        "/opt/homebrew/bin/htop",
+        "/usr/local/bin/htop",
+        "/usr/bin/htop",
+        "/bin/htop",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|p| p.exists())
 }
 
 /// Return the reference htop path only if it exists AND is the ported 3.5
@@ -107,7 +112,8 @@ pub fn assert_stdout_parity(args: &[&str]) {
         r.stdout,
     );
     assert_eq!(
-        h.exit, r.exit,
+        h.exit,
+        r.exit,
         "exit-code divergence for `{}`: htop={} htoprs={}",
         args.join(" "),
         h.exit,
