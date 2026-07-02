@@ -73,6 +73,20 @@ have filled in the pure-logic functions of more files — meter sum/mode math,
 and unit tests. Overall and per-file coverage — real ports vs stubs — lives in
 `docs/port_report.html` (derived from source at run time — nothing hardcoded).
 
+### Terminal backend & substrate
+
+htoprs must render **byte-for-byte identical to htop** (enforced by the parity
+suite). The terminal layer is [crossterm](https://crates.io/crates/crossterm) —
+pure-Rust, vendorable, cross-arch, no C dependency — giving full control over
+every glyph/color/attribute so the output matches htop while the draw code is a
+behavioral (not line-for-line) port. The substrate the UI renders through is
+ported: `Object.c` (htop's vtable OOP → a Rust `Object` trait with a class-chain
+`Object_isA`), `RichString.c` (the full styled-character buffer), and `CRT.c`'s
+**color model** — the `ColorElements` enum and every `CRT_colorSchemes` entry
+transcribed verbatim so colors match htop exactly. The terminal-control fns
+(`CRT_init`/`readKey`, `Panel`/`ScreenManager` draw) and the platform
+data-collection layer (`Platform_*`, process scan) are the next phases.
+
 **`XUtils.c`** — string / math utilities:
 
 | C function | notes |
