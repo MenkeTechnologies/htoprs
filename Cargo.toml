@@ -1,0 +1,19 @@
+[package]
+name = "htoprs"
+version = "0.1.0"
+edition = "2021"
+description = "A faithful Rust port of htop — the interactive process viewer"
+license = "GPL-2.0-or-later"
+authors = ["MenkeTechnologies"]
+repository = "https://github.com/MenkeTechnologies/htoprs"
+readme = "README.md"
+keywords = ["htop", "process", "monitor", "top", "terminal"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "htoprs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "htoprs"
+path = "src/main.rs"

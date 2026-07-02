@@ -1,0 +1,10 @@
+# Architectural Rust-only helpers with no htop C counterpart.
+#
+# The build.rs port-purity gate rejects any free `fn` under
+# src/ported/ whose name is absent from tests/data/htop_c_fn_names.txt.
+# Names listed here (one per line, `# justification` allowed inline)
+# are exempted. Reserve this for genuine Rust-only architecture
+# (singleton accessors, trait glue) — NOT for renamed or refactored
+# ports. When in doubt, name the fn after the C fn it ports instead.
+#
+# Empty for now: every ported fn maps 1:1 to an htop C name.
