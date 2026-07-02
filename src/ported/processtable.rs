@@ -30,16 +30,34 @@
 //! # Still stubbed (`todo!()`, named after the C fn so the port gate
 //! accepts the module)
 //!
-//! - [`ProcessTable_getProcess`] (`ProcessTable.c:31`) — needs the
-//!   platform `Process_New` constructor and a real `host` to build a new
-//!   `Process`.
+//! All three are blocked by the same root gap plus per-fn specifics: the
+//! ported [`Table`] stores its rows as `Vec<Option<Row>>` — `Row` values,
+//! not the polymorphic `Process*` rows htop's `Table` holds (C stores
+//! `Row*` that are upcast `Process*`). Any `ProcessTable` fn that must
+//! treat a row *as a `Process`* — recover it via `(Process*)Vector_get`,
+//! read a `Process`-only field, or return a `Process*` — has no faithful
+//! expression against a `Row`-typed table, and `table.rs` is out of scope
+//! for this port (edit-only-my-file rule). This is the honest reason the
+//! bodies stay `todo!()` rather than being gutted to a `Row`-only shell.
+//!
+//! - [`ProcessTable_getProcess`] (`ProcessTable.c:31`) — `Hashtable_get`
+//!   returns a `Process*` and the fn returns/constructs a `Process`, but
+//!   the ported table's rows are `Row`, so there is no `Process` to look
+//!   up or hand back. Also needs the platform `Process_New` constructor
+//!   (`typedef Process* (*Process_New)(const struct Machine_*)`,
+//!   `Process.h:241`) — a function-pointer type with no ported analog.
 //! - [`ProcessTable_goThroughEntries`] (`ProcessTable.c` platform) — the
 //!   `/proc` (or per-platform) scan; implemented by `linux/` etc.
-//! - [`ProcessTable_cleanupEntries`] (`ProcessTable.c:62`) — calls
-//!   `Process_makeCommandStr` (stubbed in `process.rs`) on every row and
-//!   tracks `host->maxUserId`/`maxProcessId`; cannot port faithfully
-//!   until `Process_makeCommandStr` exists (the base `Table_cleanupRow` /
-//!   `Table_compact` logic it wraps *is* ported, in `table.rs`).
+//! - [`ProcessTable_cleanupEntries`] (`ProcessTable.c:62`) — three
+//!   blockers: (1) it treats each row as a `Process`
+//!   (`(Process*)Vector_get`) to read `p->st_uid` and call
+//!   `Process_makeCommandStr(p, settings)`, both inaccessible on a
+//!   `Row`-typed table; (2) `Process_makeCommandStr` (`Process.c:183`) is
+//!   itself an unported stub in `process.rs`; (3) it *mutates*
+//!   `host->maxUserId`/`maxProcessId`, but [`Table::host`] is
+//!   `*const Machine` (the C `super->host` is a mutable `Machine*`), so
+//!   the write is not expressible. The base `Table_cleanupRow` /
+//!   `Table_compact` logic it wraps *is* ported, in `table.rs`.
 //!
 //! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
 //! *ported*, so scaffolding does not inflate coverage.
@@ -107,10 +125,16 @@ pub fn ProcessTable_done(this: &mut ProcessTable) {
 
 /// TODO: port of `Process* ProcessTable_getProcess(ProcessTable* this,
 /// pid_t pid, bool* preExisting, Process_New constructor)` from
-/// `ProcessTable.c:31`. Needs the platform `Process_New` constructor and
-/// a real `host` to build a new `Process`.
+/// `ProcessTable.c:31`. Blocked: the body looks up (`Hashtable_get`),
+/// constructs (`constructor(table->host)`), and returns a `Process*`, but
+/// the ported [`Table`] stores rows as `Row` values (`Vec<Option<Row>>`),
+/// not the upcast `Process*` htop's table holds — there is no `Process` to
+/// recover or return. It also needs the platform `Process_New` constructor
+/// (`typedef Process* (*Process_New)(...)`, `Process.h:241`), a
+/// function-pointer type with no ported analog. Cannot be gutted to a
+/// `Row`-only shell without lying about what it does.
 pub fn ProcessTable_getProcess() {
-    todo!("port of ProcessTable.c:31 — needs platform Process_New constructor")
+    todo!("port of ProcessTable.c:31 — Table rows are Row, not Process; needs Process_New constructor")
 }
 
 /// Port of `static void ProcessTable_prepareEntries(Table* super)` from
@@ -145,12 +169,19 @@ pub fn ProcessTable_goThroughEntries(_this: &mut ProcessTable) {
 }
 
 /// TODO: port of `static void ProcessTable_cleanupEntries(Table* super)`
-/// from `ProcessTable.c:62`. Calls `Process_makeCommandStr` (stubbed in
-/// `process.rs`) on every row and tracks `host->maxUserId`/`maxProcessId`
-/// before the base `Table_cleanupRow` / `Table_compact` cull; cannot port
-/// faithfully until `Process_makeCommandStr` exists.
+/// from `ProcessTable.c:62`. Three blockers, none yet resolvable from
+/// this file: (1) each row is cast `(Process*)Vector_get(super->rows, i)`
+/// to read `p->st_uid` and call `Process_makeCommandStr(p, settings)` —
+/// both inaccessible because the ported [`Table`] stores `Row` values, not
+/// `Process`; (2) `Process_makeCommandStr` (`Process.c:183`) is itself a
+/// stub in `process.rs`; (3) it mutates `host->maxUserId`/`maxProcessId`,
+/// but [`Table::host`] is `*const Machine` while the C `super->host` is a
+/// mutable `Machine*`, so the write cannot be expressed. The wrapped base
+/// `Table_cleanupRow` / `Table_compact` logic *is* ported (in `table.rs`);
+/// this per-process wrapper is not portable until the table models
+/// `Process` rows and `Process_makeCommandStr` lands.
 pub fn ProcessTable_cleanupEntries() {
-    todo!("port of ProcessTable.c:62 — needs Process_makeCommandStr")
+    todo!("port of ProcessTable.c:62 — Table rows are Row not Process; needs Process_makeCommandStr + mutable host")
 }
 
 #[cfg(test)]

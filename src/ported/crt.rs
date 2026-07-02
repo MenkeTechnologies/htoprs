@@ -29,9 +29,35 @@
 //! compares against are reproduced verbatim so the mapping hands the
 //! rest of the port exactly the ints it expects.
 //!
-//! Still stubbed (`todo!()`): signal handlers (SIGSEGV/SIGTERM backtrace),
-//! stderr redirect/dump, `CRT_debug_impl`, and the signal-handler
-//! install/reset — debugging infrastructure that is out of scope here.
+//! Still stubbed (`todo!()`) — signal / debug-stderr infrastructure that
+//! is genuinely blocked, each with its specific blocker. Every one needs
+//! POSIX syscalls that Rust's `std` does not expose and that are only
+//! reachable through a `libc`/`nix` dependency; this crate depends on
+//! only `crossterm` + `unicode-width`, and adding a crate would mean
+//! editing `Cargo.toml`, so the faithful port cannot be written here yet:
+//!   * `CRT_handleSIGTERM` (`CRT.c:961`) — a real `signal()`-registered
+//!     handler that reads `CRT_settings->changed` (no `CRT_settings`
+//!     global is modeled) and calls `strsignal(3)`; no `std` API for any
+//!     of these.
+//!   * `createStderrCacheFile` (`CRT.c:984`) — `memfd_create` /
+//!     `open(O_TMPFILE)` / `mkstemp`, none exposed by `std`; NDEBUG-only.
+//!   * `redirectStderr` (`CRT.c:1003`) / `dumpStderr` (`CRT.c:1014`) —
+//!     `dup`/`dup2`/`fsync`/`lseek` and raw-fd `read` on `STDERR_FILENO`;
+//!     no `std` API for `dup2`-onto-stderr.
+//!   * `CRT_debug_impl` (`CRT.c:1056`) — a C variadic (`...`) `vfprintf`
+//!     shim; Rust has no stable variadic `fn`, so the faithful analog is
+//!     a macro, not the `pub fn` the port gate requires.
+//!   * `CRT_installSignalHandlers` (`CRT.c:1078`) /
+//!     `CRT_resetSignalHandlers` (`CRT.c:1103`) — `sigaction`/`signal`
+//!     plus the `struct sigaction old_sig_handler[32]` save/restore
+//!     array; no `std` signal-installation API.
+//!   * `print_backtrace` (`CRT.c:1360`) — libunwind / `backtrace(3)`
+//!     (execinfo) walking of the stack; external C unwinding libs,
+//!     `PRINT_BACKTRACE`-gated.
+//!   * `CRT_handleSIGSEGV` (`CRT.c:1420`) — the SIGSEGV handler; needs
+//!     `Settings_write` (still a `todo!()` in `settings.rs`), the
+//!     `program` global (unmodeled), `old_sig_handler`, `sigaction`,
+//!     `raise`, and `strsignal`.
 //!
 //! ncurses macro values are cited from
 //! `/opt/homebrew/opt/ncurses/include/ncurses.h`:

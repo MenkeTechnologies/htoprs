@@ -503,9 +503,18 @@ pub fn Process_fillStarttimeBuffer() {
     todo!("port of Process.c:43")
 }
 
-/// TODO: port of `static inline char* stpcpyWithNewlineConversion(char* dstStr, const char* srcStr` from `Process.c:169`.
-pub fn stpcpyWithNewlineConversion() {
-    todo!("port of Process.c:169")
+/// Port of `static inline char* stpcpyWithNewlineConversion(char* dstStr,
+/// const char* srcStr)` from `Process.c:169`. Copies `src` into `dst`,
+/// converting each `'\n'` to `' '`. The C variant writes a terminating
+/// NUL and returns the pointer just past the copied bytes (stpcpy
+/// semantics) so callers can chain; a `Vec<u8>` tracks its own end and
+/// carries no NUL, so the append leaves `dst` extended in place and no
+/// end pointer is needed. Only reachable from the stubbed
+/// [`Process_makeCommandStr`] in C.
+pub fn stpcpyWithNewlineConversion(dst: &mut Vec<u8>, src: &[u8]) {
+    for &c in src {
+        dst.push(if c == b'\n' { b' ' } else { c });
+    }
 }
 
 /// TODO: port of `void Process_makeCommandStr(Process* this, const Settings* settings` from `Process.c:183`.
@@ -843,9 +852,28 @@ pub fn Process_isThread(this: &Process) -> bool {
     Process_isUserlandThread(this) || Process_isKernelThread(this)
 }
 
-/// TODO: port of `void Process_updateComm(Process* this, const char* comm` from `Process.c:1020`.
-pub fn Process_updateComm() {
-    todo!("port of Process.c:1020")
+/// Port of `void Process_updateComm(Process* this, const char* comm)`
+/// from `Process.c:1020`. No-op when both the stored `procComm` and the
+/// new `comm` are `None` (C `NULL`), or when both are present and equal
+/// (`String_eq`, inlined as `==`). Otherwise it replaces `procComm`
+/// (`xStrdup(comm)` → an owned `String`, `NULL` → `None`) and resets the
+/// merged-command cache marker so the display string is regenerated. The
+/// C `free(this->procComm)` is implicit — the old `String` is dropped
+/// when the field is overwritten.
+pub fn Process_updateComm(this: &mut Process, comm: Option<&str>) {
+    if this.procComm.is_none() && comm.is_none() {
+        return;
+    }
+
+    if let (Some(cur), Some(new)) = (&this.procComm, comm) {
+        if cur == new {
+            return;
+        }
+    }
+
+    this.procComm = comm.map(|s| s.to_string());
+
+    this.mergedCommand.lastUpdate = 0;
 }
 
 /// Port of `skipPotentialPath(const char* cmdline, size_t end)` from

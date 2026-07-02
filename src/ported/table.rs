@@ -47,15 +47,34 @@
 //! # Still stubbed (`todo!()`, named after the C fn so the port gate
 //! accepts the module)
 //!
+//! `panel.rs`, `richstring.rs`, `crt.rs`, and `settings.rs` now exist,
+//! but the *specific* symbols these three functions call are still
+//! unported, so each remains a faithful stub rather than a fabricated
+//! body (verified against the ported tree, not assumed):
+//!
 //! - `Table_delete` (`Table.c:42`) — `Object` teardown + `free`; Rust
-//!   `Drop` releases the owned fields, no algorithm to port.
-//! - `Table_rebuildPanel` (`Table.c:232`) — drives the ncurses `Panel`
-//!   (`Panel_prune`/`Panel_set`/`Panel_setSelected`) and calls
-//!   `Row_isVisible`/`Row_matchesFilter` (unported vtable slots). Needs
-//!   the UI layer.
+//!   `Drop` releases the owned fields, no algorithm to port (same call
+//!   made for `History_delete`).
+//! - `Table_rebuildPanel` (`Table.c:232`) — genuinely blocked on five
+//!   fronts: (1) `Row_isVisible` and `Row_matchesFilter` are not ported
+//!   (`row.rs` has no such fn); (2) this module models `panel` as an
+//!   opaque `Option<usize>` handle, so it cannot call `Panel_prune`/
+//!   `Panel_setSelected`/etc. on a real `Panel`; (3) `Panel_set`
+//!   (`panel.rs:276`) takes a `Box<dyn Object>`, but the rows here are
+//!   owned `Row` values in `self.rows`, an object-model mismatch; (4)
+//!   the C stable-tree-view anchor state (`stableId`/`stableLastIdx`,
+//!   `Table.h:37`) is not on the Rust `Table` struct and
+//!   `ScreenSettings.stableTreeView` is not modeled in `settings.rs`;
+//!   (5) `Panel` has no `allowExcessScrollV` field yet (`panel.rs`).
 //! - `Table_printHeader` (`Table.c:289`) — writes the column header into
-//!   a `RichString` from `Settings`/`ScreenSettings` field lists and
-//!   `CRT_colors`; needs the unported settings-field + CRT header layer.
+//!   a `RichString` from the `ScreenSettings` field list. Blocked on:
+//!   `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
+//!   (not ported — only referenced in a `process.rs` doc comment);
+//!   `RowField_alignedTitle` (`todo!()` at `row.rs:302`); `CRT_treeStr`
+//!   with `TREE_STR_ASC`/`TREE_STR_DESC` (unported — see `crt.rs:1604`);
+//!   and the `settings.rs` `ScreenSettings` subset omits the `fields`
+//!   array and `treeViewAlwaysByPID`, with `Settings.showMergedCommand`
+//!   likewise unmodeled.
 //!
 //! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
 //! *ported*, so scaffolding does not inflate coverage.
@@ -463,20 +482,30 @@ pub fn Table_collapseAllBranches(this: &mut Table) {
 }
 
 /// TODO: port of `void Table_rebuildPanel(Table* this)` from
-/// `Table.c:232`. Drives the ncurses `Panel` (`Panel_prune`/`Panel_set`/
-/// `Panel_setSelected`/`Panel_setSelectionColor`) and calls
-/// `Row_isVisible`/`Row_matchesFilter` (unported `Row` vtable slots).
-/// Needs the UI layer.
+/// `Table.c:232`. Still blocked despite `panel.rs` now existing:
+/// `Row_isVisible` / `Row_matchesFilter` are unported (no such fn in
+/// `row.rs`); this module models `panel` as an opaque `Option<usize>`
+/// (cannot drive a real `Panel`); `Panel_set` (`panel.rs:276`) takes a
+/// `Box<dyn Object>` while the rows here are owned `Row` values
+/// (object-model mismatch); the stable-tree-view anchor state
+/// (`stableId`/`stableLastIdx`, `Table.h:37`; `ScreenSettings.stableTreeView`)
+/// is not modeled; and `Panel` has no `allowExcessScrollV` field. See
+/// the module header for the full list.
 pub fn Table_rebuildPanel() {
-    todo!("port of Table.c:232 — needs Panel/Row_isVisible/Row_matchesFilter")
+    todo!("port of Table.c:232 — needs Panel drive/Row_isVisible/Row_matchesFilter/stable-view state")
 }
 
 /// TODO: port of `void Table_printHeader(const Settings* settings,
-/// RichString* header)` from `Table.c:289`. Writes the column header
-/// into a `RichString` from the `ScreenSettings` field list and
-/// `CRT_colors`; needs the unported settings-field + CRT header layer.
+/// RichString* header)` from `Table.c:289`. A pure function (never
+/// touches `Table`), but still blocked on unported callees:
+/// `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
+/// (unported), `RowField_alignedTitle` (`todo!()` at `row.rs:302`),
+/// `CRT_treeStr` with `TREE_STR_ASC`/`TREE_STR_DESC` (unported, see
+/// `crt.rs:1604`), plus the `settings.rs` `ScreenSettings` subset lacks
+/// the `fields` array and `treeViewAlwaysByPID` and `Settings` lacks
+/// `showMergedCommand`. See the module header for detail.
 pub fn Table_printHeader() {
-    todo!("port of Table.c:289 — needs Settings fields + CRT header layer")
+    todo!("port of Table.c:289 — needs getActiveSortKey/RowField_alignedTitle/CRT_treeStr + Settings fields")
 }
 
 /// Port of `void Table_prepareEntries(Table* this)` from `Table.c:322`.

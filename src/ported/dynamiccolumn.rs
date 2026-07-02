@@ -1,18 +1,38 @@
 //! Partial port of `DynamicColumn.c` — htop's dynamic-column registry.
 //!
-//! C names are preserved verbatim (`non_snake_case` allowed). Only the
-//! `Hashtable_foreach` comparison callback `DynamicColumn_compare` has a
-//! faithful safe-Rust body — its logic is a plain name match plus an
-//! iterator update, needing no unported substrate.
+//! C names are preserved verbatim (htop uses `CamelCase_snake`), so
+//! `non_snake_case` is allowed for the whole module — matching the spec
+//! name-for-name is the point of the port. Each C function taking
+//! `DynamicColumn* this` ports to a free fn (the shape `Vector.c`/
+//! `History.c` use), not a method.
 //!
-//! Every other function here depends on substrate that is not ported:
-//! `DynamicColumns_new`/`DynamicColumns_delete`/`DynamicColumn_name`/
-//! `DynamicColumn_writeField` call `Platform_*`; `DynamicColumns_new`,
-//! `DynamicColumns_delete`, `DynamicColumn_search`, and
-//! `DynamicColumn_lookup` need the `Hashtable` heap wrapper and its
-//! `foreach`/`get` dispatch; `DynamicColumn_done` is a `free()` wrapper
-//! (Rust owns its allocations); `DynamicColumn_writeField` also needs
-//! `RichString`. Those keep their exact `todo!()` stubs.
+//! Ported (self-contained, no unported substrate):
+//! - `DynamicColumn_compare` (`DynamicColumn.c:52`) — `static` in C; the
+//!   `Hashtable_foreach` comparison callback. Its logic is a plain
+//!   `String_eq` name match (`strcmp == 0`) plus an iterator update,
+//!   needing no unported substrate.
+//!
+//! Stubbed (cannot be ported faithfully yet — specific blocker named):
+//! - `DynamicColumns_new` (`DynamicColumn.c:22`) — calls
+//!   `Platform_dynamicColumns()` and `Hashtable_new`; neither the
+//!   `Platform_*` layer nor the `Hashtable` heap wrapper is ported
+//!   (`hashtable.rs` ports only `nextPrime`).
+//! - `DynamicColumns_delete` (`DynamicColumn.c:29`) — calls
+//!   `Platform_dynamicColumnsDone` and `Hashtable_delete`; same blockers.
+//! - `DynamicColumn_name` (`DynamicColumn.c:36`) — thin wrapper over
+//!   `Platform_dynamicColumnName`, an unported `Platform_*` fn.
+//! - `DynamicColumn_done` (`DynamicColumn.c:40`) — `free()`s `heading`,
+//!   `caption`, `description`. No faithful safe-Rust analog: a
+//!   `DynamicColumn` owns its `String` fields, so `Drop` frees them
+//!   automatically (same precedent as `History_delete`).
+//! - `DynamicColumn_search` (`DynamicColumn.c:61`) — drives
+//!   `Hashtable_foreach` over the registry; the `Hashtable` dispatch is
+//!   not ported.
+//! - `DynamicColumn_lookup` (`DynamicColumn.c:70`) — thin wrapper over
+//!   `Hashtable_get`; same `Hashtable` blocker.
+//! - `DynamicColumn_writeField` (`DynamicColumn.c:74`) — thin wrapper
+//!   over `Platform_dynamicColumnWriteField`; also needs the `Process`
+//!   and `RichString` graph.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 

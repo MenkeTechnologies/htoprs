@@ -132,9 +132,36 @@ pub fn CPUMeter_init() {
     todo!("port of CPUMeter.c:51")
 }
 
-/// TODO: port of `static void CPUMeter_getUiName(const Meter* this, char* buffer, size_t length` from `CPUMeter.c:78`.
-pub fn CPUMeter_getUiName() {
-    todo!("port of CPUMeter.c:78")
+/// Port of `static void CPUMeter_getUiName(const Meter* this,
+/// char* buffer, size_t length)` from `CPUMeter.c:78`. Builds the header
+/// setup-menu label: for a per-CPU meter (`param > 0`) it appends the
+/// (optionally 1-based) CPU id after the class UI name; for the average
+/// meter (`param == 0`) it is just the UI name.
+///
+/// Signature mapping: the C writes into the caller's `char* buffer`
+/// bounded by `length` and returns nothing. Rust owns its allocation, so
+/// the `buffer`/`length` out-params are dropped in favor of a returned
+/// owned `String` — the same mapping [`crate::ported::meter::Meter_humanUnit`]
+/// applies to `char*` formatters. The C `assert(length > 0)` is a
+/// debug-only precondition on that dropped buffer, so it is dropped too.
+///
+/// `Meter_uiName(this)` (`Meter.h`) yields the class `uiName` string,
+/// modeled as [`Meter::uiName`]. `Settings_cpuId(settings, cpu)`
+/// (`Settings.h:119`, `countCPUsFromOne ? cpu+1 : cpu`) is inlined over
+/// `cpu = this->param - 1`; `param` is `unsigned int`, and the guard
+/// `param > 0` makes the `param - 1` subtraction safe.
+pub fn CPUMeter_getUiName(this: &Meter) -> String {
+    if this.param > 0 {
+        let cpu: u32 = this.param - 1;
+        let id = if this.host.settings.countCPUsFromOne {
+            cpu + 1
+        } else {
+            cpu
+        };
+        format!("{} {}", this.uiName, id)
+    } else {
+        this.uiName.to_string()
+    }
 }
 
 /// TODO: port of `static void CPUMeter_updateValues(Meter* this` from `CPUMeter.c:87`.
@@ -219,11 +246,27 @@ mod tests {
     fn meter(name: &'static str, existingCPUs: u32) -> Meter {
         Meter {
             name,
-            uiName: name,
+            uiName: "CPU",
             param: 0,
             host: Machine {
                 existingCPUs,
-                settings: Settings { countCPUsFromOne: false },
+                settings: Settings {
+                    countCPUsFromOne: false,
+                },
+            },
+        }
+    }
+
+    /// Builds a `Meter` exercising [`CPUMeter_getUiName`]: sets the
+    /// `uiName`, the tracked `param`, and the `countCPUsFromOne` flag.
+    fn ui_meter(uiName: &'static str, param: u32, countCPUsFromOne: bool) -> Meter {
+        Meter {
+            name: "CPU",
+            uiName,
+            param,
+            host: Machine {
+                existingCPUs: 0,
+                settings: Settings { countCPUsFromOne },
             },
         }
     }
@@ -283,6 +326,28 @@ mod tests {
             // Left never smaller than right (ceiling half on the left).
             assert!(l_count >= r_count, "left >= right (cpus={cpus})");
         }
+    }
+
+    #[test]
+    fn ui_name_average_meter_is_bare_ui_name() {
+        // param == 0 (the "Avg" meter): buffer is just Meter_uiName.
+        assert_eq!(CPUMeter_getUiName(&ui_meter("CPU", 0, false)), "CPU");
+        assert_eq!(CPUMeter_getUiName(&ui_meter("CPU", 0, true)), "CPU");
+    }
+
+    #[test]
+    fn ui_name_per_cpu_zero_based() {
+        // param > 0, countCPUsFromOne off: id == param - 1.
+        assert_eq!(CPUMeter_getUiName(&ui_meter("CPU", 1, false)), "CPU 0");
+        assert_eq!(CPUMeter_getUiName(&ui_meter("CPU", 8, false)), "CPU 7");
+    }
+
+    #[test]
+    fn ui_name_per_cpu_one_based() {
+        // param > 0, countCPUsFromOne on: Settings_cpuId adds 1 back, so
+        // id == (param - 1) + 1 == param.
+        assert_eq!(CPUMeter_getUiName(&ui_meter("CPU", 1, true)), "CPU 1");
+        assert_eq!(CPUMeter_getUiName(&ui_meter("CPU", 8, true)), "CPU 8");
     }
 
     #[test]

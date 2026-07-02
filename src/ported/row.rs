@@ -15,13 +15,32 @@
 //! `Row_printPercentage` (writes into a `char* buffer`). These sit on
 //! the merged `richstring` + `crt` substrate.
 //!
+//! Ported column-width setters: [`Row_setPidColumnWidth`] /
+//! [`Row_setUidColumnWidth`] and their `Row_pidDigits` / `Row_uidDigits`
+//! globals (modeled as `AtomicI32`, matching `crt.rs`'s `CRT_colorScheme`
+//! pattern). They depend only on the ported `countDigits` (`xutils.rs`).
+//!
 //! Still stubbed (`todo!()`, named after their real htop C function so
-//! the port-purity gate accepts the module): [`Row_isNew`],
-//! [`Row_display`], and the field-title / column-width helpers — they
-//! need the unported `Machine` / `Settings` structs (e.g. `Row_isNew`
-//! reads `host->monotonicMs` and `settings->highlightDelaySecs`) and the
-//! ncurses draw layer. `gen_port_report.py` counts `todo!()` bodies as
-//! *stubbed*, not *ported*, so scaffolding does not inflate coverage.
+//! the port-purity gate accepts the module); each names its blocker in
+//! its own doc-comment:
+//! - [`Row_isNew`], [`Row_display`] — dereference `host` (an opaque
+//!   `*const c_void`) into the `Machine` / `Settings` structs; the ported
+//!   `Settings` (`settings.rs`) has none of the fields they read
+//!   (`highlightDelaySecs`, `ss->fields`, `highlightChanges`), and
+//!   `Row_display` also needs the `writeField` vtable dispatch.
+//! - [`Row_resetFieldWidths`], [`alignedTitleProcessField`] — need the
+//!   unported platform `Process_fields[]` (`ProcessFieldData`) table.
+//! - [`Row_updateFieldWidth`], [`Row_resetFieldWidths`] — need the
+//!   `Row_fieldWidths[LAST_RESERVED_FIELD]` global, sized by a platform
+//!   constant not modeled in the port.
+//! - [`alignedTitleDynamicColumn`] — needs `Settings.dynamicColumns`,
+//!   `Hashtable_get`, and `DynamicColumn.{width,heading}` /
+//!   `DYNAMIC_*_COLUMN_WIDTH`, none present yet.
+//! - [`RowField_alignedTitle`], [`RowField_keyAt`] — blocked transitively
+//!   on the two `alignedTitle*` helpers (and `Settings.ss`).
+//!
+//! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
+//! *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -33,8 +52,10 @@ use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendChr, RichString_appendnAscii,
     RichString_appendnWideColumns,
 };
+use crate::ported::xutils::countDigits;
 use core::any::Any;
 use core::ffi::c_void;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 /// Port of `#define SPACESHIP_NUMBER(a, b) (((a) > (b)) - ((a) < (b)))`
 /// from `Macros.h:33`. A three-way comparison collapsing to `-1`/`0`/`1`
@@ -67,6 +88,27 @@ const ONE_DECIMAL_G: u64 = ONE_DECIMAL_M * ONE_DECIMAL_K;
 /// `#define ONE_DECIMAL_T (1ULL * ONE_DECIMAL_G * ONE_DECIMAL_K)`
 /// (`Row.h:116`).
 const ONE_DECIMAL_T: u64 = ONE_DECIMAL_G * ONE_DECIMAL_K;
+
+// PID/UID column-width bounds from `Row.h:22-25`.
+/// `#define ROW_MIN_PID_DIGITS 5` (`Row.h:22`).
+const ROW_MIN_PID_DIGITS: i32 = 5;
+/// `#define ROW_MAX_PID_DIGITS 19` (`Row.h:23`).
+const ROW_MAX_PID_DIGITS: i32 = 19;
+/// `#define ROW_MIN_UID_DIGITS 5` (`Row.h:24`).
+const ROW_MIN_UID_DIGITS: i32 = 5;
+/// `#define ROW_MAX_UID_DIGITS 20` (`Row.h:25`).
+const ROW_MAX_UID_DIGITS: i32 = 20;
+
+/// Port of the global `int Row_pidDigits = ROW_MIN_PID_DIGITS;`
+/// (`Row.c:32`). Mutable process-wide state, so it is modeled as an
+/// `AtomicI32` — the same pattern `crt.rs` uses for the `CRT_colorScheme`
+/// global. Written by [`Row_setPidColumnWidth`].
+pub static Row_pidDigits: AtomicI32 = AtomicI32::new(ROW_MIN_PID_DIGITS);
+
+/// Port of the global `int Row_uidDigits = ROW_MIN_UID_DIGITS;`
+/// (`Row.c:33`). Mutable process-wide state; see [`Row_pidDigits`].
+/// Written by [`Row_setUidColumnWidth`].
+pub static Row_uidDigits: AtomicI32 = AtomicI32::new(ROW_MIN_UID_DIGITS);
 
 /// `static const char unitPrefixes[]` from `XUtils.h:160` — the
 /// unit-prefix letters `Row_printKBytes` indexes by magnitude. `XUtils.h`
@@ -268,44 +310,108 @@ pub fn Row_display() {
     todo!("port of Row.c:62")
 }
 
-/// TODO: port of `void Row_setPidColumnWidth(pid_t maxPid` from `Row.c:86`.
-pub fn Row_setPidColumnWidth() {
-    todo!("port of Row.c:86")
+/// Port of `void Row_setPidColumnWidth(pid_t maxPid)` from `Row.c:86`.
+/// Sets [`Row_pidDigits`] from the largest PID seen: the minimum when
+/// `maxPid` still fits in `ROW_MIN_PID_DIGITS` digits, otherwise the exact
+/// digit count.
+///
+/// Signature mapping: `pid_t` → `i32` (the port's PID type, per
+/// `machine.rs`'s `maxProcessId: i32`). The C `(int)pow(10,
+/// ROW_MIN_PID_DIGITS)` is the compile-time constant `10^5 == 100000`,
+/// computed with integer `pow` here (no float round-trip needed).
+/// `countDigits((size_t)maxPid, 10)` reuses the ported [`countDigits`];
+/// the cast is safe because this branch is only reached when
+/// `maxPid >= 100000 > 0`. The C `assert` becomes a `debug_assert!`.
+pub fn Row_setPidColumnWidth(maxPid: i32) {
+    if maxPid < 10_i32.pow(ROW_MIN_PID_DIGITS as u32) {
+        Row_pidDigits.store(ROW_MIN_PID_DIGITS, Ordering::Relaxed);
+        return;
+    }
+
+    let digits = countDigits(maxPid as usize, 10) as i32;
+    Row_pidDigits.store(digits, Ordering::Relaxed);
+    debug_assert!(digits <= ROW_MAX_PID_DIGITS);
 }
 
-/// TODO: port of `void Row_setUidColumnWidth(uid_t maxUid` from `Row.c:96`.
-pub fn Row_setUidColumnWidth() {
-    todo!("port of Row.c:96")
+/// Port of `void Row_setUidColumnWidth(uid_t maxUid)` from `Row.c:96`.
+/// Sets [`Row_uidDigits`] from the largest UID seen; mirrors
+/// [`Row_setPidColumnWidth`].
+///
+/// Signature mapping: `uid_t` → `u32` (the port's UID type, per
+/// `process.rs`'s `st_uid: u32`). The C `(uid_t)pow(10,
+/// ROW_MIN_UID_DIGITS)` is the constant `10^5 == 100000`. `maxUid` is
+/// unsigned, so no sign concern on the `usize` cast.
+pub fn Row_setUidColumnWidth(maxUid: u32) {
+    if maxUid < 10_u32.pow(ROW_MIN_UID_DIGITS as u32) {
+        Row_uidDigits.store(ROW_MIN_UID_DIGITS, Ordering::Relaxed);
+        return;
+    }
+
+    let digits = countDigits(maxUid as usize, 10) as i32;
+    Row_uidDigits.store(digits, Ordering::Relaxed);
+    debug_assert!(digits <= ROW_MAX_UID_DIGITS);
 }
 
-/// TODO: port of `void Row_resetFieldWidths(void` from `Row.c:108`.
+/// TODO: port of `void Row_resetFieldWidths(void)` from `Row.c:108`.
+/// Not portable yet: iterates the platform `Process_fields[]` table
+/// (reading `.autoWidth` / `.title`) to seed the `Row_fieldWidths[]`
+/// global. `Process_fields` is not ported (no `ProcessFieldData` table in
+/// `process.rs`), and `Row_fieldWidths` is sized `LAST_RESERVED_FIELD` —
+/// a platform constant (`Process.h:229` aliases it as `LAST_PROCESSFIELD`)
+/// not modeled in the port. Stays a stub until both exist.
 pub fn Row_resetFieldWidths() {
-    todo!("port of Row.c:108")
+    todo!("port of Row.c:108 — needs Process_fields table + LAST_RESERVED_FIELD")
 }
 
-/// TODO: port of `void Row_updateFieldWidth(RowField key, size_t width` from `Row.c:119`.
+/// TODO: port of `void Row_updateFieldWidth(RowField key, size_t width)`
+/// from `Row.c:119`. The body is self-contained (index + grow the
+/// `Row_fieldWidths[]` global), but that global is `uint8_t
+/// Row_fieldWidths[LAST_RESERVED_FIELD]` — a platform-sized array not
+/// modeled in the port (`LAST_RESERVED_FIELD` is unknown without the
+/// platform `ProcessField.h`). Stays a stub until that constant is
+/// ported.
 pub fn Row_updateFieldWidth() {
-    todo!("port of Row.c:119")
+    todo!("port of Row.c:119 — needs Row_fieldWidths[LAST_RESERVED_FIELD] global")
 }
 
-/// TODO: port of `static const char* alignedTitleDynamicColumn(const Settings* settings, int key, char* titleBuffer, size_t titleBufferSize` from `Row.c:127`.
+/// TODO: port of `static const char* alignedTitleDynamicColumn(const
+/// Settings* settings, int key, char* titleBuffer, size_t
+/// titleBufferSize)` from `Row.c:127`. Not portable yet: looks up
+/// `settings->dynamicColumns` (a `Hashtable`) via `Hashtable_get` and
+/// reads `column->width` / `column->heading`. `Settings` (`settings.rs`)
+/// carries no `dynamicColumns` field, `Hashtable_get` is unported, and
+/// `dynamiccolumn.rs`'s `DynamicColumn` has no `width`/`heading` fields
+/// nor the `DYNAMIC_{MAX,DEFAULT}_COLUMN_WIDTH` constants. Stays a stub.
 pub fn alignedTitleDynamicColumn() {
-    todo!("port of Row.c:127")
+    todo!("port of Row.c:127 — needs Settings.dynamicColumns + Hashtable_get + DynamicColumn")
 }
 
-/// TODO: port of `static const char* alignedTitleProcessField(ProcessField field, char* titleBuffer, size_t titleBufferSize` from `Row.c:141`.
+/// TODO: port of `static const char* alignedTitleProcessField(ProcessField
+/// field, char* titleBuffer, size_t titleBufferSize)` from `Row.c:141`.
+/// Not portable yet: reads `Process_fields[field]` (`.title`,
+/// `.pidColumn`, `.autoWidth`, `.autoTitleRightAlign`) and the
+/// `Row_fieldWidths[]` global. `Process_fields` is not ported. Stays a
+/// stub until the `ProcessFieldData` table exists.
 pub fn alignedTitleProcessField() {
-    todo!("port of Row.c:141")
+    todo!("port of Row.c:141 — needs Process_fields table")
 }
 
-/// TODO: port of `const char* RowField_alignedTitle(const Settings* settings, RowField field` from `Row.c:168`.
+/// TODO: port of `const char* RowField_alignedTitle(const Settings*
+/// settings, RowField field)` from `Row.c:168`. Dispatches to
+/// [`alignedTitleProcessField`] (blocked on `Process_fields`) or
+/// [`alignedTitleDynamicColumn`] (blocked on `Settings.dynamicColumns` /
+/// `Hashtable_get`); blocked transitively on both helpers.
 pub fn RowField_alignedTitle() {
-    todo!("port of Row.c:168")
+    todo!("port of Row.c:168 — needs alignedTitleProcessField/alignedTitleDynamicColumn")
 }
 
-/// TODO: port of `RowField RowField_keyAt(const Settings* settings, int at` from `Row.c:179`.
+/// TODO: port of `RowField RowField_keyAt(const Settings* settings, int
+/// at)` from `Row.c:179`. Walks `settings->ss->fields` measuring each
+/// column with [`RowField_alignedTitle`]. `Settings` (`settings.rs`) has
+/// no `ss`/`ScreenSettings` field, and `RowField_alignedTitle` is itself
+/// blocked. Stays a stub.
 pub fn RowField_keyAt() {
-    todo!("port of Row.c:179")
+    todo!("port of Row.c:179 — needs Settings.ss.fields + RowField_alignedTitle")
 }
 
 /// Port of `Row.c:193`.
@@ -1542,5 +1648,40 @@ mod tests {
         };
         // root's key = 0, child's key = 7 => root sorts first.
         assert_eq!(Row_compareByParent_Base(&root, &child), -1);
+    }
+
+    // ── Column-width setters (mutate the Row_*Digits globals) ──────────
+    // Each test drives one global only (pid vs uid are distinct atomics),
+    // exercising both branches sequentially so no cross-test race exists.
+
+    #[test]
+    fn set_pid_column_width_min_then_grows() {
+        // < 10^5 keeps the minimum; the exact digit count is used above it.
+        Row_setPidColumnWidth(0);
+        assert_eq!(Row_pidDigits.load(Ordering::Relaxed), ROW_MIN_PID_DIGITS);
+        Row_setPidColumnWidth(99999);
+        assert_eq!(Row_pidDigits.load(Ordering::Relaxed), ROW_MIN_PID_DIGITS);
+        // 100000 has 6 digits.
+        Row_setPidColumnWidth(100000);
+        assert_eq!(Row_pidDigits.load(Ordering::Relaxed), 6);
+        // 4194304 (a common pid_max) has 7 digits.
+        Row_setPidColumnWidth(4194304);
+        assert_eq!(Row_pidDigits.load(Ordering::Relaxed), 7);
+        // Reset the global so the module's steady state is the C default.
+        Row_setPidColumnWidth(0);
+        assert_eq!(Row_pidDigits.load(Ordering::Relaxed), ROW_MIN_PID_DIGITS);
+    }
+
+    #[test]
+    fn set_uid_column_width_min_then_grows() {
+        Row_setUidColumnWidth(0);
+        assert_eq!(Row_uidDigits.load(Ordering::Relaxed), ROW_MIN_UID_DIGITS);
+        Row_setUidColumnWidth(99999);
+        assert_eq!(Row_uidDigits.load(Ordering::Relaxed), ROW_MIN_UID_DIGITS);
+        // 4294967295 (uid_t max) has 10 digits, <= ROW_MAX_UID_DIGITS.
+        Row_setUidColumnWidth(u32::MAX);
+        assert_eq!(Row_uidDigits.load(Ordering::Relaxed), 10);
+        Row_setUidColumnWidth(0);
+        assert_eq!(Row_uidDigits.load(Ordering::Relaxed), ROW_MIN_UID_DIGITS);
     }
 }

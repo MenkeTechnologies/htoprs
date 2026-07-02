@@ -2,7 +2,52 @@
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
 //! `non_snake_case` is allowed for the whole module — matching the
-//! spec name-for-name is the point of the port.
+//! spec name-for-name is the point of the port. Each C function
+//! `Foo_bar(Meter* this, …)` ports to a free fn taking
+//! `this: &Meter` / `this: &mut Meter` (the same shape the `Vector.c`
+//! and `History.c` ports use: free fns, not methods).
+//!
+//! Ported (self-contained, no unported substrate):
+//! - `Meter_humanUnit` (`Meter.c:473`) — kibibytes → human-readable
+//!   string. Pure numeric formatting over `unitPrefixes`.
+//! - `Meter_computeSum` (`Meter.c:51`) — `static` in C; sums the live
+//!   positive values (`sumPositiveValues`) clamped to `DBL_MAX`.
+//! - `Meter_nextSupportedMode` (`Meter.c:556`) — pure bit operation over
+//!   the `supportedModes` bitset (`countTrailingZeros`).
+//!
+//! Stubbed (cannot be ported faithfully yet — all four are terminal
+//! rendering / class-vtable code whose substrate is not modeled):
+//! - `Meter_displayBuffer` (`Meter.c:44`) — `static inline` in C.
+//!   Dispatches on the `Object` display vtable (`Object_displayFn` /
+//!   `Object_display`) or, in the else branch, reads
+//!   `Meter_attributes(this)[0]` (the `MeterClass` vtable), `CRT_colors[]`
+//!   (the resolved active-scheme row — only `CRT_colorScheme` /
+//!   `CRT_colorSchemes` are ported, not an indexable `CRT_colors`), and
+//!   `this->txtBuffer`. The `Meter` model here is a data-only partial
+//!   struct with no class vtable and no `txtBuffer`, so neither branch
+//!   can be written.
+//! - `TextMeterMode_draw` (`Meter.c:62`) — `static` in C. Terminal cursor
+//!   drawing (`attrset` / `mvaddnstr` against the global curses screen —
+//!   not reachable from this module) plus `Meter_getCaption` (vtable),
+//!   `Meter_displayBuffer` (itself stubbed), and `RichString_printoffnVal`
+//!   (absent from `richstring.rs`).
+//! - `BarMeterMode_draw` (`Meter.c:90`) — `static` in C. Same terminal
+//!   layer (`attrset` / `mvaddch` / `move`) plus `Meter_getCaption` /
+//!   `Meter_isPercentChart` / `Meter_attributes` (vtable), the unmodeled
+//!   `Meter` fields `total` / `txtBuffer` / `curAttributes`,
+//!   `RichString_printoffnVal` (absent), and `CRT_colorScheme` /
+//!   `CRT_colors[]`. The bar glyphs are `BarMeterMode_characters =
+//!   "|#*@$%&."` (`Meter.c:87`), `'|'` outside `COLORSCHEME_MONOCHROME`.
+//! - `Meter_setMode` (`Meter.c:525`) — assigns C draw function pointers
+//!   (`this->draw = mode->draw`), reads the `MeterClass` vtable
+//!   (`Meter_updateModeFn` / `Meter_drawFn`), calls `Meter_updateMode`,
+//!   resets the `GraphData drawData` buffer, and indexes the
+//!   `Meter_modes[]` draw-fn/height table (`Meter.c:416`). None of that
+//!   substrate — vtable dispatch, the `draw`/`h`/`drawData` `Meter`
+//!   fields, `GraphData`, the `Meter_modes` fn-pointer table — is modeled
+//!   here; only `supportedModes` is. Sibling meter modules
+//!   (`tasksmeter.rs`, `gpumeter.rs`, `cpumeter.rs`) leave their
+//!   draw/display functions stubbed for the same reason.
 #![allow(non_snake_case)]
 
 /// IEC unit prefixes. Port of `unitPrefixes` from `XUtils.h:160`

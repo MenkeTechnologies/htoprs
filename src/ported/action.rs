@@ -8,25 +8,88 @@
 //! handler drives a `Panel`/`ScreenManager`, mutates a `Settings`/
 //! `Machine`/`Table`, calls ncurses (`clear`, `attrset`, `refresh`,
 //! `beep`, `napms`), spawns child screens (lsof/strace/env/command),
-//! or issues syscalls (`getpwnam`, signals). None of that substrate is
-//! ported, so those handlers stay as their exact `todo!()` stubs.
+//! or issues syscalls (`getpwnam`, signals). Most of that substrate is
+//! unported or unreachable from the minimal `State` model, so those
+//! handlers stay as their exact `todo!()` stubs.
 //!
-//! What *is* faithfully portable in safe Rust:
+//! # Ported (self-contained in safe Rust)
+//!
 //! - The `Htop_Reaction` bit-flag set from `Action.h:21` (pure data).
 //! - `State`'s three `bool` fields (`Action.h:41`), which two toggle
-//!   handlers flip. `State` is modeled as a minimal plain struct
-//!   holding only those fields; the omitted members are the substrate
-//!   pointers `host` (`Machine*`), `mainPanel` (`MainPanel*`), `header`
+//!   handlers flip. `State` is modeled as a minimal plain struct holding
+//!   only those fields; the omitted members are the substrate pointers
+//!   `host` (`Machine*`), `mainPanel` (`MainPanel*`), `header`
 //!   (`Header*`) and `failedUpdate` (`const char*`), none of which the
 //!   ported handlers touch.
-//! - `actionQuit`, whose `State*` argument is `ATTR_UNUSED` — its full
+//! - `actionQuit` (`Action.c:454`) — `State*` is `ATTR_UNUSED`; the full
 //!   behavior is returning the `HTOP_QUIT` constant.
+//! - `actionToggleHideMeters` (`Action.c:300`) / `actionTogglePauseUpdate`
+//!   (`Action.c:703`) — flip one `State` bool and return a reaction.
+//! - `expandCollapse` (`Action.c:148`) / `collapseIntoParent`
+//!   (`Action.c:157`) — the two `static` tree helpers that take a bare
+//!   `Panel*` (not `State`). They mutate the selected/parent [`Row`]'s
+//!   `showChildren` via the ported [`Panel`]/[`Row`] substrate. The
+//!   ported `Panel_get`/`Panel_getSelected` yield only `&dyn Object`, so
+//!   the mutating analog indexes `panel.items` and downcasts to `&mut Row`
+//!   through the `Any` supertrait — the exact idiom `ColumnsPanel.c`'s
+//!   port uses (`columnspanel.rs`), and the safe-Rust analog of the C
+//!   `(Row*)` cast.
+//!
+//! # Stubbed (genuinely blocked; grouped by the missing substrate)
+//!
+//! - **ncurses / CRT drawing:** `actionHelp`, `addattrstr`, `actionRedraw`
+//!   (`clear()` is unported in `crt.rs`). No ported drawing primitives.
+//! - **`State` lacks `host`/`mainPanel`, and their `Settings`/`Machine`/
+//!   `Table` fields are unmodeled:** the sort handlers, screen-tab
+//!   switching (`setActiveScreen`/`actionNextScreen`/`actionPrevScreen`/
+//!   `Action_setScreenTab`), the display toggles (`actionToggle*`),
+//!   `actionInvertSortOrder`, `Action_writeableProcess`/`_readableProcess`,
+//!   and `Action_follow`. The fields they need (`dynamic`,
+//!   `hideKernelThreads`, `showProgramPath`, `lastUpdate`, `ssIndex`,
+//!   `nScreens`, `following`, `needsSort`, …) are not present in the
+//!   `Settings`/`Machine`/`ScreenSettings` already modeled by `settings.rs`
+//!   / `machine.rs`, and the reuse rule + edit-only-`action.rs` scope bar
+//!   adding them there.
+//! - **`Action_setSortKey` / `ScreenSettings_setSortKey`:** the latter is a
+//!   `todo!()` in `settings.rs` (needs the platform `Process_fields[]`
+//!   table), so `Action_setSortKey`, `actionSetSortColumn`, and the four
+//!   `actionSortBy*` handlers cannot call it.
+//! - **`Panel`/`ScreenManager`/`IncSet`/`MainPanel` glue:**
+//!   `Action_pickFromVector`, `Action_runSetup`/`actionSetup`,
+//!   `changePriority`/`actionHigherPriority`/`actionLowerPriority`,
+//!   `addUserToVector`/`actionFilterByUser`, `actionIncFilter`/
+//!   `actionIncSearch`, `actionTag`/`actionUntagAll`/`actionTagAllChildren`,
+//!   `actionExpandOrCollapse`/`actionCollapseIntoParent`/
+//!   `actionExpandCollapseOrSortColumn`/`actionExpandOrCollapseAllBranches`.
+//!   These reach `st->mainPanel`, which the minimal `State` does not model,
+//!   and several need mutable panel accessors the ported `Panel` API does
+//!   not expose.
+//! - **`tagAllChildren` (`Action.c:137`):** its `Row* parent` argument
+//!   aliases an element of the same `Panel` it then recursively walks and
+//!   mutates. That shared-mutable aliasing has no safe-Rust analog under
+//!   the C signature, so it stays a stub rather than deviate the signature.
+//! - **Syscalls without a libc dependency:** `Action_setUserOnly`
+//!   (`getpwnam`) and `actionKill` (signal delivery). The crate has no
+//!   `libc`/`nix` dependency and no FFI precedent, and adding one is out of
+//!   scope (Cargo.toml is off-limits).
+//! - **Child screens (each its own unported InfoScreen subclass):**
+//!   `actionLsof`, `actionStrace`, `actionShowLocks`, `actionShowEnvScreen`,
+//!   `actionShowCommandScreen`, `actionBacktrace`, `actionSetAffinity`,
+//!   `actionSetSchedPolicy`.
+//! - **`Action_setBindings` (`Action.c:969`):** builds a dispatch table of
+//!   `fn(&mut State) -> Htop_Reaction` pointers, which requires every
+//!   `actionXxx` to share that signature. Most are still stubs with the
+//!   scaffold `pub fn foo()` signature, so the table cannot be built yet.
 //!
 //! `gen_port_report.py` counts remaining `todo!()` bodies as *stubbed*,
 //! not *ported*, so the scaffold does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)] // `Htop_Reaction` mirrors the C type name verbatim
 #![allow(dead_code)]
+
+use crate::ported::object::Object;
+use crate::ported::panel::{Panel, Panel_setSelected, Panel_size};
+use crate::ported::row::{Row, Row_getGroupOrParent};
 
 /// Port of the `Htop_Reaction` enum from `Action.h:21`.
 ///
@@ -100,14 +163,73 @@ pub fn tagAllChildren() {
     todo!("port of Action.c:137")
 }
 
-/// TODO: port of `static bool expandCollapse(Panel* panel` from `Action.c:148`.
-pub fn expandCollapse() {
-    todo!("port of Action.c:148")
+/// Port of `static bool expandCollapse(Panel* panel)` from `Action.c:148`.
+/// Flips the selected row's `showChildren` flag and returns `true`;
+/// returns `false` when the panel is empty (the C `if (!row) return false`,
+/// since ported `Panel_getSelected` yields `NULL`/`None` only for an empty
+/// list). The C `(Row*) Panel_getSelected(panel)` casts the base
+/// `Object*`; the ported `Panel_getSelected` returns an immutable
+/// `&dyn Object`, so the mutating analog indexes `panel.items` at the
+/// selected position and downcasts to `&mut Row` through the `Any`
+/// supertrait (same idiom as `columnspanel.rs`).
+pub fn expandCollapse(panel: &mut Panel) -> bool {
+    if panel.items.is_empty() {
+        return false;
+    }
+
+    let idx = panel.selected as usize;
+    let obj: &mut dyn Object = panel.items[idx].as_mut();
+    let any: &mut dyn core::any::Any = obj;
+    let row = any
+        .downcast_mut::<Row>()
+        .expect("expandCollapse operates on the mainPanel, whose items are Rows");
+    row.showChildren = !row.showChildren;
+    true
 }
 
-/// TODO: port of `static bool collapseIntoParent(Panel* panel` from `Action.c:157`.
-pub fn collapseIntoParent() {
-    todo!("port of Action.c:157")
+/// Port of `static bool collapseIntoParent(Panel* panel)` from
+/// `Action.c:157`. Reads the selected row's group-or-parent id via
+/// [`Row_getGroupOrParent`], then scans the panel for the row whose `id`
+/// matches: on a hit it clears that row's `showChildren`, moves the
+/// selection there via [`Panel_setSelected`], and returns `true`;
+/// otherwise `false` (also `false` when the panel is empty — the C
+/// `if (!r) return false`). The two `(Row*)` casts become `Any`
+/// downcasts of `panel.items`; the read of the selected row (immutable)
+/// is scoped before the mutating scan so the borrows never overlap.
+pub fn collapseIntoParent(panel: &mut Panel) -> bool {
+    if panel.items.is_empty() {
+        return false;
+    }
+
+    let parent_id = {
+        let obj: &dyn Object = panel.items[panel.selected as usize].as_ref();
+        let any: &dyn core::any::Any = obj;
+        let r = any
+            .downcast_ref::<Row>()
+            .expect("collapseIntoParent operates on the mainPanel, whose items are Rows");
+        Row_getGroupOrParent(r)
+    };
+
+    let size = Panel_size(panel);
+    for i in 0..size {
+        let id = {
+            let obj: &dyn Object = panel.items[i as usize].as_ref();
+            let any: &dyn core::any::Any = obj;
+            any.downcast_ref::<Row>()
+                .expect("collapseIntoParent operates on the mainPanel, whose items are Rows")
+                .id
+        };
+        if id == parent_id {
+            let obj: &mut dyn Object = panel.items[i as usize].as_mut();
+            let any: &mut dyn core::any::Any = obj;
+            any.downcast_mut::<Row>()
+                .expect("collapseIntoParent operates on the mainPanel, whose items are Rows")
+                .showChildren = false;
+            Panel_setSelected(panel, i);
+            return true;
+        }
+    }
+    false
 }
 
 /// TODO: port of `Htop_Reaction Action_setSortKey(Settings* settings, ProcessField sortKey` from `Action.c:174`.
@@ -370,6 +492,94 @@ pub fn Action_setBindings() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ported::panel::{Panel_add, Panel_get, Panel_getSelectedIndex, Panel_new};
+
+    /// A `Row` with the given `id`/`group`/`parent`, all else defaulted.
+    /// Mirrors the fields `expandCollapse`/`collapseIntoParent` read.
+    fn row(id: i32, group: i32, parent: i32) -> Row {
+        Row {
+            id,
+            group,
+            parent,
+            ..Row::default()
+        }
+    }
+
+    /// Read a panel item's `showChildren` via the ported `Panel_get`
+    /// (`&dyn Object`) upcast to `&dyn Any` (the proven `object.rs`
+    /// coercion) then downcast to `Row`.
+    fn show_children_at(p: &Panel, i: i32) -> bool {
+        let obj: &dyn Object = Panel_get(p, i);
+        let any: &dyn core::any::Any = obj;
+        any.downcast_ref::<Row>().unwrap().showChildren
+    }
+
+    /// `expandCollapse` flips the selected row's `showChildren` and
+    /// returns `true` (`Action.c:148-155`).
+    #[test]
+    fn expand_collapse_toggles_selected_show_children() {
+        let mut p = Panel_new(0, 0, 0, 0, None);
+        Panel_add(&mut p, Box::new(row(1, 1, 0)));
+        Panel_add(&mut p, Box::new(row(2, 2, 0)));
+        Panel_setSelected(&mut p, 1); // select the second row
+
+        // showChildren starts false (Row::default); first call sets it true.
+        assert!(expandCollapse(&mut p));
+        assert!(show_children_at(&p, 1));
+        // The unselected row is untouched.
+        assert!(!show_children_at(&p, 0));
+
+        // Second call flips it back to false.
+        assert!(expandCollapse(&mut p));
+        assert!(!show_children_at(&p, 1));
+    }
+
+    /// `expandCollapse` on an empty panel returns `false` (the C
+    /// `if (!row) return false`).
+    #[test]
+    fn expand_collapse_empty_panel_returns_false() {
+        let mut p = Panel_new(0, 0, 0, 0, None);
+        assert!(!expandCollapse(&mut p));
+    }
+
+    /// `collapseIntoParent` finds the selected row's parent, clears its
+    /// `showChildren`, moves the selection there, and returns `true`
+    /// (`Action.c:157-172`).
+    #[test]
+    fn collapse_into_parent_finds_parent_and_moves_selection() {
+        let mut p = Panel_new(0, 0, 0, 0, None);
+        // Parent (id 10, its own group => getGroupOrParent yields parent 0),
+        // then a child whose group points at 10.
+        let mut parent = row(10, 10, 0);
+        parent.showChildren = true;
+        Panel_add(&mut p, Box::new(parent)); // index 0
+        Panel_add(&mut p, Box::new(row(11, 10, 10))); // index 1: child of 10
+        Panel_setSelected(&mut p, 1); // select the child
+
+        assert!(collapseIntoParent(&mut p));
+        // Selection moved to the parent (index 0) and its children collapsed.
+        assert_eq!(Panel_getSelectedIndex(&p), 0);
+        assert!(!show_children_at(&p, 0));
+    }
+
+    /// `collapseIntoParent` returns `false` when no row matches the
+    /// group-or-parent id (the C loop falls through).
+    #[test]
+    fn collapse_into_parent_no_match_returns_false() {
+        let mut p = Panel_new(0, 0, 0, 0, None);
+        // Selected row's group (99) matches no row's id in the panel.
+        Panel_add(&mut p, Box::new(row(1, 99, 0)));
+        Panel_add(&mut p, Box::new(row(2, 2, 0)));
+        Panel_setSelected(&mut p, 0);
+        assert!(!collapseIntoParent(&mut p));
+    }
+
+    /// `collapseIntoParent` on an empty panel returns `false`.
+    #[test]
+    fn collapse_into_parent_empty_panel_returns_false() {
+        let mut p = Panel_new(0, 0, 0, 0, None);
+        assert!(!collapseIntoParent(&mut p));
+    }
 
     /// Pins the `Htop_Reaction` composite values from `Action.h:24-30`.
     /// These composites are OR-of-other-members, so a wrong base value

@@ -6,17 +6,25 @@
 //!
 //! # What is ported
 //!
-//! The pure state layer, which depends only on already-ported substrate
-//! ([`FunctionBar`]/`FunctionBar_new`, [`LineEditor`] init/reset/setText,
-//! [`Panel_get`], `String_contains_i`, `crt::{ERR, KEY_F}`):
+//! The state layer plus the pure match core, which now depend only on
+//! already-ported substrate ([`FunctionBar`]/`FunctionBar_new`/
+//! `FunctionBar_draw`, [`LineEditor`] init/reset/setText/`getText`,
+//! [`Panel_get`]/`Panel_size`/`Panel_setSelected`/`Panel_getSelectedIndex`/
+//! `Panel_setDefaultBar`, [`History`], `String_contains_i`, `crt::{ERR, KEY_F}`):
 //!
 //! - the `IncType` enum and the [`IncMode`]/[`IncSet`] structs,
 //! - [`IncMode_reset`], [`IncSet_reset`], [`IncSet_setFilter`],
 //! - [`IncMode_initSearch`] / [`IncMode_initFilter`] (the exact
 //!   function-bar label/key/event tables) and [`IncSet_new`],
+//! - [`IncSet_setHistoryFile`], [`IncSet_saveHistory`],
 //! - [`IncSet_getListItemValue`] — the concrete `IncMode_GetPanelValue`
 //!   callback (downcasts each `Panel` item to [`ListItem`] and returns its
-//!   `value`, `""` for a non-`ListItem`, exactly like the C ternary).
+//!   `value`, `""` for a non-`ListItem`, exactly like the C ternary),
+//! - the match core: [`search`] (`:124`) and [`IncMode_find`] (`:154`),
+//!   now that `LineEditor_getText` reads the active editor text,
+//! - [`IncSet_deactivate`] (`:147`) — `Panel_setDefaultBar` + hide cursor +
+//!   `FunctionBar_draw`, all ported,
+//! - [`IncSet_filter`] (`IncSet.h:40`) — the filter-text accessor.
 //!
 //! # What stays a `todo!()` stub, and why
 //!
@@ -24,27 +32,28 @@
 //! the port rules the missing piece is escalated, never papered over with
 //! an ad-hoc reimplementation:
 //!
-//! - `LineEditor_getText` (`LineEditor.h:37`, `return this->buffer`) has
-//!   **no** Rust analog in `lineeditor.rs` and the `LineEditor` fields are
-//!   module-private, so the editor's current text cannot be read from this
-//!   module. This blocks the entire match core: [`search`] (`:124`),
-//!   [`IncMode_find`] (`:154`), [`updateWeakPanel`] (`:96`), and
-//!   [`IncSet_filter`] (`IncSet.h:40`).
-//! - `LineEditor_handleKey` (`lineeditor.rs:205`, itself a `todo!()`) is
-//!   the char/backspace edit path; together with the `getText` gap it
-//!   blocks [`IncSet_handleKey`] (`:177`).
-//! - `Panel_setDefaultBar` (`Panel.c`) is not ported in `panel.rs`, and the
-//!   terminal side-effects (`FunctionBar_draw`) block [`IncSet_deactivate`]
-//!   (`:147`).
-//! - `IncSet_drawBar` (`:302`) is ncurses drawing (`FunctionBar_drawExtra`,
-//!   `LineEditor_draw`/`LineEditor_updateScroll`, `curs_set`, `COLS`/`LINES`);
-//!   `LineEditor_draw` is also an unported stub. [`IncSet_activate`]
-//!   (`:136`) ends in `IncSet_drawBar` and stores a `Panel*` back-pointer
-//!   the Rust model omits, so it is stubbed too.
+//! - `LineEditor_draw` (`lineeditor.rs`, still a `todo!()` ncurses blit)
+//!   blocks [`IncSet_drawBar`] (`:302`), which also writes
+//!   `this->panel->cursorY`/`cursorX` through the omitted `Panel*`
+//!   back-pointer. [`IncSet_activate`] (`:136`) ends in `IncSet_drawBar`
+//!   and stores that same `this->panel = panel` back-pointer, so it is
+//!   stubbed too.
 //! - [`IncSet_synthesizeEvent`] (`:327`) writes `this->panel->lastMouseBarClickX`
 //!   through the omitted `Panel*` back-pointer.
-//! - `History` (`History.c`) is not ported: [`IncSet_delete`] (`:77`),
-//!   [`IncSet_setHistoryFile`] (`:85`), [`IncSet_saveHistory`] (`:91`).
+//! - [`IncSet_handleKey`] (`:177`) drives ported line-editor/`search`/
+//!   `IncMode_find`/`IncSet_deactivate` code, but also calls the three
+//!   stubs above plus `History_navigate` (`history.rs`, still `todo!()` —
+//!   the KEY_UP/KEY_DOWN arms), `LineEditor_click` (`lineeditor.rs`, still
+//!   `todo!()` — the KEY_MOUSE_BAR_CLICK arm), and [`updateWeakPanel`], so
+//!   the whole body cannot be assembled without gutting behavior.
+//! - [`updateWeakPanel`] (`:96`) takes a `Vector* lines`; `vector.rs` ports
+//!   only the sort core (no `Vector` container), and htop's "weak panel"
+//!   shares one `Object*` between `lines` and `panel` while `Panel_add`
+//!   takes an owned, non-`Clone` `Box<dyn Object>` — the shared-pointer
+//!   model has no analog.
+//! - [`IncSet_delete`] (`:77`) is a pure teardown chain; the owned
+//!   `FunctionBar`s and `Option<History>` are released by `Drop` (and
+//!   `History_delete` is itself a `Drop` no-op), so there is no algorithm.
 //! - [`IncMode_done`] (`:61`) is `FunctionBar_delete(mode->bar)` — the
 //!   owned [`FunctionBar`] is released by `Drop`, so there is no algorithm
 //!   to port (same as `FunctionBar_delete`/`Panel_done`).
@@ -62,11 +71,16 @@
 #![allow(dead_code)]
 
 use crate::ported::crt::{ERR, KEY_F};
-use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
+use crate::ported::functionbar::{FunctionBar, FunctionBar_draw, FunctionBar_new};
 use crate::ported::history::{History, History_new, History_save};
-use crate::ported::lineeditor::{LineEditor, LineEditor_init, LineEditor_reset, LineEditor_setText};
+use crate::ported::lineeditor::{
+    LineEditor, LineEditor_getText, LineEditor_init, LineEditor_reset, LineEditor_setText,
+};
 use crate::ported::listitem::ListItem;
-use crate::ported::panel::{Panel, Panel_get};
+use crate::ported::panel::{
+    Panel, Panel_get, Panel_getSelectedIndex, Panel_setDefaultBar, Panel_setSelected, Panel_size,
+};
+use crate::ported::xutils::String_contains_i;
 
 /// Port of `enum` `IncType` from `IncSet.h:19`. The discriminants (0/1)
 /// are load-bearing: they index `IncSet::modes`.
@@ -207,10 +221,11 @@ pub fn IncSet_new(bar: Option<FunctionBar>) -> IncSet {
 }
 
 /// TODO: port of `IncSet.c:77`. `IncMode_done` x2 + `History_delete` +
-/// `free` — the owned fields are released by `Drop`, and `History` is not
-/// ported.
+/// `free` — a pure teardown chain. Every owned field (the two `FunctionBar`s,
+/// the `Option<History>`) is released by `Drop`, and `History_delete` itself
+/// is a `Drop` no-op in `history.rs`, so there is no algorithm to port.
 pub fn IncSet_delete() {
-    todo!("port of IncSet.c:77 — Drop releases owned fields; History.c unported")
+    todo!("port of IncSet.c:77 — Drop releases owned fields (FunctionBars + History)")
 }
 
 /// Port of `IncSet.c:85`. Replaces the history with one loaded from
@@ -233,56 +248,113 @@ pub fn IncSet_saveHistory(this: &IncSet) {
 
 /// TODO: port of `IncSet.c:96`. Rebuilds `panel` from the backing `lines`,
 /// keeping only items whose value matches the filter via `String_contains_i`.
-/// Blocked on `LineEditor_getText` (`LineEditor.h:37`, unported — needed to
-/// read the filter text) and the unported `Vector` type (the `lines` source).
+/// Blocked on two things: the `lines` parameter is a `Vector*` and
+/// `vector.rs` ports only the sort core (no `Vector` container / `Vector_get`
+/// / `Vector_size`); and htop's "weak panel" shares the same `Object*` between
+/// `lines` and `panel`, whereas `Panel_add` takes an *owned* `Box<dyn Object>`
+/// (not `Clone`), so items cannot be shared/duplicated from `lines` into the
+/// panel. (`LineEditor_getText` is now available, so the filter text itself is
+/// no longer a blocker.)
 fn updateWeakPanel() {
-    todo!("port of IncSet.c:96 — needs LineEditor_getText (unported) + Vector (unported)")
+    todo!("port of IncSet.c:96 — needs Vector container (unported) + weak-panel shared Object* model")
 }
 
-/// TODO: port of `IncSet.c:124`. Walks the panel front-to-back and selects
-/// the first item whose `getPanelValue` matches the active editor text via
-/// `String_contains_i`. Blocked on `LineEditor_getText` (`LineEditor.h:37`)
-/// which is not ported in `lineeditor.rs` (the editor's text cannot be read
-/// from this module).
-fn search(_this: &mut IncSet, _panel: &mut Panel, _getPanelValue: IncMode_GetPanelValue) -> bool {
-    todo!("port of IncSet.c:124 — needs LineEditor_getText (LineEditor.h:37), unported")
+/// Port of `IncSet.c:124`. Walks the panel front-to-back and selects the
+/// first item whose `getPanelValue` matches the active editor text via
+/// `String_contains_i`. The C `this->active->editor` (a pointer into
+/// `modes[]`) resolves through `active: Option<IncType>` — the mode is
+/// non-`None` whenever `search` runs (the caller only searches with an
+/// active mode), so `unwrap()` reproduces the C non-NULL dereference.
+fn search(this: &mut IncSet, panel: &mut Panel, getPanelValue: IncMode_GetPanelValue) -> bool {
+    let active = this.active.unwrap();
+    let size = Panel_size(panel);
+    for i in 0..size {
+        if String_contains_i(
+            getPanelValue(&*panel, i),
+            LineEditor_getText(&this.modes[active as usize].editor),
+            true,
+        ) {
+            Panel_setSelected(panel, i);
+            return true;
+        }
+    }
+
+    false
 }
 
 /// TODO: port of `IncSet.c:136`. Activates a mode (sets `active`,
 /// `panel->currentBar`, `cursorOn`, the `panel` back-pointer, resets history
 /// position) and ends in `IncSet_drawBar`. Blocked on the omitted `Panel*`
-/// back-pointer, `IncSet_drawBar` (ncurses), and `History_resetPosition`.
+/// back-pointer (`this->panel = panel`, which the Rust model drops) and on
+/// [`IncSet_drawBar`] being an unported stub (see its blockers). `History`
+/// and `History_resetPosition` are now ported, so those are no longer the gap.
 pub fn IncSet_activate() {
-    todo!("port of IncSet.c:136 — needs IncSet_drawBar (ncurses) + Panel back-pointer + History")
+    todo!("port of IncSet.c:136 — needs IncSet_drawBar (stub) + the omitted Panel back-pointer")
 }
 
-/// TODO: port of `IncSet.c:147`. Clears `active`, restores the default bar
-/// (`Panel_setDefaultBar`), hides the cursor, and redraws. Blocked on
-/// `Panel_setDefaultBar` (not ported in `panel.rs`) and `FunctionBar_draw`
-/// (ncurses side-effect).
-fn IncSet_deactivate() {
-    todo!("port of IncSet.c:147 — needs Panel_setDefaultBar (unported) + ncurses draw")
+/// Port of `IncSet.c:147`. Clears `active` (`this->active = NULL` → `None`),
+/// restores the panel's default bar (`Panel_setDefaultBar`), hides the
+/// cursor, and redraws the default bar. C dereferences `this->defaultBar`
+/// unconditionally; the `Option<FunctionBar>` model draws it when present.
+fn IncSet_deactivate(this: &mut IncSet, panel: &mut Panel) {
+    this.active = None;
+    Panel_setDefaultBar(panel);
+    panel.cursorOn = false;
+    if let Some(bar) = &this.defaultBar {
+        FunctionBar_draw(bar);
+    }
 }
 
-/// TODO: port of `IncSet.c:154`. Steps through the panel (wrapping) from the
-/// current selection looking for the next/prev `String_contains_i` match.
-/// Blocked on `LineEditor_getText` (`LineEditor.h:37`), unported.
+/// Port of `IncSet.c:154`. Steps through the panel (wrapping at both ends)
+/// from the current selection looking for the next/prev `String_contains_i`
+/// match; returns to `here` after a full loop with no match. The C
+/// `for (;;)` becomes `loop {}`; every index stays `i32` so the `i == -1`
+/// wrap check is faithful.
 fn IncMode_find(
-    _mode: &mut IncMode,
-    _panel: &mut Panel,
-    _getPanelValue: IncMode_GetPanelValue,
-    _step: i32,
+    mode: &mut IncMode,
+    panel: &mut Panel,
+    getPanelValue: IncMode_GetPanelValue,
+    step: i32,
 ) -> bool {
-    todo!("port of IncSet.c:154 — needs LineEditor_getText (LineEditor.h:37), unported")
+    let size = Panel_size(panel);
+    let here = Panel_getSelectedIndex(panel);
+    let mut i = here;
+    loop {
+        i += step;
+        if i == size {
+            i = 0;
+        }
+        if i == -1 {
+            i = size - 1;
+        }
+        if i == here {
+            return false;
+        }
+
+        if String_contains_i(
+            getPanelValue(&*panel, i),
+            LineEditor_getText(&mode.editor),
+            true,
+        ) {
+            Panel_setSelected(panel, i);
+            return true;
+        }
+    }
 }
 
 /// TODO: port of `IncSet.c:177`. The key dispatcher (F3/next-prev, history
-/// up/down, Enter/Esc confirm-abort, and the line-editor char/backspace
-/// path). Blocked on `LineEditor_getText` (`LineEditor.h:37`) and
-/// `LineEditor_handleKey` (`lineeditor.rs:205`, itself a stub), plus
-/// `History`, `IncSet_drawBar`, and `Panel_setDefaultBar`.
+/// up/down, Enter/Esc confirm-abort, mouse bar-click, and the line-editor
+/// char/backspace path). The line-editor primitives it drives are now ported
+/// (`LineEditor_getText`, `LineEditor_handleKey`), and so are `search` /
+/// `IncMode_find` / `IncSet_deactivate` above, but the whole body still cannot
+/// be assembled because it also calls: [`IncSet_drawBar`] (a stub — see its
+/// blockers), `History_navigate` (`history.rs`, still a `todo!()` — the
+/// KEY_UP/KEY_DOWN arms), `LineEditor_click` (`lineeditor.rs`, still a
+/// `todo!()` — the KEY_MOUSE_BAR_CLICK arm), and [`updateWeakPanel`] (Vector /
+/// weak-panel model). Porting a subset that skips those arms would gut
+/// behavior, so it stays a whole honest stub.
 pub fn IncSet_handleKey() {
-    todo!("port of IncSet.c:177 — needs LineEditor_getText + LineEditor_handleKey (both unported)")
+    todo!("port of IncSet.c:177 — needs IncSet_drawBar + History_navigate + LineEditor_click + updateWeakPanel (all stubs)")
 }
 
 /// Port of `IncSet.c:297`. The concrete `IncMode_GetPanelValue`: downcast the
@@ -299,11 +371,12 @@ pub fn IncSet_getListItemValue(panel: &Panel, i: i32) -> &str {
 }
 
 /// TODO: port of `IncSet.c:302`. Draws the active mode's function bar and
-/// line editor. Pure ncurses (`FunctionBar_drawExtra`, `LineEditor_updateScroll`,
-/// `LineEditor_draw`, `curs_set`, `COLS`/`LINES`); `LineEditor_draw` is also
-/// an unported stub.
+/// line editor. `FunctionBar_drawExtra` and `LineEditor_updateScroll` are now
+/// ported, but this still cannot: it calls `LineEditor_draw` (`lineeditor.rs`,
+/// still a `todo!()` ncurses blit) and writes `this->panel->cursorY`/`cursorX`
+/// through the omitted `Panel*` back-pointer, neither of which exists here.
 pub fn IncSet_drawBar() {
-    todo!("port of IncSet.c:302 — ncurses draw; LineEditor_draw also unported")
+    todo!("port of IncSet.c:302 — needs LineEditor_draw (stub) + the omitted Panel back-pointer")
 }
 
 /// TODO: port of `IncSet.c:327`. Turns a bar x-coordinate into a synthesized
@@ -313,11 +386,17 @@ pub fn IncSet_synthesizeEvent() {
     todo!("port of IncSet.c:327 — needs the omitted Panel back-pointer")
 }
 
-/// TODO: port of `IncSet.h:40` (`static inline IncSet_filter`). Returns the
-/// filter text when `filtering`, else `NULL`. Blocked on `LineEditor_getText`
-/// (`LineEditor.h:37`), unported in `lineeditor.rs`.
-pub fn IncSet_filter() {
-    todo!("port of IncSet.h:40 — needs LineEditor_getText (LineEditor.h:37), unported")
+/// Port of `IncSet.h:40` (`static inline IncSet_filter`). Returns the filter
+/// text when `filtering`, else `NULL` (`None`). The C `char*` into the
+/// filter mode's editor buffer becomes an `&str` borrowing `this`.
+pub fn IncSet_filter(this: &IncSet) -> Option<&str> {
+    if this.filtering {
+        Some(LineEditor_getText(
+            &this.modes[IncType::INC_FILTER as usize].editor,
+        ))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -458,5 +537,150 @@ mod tests {
             .filter(|&i| String_contains_i(IncSet_getListItemValue(&p, i), needle, true))
             .collect();
         assert_eq!(hits, vec![1, 3]);
+    }
+
+    // ── search (IncSet.c:124) ─────────────────────────────────────────
+
+    /// Build a panel with the given item values.
+    fn panel_of(values: &[&str]) -> Panel {
+        let mut p = Panel_new(0, 0, 10, 10, None);
+        for v in values {
+            p.items.push(li(v));
+        }
+        p
+    }
+
+    #[test]
+    fn search_selects_first_forward_match() {
+        let mut set = IncSet_new(None);
+        set.active = Some(IncType::INC_SEARCH);
+        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "sh");
+        // "systemd" has no "sh"; "bash" and "sshd" do -> first match is idx 1.
+        let mut p = panel_of(&["systemd", "bash", "sshd"]);
+        assert!(search(&mut set, &mut p, IncSet_getListItemValue));
+        assert_eq!(p.selected, 1);
+    }
+
+    #[test]
+    fn search_no_match_returns_false_and_keeps_selection() {
+        let mut set = IncSet_new(None);
+        set.active = Some(IncType::INC_SEARCH);
+        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "zzz");
+        let mut p = panel_of(&["systemd", "bash", "sshd"]);
+        p.selected = 2;
+        assert!(!search(&mut set, &mut p, IncSet_getListItemValue));
+        assert_eq!(p.selected, 2); // unchanged on no match
+    }
+
+    // ── IncMode_find (IncSet.c:154) ───────────────────────────────────
+
+    #[test]
+    fn find_forward_advances_to_next_match() {
+        let mut set = IncSet_new(None);
+        // Every item contains "sh".
+        let mut p = panel_of(&["bash", "zsh", "fish", "dash"]);
+        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "sh");
+        p.selected = 0; // on "bash"
+        assert!(IncMode_find(
+            &mut set.modes[IncType::INC_SEARCH as usize],
+            &mut p,
+            IncSet_getListItemValue,
+            1,
+        ));
+        assert_eq!(p.selected, 1); // "zsh"
+    }
+
+    #[test]
+    fn find_forward_wraps_past_end() {
+        let mut set = IncSet_new(None);
+        let mut p = panel_of(&["bash", "zsh", "fish", "dash"]);
+        // Only "fish" contains the needle "fish".
+        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "fish");
+        p.selected = 3; // on "dash": +1 wraps to 0, scans forward to idx 2
+        assert!(IncMode_find(
+            &mut set.modes[IncType::INC_SEARCH as usize],
+            &mut p,
+            IncSet_getListItemValue,
+            1,
+        ));
+        assert_eq!(p.selected, 2);
+    }
+
+    #[test]
+    fn find_backward_steps_to_prev_match() {
+        let mut set = IncSet_new(None);
+        let mut p = panel_of(&["bash", "zsh", "fish", "dash"]);
+        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "sh");
+        p.selected = 2; // on "fish"; step -1 -> "zsh"
+        assert!(IncMode_find(
+            &mut set.modes[IncType::INC_SEARCH as usize],
+            &mut p,
+            IncSet_getListItemValue,
+            -1,
+        ));
+        assert_eq!(p.selected, 1);
+    }
+
+    #[test]
+    fn find_no_match_full_loop_returns_false() {
+        let mut set = IncSet_new(None);
+        let mut p = panel_of(&["bash", "zsh", "fish", "dash"]);
+        LineEditor_setText(&mut set.modes[IncType::INC_SEARCH as usize].editor, "nomatch");
+        p.selected = 1;
+        assert!(!IncMode_find(
+            &mut set.modes[IncType::INC_SEARCH as usize],
+            &mut p,
+            IncSet_getListItemValue,
+            1,
+        ));
+        assert_eq!(p.selected, 1); // returns to `here`, selection untouched
+    }
+
+    // ── IncSet_deactivate (IncSet.c:147) ──────────────────────────────
+
+    #[test]
+    fn deactivate_clears_active_restores_bar_and_hides_cursor() {
+        let default_bar = FunctionBar {
+            functions: vec!["DEFAULT".into()],
+            keys: vec!["F1".into()],
+            events: vec![1],
+            staticData: false,
+        };
+        let mut set = IncSet_new(Some(default_bar));
+        set.active = Some(IncType::INC_SEARCH);
+        let panel_bar = FunctionBar {
+            functions: vec!["DEF".into()],
+            keys: vec!["F1".into()],
+            events: vec![1],
+            staticData: false,
+        };
+        let mut p = Panel_new(0, 0, 10, 10, Some(panel_bar));
+        p.cursorOn = true;
+        // Emulate an active search: currentBar swapped to the search bar.
+        p.currentBar = Some(set.modes[IncType::INC_SEARCH as usize].bar.clone());
+
+        IncSet_deactivate(&mut set, &mut p);
+        assert!(set.active.is_none());
+        assert!(!p.cursorOn);
+        // Panel_setDefaultBar restored currentBar from the panel's defaultBar.
+        assert_eq!(
+            p.currentBar.as_ref().unwrap().functions,
+            vec!["DEF".to_string()]
+        );
+    }
+
+    // ── IncSet_filter (IncSet.h:40) ───────────────────────────────────
+
+    #[test]
+    fn filter_returns_text_only_when_filtering() {
+        let mut set = IncSet_new(None);
+        // Not filtering -> None (C NULL).
+        assert!(IncSet_filter(&set).is_none());
+        // Filtering with text -> the filter mode's editor text.
+        IncSet_setFilter(&mut set, "bash");
+        assert_eq!(IncSet_filter(&set), Some("bash"));
+        // Empty filter clears `filtering` -> None again.
+        IncSet_setFilter(&mut set, "");
+        assert!(IncSet_filter(&set).is_none());
     }
 }

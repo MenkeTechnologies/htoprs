@@ -4,39 +4,69 @@
 //! C names are preserved verbatim (`Affinity_add`, …), so
 //! `non_snake_case` is allowed for the whole module.
 //!
-//! Only the pure data-structure operation `Affinity_add` is ported. The
-//! rest of the file is intentionally left as stubs:
+//! Ported (self-contained, no unported substrate):
+//! - `Affinity_new` (`Affinity.c:32`) — constructor: `size = 8`,
+//!   `used = 0`, an 8-slot `cpus` buffer, and the borrowed `host`. C heap
+//!   allocates and returns a pointer; the faithful analog returns an owned
+//!   `Affinity` by value (the same idiom `History_new` uses). `Machine` is
+//!   now modeled, so `host` is stored as a raw `*mut Machine` borrowed
+//!   pointer — the `Arg` `void* v` precedent (`Object.c`): keeping a raw
+//!   pointer needs no `unsafe`; only dereferencing it would.
+//! - `Affinity_add` (`Affinity.c:45`) — append, doubling capacity when
+//!   the array is full.
 //!
-//! * `Affinity_new` (`Affinity.c:32`) takes a `Machine* host` and stores
-//!   it on the struct; `Machine` is not modeled yet, so the constructor
-//!   is stubbed. Tests build the struct literal directly, mirroring the
-//!   `size = 8` initial allocation the C constructor performs.
-//! * `Affinity_delete` (`Affinity.c:40`) is a `free(this->cpus); free(this)`
+//! Stubbed (cannot be ported faithfully yet):
+//! - `Affinity_delete` (`Affinity.c:40`) is a `free(this->cpus); free(this)`
 //!   heap-teardown with no faithful safe-Rust analog — Rust owns the
-//!   allocation and drops it automatically (`Vec` + `Drop`). Left stubbed.
-//! * `Affinity_get`, `Affinity_set`, `Affinity_rowGet`, `Affinity_rowSet`
-//!   call `sched_getaffinity`/`sched_setaffinity` (or hwloc) and cast
-//!   `Row`/`Process` pointers. Those touch platform syscalls and types
-//!   not yet ported, so they remain stubs.
+//!   `cpus` allocation and drops it automatically (`Vec` + `Drop`); `host`
+//!   is a borrowed pointer that C's `free` does not touch either. Left
+//!   stubbed, matching the `History_delete` precedent.
+//! - `Affinity_get` (`Affinity.c:56`/`90`) calls `sched_getaffinity`
+//!   (`HAVE_AFFINITY`) or `hwloc_get_proc_cpubind` (`HAVE_LIBHWLOC`). Both
+//!   need a raw-syscall/FFI layer (`libc`/`nix`); the crate depends on
+//!   neither, and `sched_getaffinity` is Linux-only. Blocked on the
+//!   platform affinity syscall layer. `Process_getPid` and
+//!   `Machine::existingCPUs` are modeled, but the syscall itself is not
+//!   reachable.
+//! - `Affinity_set` (`Affinity.c:77`/`105`) — `sched_setaffinity` /
+//!   `hwloc_set_proc_cpubind`. Same syscall blocker as `Affinity_get`.
+//! - `Affinity_rowGet` (`Affinity.c:126`) casts `Row*`→`Process*`, asserts
+//!   `Object_isA(&Process_class)`, and delegates to `Affinity_get`.
+//!   Blocked transitively on `Affinity_get`.
+//! - `Affinity_rowSet` (`Affinity.c:120`) casts `Row*`→`Process*`, asserts,
+//!   and delegates to `Affinity_set`. Blocked transitively on
+//!   `Affinity_set`.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use crate::ported::machine::Machine;
+
 /// A growable set of CPU ids. Faithful to `struct Affinity_` in
-/// `Affinity.h:26` (the `Machine* host` field is omitted — `Machine` is
-/// not modeled and the fns that use it are stubbed). `size` is the
-/// capacity in slots, `used` the number of filled slots, and `cpus` the
-/// backing array (length always equals `size`, matching the C heap
-/// buffer sized `sizeof(unsigned int) * size`).
+/// `Affinity.h:26`. `host` is the borrowed `Machine*` (raw pointer — the
+/// `Arg` `void* v` precedent; never dereferenced by ported code), `size`
+/// is the capacity in slots, `used` the number of filled slots, and
+/// `cpus` the backing array (length always equals `size`, matching the C
+/// heap buffer sized `sizeof(unsigned int) * size`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Affinity {
+    pub host: *mut Machine,
     pub size: u32,
     pub used: u32,
     pub cpus: Vec<u32>,
 }
 
-/// TODO: port of `Affinity* Affinity_new(Machine* host` from `Affinity.c:32`.
-pub fn Affinity_new() {
-    todo!("port of Affinity.c:32")
+/// Port of `Affinity* Affinity_new(Machine* host)` from `Affinity.c:32`.
+/// C `xCalloc`s the struct (so `used == 0`), sets `size = 8`, allocates
+/// an 8-slot `cpus` buffer, and stores the borrowed `host`. The C heap
+/// pointer is modeled as an owned value returned by move (same idiom as
+/// `History_new`); the zero-initialized `cpus` matches `xCalloc`.
+pub fn Affinity_new(host: *mut Machine) -> Affinity {
+    Affinity {
+        host,
+        size: 8,
+        used: 0,
+        cpus: vec![0; 8],
+    }
 }
 
 /// TODO: port of `void Affinity_delete(Affinity* this` from `Affinity.c:40`.
@@ -85,12 +115,19 @@ mod tests {
 
     /// Build the initial state `Affinity_new` (`Affinity.c:32-37`)
     /// produces: `size = 8`, `used = 0`, `cpus` a `size`-length buffer.
+    /// A null `host` stands in for the borrowed `Machine*` — ported code
+    /// never dereferences it.
     fn fresh() -> Affinity {
-        Affinity {
-            size: 8,
-            used: 0,
-            cpus: vec![0; 8],
-        }
+        Affinity_new(core::ptr::null_mut())
+    }
+
+    #[test]
+    fn affinity_new_initial_state() {
+        let a = fresh();
+        assert_eq!(a.size, 8);
+        assert_eq!(a.used, 0);
+        assert_eq!(a.cpus, vec![0; 8]);
+        assert!(a.host.is_null());
     }
 
     #[test]

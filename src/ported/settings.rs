@@ -1,26 +1,46 @@
 //! Partial port of `Settings.c` — htop's config-file settings layer.
 //!
-//! Most of `Settings.c` is I/O and substrate: `Settings_read`/`_write`
-//! do `open`/`fstat`/`mkstemp`/`rename` syscalls, `Settings_new` reads
-//! the environment and calls `Platform_*`, and the field helpers
-//! (`toFieldName`/`toFieldIndex`/`ScreenSettings_readFields`,
-//! `ScreenSettings_setSortKey`) index the platform `Process_fields[]`
-//! table and the `DynamicColumn` `Hashtable`. `writeFields`/`Settings_write`
-//! sit on top of those. None of that substrate has a faithful safe-Rust
-//! analog here, so those functions are left as their exact `todo!()`
-//! stubs.
-//!
-//! The functions ported below are the ones whose *full* behavior is
-//! reproducible in safe Rust without that substrate:
+//! Ported (full behavior reproducible in safe Rust with the substrate
+//! that exists today):
 //!
 //! * `Settings_splitLineToIDs` — pure string work over the ported `XUtils`.
 //! * The meter readers `Settings_readMeters` / `Settings_readMeterModes`
 //!   and `Settings_validateMeters` — string + `HeaderLayout` only.
+//! * `Settings_defaultMeters` — builds the default two-column meter
+//!   layout from `Machine.activeCPUs` (ported in `machine.rs`) and the
+//!   `BAR_METERMODE`/`TEXT_METERMODE` constants (ported in `meter.rs`);
+//!   touches only `hLayout`/`hColumns`.
 //! * `Settings_setHeaderLayout` — resizes the `hColumns` array.
 //! * The meter writers `writeList` / `writeMeters` / `writeMeterModes` —
 //!   string building into a buffer (the C `OutputFunc`/`FILE*` sink is
 //!   modeled as a `&mut String`, since the config text is identical).
 //! * `ScreenSettings_invertSortOrder` and the `readonly` latch pair.
+//!
+//! Stubbed (cannot be ported faithfully yet — the specific blocker is
+//! named on each stub below):
+//!
+//! * The field-name/index family `toFieldName` / `toFieldIndex` /
+//!   `ScreenSettings_readFields` / `ScreenSettings_setSortKey` and the
+//!   `writeFields` writer all index the platform `Process_fields[]`
+//!   `ProcessFieldData` table (its `.name`/`.flags`/`.defaultSortDesc`)
+//!   and `LAST_PROCESSFIELD`/`ROW_DYNAMIC_FIELDS`/`RowField`, none of
+//!   which is ported (`process.rs` has the `ProcessField` enum but not
+//!   the data table), plus `DynamicColumn_lookup`/`DynamicColumn_search`
+//!   which are still `todo!()` stubs in `dynamiccolumn.rs`.
+//! * The screen constructors `Settings_newScreen` /
+//!   `Settings_newDynamicScreen` / `Settings_initScreenSettings` /
+//!   `Settings_defaultScreens` sit on top of that field family plus the
+//!   full `ScreenSettings`/`screens[]` array model and `Platform_*`
+//!   (`Platform_defaultScreens`, `Platform_addDynamicScreen`).
+//! * `Settings_read` / `Settings_write` / `Settings_new` /
+//!   `signal_safe_fprintf` are the file-I/O layer (`open`/`fstat`/
+//!   `mkstemp`/`rename`/`realpath`, env reads, `Platform_*`) sitting on
+//!   top of the above.
+//! * The heap-free `Settings_deleteColumns` / `Settings_deleteScreens` /
+//!   `Settings_delete` / `ScreenSettings_delete` free the owned arrays and
+//!   the struct; `Settings`/`ScreenSettings`/`MeterColumnSetting` own
+//!   their fields, so `Drop` frees them and there is no faithful body to
+//!   port (same call as `History_delete` in `history.rs`).
 //!
 //! `HeaderLayout` and `HeaderLayout_getColumns` are ports of the pure
 //! `HeaderLayout.h` `static inline` helpers, inlined here because the
@@ -33,6 +53,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::ported::machine::Machine;
+use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
 use crate::ported::xutils::{String_split, String_trim};
 
 /// Port of `MeterMode.h:20` — `typedef unsigned int MeterModeId`.
@@ -214,26 +236,116 @@ pub fn Settings_validateMeters(this: &Settings) -> bool {
     anyMeter
 }
 
-/// TODO: port of `static void Settings_deleteColumns(Settings* this` from `Settings.c:35`.
+/// TODO: port of `static void Settings_deleteColumns(Settings* this` from
+/// `Settings.c:35`. Heap-free only (frees each column's `names` array +
+/// `modes`, then the `hColumns` array); `MeterColumnSetting` owns its
+/// `Vec`s, so `Drop` frees them and there is no faithful body to port.
+/// Left as a stub.
 pub fn Settings_deleteColumns() {
     todo!("port of Settings.c:35")
 }
 
-/// TODO: port of `static void Settings_deleteScreens(Settings* this` from `Settings.c:43`.
+/// TODO: port of `static void Settings_deleteScreens(Settings* this` from
+/// `Settings.c:43`. Heap-free only (`ScreenSettings_delete` each screen,
+/// then free the `screens` array); the owned screen model frees via
+/// `Drop`, so there is no faithful body to port. Left as a stub.
 pub fn Settings_deleteScreens() {
     todo!("port of Settings.c:43")
 }
 
-/// TODO: port of `void Settings_delete(Settings* this` from `Settings.c:51`.
+/// TODO: port of `void Settings_delete(Settings* this` from
+/// `Settings.c:51`. Heap-free only (frees `filename`/`initialFilename`,
+/// the columns, the screens, and the struct); `Settings` owns its fields
+/// and frees them via `Drop`, so there is no faithful body to port. Left
+/// as a stub (same call as `History_delete`).
 pub fn Settings_delete() {
     todo!("port of Settings.c:51")
 }
 
-/// TODO: port of `static void Settings_defaultMeters(Settings* this, const Machine* host` from `Settings.c:120`.
-/// Needs the `Machine` substrate (`host->activeCPUs`) and the `xStrdup`
-/// heap wrappers — left stubbed.
-pub fn Settings_defaultMeters() {
-    todo!("port of Settings.c:120")
+/// Port of `Settings.c:120`. Installs the built-in two-column
+/// (`HF_TWO_50_50`) header meter layout scaled to the host's CPU count:
+/// column 0 is always `<CPU-variant> Memory Swap` (all `BAR`), column 1
+/// is `[<RightCPUs>] Tasks LoadAverage Uptime` (`Tasks`/`LoadAverage`/
+/// `Uptime` are `TEXT`). The CPU meter name is chosen by `activeCPUs`
+/// exactly as the C if/else chain: `>128` a single averaged `CPU`,
+/// `>32/>16/>8/>4` the `Left/RightCPUs{8,4,2,}` split pair, else a single
+/// `AllCPUs`. The right column gains the extra `RightCPUs*` slot only for
+/// `4 < activeCPUs <= 128`, matching the C `sizes[1]++` guard.
+///
+/// The C first calls `Settings_deleteColumns` to release the previous
+/// `hColumns`; here reassigning `this.hColumns` drops the old columns via
+/// `Drop`. The C `char** names` NUL-terminator slot is not modeled — the
+/// `Vec<String>` carries exactly `len` names. `xStrdup` becomes
+/// `String::to_string`.
+pub fn Settings_defaultMeters(this: &mut Settings, host: &Machine) {
+    let initialCpuCount = host.activeCPUs;
+    let mut sizes: [usize; 2] = [3, 3];
+
+    if initialCpuCount > 4 && initialCpuCount <= 128 {
+        sizes[1] += 1;
+    }
+
+    // Release any previously allocated memory (C `Settings_deleteColumns`);
+    // reassigning `this.hColumns` below drops the old columns via `Drop`.
+
+    this.hLayout = HeaderLayout::HF_TWO_50_50;
+
+    let mut names0: Vec<String> = Vec::new();
+    let mut modes0: Vec<MeterModeId> = Vec::new();
+    let mut names1: Vec<String> = Vec::new();
+    let mut modes1: Vec<MeterModeId> = Vec::new();
+
+    if initialCpuCount > 128 {
+        // Just show the average, ricers need to config for impressive screenshots
+        names0.push("CPU".to_string());
+        modes0.push(BAR_METERMODE);
+    } else if initialCpuCount > 32 {
+        names0.push("LeftCPUs8".to_string());
+        modes0.push(BAR_METERMODE);
+        names1.push("RightCPUs8".to_string());
+        modes1.push(BAR_METERMODE);
+    } else if initialCpuCount > 16 {
+        names0.push("LeftCPUs4".to_string());
+        modes0.push(BAR_METERMODE);
+        names1.push("RightCPUs4".to_string());
+        modes1.push(BAR_METERMODE);
+    } else if initialCpuCount > 8 {
+        names0.push("LeftCPUs2".to_string());
+        modes0.push(BAR_METERMODE);
+        names1.push("RightCPUs2".to_string());
+        modes1.push(BAR_METERMODE);
+    } else if initialCpuCount > 4 {
+        names0.push("LeftCPUs".to_string());
+        modes0.push(BAR_METERMODE);
+        names1.push("RightCPUs".to_string());
+        modes1.push(BAR_METERMODE);
+    } else {
+        names0.push("AllCPUs".to_string());
+        modes0.push(BAR_METERMODE);
+    }
+    names0.push("Memory".to_string());
+    modes0.push(BAR_METERMODE);
+    names0.push("Swap".to_string());
+    modes0.push(BAR_METERMODE);
+    names1.push("Tasks".to_string());
+    modes1.push(TEXT_METERMODE);
+    names1.push("LoadAverage".to_string());
+    modes1.push(TEXT_METERMODE);
+    names1.push("Uptime".to_string());
+    modes1.push(TEXT_METERMODE);
+
+    this.hColumns = vec![
+        MeterColumnSetting {
+            len: sizes[0],
+            names: Some(names0),
+            modes: Some(modes0),
+        },
+        MeterColumnSetting {
+            len: sizes[1],
+            names: Some(names1),
+            modes: Some(modes1),
+        },
+    ];
 }
 
 /// TODO: port of `static const char* toFieldName(Hashtable* columns, int id, bool* enabled` from `Settings.c:181`.
@@ -251,37 +363,58 @@ pub fn toFieldIndex() {
 }
 
 /// TODO: port of `static void ScreenSettings_readFields(ScreenSettings* ss, Hashtable* columns, const char* line` from `Settings.c:230`.
-/// Needs `toFieldIndex` and `Process_fields[id].flags` — left stubbed.
+/// Needs `toFieldIndex` (still stubbed) plus the platform
+/// `Process_fields[id].flags` table and `LAST_PROCESSFIELD`, neither
+/// ported — left stubbed.
 pub fn ScreenSettings_readFields() {
     todo!("port of Settings.c:230")
 }
 
 /// TODO: port of `static ScreenSettings* Settings_initScreenSettings(ScreenSettings* ss, Settings* this, const char* columns` from `Settings.c:254`.
+/// Calls the stubbed `ScreenSettings_readFields` and manages the full
+/// `screens[]` array, which is not modeled in this minimal `Settings` —
+/// left stubbed.
 pub fn Settings_initScreenSettings() {
     todo!("port of Settings.c:254")
 }
 
 /// TODO: port of `ScreenSettings* Settings_newScreen(Settings* this, const ScreenDefaults* defaults` from `Settings.c:263`.
+/// Needs `toFieldIndex`, `Process_fields[sortKey].defaultSortDesc`, the
+/// full `ScreenSettings`/`screens[]` model, and `Settings_initScreenSettings`
+/// — all stubbed/unported. Left stubbed.
 pub fn Settings_newScreen() {
     todo!("port of Settings.c:263")
 }
 
 /// TODO: port of `ScreenSettings* Settings_newDynamicScreen(Settings* this, const char* tab, const DynamicScreen* screen, Table* table` from `Settings.c:286`.
+/// Needs `toFieldIndex`, the `DynamicScreen`/`Table` substrate, and the
+/// `screens[]` model — left stubbed.
 pub fn Settings_newDynamicScreen() {
     todo!("port of Settings.c:286")
 }
 
-/// TODO: port of `void ScreenSettings_delete(ScreenSettings* this` from `Settings.c:302`.
+/// TODO: port of `void ScreenSettings_delete(ScreenSettings* this` from
+/// `Settings.c:302`. Heap-free only (frees `heading`/`dynamic`/`fields`
+/// and the struct); the owned `ScreenSettings` model frees via `Drop`, so
+/// there is no faithful body to port. Left as a stub.
 pub fn ScreenSettings_delete() {
     todo!("port of Settings.c:302")
 }
 
 /// TODO: port of `static ScreenSettings* Settings_defaultScreens(Settings* this` from `Settings.c:309`.
+/// Needs `Platform_numberOfDefaultScreens`/`Platform_defaultScreens`/
+/// `Platform_defaultDynamicScreens` and the stubbed `Settings_newScreen`
+/// — left stubbed.
 pub fn Settings_defaultScreens() {
     todo!("port of Settings.c:309")
 }
 
 /// TODO: port of `static bool Settings_read(Settings* this, const char* fileName, const Machine* host, bool checkWritability` from `Settings.c:320`.
+/// The config-file reader: `open`/`fstat` writability probe, line
+/// parsing, then dispatch into `ScreenSettings_readFields` /
+/// `Settings_newScreen` / `toFieldIndex` (all stubbed) and the full
+/// `Settings` field set (display toggles, screens) not modeled here.
+/// Left stubbed.
 pub fn Settings_read() {
     todo!("port of Settings.c:320")
 }
@@ -346,6 +479,10 @@ pub fn writeMeterModes(this: &Settings, out: &mut String, separator: char, colum
 }
 
 /// TODO: port of `static int signal_safe_fprintf(FILE* stream, const char* fmt, ...` from `Settings.c:632`.
+/// The signal-safe `vsnprintf` + `full_write_str(fileno(stream), buf)`
+/// crash-path writer. The ported meter/field writers model their sink as
+/// a `&mut String`, not a `FILE*`/fd; there is no fd-write substrate to
+/// port this against. Left stubbed.
 pub fn signal_safe_fprintf() {
     todo!("port of Settings.c:632")
 }
@@ -359,6 +496,11 @@ pub fn Settings_write() {
 }
 
 /// TODO: port of `Settings* Settings_new(const Machine* host, Hashtable* dynamicMeters, Hashtable* dynamicColumns, Hashtable* dynamicScreens` from `Settings.c:794`.
+/// The top-level constructor: reads `HTOPRC`/`HOME`/`XDG_CONFIG_HOME`
+/// from the environment, `mkdir`s the config dir, `realpath`s the
+/// filename, then drives `Settings_read`/`Settings_defaultScreens`/
+/// `Settings_write` (all stubbed) over the full `Settings` field set not
+/// modeled here. Left stubbed.
 pub fn Settings_new() {
     todo!("port of Settings.c:794")
 }
@@ -500,6 +642,115 @@ mod tests {
         Settings_readMeterModes(&mut s, "", 0);
         assert_eq!(s.hColumns[0].len, 0);
         assert!(s.hColumns[0].modes.is_none());
+    }
+
+    /// Build a `Machine` whose only meaningful field for
+    /// `Settings_defaultMeters` is `activeCPUs`.
+    fn host_with_cpus(activeCPUs: u32) -> Machine {
+        Machine {
+            activeCPUs,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_meters_small_cpu_uses_allcpus_three_and_three() {
+        // activeCPUs <= 4: single AllCPUs meter, no RightCPUs, both
+        // columns len 3.
+        let mut s = two_column_settings();
+        Settings_defaultMeters(&mut s, &host_with_cpus(4));
+
+        assert_eq!(s.hLayout, HeaderLayout::HF_TWO_50_50);
+        assert_eq!(s.hColumns.len(), 2);
+        assert_eq!(s.hColumns[0].len, 3);
+        assert_eq!(s.hColumns[1].len, 3);
+        assert_eq!(
+            s.hColumns[0].names.as_deref().unwrap(),
+            ["AllCPUs", "Memory", "Swap"]
+        );
+        assert_eq!(
+            s.hColumns[0].modes.as_deref().unwrap(),
+            [BAR_METERMODE, BAR_METERMODE, BAR_METERMODE]
+        );
+        assert_eq!(
+            s.hColumns[1].names.as_deref().unwrap(),
+            ["Tasks", "LoadAverage", "Uptime"]
+        );
+        assert_eq!(
+            s.hColumns[1].modes.as_deref().unwrap(),
+            [TEXT_METERMODE, TEXT_METERMODE, TEXT_METERMODE]
+        );
+        // The resulting layout must satisfy the validator.
+        assert!(Settings_validateMeters(&s));
+    }
+
+    #[test]
+    fn default_meters_midrange_cpu_adds_right_cpus_split() {
+        // 4 < activeCPUs <= 8: Left/RightCPUs pair, right column len 4.
+        let mut s = two_column_settings();
+        Settings_defaultMeters(&mut s, &host_with_cpus(6));
+
+        assert_eq!(s.hColumns[0].len, 3);
+        assert_eq!(s.hColumns[1].len, 4);
+        assert_eq!(
+            s.hColumns[0].names.as_deref().unwrap(),
+            ["LeftCPUs", "Memory", "Swap"]
+        );
+        assert_eq!(
+            s.hColumns[1].names.as_deref().unwrap(),
+            ["RightCPUs", "Tasks", "LoadAverage", "Uptime"]
+        );
+        assert_eq!(
+            s.hColumns[1].modes.as_deref().unwrap(),
+            [BAR_METERMODE, TEXT_METERMODE, TEXT_METERMODE, TEXT_METERMODE]
+        );
+        assert!(Settings_validateMeters(&s));
+    }
+
+    #[test]
+    fn default_meters_cpu_bucket_names_track_thresholds() {
+        // Each threshold selects a distinct Left/RightCPUs variant.
+        for (cpus, left, right) in [
+            (9u32, "LeftCPUs2", "RightCPUs2"),
+            (17, "LeftCPUs4", "RightCPUs4"),
+            (33, "LeftCPUs8", "RightCPUs8"),
+        ] {
+            let mut s = two_column_settings();
+            Settings_defaultMeters(&mut s, &host_with_cpus(cpus));
+            assert_eq!(s.hColumns[0].names.as_deref().unwrap()[0], left);
+            assert_eq!(s.hColumns[1].names.as_deref().unwrap()[0], right);
+            assert_eq!(s.hColumns[1].len, 4);
+        }
+    }
+
+    #[test]
+    fn default_meters_huge_cpu_shows_single_averaged_cpu() {
+        // activeCPUs > 128: single averaged "CPU", no RightCPUs, len 3/3.
+        let mut s = two_column_settings();
+        Settings_defaultMeters(&mut s, &host_with_cpus(256));
+
+        assert_eq!(s.hColumns[0].len, 3);
+        assert_eq!(s.hColumns[1].len, 3);
+        assert_eq!(s.hColumns[0].names.as_deref().unwrap()[0], "CPU");
+        assert_eq!(
+            s.hColumns[1].names.as_deref().unwrap(),
+            ["Tasks", "LoadAverage", "Uptime"]
+        );
+        assert!(Settings_validateMeters(&s));
+    }
+
+    #[test]
+    fn default_meters_replaces_prior_columns() {
+        // Prior custom columns are dropped and replaced by the defaults.
+        let mut s = two_column_settings();
+        Settings_readMeters(&mut s, "Custom1 Custom2", 0);
+        Settings_readMeterModes(&mut s, "1 1", 0);
+        Settings_defaultMeters(&mut s, &host_with_cpus(2));
+        assert_eq!(
+            s.hColumns[0].names.as_deref().unwrap(),
+            ["AllCPUs", "Memory", "Swap"]
+        );
+        assert_eq!(s.hColumns[0].len, 3);
     }
 
     #[test]

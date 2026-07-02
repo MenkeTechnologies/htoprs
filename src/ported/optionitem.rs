@@ -19,14 +19,20 @@
 //! The label (C `OptionItem.super.text`) is modeled as a plain `text: String`
 //! field on each struct — pure data, no object substrate needed.
 //!
+//! Also ported: the direct-value constructors `TextItem_new`,
+//! `CheckItem_newByVal`, and `NumberItem_newByVal`. The C `AllocThis`/
+//! `xStrdup` + `Object`-super wiring becomes a struct literal plus an owned
+//! `text` copy (the vtable is supplied by `impl Object`), so these are
+//! faithful ports of the `ref == NULL` construction path — including
+//! `NumberItem_newByVal`'s `assert(min <= max)` and `CLAMP(value, min, max)`.
+//!
 //! Left as `todo!()` stubs (require unported substrate):
 //! - `OptionItem_delete` — frees through the `Object` cast; its safe-Rust
 //!   analog is `Drop`, so there is no free-fn to port.
-//! - `TextItem_new`, `CheckItem_newByRef`, `CheckItem_newByVal`,
-//!   `NumberItem_newByRef`, `NumberItem_newByVal` — allocate through
-//!   `AllocThis`/`xStrdup` and populate the `Object` super, which need the
-//!   object allocation substrate. Tests construct the structs directly via
-//!   their public fields instead.
+//! - `CheckItem_newByRef`, `NumberItem_newByRef` — the `*_newByRef`
+//!   constructors set `this->ref` to a non-NULL pointer into an external
+//!   cell. That pointer-indirection case is not modeled by these structs
+//!   (see the aliasing note below), so there is no faithful body to port.
 //!
 //! Pointer-indirection limitation: the C `CheckItem`/`NumberItem` can
 //! store either a direct value or a pointer to an external value
@@ -281,9 +287,34 @@ pub fn NumberItem_newByRef() {
     todo!("port of OptionItem.c:161")
 }
 
-/// TODO: port of `NumberItem* NumberItem_newByVal(const char* text, int value, int scale, int min, int max` from `OptionItem.c:178`.
-pub fn NumberItem_newByVal() {
-    todo!("port of OptionItem.c:178")
+/// Port of `NumberItem_newByVal` from `OptionItem.c:178`. Builds a
+/// direct-value `NumberItem`: C sets `ref = NULL` — the `ref == NULL` case
+/// this struct models — and clamps the initial value to `[min, max]`
+/// (C `CLAMP(value, min, max)`). The C `assert(min <= max)` precondition
+/// is preserved. `AllocThis(NumberItem)` + `xStrdup(text)` become the
+/// struct literal + an owned `text` copy; the edit-buffer fields are
+/// zero-initialized exactly as in C (`editing = false`, empty buffer,
+/// `savedValue = 0`).
+pub fn NumberItem_newByVal(text: &str, value: i32, scale: i32, min: i32, max: i32) -> NumberItem {
+    assert!(min <= max);
+    // CLAMP(value, min, max)
+    let value = if value > max {
+        max
+    } else if value < min {
+        min
+    } else {
+        value
+    };
+    NumberItem {
+        value,
+        scale,
+        min,
+        max,
+        editing: false,
+        editBuffer: String::new(),
+        savedValue: 0,
+        text: text.to_string(),
+    }
 }
 
 /// Port of `NumberItem_get` from `OptionItem.c:195`. Ports the direct
@@ -673,6 +704,27 @@ mod tests {
         let mut rs3 = RichString::new();
         Object::display(&n, &mut rs3);
         assert_eq!(rendered(&rs3), "[5]    N");
+    }
+
+    #[test]
+    fn number_item_new_by_val_clamps_initial_value() {
+        // value above max clamps down to max (C CLAMP)
+        let it = NumberItem_newByVal("Delay", 999, 0, 0, 50);
+        assert_eq!(it.value, 50);
+        assert_eq!(it.scale, 0);
+        assert_eq!(it.min, 0);
+        assert_eq!(it.max, 50);
+        assert!(!it.editing);
+        assert_eq!(it.savedValue, 0);
+        assert!(it.editBuffer.is_empty());
+        assert_eq!(it.text, "Delay");
+        // value below min clamps up to min
+        let lo = NumberItem_newByVal("N", -5, -2, 3, 100);
+        assert_eq!(lo.value, 3);
+        assert_eq!(lo.scale, -2);
+        // in-range value passes through
+        let mid = NumberItem_newByVal("M", 20, 0, 0, 50);
+        assert_eq!(mid.value, 20);
     }
 
     #[test]
