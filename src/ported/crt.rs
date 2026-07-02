@@ -298,7 +298,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_DEFAULT as usize][PROCESS_NEW as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_DEFAULT as usize][PROCESS_TOMB as usize] = ColorPair(Black, Red);
     t[COLORSCHEME_DEFAULT as usize][PROCESS_THREAD as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_DEFAULT as usize][PROCESS_THREAD_BASENAME as usize] = A_BOLD | ColorPair(Green, Black);
+    t[COLORSCHEME_DEFAULT as usize][PROCESS_THREAD_BASENAME as usize] =
+        A_BOLD | ColorPair(Green, Black);
     t[COLORSCHEME_DEFAULT as usize][PROCESS_COMM as usize] = ColorPair(Magenta, Black);
     t[COLORSCHEME_DEFAULT as usize][PROCESS_THREAD_COMM as usize] = A_BOLD | ColorPair(Blue, Black);
     t[COLORSCHEME_DEFAULT as usize][PROCESS_PRIV as usize] = ColorPair(Magenta, Black);
@@ -352,7 +353,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_DEFAULT as usize][SCREENS_CUR_BORDER as usize] = ColorPair(Green, Green);
     t[COLORSCHEME_DEFAULT as usize][SCREENS_CUR_TEXT as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_DEFAULT as usize][PRESSURE_STALL_THREEHUNDRED as usize] = ColorPair(Cyan, Black);
-    t[COLORSCHEME_DEFAULT as usize][PRESSURE_STALL_SIXTY as usize] = A_BOLD | ColorPair(Cyan, Black);
+    t[COLORSCHEME_DEFAULT as usize][PRESSURE_STALL_SIXTY as usize] =
+        A_BOLD | ColorPair(Cyan, Black);
     t[COLORSCHEME_DEFAULT as usize][PRESSURE_STALL_TEN as usize] = A_BOLD | ColorPair(White, Black);
     t[COLORSCHEME_DEFAULT as usize][FILE_DESCRIPTOR_USED as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_DEFAULT as usize][FILE_DESCRIPTOR_MAX as usize] = A_BOLD | ColorPair(Blue, Black);
@@ -497,7 +499,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKONWHITE as usize][PANEL_HEADER_FOCUS as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_BLACKONWHITE as usize][PANEL_HEADER_UNFOCUS as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_BLACKONWHITE as usize][PANEL_SELECTION_FOCUS as usize] = ColorPair(Black, Cyan);
-    t[COLORSCHEME_BLACKONWHITE as usize][PANEL_SELECTION_FOLLOW as usize] = ColorPair(Black, Yellow);
+    t[COLORSCHEME_BLACKONWHITE as usize][PANEL_SELECTION_FOLLOW as usize] =
+        ColorPair(Black, Yellow);
     t[COLORSCHEME_BLACKONWHITE as usize][PANEL_SELECTION_UNFOCUS as usize] = ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][FAILED_SEARCH as usize] = ColorPair(Red, Cyan);
     t[COLORSCHEME_BLACKONWHITE as usize][FAILED_READ as usize] = ColorPair(Red, White);
@@ -508,16 +511,20 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKONWHITE as usize][METER_SHADOW as usize] = ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][METER_TEXT as usize] = ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE as usize] = ColorPair(Black, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_ERROR as usize] = A_BOLD | ColorPair(Red, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_ERROR as usize] =
+        A_BOLD | ColorPair(Red, White);
     t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_IOREAD as usize] = ColorPair(Green, White);
     t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_IOWRITE as usize] = ColorPair(Yellow, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_NOTICE as usize] = A_BOLD | ColorPair(Yellow, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_NOTICE as usize] =
+        A_BOLD | ColorPair(Yellow, White);
     t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_OK as usize] = ColorPair(Green, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_WARN as usize] = A_BOLD | ColorPair(Yellow, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][METER_VALUE_WARN as usize] =
+        A_BOLD | ColorPair(Yellow, White);
     t[COLORSCHEME_BLACKONWHITE as usize][LED_COLOR as usize] = ColorPair(Green, White);
     t[COLORSCHEME_BLACKONWHITE as usize][TASKS_RUNNING as usize] = ColorPair(Green, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS as usize] = ColorPair(Black, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_SHADOW as usize] = A_BOLD | ColorPair(Black, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_SHADOW as usize] =
+        A_BOLD | ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_TAG as usize] = ColorPair(White, Blue);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_MEGABYTES as usize] = ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_GIGABYTES as usize] = ColorPair(Green, White);
@@ -530,7 +537,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_NEW as usize] = ColorPair(White, Green);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_TOMB as usize] = ColorPair(White, Red);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_THREAD as usize] = ColorPair(Blue, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_THREAD_BASENAME as usize] = A_BOLD | ColorPair(Blue, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_THREAD_BASENAME as usize] =
+        A_BOLD | ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_COMM as usize] = ColorPair(Magenta, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_THREAD_COMM as usize] = ColorPair(Green, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PROCESS_PRIV as usize] = ColorPair(Magenta, White);
@@ -538,7 +546,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKONWHITE as usize][BAR_SHADOW as usize] = ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][SWAP as usize] = ColorPair(Red, White);
     t[COLORSCHEME_BLACKONWHITE as usize][SWAP_CACHE as usize] = ColorPair(Yellow, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][SWAP_FRONTSWAP as usize] = A_BOLD | ColorPair(Black, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][SWAP_FRONTSWAP as usize] =
+        A_BOLD | ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][GRAPH_1 as usize] = A_BOLD | ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][GRAPH_2 as usize] = ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][MEMORY_1 as usize] = ColorPair(Green, White);
@@ -579,11 +588,14 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKONWHITE as usize][GPU_ENGINE_4 as usize] = ColorPair(Blue, White);
     t[COLORSCHEME_BLACKONWHITE as usize][GPU_RESIDUE as usize] = ColorPair(Magenta, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PANEL_EDIT as usize] = ColorPair(White, Blue);
-    t[COLORSCHEME_BLACKONWHITE as usize][SCREENS_OTH_BORDER as usize] = A_BOLD | ColorPair(Black, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][SCREENS_OTH_TEXT as usize] = A_BOLD | ColorPair(Black, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][SCREENS_OTH_BORDER as usize] =
+        A_BOLD | ColorPair(Black, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][SCREENS_OTH_TEXT as usize] =
+        A_BOLD | ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][SCREENS_CUR_BORDER as usize] = ColorPair(Green, Green);
     t[COLORSCHEME_BLACKONWHITE as usize][SCREENS_CUR_TEXT as usize] = ColorPair(Black, Green);
-    t[COLORSCHEME_BLACKONWHITE as usize][PRESSURE_STALL_THREEHUNDRED as usize] = ColorPair(Black, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][PRESSURE_STALL_THREEHUNDRED as usize] =
+        ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PRESSURE_STALL_SIXTY as usize] = ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][PRESSURE_STALL_TEN as usize] = ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][FILE_DESCRIPTOR_USED as usize] = ColorPair(Green, White);
@@ -598,7 +610,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKONWHITE as usize][ZRAM_COMPRESSED as usize] = ColorPair(Cyan, White);
     t[COLORSCHEME_BLACKONWHITE as usize][ZRAM_UNCOMPRESSED as usize] = ColorPair(Yellow, White);
     t[COLORSCHEME_BLACKONWHITE as usize][DYNAMIC_GRAY as usize] = ColorPair(Black, White);
-    t[COLORSCHEME_BLACKONWHITE as usize][DYNAMIC_DARKGRAY as usize] = A_BOLD | ColorPair(Black, White);
+    t[COLORSCHEME_BLACKONWHITE as usize][DYNAMIC_DARKGRAY as usize] =
+        A_BOLD | ColorPair(Black, White);
     t[COLORSCHEME_BLACKONWHITE as usize][DYNAMIC_RED as usize] = ColorPair(Red, White);
     t[COLORSCHEME_BLACKONWHITE as usize][DYNAMIC_GREEN as usize] = ColorPair(Green, White);
     t[COLORSCHEME_BLACKONWHITE as usize][DYNAMIC_BLUE as usize] = ColorPair(Blue, White);
@@ -613,8 +626,10 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_HEADER_FOCUS as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_HEADER_UNFOCUS as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_SELECTION_FOCUS as usize] = ColorPair(Black, Cyan);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_SELECTION_FOLLOW as usize] = ColorPair(Black, Yellow);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_SELECTION_UNFOCUS as usize] = ColorPair(Blue, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_SELECTION_FOLLOW as usize] =
+        ColorPair(Black, Yellow);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][PANEL_SELECTION_UNFOCUS as usize] =
+        ColorPair(Blue, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][FAILED_SEARCH as usize] = ColorPair(Red, Cyan);
     t[COLORSCHEME_LIGHTTERMINAL as usize][FAILED_READ as usize] = ColorPair(Red, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PAUSED as usize] = A_BOLD | ColorPair(Yellow, Cyan);
@@ -624,12 +639,15 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_LIGHTTERMINAL as usize][METER_SHADOW as usize] = A_BOLD | ColorPairGrayBlack;
     t[COLORSCHEME_LIGHTTERMINAL as usize][METER_TEXT as usize] = ColorPair(Blue, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE as usize] = ColorPair(Black, Black);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_ERROR as usize] = A_BOLD | ColorPair(Red, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_ERROR as usize] =
+        A_BOLD | ColorPair(Red, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_IOREAD as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_IOWRITE as usize] = ColorPair(Yellow, Black);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_NOTICE as usize] = A_BOLD | ColorPairWhiteDefault;
+    t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_NOTICE as usize] =
+        A_BOLD | ColorPairWhiteDefault;
     t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_OK as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_WARN as usize] = A_BOLD | ColorPair(Yellow, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][METER_VALUE_WARN as usize] =
+        A_BOLD | ColorPair(Yellow, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][LED_COLOR as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][TASKS_RUNNING as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS as usize] = ColorPair(Black, Black);
@@ -640,13 +658,15 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_BASENAME as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_TREE as usize] = ColorPair(Blue, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_RUN_STATE as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_D_STATE as usize] = A_BOLD | ColorPair(Red, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_D_STATE as usize] =
+        A_BOLD | ColorPair(Red, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_HIGH_PRIORITY as usize] = ColorPair(Red, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_LOW_PRIORITY as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_NEW as usize] = ColorPair(Black, Green);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_TOMB as usize] = ColorPair(Black, Red);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_THREAD as usize] = ColorPair(Blue, Black);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_THREAD_BASENAME as usize] = A_BOLD | ColorPair(Blue, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_THREAD_BASENAME as usize] =
+        A_BOLD | ColorPair(Blue, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_COMM as usize] = ColorPair(Magenta, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_THREAD_COMM as usize] = ColorPair(Yellow, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PROCESS_PRIV as usize] = ColorPair(Magenta, Black);
@@ -699,11 +719,13 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_LIGHTTERMINAL as usize][SCREENS_OTH_TEXT as usize] = ColorPair(Blue, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][SCREENS_CUR_BORDER as usize] = ColorPair(Green, Green);
     t[COLORSCHEME_LIGHTTERMINAL as usize][SCREENS_CUR_TEXT as usize] = ColorPair(Black, Green);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][PRESSURE_STALL_THREEHUNDRED as usize] = ColorPair(Black, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][PRESSURE_STALL_THREEHUNDRED as usize] =
+        ColorPair(Black, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PRESSURE_STALL_SIXTY as usize] = ColorPair(Black, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][PRESSURE_STALL_TEN as usize] = ColorPair(Black, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][FILE_DESCRIPTOR_USED as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_LIGHTTERMINAL as usize][FILE_DESCRIPTOR_MAX as usize] = A_BOLD | ColorPair(Blue, Black);
+    t[COLORSCHEME_LIGHTTERMINAL as usize][FILE_DESCRIPTOR_MAX as usize] =
+        A_BOLD | ColorPair(Blue, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][ZFS_MFU as usize] = ColorPair(Cyan, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][ZFS_MRU as usize] = ColorPair(Yellow, Black);
     t[COLORSCHEME_LIGHTTERMINAL as usize][ZFS_ANON as usize] = A_BOLD | ColorPair(Magenta, Black);
@@ -730,7 +752,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_MIDNIGHT as usize][PANEL_HEADER_UNFOCUS as usize] = ColorPair(Black, Cyan);
     t[COLORSCHEME_MIDNIGHT as usize][PANEL_SELECTION_FOCUS as usize] = ColorPair(Black, White);
     t[COLORSCHEME_MIDNIGHT as usize][PANEL_SELECTION_FOLLOW as usize] = ColorPair(Black, Yellow);
-    t[COLORSCHEME_MIDNIGHT as usize][PANEL_SELECTION_UNFOCUS as usize] = A_BOLD | ColorPair(Yellow, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][PANEL_SELECTION_UNFOCUS as usize] =
+        A_BOLD | ColorPair(Yellow, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][FAILED_SEARCH as usize] = ColorPair(Red, Cyan);
     t[COLORSCHEME_MIDNIGHT as usize][FAILED_READ as usize] = A_BOLD | ColorPair(Red, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][PAUSED as usize] = A_BOLD | ColorPair(Yellow, Cyan);
@@ -762,7 +785,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_MIDNIGHT as usize][PROCESS_NEW as usize] = ColorPair(Blue, Green);
     t[COLORSCHEME_MIDNIGHT as usize][PROCESS_TOMB as usize] = ColorPair(Blue, Red);
     t[COLORSCHEME_MIDNIGHT as usize][PROCESS_THREAD as usize] = ColorPair(Green, Blue);
-    t[COLORSCHEME_MIDNIGHT as usize][PROCESS_THREAD_BASENAME as usize] = A_BOLD | ColorPair(Green, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][PROCESS_THREAD_BASENAME as usize] =
+        A_BOLD | ColorPair(Green, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][PROCESS_COMM as usize] = ColorPair(Magenta, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][PROCESS_THREAD_COMM as usize] = ColorPair(Black, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][PROCESS_PRIV as usize] = ColorPair(Magenta, Blue);
@@ -783,8 +807,10 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_MIDNIGHT as usize][HUGEPAGE_2 as usize] = A_BOLD | ColorPair(Yellow, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][HUGEPAGE_3 as usize] = A_BOLD | ColorPair(Red, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][HUGEPAGE_4 as usize] = A_BOLD | ColorPair(White, Blue);
-    t[COLORSCHEME_MIDNIGHT as usize][LOAD_AVERAGE_FIFTEEN as usize] = A_BOLD | ColorPair(Black, Blue);
-    t[COLORSCHEME_MIDNIGHT as usize][LOAD_AVERAGE_FIVE as usize] = A_NORMAL | ColorPair(White, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][LOAD_AVERAGE_FIFTEEN as usize] =
+        A_BOLD | ColorPair(Black, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][LOAD_AVERAGE_FIVE as usize] =
+        A_NORMAL | ColorPair(White, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][LOAD_AVERAGE_ONE as usize] = A_BOLD | ColorPair(White, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][LOAD as usize] = A_BOLD | ColorPair(White, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][HELP_BOLD as usize] = A_BOLD | ColorPair(Cyan, Blue);
@@ -811,14 +837,18 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_MIDNIGHT as usize][GPU_ENGINE_4 as usize] = A_BOLD | ColorPair(White, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][GPU_RESIDUE as usize] = A_BOLD | ColorPair(Magenta, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][PANEL_EDIT as usize] = ColorPair(White, Blue);
-    t[COLORSCHEME_MIDNIGHT as usize][SCREENS_OTH_BORDER as usize] = A_BOLD | ColorPair(Yellow, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][SCREENS_OTH_BORDER as usize] =
+        A_BOLD | ColorPair(Yellow, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][SCREENS_OTH_TEXT as usize] = ColorPair(Cyan, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][SCREENS_CUR_BORDER as usize] = ColorPair(Cyan, Cyan);
     t[COLORSCHEME_MIDNIGHT as usize][SCREENS_CUR_TEXT as usize] = ColorPair(Black, Cyan);
-    t[COLORSCHEME_MIDNIGHT as usize][PRESSURE_STALL_THREEHUNDRED as usize] = A_BOLD | ColorPair(Black, Blue);
-    t[COLORSCHEME_MIDNIGHT as usize][PRESSURE_STALL_SIXTY as usize] = A_NORMAL | ColorPair(White, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][PRESSURE_STALL_THREEHUNDRED as usize] =
+        A_BOLD | ColorPair(Black, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][PRESSURE_STALL_SIXTY as usize] =
+        A_NORMAL | ColorPair(White, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][PRESSURE_STALL_TEN as usize] = A_BOLD | ColorPair(White, Blue);
-    t[COLORSCHEME_MIDNIGHT as usize][FILE_DESCRIPTOR_USED as usize] = A_BOLD | ColorPair(Green, Blue);
+    t[COLORSCHEME_MIDNIGHT as usize][FILE_DESCRIPTOR_USED as usize] =
+        A_BOLD | ColorPair(Green, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][FILE_DESCRIPTOR_MAX as usize] = A_BOLD | ColorPair(Red, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][ZFS_MFU as usize] = A_BOLD | ColorPair(White, Blue);
     t[COLORSCHEME_MIDNIGHT as usize][ZFS_MRU as usize] = A_BOLD | ColorPair(Yellow, Blue);
@@ -859,20 +889,26 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_ERROR as usize] = A_BOLD | ColorPair(Red, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_IOREAD as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_IOWRITE as usize] = ColorPair(Blue, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_NOTICE as usize] = A_BOLD | ColorPair(White, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_NOTICE as usize] =
+        A_BOLD | ColorPair(White, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_OK as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_WARN as usize] = A_BOLD | ColorPair(Yellow, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][METER_VALUE_WARN as usize] =
+        A_BOLD | ColorPair(Yellow, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][LED_COLOR as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][TASKS_RUNNING as usize] = A_BOLD | ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS as usize] = ColorPair(Cyan, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_SHADOW as usize] = A_BOLD | ColorPairGrayBlack;
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_TAG as usize] = A_BOLD | ColorPair(Yellow, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_MEGABYTES as usize] = A_BOLD | ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_GIGABYTES as usize] = A_BOLD | ColorPair(Yellow, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_BASENAME as usize] = A_BOLD | ColorPair(Green, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_MEGABYTES as usize] =
+        A_BOLD | ColorPair(Green, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_GIGABYTES as usize] =
+        A_BOLD | ColorPair(Yellow, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_BASENAME as usize] =
+        A_BOLD | ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_TREE as usize] = ColorPair(Cyan, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_THREAD as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_THREAD_BASENAME as usize] = A_BOLD | ColorPair(Blue, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_THREAD_BASENAME as usize] =
+        A_BOLD | ColorPair(Blue, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_COMM as usize] = ColorPair(Magenta, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_THREAD_COMM as usize] = ColorPair(Yellow, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PROCESS_RUN_STATE as usize] = ColorPair(Green, Black);
@@ -901,7 +937,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKNIGHT as usize][HUGEPAGE_4 as usize] = ColorPair(Blue, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][LOAD_AVERAGE_FIFTEEN as usize] = ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][LOAD_AVERAGE_FIVE as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][LOAD_AVERAGE_ONE as usize] = A_BOLD | ColorPair(Green, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][LOAD_AVERAGE_ONE as usize] =
+        A_BOLD | ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][LOAD as usize] = A_BOLD;
     t[COLORSCHEME_BLACKNIGHT as usize][HELP_BOLD as usize] = A_BOLD | ColorPair(Cyan, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][HELP_SHADOW as usize] = A_BOLD | ColorPairGrayBlack;
@@ -927,13 +964,18 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_BLACKNIGHT as usize][PANEL_EDIT as usize] = ColorPair(White, Cyan);
     t[COLORSCHEME_BLACKNIGHT as usize][SCREENS_OTH_BORDER as usize] = ColorPair(White, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][SCREENS_OTH_TEXT as usize] = ColorPair(Cyan, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][SCREENS_CUR_BORDER as usize] = A_BOLD | ColorPair(White, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][SCREENS_CUR_TEXT as usize] = A_BOLD | ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][PRESSURE_STALL_THREEHUNDRED as usize] = ColorPair(Green, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][SCREENS_CUR_BORDER as usize] =
+        A_BOLD | ColorPair(White, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][SCREENS_CUR_TEXT as usize] =
+        A_BOLD | ColorPair(Green, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][PRESSURE_STALL_THREEHUNDRED as usize] =
+        ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][PRESSURE_STALL_SIXTY as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][PRESSURE_STALL_TEN as usize] = A_BOLD | ColorPair(Green, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][PRESSURE_STALL_TEN as usize] =
+        A_BOLD | ColorPair(Green, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][FILE_DESCRIPTOR_USED as usize] = ColorPair(Green, Black);
-    t[COLORSCHEME_BLACKNIGHT as usize][FILE_DESCRIPTOR_MAX as usize] = A_BOLD | ColorPair(Blue, Black);
+    t[COLORSCHEME_BLACKNIGHT as usize][FILE_DESCRIPTOR_MAX as usize] =
+        A_BOLD | ColorPair(Blue, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][ZFS_MFU as usize] = ColorPair(Blue, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][ZFS_MRU as usize] = ColorPair(Yellow, Black);
     t[COLORSCHEME_BLACKNIGHT as usize][ZFS_ANON as usize] = ColorPair(Magenta, Black);
@@ -961,7 +1003,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_NORD as usize][PANEL_SELECTION_FOCUS as usize] = ColorPair(Black, Cyan);
     t[COLORSCHEME_NORD as usize][PANEL_SELECTION_FOLLOW as usize] = A_REVERSE;
     t[COLORSCHEME_NORD as usize][PANEL_SELECTION_UNFOCUS as usize] = A_BOLD;
-    t[COLORSCHEME_NORD as usize][FAILED_SEARCH as usize] = A_REVERSE | A_BOLD | ColorPair(Yellow, Black);
+    t[COLORSCHEME_NORD as usize][FAILED_SEARCH as usize] =
+        A_REVERSE | A_BOLD | ColorPair(Yellow, Black);
     t[COLORSCHEME_NORD as usize][FAILED_READ as usize] = A_BOLD | ColorPair(Yellow, Black);
     t[COLORSCHEME_NORD as usize][PAUSED as usize] = A_BOLD | ColorPair(Black, Cyan);
     t[COLORSCHEME_NORD as usize][UPTIME as usize] = A_BOLD;
@@ -1041,7 +1084,8 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
     t[COLORSCHEME_NORD as usize][SCREENS_OTH_TEXT as usize] = A_BOLD | ColorPairGrayBlack;
     t[COLORSCHEME_NORD as usize][SCREENS_CUR_BORDER as usize] = ColorPair(Black, Cyan);
     t[COLORSCHEME_NORD as usize][SCREENS_CUR_TEXT as usize] = ColorPair(Black, Cyan);
-    t[COLORSCHEME_NORD as usize][PRESSURE_STALL_THREEHUNDRED as usize] = A_BOLD | ColorPairGrayBlack;
+    t[COLORSCHEME_NORD as usize][PRESSURE_STALL_THREEHUNDRED as usize] =
+        A_BOLD | ColorPairGrayBlack;
     t[COLORSCHEME_NORD as usize][PRESSURE_STALL_SIXTY as usize] = A_NORMAL;
     t[COLORSCHEME_NORD as usize][PRESSURE_STALL_TEN as usize] = A_BOLD;
     t[COLORSCHEME_NORD as usize][FILE_DESCRIPTOR_USED as usize] = A_BOLD;
@@ -1173,7 +1217,11 @@ impl ResolvedColor {
 
         // Pair 0 cannot be redefined in ncurses -> terminal default.
         if pair == 0 {
-            return ResolvedColor { fg: Self::DEFAULT, bg: Self::DEFAULT, attributes };
+            return ResolvedColor {
+                fg: Self::DEFAULT,
+                bg: Self::DEFAULT,
+                attributes,
+            };
         }
         if pair == ColorIndexGrayBlack {
             let fg = if colors_gt_8 { 8 } else { 0 };
@@ -1181,13 +1229,25 @@ impl ResolvedColor {
             return ResolvedColor { fg, bg, attributes };
         }
         if pair == ColorIndexWhiteDefault {
-            return ResolvedColor { fg: White as i16, bg: Self::DEFAULT, attributes };
+            return ResolvedColor {
+                fg: White as i16,
+                bg: Self::DEFAULT,
+                attributes,
+            };
         }
         // ColorIndex(i, j) = (7 - i) * 8 + j  =>  j = pair % 8, i = 7 - pair / 8.
         let j = pair & 7;
         let i = 7 - (pair >> 3);
-        let bg = if !blacknight && j == Black { Self::DEFAULT } else { j as i16 };
-        ResolvedColor { fg: i as i16, bg, attributes }
+        let bg = if !blacknight && j == Black {
+            Self::DEFAULT
+        } else {
+            j as i16
+        };
+        ResolvedColor {
+            fg: i as i16,
+            bg,
+            attributes,
+        }
     }
 }
 

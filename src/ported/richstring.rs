@@ -447,7 +447,10 @@ pub fn RichString_appendChr(this: &mut RichString, attrs: i32, c: char, count: i
     let new_len = from + count;
     RichString_setLen(this, new_len as usize);
     for i in (from as usize)..(new_len as usize) {
-        this.chptr[i] = RichCell { chars: c, attr: attrs };
+        this.chptr[i] = RichCell {
+            chars: c,
+            attr: attrs,
+        };
     }
 }
 
