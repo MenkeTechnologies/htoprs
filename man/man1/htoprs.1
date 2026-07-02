@@ -1,0 +1,102 @@
+.\" htoprs.1 — man page for htoprs(1)
+.\" Ported from htop's htop.1.in (htop 3.5.1). htoprs is a faithful
+.\" Rust port of htop; the command-line interface documented here is
+.\" the port target. Interactive-runtime commands live in htop(1)
+.\" until the TUI is ported.
+.TH HTOPRS 1 "2026-07-02" "htoprs 0.1.0" "User Commands"
+.SH NAME
+htoprs \- interactive process viewer (a faithful Rust port of htop)
+.SH SYNOPSIS
+.B htoprs
+.RB [ \-dCFhpustvH ]
+.SH DESCRIPTION
+.B htoprs
+is a Rust port of
+.BR htop (1),
+the cross-platform ncurses-based process viewer. It is being ported
+function-for-function from the htop 3.5.1 C source, which is the
+specification; the command-line surface below mirrors htop's.
+.LP
+Like
+.BR top (1),
+htop lets you scroll vertically and horizontally, interact using a
+pointing device, observe all processes with their command lines, view
+them in a tree, select multiple processes, and act on them at once.
+Tasks such as killing and renicing can be done without entering PIDs.
+.LP
+.B PORT STATUS:
+the port is at an early stage. The
+.BR XUtils.c
+string and math utility layer is ported and tested; the TUI, process
+table, meters, and platform data collection are not yet ported, so the
+binary does not yet present an interactive interface. The options below
+document the CLI contract being ported. For interactive-runtime
+commands, see
+.BR htop (1).
+.SH COMMAND-LINE OPTIONS
+Mandatory arguments to long options are mandatory for short options too.
+.TP
+\fB\-d \-\-delay=DELAY\fR
+Delay between updates, in tenths of a second. If the delay value is
+less than 1, it is increased to 1, i.e. 1/10 second. If the delay value
+is greater than 100, it is decreased to 100, i.e. 10 seconds.
+.TP
+\fB\-C \-\-no-color \-\-no-colour\fR
+Start in monochrome mode.
+.TP
+\fB\-F \-\-filter=FILTER\fR
+Filter processes by terms matching the commands. The terms are matched
+case-insensitive and as fixed strings (not regexps). You can separate
+multiple terms with "|".
+.TP
+\fB\-\-no-function-bar\fR
+Hide the function bar.
+.TP
+\fB\-h \-\-help\fR
+Display a help message and exit.
+.TP
+\fB\-p \-\-pid=PID,PID...\fR
+Show only the given PIDs.
+.TP
+\fB\-s \-\-sort\-key COLUMN\fR
+Sort by this column (use \-\-sort\-key help for a column list).
+This will force a list view unless you specify \-t at the same time.
+Sorting in tree mode applies to the direct children of each process.
+.TP
+\fB\-u \-\-user[=USERNAME|UID]\fR
+Show only the processes of a given user, or self if omitted.
+.TP
+\fB\-n \-\-max-iterations=NUMBER\fR
+Exit after NUMBER refresh iterations.
+.TP
+\fB\-U \-\-no-unicode\fR
+Do not use unicode but ASCII characters for graph meters.
+.TP
+\fB\-M \-\-no-mouse\fR
+Disable support of mouse control.
+.TP
+\fB\-\-no-meters\fR
+Hide graph meters.
+.TP
+\fB\-\-readonly\fR
+Disable all system and process changing features.
+.TP
+\fB\-V \-\-version\fR
+Output version information and exit.
+.TP
+\fB\-t \-\-tree\fR
+Show processes in tree view. This can be used to force a tree view when
+requesting a sort order with \-s.
+.TP
+\fB\-H \-\-highlight-changes[=DELAY]\fR
+Highlight new and old processes.
+.SH SEE ALSO
+.BR htop (1),
+.BR top (1),
+.BR ps (1)
+.SH AUTHOR
+htoprs is written by MenkeTechnologies as a faithful Rust port of htop.
+htop was originally written by Hisham Muhammad and is maintained by the
+htop dev team. See
+.UR https://github.com/MenkeTechnologies/htoprs
+.UE .
