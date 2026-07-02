@@ -30,7 +30,11 @@ The C source is the specification. Ports are faithful — the original C is
 translated function-for-function, never reimplemented from scratch. This is
 enforced mechanically, following the same precedent as `zshrs`.
 
-- **Spec:** htop **3.5.1** at `~/forkedRepos/htop` (131 `.c` files).
+- **Spec:** htop **3.5.1**, 131 `.c` files — vendored in-repo as the
+  `vendor/htop` submodule (pinned to the 3.5.1 tag) and mirrored at the
+  developer checkout `~/forkedRepos/htop`. `docs/port_report.html` is generated
+  against `vendor/htop`; the snapshot/report tools take `$HTOP_C_SOURCE`
+  (default `~/forkedRepos/htop`) to point at either.
 - **Port tree:** `src/ported/<file>.rs` — one Rust module per C file. Each `fn`
   carries a `/// Port of` citation naming its `<File>.c:<line>` origin.
 - **Port-purity gate (`build.rs`):** on every `cargo build` / `cargo test` /
