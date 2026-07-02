@@ -1,4 +1,4 @@
-//! Port of `CPUMeter.c` — only the one pure-arithmetic helper.
+//! Port of `CPUMeter.c` — the two self-contained helpers.
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
 //! `non_snake_case` is allowed for the whole module — matching the spec
@@ -10,12 +10,20 @@
 //!   of the meter's class name (`Meter_name(this)[0]`), writing the
 //!   `start`/`count` out-params. The two inputs it reads are modeled as
 //!   small plain structs ([`Meter`] / [`Machine`], below).
+//! - [`CPUMeter_getUiName`] (`CPUMeter.c:78`) — builds the header
+//!   setup-menu label. It reads only `Meter_uiName(this)` (the meter
+//!   class's `uiName` vtable string, modeled as a [`Meter`] field),
+//!   `this->param`, and `Settings_cpuId(settings, cpu)` — the latter a
+//!   pure macro (`Settings.h:119`, `countCPUsFromOne ? cpu+1 : cpu`)
+//!   inlined here over the modeled [`Settings::countCPUsFromOne`]. No
+//!   curses/platform substrate is involved, so it ports faithfully.
 //!
-//! Not ported (and why) — every other function in `CPUMeter.c` needs
+//! Not ported (and why) — every remaining function in `CPUMeter.c` needs
 //! unported substrate, so each keeps its exact `todo!()` stub:
-//! - `CPUMeter_init` (`:51`) — `Meter_setCaption`, `Machine_getCPU*`,
-//!   `Settings_cpuId`, `xSnprintf` into a fixed caption buffer.
-//! - `CPUMeter_getUiName` (`:78`) — `Meter_uiName`, `Settings_cpuId`.
+//! - `CPUMeter_init` (`:51`) — `Meter_setCaption`, and (on the
+//!   multi-CPU branch) `Machine_getCPUPhysicalCoreID` /
+//!   `Machine_getCPUThreadIndex`, which are platform-specific CPU-topology
+//!   functions not modeled here.
 //! - `CPUMeter_updateValues` (`:87`) — `Platform_setCPUValues`, the
 //!   `Settings` flags, `CRT_degreeSign`, and writes to the `Meter`'s
 //!   `values`/`curAttributes`/`txtBuffer` fields.
@@ -38,24 +46,44 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+/// Minimal stand-in for htop's `Settings` (`Settings.h`), modeling only
+/// the flag [`CPUMeter_getUiName`] reads through the `Settings_cpuId`
+/// macro (`Settings.h:119`). Every other `Settings` field is omitted.
+pub struct Settings {
+    /// `Settings.countCPUsFromOne` (`Settings.h:77`, `bool`) — when set,
+    /// `Settings_cpuId` returns `cpu + 1` so CPUs are labeled 1-based.
+    pub countCPUsFromOne: bool,
+}
+
 /// Minimal stand-in for htop's `Machine` (`Machine.h`), modeling only the
-/// field [`AllCPUsMeter_getRange`] reads: `existingCPUs` (an
-/// `unsigned int`). Every other `Machine` field (process table, CPU
-/// stats, `settings`, active/online CPU counts, ...) is omitted.
+/// fields the ported functions read: `existingCPUs`
+/// ([`AllCPUsMeter_getRange`]) and `settings` ([`CPUMeter_getUiName`],
+/// through `this->host->settings`). Every other `Machine` field (process
+/// table, CPU stats, active/online CPU counts, ...) is omitted.
 pub struct Machine {
     /// `Machine.existingCPUs` — number of CPUs the platform reports.
     pub existingCPUs: u32,
+    /// `Machine.settings` — the owning host's `Settings` (`this->host->settings`).
+    pub settings: Settings,
 }
 
 /// Minimal stand-in for htop's `Meter` (`Meter.h`), modeling only what
-/// [`AllCPUsMeter_getRange`] touches: the class name — `Meter_name(this)`
-/// returns the `MeterClass.name` string — and the host machine
-/// (`this->host`). Every other `Meter` field (`values`, `mode`, `h`,
-/// `w`, `meterData`, `txtBuffer`, `curItems`, `param`, ...) is omitted.
+/// the ported functions touch: the class name — `Meter_name(this)`
+/// returns the `MeterClass.name` string — the class UI name —
+/// `Meter_uiName(this)` returns the `MeterClass.uiName` string — the
+/// `param` (processor index, `Meter.h:119`, `unsigned int`), and the host
+/// machine (`this->host`). Every other `Meter` field (`values`, `mode`,
+/// `h`, `w`, `meterData`, `txtBuffer`, `curItems`, ...) is omitted.
 pub struct Meter {
     /// `Meter_name(this)` — the meter class's `.name` (e.g. `"AllCPUs"`,
     /// `"LeftCPUs2"`, `"RightCPUs8"`). Only the first byte is inspected.
     pub name: &'static str,
+    /// `Meter_uiName(this)` — the meter class's `.uiName` display label
+    /// (e.g. `"CPU"`), modeled as an instance field carrying that vtable
+    /// constant, exactly the value the `Meter_uiName` macro yields.
+    pub uiName: &'static str,
+    /// `this->param` — the processor this meter tracks (0 == average).
+    pub param: u32,
     /// `this->host` — the owning `Machine`.
     pub host: Machine,
 }

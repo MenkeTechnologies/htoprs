@@ -63,6 +63,7 @@
 
 use crate::ported::crt::{ERR, KEY_F};
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
+use crate::ported::history::{History, History_new, History_save};
 use crate::ported::lineeditor::{LineEditor, LineEditor_init, LineEditor_reset, LineEditor_setText};
 use crate::ported::listitem::ListItem;
 use crate::ported::panel::{Panel, Panel_get};
@@ -110,6 +111,11 @@ pub struct IncSet {
     pub defaultBar: Option<FunctionBar>,
     pub filtering: bool,
     pub found: bool,
+    /// C `History* history` (`IncSet.h:37`) — shared history for search and
+    /// filter, `NULL` when no history file is set. Modeled as an owned
+    /// `Option<History>` (History.c is ported); the C `History_delete` free
+    /// is supplied by `Drop`, so reassignment/teardown releases it.
+    pub history: Option<History>,
 }
 
 /// Port of the `IncMode_GetPanelValue` function-pointer typedef from
@@ -184,8 +190,8 @@ fn IncMode_done() {
 
 /// Port of `IncSet.c:65`. Builds both modes (zeroed [`IncMode::empty`] then
 /// `IncMode_initSearch`/`IncMode_initFilter`), stores the panel's default
-/// bar, and clears `active`/`filtering`/`found`. The C `history = NULL`
-/// field is omitted (History.c is not ported — see module docs).
+/// bar, and clears `active`/`filtering`/`found`/`history` (C `history = NULL`
+/// → `None`).
 pub fn IncSet_new(bar: Option<FunctionBar>) -> IncSet {
     let mut this = IncSet {
         modes: [IncMode::empty(), IncMode::empty()],
@@ -193,6 +199,7 @@ pub fn IncSet_new(bar: Option<FunctionBar>) -> IncSet {
         defaultBar: bar,
         filtering: false,
         found: false,
+        history: None,
     };
     IncMode_initSearch(&mut this.modes[IncType::INC_SEARCH as usize]);
     IncMode_initFilter(&mut this.modes[IncType::INC_FILTER as usize]);
@@ -206,15 +213,22 @@ pub fn IncSet_delete() {
     todo!("port of IncSet.c:77 — Drop releases owned fields; History.c unported")
 }
 
-/// TODO: port of `IncSet.c:85`. `History_new(filename)` — History.c is not
-/// ported.
-pub fn IncSet_setHistoryFile() {
-    todo!("port of IncSet.c:85 — History.c is not ported")
+/// Port of `IncSet.c:85`. Replaces the history with one loaded from
+/// `filename`. The C `if (this->history) History_delete(this->history)`
+/// free is supplied by `Drop`: assigning `Some(..)` releases the previous
+/// `History`. `filename` is never null at the call site, so the C
+/// `const char*` becomes `&str` wrapped as `Some(filename)` for
+/// `History_new`.
+pub fn IncSet_setHistoryFile(this: &mut IncSet, filename: &str) {
+    this.history = Some(History_new(Some(filename)));
 }
 
-/// TODO: port of `IncSet.c:91`. `History_save` — History.c is not ported.
-pub fn IncSet_saveHistory() {
-    todo!("port of IncSet.c:91 — History.c is not ported")
+/// Port of `IncSet.c:91`. Saves the history to disk if one is set
+/// (`History_save` is itself a no-op when the history has no filename).
+pub fn IncSet_saveHistory(this: &IncSet) {
+    if let Some(history) = &this.history {
+        History_save(history);
+    }
 }
 
 /// TODO: port of `IncSet.c:96`. Rebuilds `panel` from the backing `lines`,

@@ -225,19 +225,36 @@ impl Object for NumberItem {
     }
 }
 
-/// TODO: port of `TextItem* TextItem_new(const char* text` from `OptionItem.c:115`.
-pub fn TextItem_new() {
-    todo!("port of OptionItem.c:115")
+/// Port of `TextItem_new` from `OptionItem.c:115`. Allocates a `TextItem`
+/// and copies the label (C `AllocThis(TextItem)` + `xStrdup(text)`). The C
+/// `AllocThis` also zero-inits and wires the `Object` vtable, which is
+/// handled here by `impl Object for TextItem`; the only data field is
+/// `text`. Returns the value (C returns a heap pointer).
+pub fn TextItem_new(text: &str) -> TextItem {
+    TextItem {
+        text: text.to_string(),
+    }
 }
 
-/// TODO: port of `CheckItem* CheckItem_newByRef(const char* text, bool* ref` from `OptionItem.c:121`.
+/// TODO: port of `CheckItem* CheckItem_newByRef(const char* text, bool* ref`
+/// from `OptionItem.c:121`. Sets `this->ref = ref` (a non-NULL pointer to an
+/// external `bool`). That pointer-indirection case is intentionally not
+/// modeled by this struct (see module docs), so there is no faithful body to
+/// port. Left as a stub.
 pub fn CheckItem_newByRef() {
     todo!("port of OptionItem.c:121")
 }
 
-/// TODO: port of `CheckItem* CheckItem_newByVal(const char* text, bool value` from `OptionItem.c:129`.
-pub fn CheckItem_newByVal() {
-    todo!("port of OptionItem.c:129")
+/// Port of `CheckItem_newByVal` from `OptionItem.c:129`. Builds a
+/// direct-value `CheckItem`: C sets `value = value` and `ref = NULL` — the
+/// `ref == NULL` case is the one this struct models. The C
+/// `AllocThis(CheckItem)` + `xStrdup(text)` become the struct literal + an
+/// owned `text` copy.
+pub fn CheckItem_newByVal(text: &str, value: bool) -> CheckItem {
+    CheckItem {
+        value,
+        text: text.to_string(),
+    }
 }
 
 /// Port of `CheckItem_get` from `OptionItem.c:137`. Ports the direct
