@@ -66,10 +66,29 @@
 //! `mbstowcs_nonfatal` (the multibyte→wide decode) is ported faithfully:
 //! it decodes UTF-8, emits exactly one `U+FFFD` per contiguous run of
 //! invalid bytes, and stops at a NUL — mirroring the `mbrtowc` loop.
+//!
+//! # Terminal blit
+//!
+//! [`RichString_printoffnVal`] is the `RichString_printoffnVal` macro
+//! (`RichString.h:28`, `HAVE_LIBNCURSESW` variant) — `mvadd_wchnstr(y, x,
+//! chptr + off, n)` — a pure ncurses blit that paints `n` styled cells to
+//! the screen. It has no locale/string logic to port; it is a behavioral
+//! crossterm port through the crate's [`Ncurses`] emit shim, per-cell
+//! `attrset` + `mvaddch`, exactly mirroring the established
+//! `Panel::print_offset` blit (`Panel.c` draw path). The companion
+//! whole-string macro `RichString_printVal` (`RichString.h:27`,
+//! `mvadd_wchstr`) is NOT ported: it is absent from the htop C-name
+//! snapshot (no call site records it), so exposing it as a `pub fn` would
+//! be a non-htop name that the port-purity gate rejects. `RichString_printAt`
+//! does not exist in htop 3.5.1.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use std::io::Write;
+
 use unicode_width::UnicodeWidthChar;
+
+use crate::ported::functionbar::Ncurses;
 
 /// `RICHSTRING_MAXLEN` from `RichString.h:40`. The size (minus the
 /// terminator slot) of htop's inline `chstr` buffer and the threshold at
@@ -539,6 +558,41 @@ pub fn RichString_writeAscii(this: &mut RichString, attrs: i32, data: &[u8]) -> 
     RichString_writeFromAscii(this, attrs, data, 0, data.len())
 }
 
+/// Port of the `RichString_printoffnVal(this, y, x, off, n)` macro
+/// (`RichString.h:28`, `HAVE_LIBNCURSESW` variant):
+/// `mvadd_wchnstr(y, x, (this).chptr + (off), n)`. Blits `n` styled cells
+/// starting at cell `off` to screen position `(y, x)`, each cell carrying
+/// its own attribute (as `mvadd_wchnstr` writes `cchar_t`s that embed their
+/// attributes rather than using the current `attrset`). Exposed as a free
+/// fn because `RichString_printoffnVal` appears in the C-name snapshot
+/// (invoked in `Meter.c` and `Panel.c`).
+///
+/// Behavioral crossterm port: the ncurses blit has no locale/string logic,
+/// so it is reproduced through the crate's [`Ncurses`] emit shim exactly as
+/// the `Panel::print_offset` draw helper does — set each cell's own
+/// attribute, then print its character. `out` is the crossterm draw target
+/// standing in for ncurses' implicit `stdscr`. Cells past the end of the
+/// backing buffer stop the blit (`mvadd_wchnstr` stops at the string's
+/// terminating null cell; callers pass `n` bounded by `chlen`).
+pub fn RichString_printoffnVal<W: Write>(
+    out: &mut W,
+    this: &RichString,
+    y: i32,
+    x: i32,
+    off: i32,
+    n: i32,
+) {
+    for k in 0..n {
+        let idx = (off + k) as usize;
+        if idx >= this.chptr.len() {
+            break;
+        }
+        let cell = this.chptr[idx];
+        Ncurses::attrset(out, cell.attr);
+        Ncurses::mvaddch(out, y, x + k, cell.chars);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,5 +1021,86 @@ mod tests {
         RichString_appendWide(&mut r, 0, "a日b".as_bytes());
         assert_eq!(RichString_findChar(&r, '日', 0), 1);
         assert_eq!(RichString_findChar(&r, 'b', 0), 2);
+    }
+
+    // ── printoffnVal (behavioral crossterm blit) ──────────────────────
+    //
+    // The blit emits crossterm escape sequences (MoveTo/SetColor/Print)
+    // into a `Vec<u8>` sink. The tests assert on the *printed characters*
+    // that survive in the byte stream — the observable payload of the
+    // `mvadd_wchnstr` blit — not on the exact escape encoding.
+
+    /// The printable (non-escape) characters emitted into a crossterm sink,
+    /// in order. Strips CSI escape sequences (`ESC [ … final-byte`) so only
+    /// the `Print`ed glyphs remain.
+    fn printed_chars(buf: &[u8]) -> String {
+        let s = String::from_utf8(buf.to_vec()).unwrap();
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                // ESC — skip a CSI: the `[` introducer (0x5b), then
+                // parameter/intermediate bytes up to and including the final
+                // byte in 0x40..=0x7e (`m` for SGR, `H` for cursor move…).
+                let intro = chars.next();
+                if intro != Some('[') {
+                    continue;
+                }
+                for e in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&e) {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn printoffn_blits_full_range() {
+        let r = ascii("hello");
+        let mut buf: Vec<u8> = Vec::new();
+        RichString_printoffnVal(&mut buf, &r, 0, 0, 0, 5);
+        assert_eq!(printed_chars(&buf), "hello");
+    }
+
+    #[test]
+    fn printoffn_honors_offset_and_count() {
+        let r = ascii("abcdef");
+        let mut buf: Vec<u8> = Vec::new();
+        // off=2, n=3 -> cells 2,3,4 == "cde"
+        RichString_printoffnVal(&mut buf, &r, 0, 0, 2, 3);
+        assert_eq!(printed_chars(&buf), "cde");
+    }
+
+    #[test]
+    fn printoffn_stops_at_buffer_end() {
+        let r = ascii("abc");
+        let mut buf: Vec<u8> = Vec::new();
+        // n overruns the 3 valid + 1 terminator cells; blit stops at the
+        // end of the backing buffer instead of reading past it.
+        RichString_printoffnVal(&mut buf, &r, 0, 0, 0, 100);
+        // valid chars plus the terminating null cell (index 3) are emitted;
+        // no panic, no read past the Vec.
+        assert!(printed_chars(&buf).starts_with("abc"));
+    }
+
+    #[test]
+    fn printoffn_zero_count_emits_nothing() {
+        let r = ascii("abc");
+        let mut buf: Vec<u8> = Vec::new();
+        RichString_printoffnVal(&mut buf, &r, 0, 0, 0, 0);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn printoffn_blits_wide_codepoints() {
+        let mut r = RichString::new();
+        RichString_appendWide(&mut r, 0, "a世b".as_bytes());
+        let mut buf: Vec<u8> = Vec::new();
+        RichString_printoffnVal(&mut buf, &r, 0, 0, 0, 3);
+        assert_eq!(printed_chars(&buf), "a世b");
     }
 }

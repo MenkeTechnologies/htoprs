@@ -1,50 +1,114 @@
-//! Port of `Vector.c` — only the pure array algorithms (the sort and
-//! search core).
+//! Port of `Vector.c` — htop's dynamic-array container of `Object*`
+//! (the pointer-array `Vector` every `Panel`, `ScreenManager`, header,
+//! etc. is built on) plus its pure sort/search core.
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake` and
 //! `camelCase` locals), so `non_snake_case` is allowed for the whole
 //! module — matching the spec name-for-name is the point of the port.
 //!
-//! htop's `Vector` is a heap-allocated `Object**` with an owner flag, a
-//! type tag, and a growth policy. The C sort/search helpers operate on
-//! that pointer array through a comparator
-//! `Object_Compare = int (*)(const void*, const void*)`. They port
-//! faithfully to generics over a slice `&mut [T]` / `&[T]` with a
-//! comparator `compare: &impl Fn(&T, &T) -> i32`: the pointer array
-//! becomes a slice of elements/handles, and swapping two elements
-//! mirrors swapping two pointers. The comparator returns C `int`, so
-//! the `<= 0` / `== 0` / `> 0` sign tests are preserved verbatim.
+//! # C model
 //!
-//! All C index arithmetic uses signed `int` (`left`, `right`,
-//! `pivotIndex`, `storeIndex`, `i`, `j`): `quickSort` recurses with
-//! `pivotNewIndex - 1` (which can be `left - 1`, i.e. one below `left`)
-//! and `insertionSort` scans `j` down past `left` to `left - 1`. To
-//! preserve that exactly, every index is `isize`, converted to `usize`
-//! only at the point of slice indexing.
+//! ```c
+//! typedef struct Vector_ {
+//!    Object** array;            // heap pointer array
+//!    const ObjectClass* type;   // type tag every element must be an instance of
+//!    int arraySize;             // allocated slot count
+//!    int growthRate;            // extra slots added on each grow
+//!    int items;                 // logical element count (<= arraySize)
+//!    bool owner;                // free elements on remove?
+//!    bool isDirty;              // pending a Vector_compact (softRemove left holes)
+//! } Vector;
+//! ```
 //!
-//! The C `assert(...)` calls (index non-negativity, `Vector` struct /
-//! `Object` type-tag consistency, non-null slots) are omitted: they
-//! reference the `Vector`/`Object` machinery not ported here, and
-//! Rust's slice indexing already bounds-checks.
+//! Slots `[0, items)` are live but may contain `NULL` *holes* punched by
+//! `Vector_softRemove`; slots `[items, arraySize)` are trailing free
+//! space.
 //!
-//! Not ported (and why):
-//! - `combSort` (`Vector.c:134`) — it is COMMENTED OUT in the C source
-//!   (inside a `/* */` block), i.e. dead code that never compiles into
-//!   htop. It only shows up in the C-name snapshot because the extractor
-//!   greps through comments. Porting it would be faithful to a comment,
-//!   not to htop's behavior.
-//! - The dynamic-array memory machinery: `Vector_new`, `Vector_delete`,
-//!   `Vector_insert`, `Vector_add`, `Vector_resizeIfNecessary`,
-//!   `Vector_prune`, `Vector_compact`, `Vector_moveUp`,
-//!   `Vector_moveDown`, `Vector_set`, `Vector_merge`, `Vector_splice`,
-//!   `Vector_size`, `Vector_isConsistent`, `Vector_countEquals`,
-//!   `Vector_quickSortCustomCompare`, `Vector_insertionSort`. These
-//!   manage a heap-allocated `Object**` with an owner/type/growth
-//!   policy — like the XUtils allocation wrappers they have no faithful
-//!   safe-Rust analog, because Rust's `Vec` owns its allocation,
-//!   bounds, and element lifetimes rather than hand-rolling them over a
-//!   raw pointer array.
+//! # Rust model
+//!
+//! htop's `Object**` maps to [`Vector::array`], a
+//! `Vec<Option<Box<dyn Object>>>`:
+//!  - each `Object*` becomes an owned `Box<dyn Object>` (the vtable/class
+//!    machinery lives on the [`Object`] trait — see `object.rs`),
+//!  - a `NULL` slot becomes `None` (modeling `Vector_softRemove`'s holes),
+//!  - the C `items` count is exactly `array.len()` — there is no separate
+//!    field, because a `Vec`'s length *is* its logical element count,
+//!  - the C `arraySize`/`growthRate` bookkeeping is subsumed by `Vec`'s
+//!    own capacity growth: `Vec::insert`/`Vec::push` reallocate and grow
+//!    automatically, so `Vector_resizeIfNecessary` (`Vector.c:184`, a
+//!    `static` helper) has no body to port and is not a `pub fn`.
+//!
+//! This is the same idiom `panel.rs` already uses (`Vec<Box<dyn Object>>`
+//! "subsuming the C `Vector`", `Panel_add`/`insert`/`set`/`remove`); the
+//! container here is the faithful, fully-typed form of it — the earlier
+//! module claim that the container "has no faithful safe-Rust analog" is
+//! superseded.
+//!
+//! ## Ownership (`owner`)
+//!
+//! A `Vec<Box<dyn Object>>` always owns its elements and frees them on
+//! drop. That is exactly htop's `owner == true` case: dropping a `Box`
+//! *is* `Object_delete`. So every remove/replace path takes the boxed
+//! element out of the `Vec` and, when `owner`, drops it (freeing) and
+//! returns `None`; when `!owner`, it returns `Some(box)`, transferring
+//! ownership to the caller (nothing is freed) — mirroring C returning the
+//! bare `Object*`. The only place `Box` cannot mirror `!owner` semantics
+//! is a `Vector` that holds pointers it does *not* own and must never
+//! free (`Vector_splice` below); that stays stubbed.
+//!
+//! # Ported
+//!
+//! - `Vector_new` (`Vector.c:19`), `Vector_countEquals` (`Vector.c:57`),
+//!   `Vector_get` (`Vector.c:67`), `Vector_size` (`Vector.c:75`),
+//!   `Vector_prune` (`Vector.c:82`),
+//!   `Vector_quickSortCustomCompare` (`Vector.c:170`),
+//!   `Vector_insertionSort` (`Vector.c:177`), `Vector_insert`
+//!   (`Vector.c:195`), `Vector_take` (`Vector.c:215`), `Vector_remove`
+//!   (`Vector.c:229`), `Vector_softRemove` (`Vector.c:239`),
+//!   `Vector_compact` (`Vector.c:258`), `Vector_moveUp` (`Vector.c:282`),
+//!   `Vector_moveDown` (`Vector.c:294`), `Vector_set` (`Vector.c:306`),
+//!   `Vector_add` (`Vector.c:342`).
+//! - The sort/search core the container delegates to: `swap`
+//!   (`Vector.c:98`), `partition` (`Vector.c:106`), `quickSort`
+//!   (`Vector.c:121`), `insertionSort` (`Vector.c:154`), and
+//!   `Vector_indexOf` (`Vector.c:352`, the generic slice form —
+//!   `Vector_quickSortCustomCompare` / `Vector_insertionSort` /
+//!   the container's index-of all reuse these rather than duplicating).
+//!
+//! # Stubbed (honest, with the reason)
+//!
+//! - `Vector_delete` (`Vector.c:36`) — heap-free of the array + struct
+//!   (freeing each element when `owner`). The `Vec<Box>` owns its
+//!   allocation and elements, so `Drop` performs the whole routine; there
+//!   is no algorithm left to port (the `History_delete` precedent).
+//! - `Vector_splice` (`Vector.c:367`) — `assert(!this->owner)`: it copies
+//!   the *pointers* of another `Vector` it will not own (shared/aliased
+//!   `Object*`). A `Box<dyn Object>` is a unique owner and cannot model
+//!   two `Vector`s aliasing the same element, so this cannot be ported
+//!   faithfully in the owning `Vec<Box>` model.
+//! - `Vector_merge` (`Vector.c:329`) — COMMENTED OUT in the C source
+//!   (inside a `/* */` block): dead code that never compiles into htop.
+//!   It only appears in the C-name snapshot because the extractor greps
+//!   through comments.
+//! - `combSort` (`Vector.c:134`) — likewise COMMENTED OUT in the C
+//!   source; porting it would be faithful to a comment, not to behavior.
+//! - `Vector_resizeIfNecessary` (`Vector.c:184`) and `Vector_isConsistent`
+//!   (`Vector.c:50`) are `static` C helpers with no faithful body in this
+//!   model: capacity growth is `Vec`'s job, and the consistency invariant
+//!   (`items <= arraySize`, `!isDirty`) is what `Vec` bounds + the
+//!   `isDirty` flag already enforce.
+//!
+//! The C `assert(...)` calls on struct/`Object`-type consistency, index
+//! non-negativity, and non-`NULL` slots are represented as `debug_assert!`
+//! where they carry meaning (notably the `Object_isA` type-tag checks) and
+//! otherwise left to `Vec`'s own bounds checking, matching how the sort
+//! core below already drops them.
 #![allow(non_snake_case)]
+#![allow(dead_code)]
+
+use core::ffi::{c_int, c_uint};
+
+use crate::ported::object::{Object, ObjectClass, Object_isA};
 
 /// Port of `swap(Object** array, int indexA, int indexB)` from
 /// `Vector.c:98`. Exchanges the elements at `indexA` and `indexB`.
@@ -147,6 +211,10 @@ pub fn insertionSort<T>(
 /// or the C sentinel `-1` when absent (kept as an `isize` sentinel, not
 /// an `Option`, to mirror the C `int` return). The `Object`-type and
 /// non-null-slot asserts are omitted.
+///
+/// This is the generic slice form; the container's index-of (C
+/// `Vector_indexOf` taking a `Vector*`) reuses it over
+/// [`Vector::array`], so there is a single implementation, not two.
 pub fn Vector_indexOf<T>(array: &[T], search: &T, compare: &impl Fn(&T, &T) -> i32) -> isize {
     let mut i: isize = 0;
     while (i as usize) < array.len() {
@@ -156,6 +224,301 @@ pub fn Vector_indexOf<T>(array: &[T], search: &T, compare: &impl Fn(&T, &T) -> i
         i += 1;
     }
     -1
+}
+
+/// Port of `struct Vector_` (`Vector.h:17`). See the module docs for the
+/// full field mapping. The C `Object** array` + `int items` collapse to a
+/// single `Vec<Option<Box<dyn Object>>>` whose length *is* `items`; the C
+/// `int arraySize` / `int growthRate` are subsumed by `Vec` capacity
+/// growth, so only `type_` (C `type`, renamed — `type` is a Rust keyword),
+/// `owner`, and `isDirty` remain as scalar fields.
+pub struct Vector {
+    /// C `Object** array` + `int items`: the owning element slots. `None`
+    /// models a C `NULL` hole (from `Vector_softRemove`); `array.len()` is
+    /// the C `items` count.
+    pub array: Vec<Option<Box<dyn Object>>>,
+    /// C `const ObjectClass* type`: the class every element must be an
+    /// instance of (checked via [`Object_isA`] where C asserts it).
+    pub type_: &'static ObjectClass,
+    /// C `bool owner`: when `true`, removed/replaced elements are freed
+    /// (here: the `Box` is dropped).
+    pub owner: bool,
+    /// C `bool isDirty`: set by [`Vector_softRemove`], cleared by
+    /// [`Vector_compact`]/[`Vector_prune`].
+    pub isDirty: bool,
+}
+
+/// Port of `Vector* Vector_new(const ObjectClass* type, bool owner, int
+/// size)` from `Vector.c:19`. Allocates an empty vector. The C `size` is
+/// the initial `arraySize`/`growthRate`; here it only preallocates `Vec`
+/// capacity (growth is `Vec`'s job), so no `arraySize`/`growthRate` field
+/// is kept. `xCalloc` zeroing the slots corresponds to the `Vec` simply
+/// being empty. `isDirty` starts `false`.
+pub fn Vector_new(type_: &'static ObjectClass, owner: bool, size: c_int) -> Vector {
+    debug_assert!(size > 0);
+    Vector {
+        array: Vec::with_capacity(size as usize),
+        type_,
+        owner,
+        isDirty: false,
+    }
+}
+
+/// TODO: port of `void Vector_delete(Vector* this)` from `Vector.c:36`.
+/// Frees each owned element then the array and struct. The `Vec<Box>`
+/// owns its allocation and (when `owner`) its elements, so `Drop` runs
+/// the whole free routine — there is no body to port (the
+/// `History_delete` precedent). Left as a stub.
+pub fn Vector_delete() {
+    todo!("port of Vector.c:36 — Drop frees the array and (owned) elements")
+}
+
+/// Port of `bool Vector_countEquals(const Vector* this, unsigned int
+/// expectedCount)` from `Vector.c:57`. Returns whether the number of
+/// non-`NULL` (`Some`) slots equals `expectedCount` — a debug/consistency
+/// check that counts live elements while ignoring `softRemove` holes.
+pub fn Vector_countEquals(this: &Vector, expectedCount: c_uint) -> bool {
+    let n = this.array.iter().filter(|o| o.is_some()).count();
+    n as c_uint == expectedCount
+}
+
+/// Port of `Object* Vector_get(const Vector* this, size_t idx)` from
+/// `Vector.c:67`. Returns the element at `idx`, mirroring the C asserts:
+/// `idx` in bounds (`Vec` indexing), the slot non-`NULL` (`expect` on the
+/// `Option`), and the element being an instance of `this->type`
+/// (`debug_assert!(Object_isA(...))`).
+pub fn Vector_get(this: &Vector, idx: usize) -> &dyn Object {
+    let o = this.array[idx]
+        .as_deref()
+        .expect("Vector_get: NULL slot (C asserts this->array[idx])");
+    debug_assert!(Object_isA(Some(o), this.type_));
+    o
+}
+
+/// Port of `int Vector_size(const Vector* this)` from `Vector.c:75`.
+/// Returns the logical element count, which is the `Vec`'s length
+/// (C `this->items`).
+pub fn Vector_size(this: &Vector) -> c_int {
+    this.array.len() as c_int
+}
+
+/// Port of `void Vector_prune(Vector* this)` from `Vector.c:82`. Empties
+/// the vector: C frees every element when `owner` then `memset`s the
+/// array to `NULL` and zeroes `items`. `Vec::clear` drops every element
+/// (each dropped `Box` is the `Object_delete` of the `owner` case) and
+/// sets the length to 0 in one step; `isDirty` is cleared.
+pub fn Vector_prune(this: &mut Vector) {
+    this.array.clear();
+    this.isDirty = false;
+}
+
+/// Port of `void Vector_quickSortCustomCompare(Vector* this,
+/// Object_Compare compare)` from `Vector.c:170`. Sorts the whole vector
+/// with a caller-supplied comparator by delegating to the generic
+/// [`quickSort`] over [`Vector::array`]. The C `Object_Compare`
+/// (`int(const void*, const void*)`) is the safe-Rust
+/// `Fn(&dyn Object, &dyn Object) -> i32`; it is adapted to the slice's
+/// `Option<Box<dyn Object>>` element type by unwrapping each slot (a
+/// consistent, sorted vector has no holes — C sorts over `[0, items)`).
+pub fn Vector_quickSortCustomCompare(
+    this: &mut Vector,
+    compare: impl Fn(&dyn Object, &dyn Object) -> i32,
+) {
+    let n = this.array.len() as isize;
+    let cmp = |a: &Option<Box<dyn Object>>, b: &Option<Box<dyn Object>>| -> i32 {
+        compare(
+            a.as_deref().expect("quickSort over a hole"),
+            b.as_deref().expect("quickSort over a hole"),
+        )
+    };
+    quickSort(&mut this.array, 0, n - 1, &cmp);
+}
+
+/// Port of `void Vector_insertionSort(Vector* this)` from `Vector.c:177`.
+/// Sorts the whole vector using the class's own comparator
+/// (`this->type->compare`), by delegating to the generic [`insertionSort`]
+/// over [`Vector::array`]. The class comparator is `Object::compare`, so
+/// the adapter is `a.compare(b)`.
+pub fn Vector_insertionSort(this: &mut Vector) {
+    let n = this.array.len() as isize;
+    let cmp = |a: &Option<Box<dyn Object>>, b: &Option<Box<dyn Object>>| -> i32 {
+        a.as_deref()
+            .expect("insertionSort over a hole")
+            .compare(b.as_deref().expect("insertionSort over a hole"))
+    };
+    insertionSort(&mut this.array, 0, n - 1, &cmp);
+}
+
+/// Port of `void Vector_insert(Vector* this, int idx, void* data_)` from
+/// `Vector.c:195`. Inserts `data` at `idx`, clamping `idx` down to the
+/// current length when it points past the end (C `if (idx > items) idx =
+/// items;`). The C grow + `memmove` (shift the tail right by one) is
+/// exactly `Vec::insert`. The `Object_isA(data, type)` assert is kept.
+pub fn Vector_insert(this: &mut Vector, idx: c_int, data: Box<dyn Object>) {
+    debug_assert!(idx >= 0);
+    debug_assert!(Object_isA(Some(&*data), this.type_));
+    let mut idx = idx as usize;
+    if idx > this.array.len() {
+        idx = this.array.len();
+    }
+    this.array.insert(idx, Some(data));
+}
+
+/// Port of `Object* Vector_take(Vector* this, int idx)` from
+/// `Vector.c:215`. Removes and returns the element at `idx` *without*
+/// freeing it (the shared take path behind `Vector_remove`). The C
+/// `items--` + `memmove` (shift the tail left) + trailing `NULL` is
+/// exactly `Vec::remove`, which returns the removed element; the slot must
+/// be non-`NULL`, so the `Option` is unwrapped.
+pub fn Vector_take(this: &mut Vector, idx: c_int) -> Box<dyn Object> {
+    debug_assert!(idx >= 0 && (idx as usize) < this.array.len());
+    this.array
+        .remove(idx as usize)
+        .expect("Vector_take: NULL slot (C asserts removed)")
+}
+
+/// Port of `Object* Vector_remove(Vector* this, int idx)` from
+/// `Vector.c:229`. Takes the element out via [`Vector_take`]; when
+/// `owner` it frees it (drops the `Box`) and returns `None` (C returns
+/// `NULL`), otherwise it hands ownership back as `Some(box)` (C returns
+/// the `Object*`).
+pub fn Vector_remove(this: &mut Vector, idx: c_int) -> Option<Box<dyn Object>> {
+    let removed = Vector_take(this, idx);
+    if this.owner {
+        drop(removed);
+        None
+    } else {
+        Some(removed)
+    }
+}
+
+/// Port of `Object* Vector_softRemove(Vector* this, int idx)` from
+/// `Vector.c:239`. Punches a `NULL` hole at `idx` without reclaiming the
+/// slot (`array.len()` / `items` is unchanged) and marks the vector
+/// `isDirty` (a later [`Vector_compact`] reclaims it). `Option::take`
+/// leaves `None` in place and yields the element; when `owner` it is
+/// freed and `None` returned, else `Some(box)` is returned.
+pub fn Vector_softRemove(this: &mut Vector, idx: c_int) -> Option<Box<dyn Object>> {
+    debug_assert!(idx >= 0 && (idx as usize) < this.array.len());
+    let removed = this.array[idx as usize]
+        .take()
+        .expect("Vector_softRemove: NULL slot (C asserts removed)");
+    this.isDirty = true;
+    if this.owner {
+        drop(removed);
+        None
+    } else {
+        Some(removed)
+    }
+}
+
+/// Port of `void Vector_compact(Vector* this, int dirtyIndex)` from
+/// `Vector.c:258`. Reclaims the `NULL` holes left by
+/// [`Vector_softRemove`], starting at `dirtyIndex` (the first hole). A
+/// no-op when not `isDirty`, or when `dirtyIndex` is past the end. The C
+/// pointer-copy compaction (`array[dirtyIndex++] = array[i]` for each
+/// non-`NULL` `i`, then `memset` the tail and set `items = dirtyIndex`)
+/// becomes: `take` each `Some` from `i > dirtyIndex` down to the write
+/// cursor, then `truncate` to the write cursor (dropping the now-`None`
+/// tail — no elements are freed there). `isDirty` is cleared.
+pub fn Vector_compact(this: &mut Vector, dirtyIndex: c_int) {
+    if !this.isDirty {
+        return;
+    }
+    debug_assert!(0 <= dirtyIndex);
+    let dirtyIndex = dirtyIndex as usize;
+    if dirtyIndex >= this.array.len() {
+        return;
+    }
+    debug_assert!(this.array[dirtyIndex].is_none());
+
+    let items = this.array.len();
+    let mut write = dirtyIndex;
+    for i in (dirtyIndex + 1)..items {
+        if this.array[i].is_some() {
+            let val = this.array[i].take();
+            this.array[write] = val;
+            write += 1;
+        }
+    }
+    // Everything from `write` on is a hole; drop the tail (no live elems).
+    this.array.truncate(write);
+    this.isDirty = false;
+}
+
+/// Port of `void Vector_moveUp(Vector* this, int idx)` from
+/// `Vector.c:282`. Swaps the element at `idx` with the one above it; a
+/// no-op at `idx == 0`.
+pub fn Vector_moveUp(this: &mut Vector, idx: c_int) {
+    debug_assert!(idx >= 0 && (idx as usize) < this.array.len());
+    if idx == 0 {
+        return;
+    }
+    this.array.swap(idx as usize, (idx - 1) as usize);
+}
+
+/// Port of `void Vector_moveDown(Vector* this, int idx)` from
+/// `Vector.c:294`. Swaps the element at `idx` with the one below it; a
+/// no-op at the last index (`idx == items - 1`).
+pub fn Vector_moveDown(this: &mut Vector, idx: c_int) {
+    debug_assert!(idx >= 0 && (idx as usize) < this.array.len());
+    if idx as usize == this.array.len() - 1 {
+        return;
+    }
+    this.array.swap(idx as usize, (idx + 1) as usize);
+}
+
+/// Port of `void Vector_set(Vector* this, int idx, void* data_)` from
+/// `Vector.c:306`. Stores `data` at `idx`. When `idx` is within
+/// `[0, items)` it replaces the existing slot (freeing the old element
+/// when `owner` — dropping the replaced `Box`). When `idx >= items` it
+/// extends the vector: C `xReallocArrayZero` grows `arraySize` and
+/// `items = idx + 1`, leaving the intermediate slots `NULL`; here that is
+/// pushing `None` holes up to `idx`, then the element — so the length
+/// becomes `idx + 1`. The `Object_isA(data, type)` assert is kept.
+pub fn Vector_set(this: &mut Vector, idx: c_int, data: Box<dyn Object>) {
+    debug_assert!(idx >= 0);
+    debug_assert!(Object_isA(Some(&*data), this.type_));
+    let idx = idx as usize;
+    if idx >= this.array.len() {
+        while this.array.len() < idx {
+            this.array.push(None);
+        }
+        this.array.push(Some(data));
+    } else {
+        // owner: dropping the replaced Box is the C `Object_delete`.
+        this.array[idx] = Some(data);
+    }
+}
+
+/// TODO: port of `static void Vector_merge(Vector* this, Vector* v2)` from
+/// `Vector.c:329`. COMMENTED OUT in the C source (inside a `/* */`
+/// block) — dead code that never compiles into htop; it appears in the
+/// C-name snapshot only because the extractor greps through comments.
+/// Left as a stub.
+pub fn Vector_merge() {
+    todo!("port of Vector.c:329 — commented-out (dead) code in the C source")
+}
+
+/// Port of `void Vector_add(Vector* this, void* data_)` from
+/// `Vector.c:342`. Appends `data` to the end by calling [`Vector_set`] at
+/// `idx == items` (exactly as the C does), which grows the length by one.
+/// The `Object_isA(data, type)` assert is kept.
+pub fn Vector_add(this: &mut Vector, data: Box<dyn Object>) {
+    debug_assert!(Object_isA(Some(&*data), this.type_));
+    let i = this.array.len();
+    Vector_set(this, i as c_int, data);
+    debug_assert!(this.array.len() == i + 1);
+}
+
+/// TODO: port of `void Vector_splice(Vector* this, Vector* from)` from
+/// `Vector.c:367`. `assert(!this->owner)`: it copies the *pointers* of
+/// `from` into `this` without owning them (shared/aliased `Object*`).
+/// A `Box<dyn Object>` is a unique owner, so it cannot model two
+/// `Vector`s aliasing the same element — this has no faithful analog in
+/// the owning `Vec<Box>` model. Left as a stub.
+pub fn Vector_splice() {
+    todo!("port of Vector.c:367 — needs !owner non-owning aliasing; Box can't share an Object")
 }
 
 #[cfg(test)]
@@ -262,5 +625,239 @@ mod tests {
         let v = vec![1, 2, 3];
         assert_eq!(Vector_indexOf(&v, &999, &|_, _| 0), 0);
         assert_eq!(Vector_indexOf(&v, &1, &|_, _| 1), -1);
+    }
+
+    // ── container tests ───────────────────────────────────────────────
+    //
+    // A tiny concrete Object holding an `i32`, following the `object.rs`
+    // test pattern: a `static` class (identity by address) extending the
+    // root `Object_class`, with a `compare` that downcasts via `Any`.
+    use crate::ported::object::Object_class;
+    use core::any::Any;
+
+    static TEST_CLASS: ObjectClass = ObjectClass {
+        extends: Some(&Object_class),
+    };
+
+    struct TestObj {
+        n: i32,
+    }
+    impl Object for TestObj {
+        fn klass(&self) -> &'static ObjectClass {
+            &TEST_CLASS
+        }
+        fn compare(&self, other: &dyn Object) -> i32 {
+            let any: &dyn Any = other;
+            let o = any
+                .downcast_ref::<TestObj>()
+                .expect("compare across incompatible classes");
+            (self.n > o.n) as i32 - (self.n < o.n) as i32
+        }
+    }
+
+    fn obj(n: i32) -> Box<dyn Object> {
+        Box::new(TestObj { n })
+    }
+
+    // Read back the `i32` a boxed element carries.
+    fn val(o: &dyn Object) -> i32 {
+        let any: &dyn Any = o;
+        any.downcast_ref::<TestObj>().unwrap().n
+    }
+
+    fn owning() -> Vector {
+        Vector_new(&TEST_CLASS, true, 10)
+    }
+    fn borrowing() -> Vector {
+        Vector_new(&TEST_CLASS, false, 10)
+    }
+
+    #[test]
+    fn new_is_empty_and_records_flags() {
+        let v = Vector_new(&TEST_CLASS, true, 8);
+        assert_eq!(Vector_size(&v), 0);
+        assert!(v.owner);
+        assert!(!v.isDirty);
+        assert!(v.array.is_empty());
+    }
+
+    #[test]
+    fn add_size_and_get() {
+        let mut v = owning();
+        Vector_add(&mut v, obj(10));
+        Vector_add(&mut v, obj(20));
+        Vector_add(&mut v, obj(30));
+        assert_eq!(Vector_size(&v), 3);
+        assert_eq!(val(Vector_get(&v, 0)), 10);
+        assert_eq!(val(Vector_get(&v, 1)), 20);
+        assert_eq!(val(Vector_get(&v, 2)), 30);
+        // countEquals sees all three live slots.
+        assert!(Vector_countEquals(&v, 3));
+    }
+
+    #[test]
+    fn insert_shifts_and_clamps_past_end() {
+        let mut v = owning();
+        Vector_add(&mut v, obj(1));
+        Vector_add(&mut v, obj(3));
+        // Insert between: [1,3] -> [1,2,3].
+        Vector_insert(&mut v, 1, obj(2));
+        assert_eq!(Vector_size(&v), 3);
+        assert_eq!(val(Vector_get(&v, 0)), 1);
+        assert_eq!(val(Vector_get(&v, 1)), 2);
+        assert_eq!(val(Vector_get(&v, 2)), 3);
+        // idx past the end clamps to items (append).
+        Vector_insert(&mut v, 99, obj(4));
+        assert_eq!(Vector_size(&v), 4);
+        assert_eq!(val(Vector_get(&v, 3)), 4);
+    }
+
+    #[test]
+    fn take_removes_and_returns_without_freeing() {
+        let mut v = borrowing();
+        Vector_add(&mut v, obj(10));
+        Vector_add(&mut v, obj(20));
+        Vector_add(&mut v, obj(30));
+        let taken = Vector_take(&mut v, 1);
+        assert_eq!(val(taken.as_ref()), 20);
+        // The tail shifted left; size shrank.
+        assert_eq!(Vector_size(&v), 2);
+        assert_eq!(val(Vector_get(&v, 0)), 10);
+        assert_eq!(val(Vector_get(&v, 1)), 30);
+    }
+
+    #[test]
+    fn remove_frees_when_owner_returns_when_not() {
+        // owner: returns None (freed).
+        let mut owned = owning();
+        Vector_add(&mut owned, obj(1));
+        Vector_add(&mut owned, obj(2));
+        assert!(Vector_remove(&mut owned, 0).is_none());
+        assert_eq!(Vector_size(&owned), 1);
+        assert_eq!(val(Vector_get(&owned, 0)), 2);
+
+        // non-owner: returns the element (ownership handed back).
+        let mut shared = borrowing();
+        Vector_add(&mut shared, obj(7));
+        Vector_add(&mut shared, obj(8));
+        let got = Vector_remove(&mut shared, 1).expect("non-owner returns the element");
+        assert_eq!(val(got.as_ref()), 8);
+        assert_eq!(Vector_size(&shared), 1);
+    }
+
+    #[test]
+    fn soft_remove_punches_hole_then_compact_reclaims() {
+        let mut v = borrowing();
+        for n in [10, 20, 30, 40] {
+            Vector_add(&mut v, obj(n));
+        }
+        // Punch a hole at index 1; length is unchanged, dirty is set.
+        let removed = Vector_softRemove(&mut v, 1).expect("non-owner returns the element");
+        assert_eq!(val(removed.as_ref()), 20);
+        assert!(v.isDirty);
+        assert_eq!(Vector_size(&v), 4); // still 4 slots (one is a hole)
+        assert!(v.array[1].is_none());
+        // Live count excludes the hole.
+        assert!(Vector_countEquals(&v, 3));
+
+        // Compact from the hole: slots pack down, length shrinks, clean.
+        Vector_compact(&mut v, 1);
+        assert!(!v.isDirty);
+        assert_eq!(Vector_size(&v), 3);
+        assert_eq!(val(Vector_get(&v, 0)), 10);
+        assert_eq!(val(Vector_get(&v, 1)), 30);
+        assert_eq!(val(Vector_get(&v, 2)), 40);
+    }
+
+    #[test]
+    fn compact_is_noop_when_not_dirty() {
+        let mut v = borrowing();
+        Vector_add(&mut v, obj(1));
+        Vector_add(&mut v, obj(2));
+        Vector_compact(&mut v, 0); // not dirty -> unchanged
+        assert_eq!(Vector_size(&v), 2);
+    }
+
+    #[test]
+    fn move_up_and_down_swap_neighbors_with_edge_noops() {
+        let mut v = owning();
+        for n in [10, 20, 30] {
+            Vector_add(&mut v, obj(n));
+        }
+        // moveUp(2): [10,20,30] -> [10,30,20].
+        Vector_moveUp(&mut v, 2);
+        assert_eq!(val(Vector_get(&v, 1)), 30);
+        assert_eq!(val(Vector_get(&v, 2)), 20);
+        // moveUp(0) is a no-op.
+        Vector_moveUp(&mut v, 0);
+        assert_eq!(val(Vector_get(&v, 0)), 10);
+        // moveDown(0): [10,30,20] -> [30,10,20].
+        Vector_moveDown(&mut v, 0);
+        assert_eq!(val(Vector_get(&v, 0)), 30);
+        assert_eq!(val(Vector_get(&v, 1)), 10);
+        // moveDown at last index is a no-op.
+        Vector_moveDown(&mut v, 2);
+        assert_eq!(val(Vector_get(&v, 2)), 20);
+    }
+
+    #[test]
+    fn set_replaces_in_range_and_extends_with_holes_beyond_items() {
+        let mut v = owning();
+        Vector_add(&mut v, obj(10));
+        Vector_add(&mut v, obj(20));
+        // In-range replace (owner frees the old element).
+        Vector_set(&mut v, 1, obj(99));
+        assert_eq!(Vector_size(&v), 2);
+        assert_eq!(val(Vector_get(&v, 1)), 99);
+
+        // Beyond items: index 4 extends length to 5, holes at 2 and 3.
+        Vector_set(&mut v, 4, obj(500));
+        assert_eq!(Vector_size(&v), 5);
+        assert!(v.array[2].is_none());
+        assert!(v.array[3].is_none());
+        assert_eq!(val(Vector_get(&v, 4)), 500);
+        // Two live originals + the placed element = 3 non-holes.
+        assert!(Vector_countEquals(&v, 3));
+    }
+
+    #[test]
+    fn index_of_over_container_reuses_generic_helper() {
+        let mut v = owning();
+        for n in [10, 20, 30, 20, 40] {
+            Vector_add(&mut v, obj(n));
+        }
+        // The container's index-of = the generic helper over `v.array`,
+        // with a comparator that dispatches through `Object::compare`.
+        let cmp = |a: &Option<Box<dyn Object>>, b: &Option<Box<dyn Object>>| -> i32 {
+            a.as_deref().unwrap().compare(b.as_deref().unwrap())
+        };
+        let needle: Option<Box<dyn Object>> = Some(obj(20));
+        assert_eq!(Vector_indexOf(&v.array, &needle, &cmp), 1); // first match
+        let miss: Option<Box<dyn Object>> = Some(obj(99));
+        assert_eq!(Vector_indexOf(&v.array, &miss, &cmp), -1);
+    }
+
+    #[test]
+    fn quicksort_and_insertion_sort_order_the_container() {
+        // quickSort with a custom (descending) comparator.
+        let mut v = owning();
+        for n in [3, 1, 4, 1, 5, 9, 2, 6] {
+            Vector_add(&mut v, obj(n));
+        }
+        Vector_quickSortCustomCompare(&mut v, |a, b| {
+            // descending: flip operands relative to the class compare
+            b.compare(a)
+        });
+        let got: Vec<i32> = (0..Vector_size(&v)).map(|i| val(Vector_get(&v, i as usize))).collect();
+        assert_eq!(got, vec![9, 6, 5, 4, 3, 2, 1, 1]);
+
+        // insertionSort uses the class's own (ascending) compare.
+        let mut w = owning();
+        for n in [3, 1, 4, 1, 5, 9, 2, 6] {
+            Vector_add(&mut w, obj(n));
+        }
+        Vector_insertionSort(&mut w);
+        let got2: Vec<i32> = (0..Vector_size(&w)).map(|i| val(Vector_get(&w, i as usize))).collect();
+        assert_eq!(got2, vec![1, 1, 2, 3, 4, 5, 6, 9]);
     }
 }

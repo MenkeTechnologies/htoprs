@@ -5,11 +5,22 @@
 //! spec name-for-name is the point of the port.
 //!
 //! The C allocation wrappers (`xMalloc`/`xCalloc`/`xRealloc`/… and
-//! `fail`), the null-terminated helpers (`strnlen`,
-//! `String_safeStrncpy`), the varargs formatters (`xAsprintf`,
+//! `fail`), `strnlen`, the varargs formatters (`xAsprintf`,
 //! `xSnprintf`), `full_write`, and `String_freeArray` have no
 //! faithful safe-Rust analog (Rust owns its allocation, bounds, and
 //! lifetimes), so they are intentionally not ported here.
+//!
+//! Deferred (blocked, not faithfully addable yet): the `static inline`
+//! header helpers `String_stripControlChars`, `Char_isControl`, and
+//! `Char_isC1Control` (`XUtils.h:137`-`156`) — the cited blocker for
+//! `InfoScreen_drawTitled`. Their C names are absent from the
+//! checked-in port-purity snapshot
+//! (`tests/data/htop_c_fn_names.txt`): the extractor scans `.c`
+//! sources and the `InfoScreen.c`/`RichString.c` call sites post-date
+//! the snapshot, so a module-level `fn` with any of those names trips
+//! the `build.rs` port-purity gate. Regenerating the snapshot and
+//! editing the allowlist are out of scope for this port, so these
+//! stay deferred rather than break `cargo build`.
 #![allow(non_snake_case)]
 
 /// Port of `String_cat(const char* s1, const char* s2)` from
@@ -85,6 +96,71 @@ pub fn String_contains_i(s1: &str, s2: &str, multi: bool) -> bool {
     } else {
         s1.to_ascii_lowercase().contains(&s2.to_ascii_lowercase())
     }
+}
+
+/// Port of `String_startsWith(const char* s, const char* match)` from
+/// `XUtils.h:54` (`static inline`). True iff `s` begins with the byte
+/// prefix `match`. The C `strncmp(s, match, strlen(match)) == 0` is a
+/// byte-prefix test; `str::starts_with` is the same on UTF-8 bytes.
+pub fn String_startsWith(s: &str, match_: &str) -> bool {
+    s.starts_with(match_)
+}
+
+/// Port of `String_eq(const char* s1, const char* s2)` from
+/// `XUtils.h:61` (`static inline`). Byte-exact string equality
+/// (`strcmp(s1, s2) == 0`).
+pub fn String_eq(s1: &str, s2: &str) -> bool {
+    s1 == s2
+}
+
+/// Port of `String_eq_nullable(const char* s1, const char* s2)` from
+/// `XUtils.h:65` (`static inline`). The C code returns true when the
+/// pointers are identical (covers both-`NULL`), true when both are
+/// non-`NULL` and equal, and false otherwise (exactly one `NULL`).
+/// `None` models the C `NULL` pointer.
+pub fn String_eq_nullable(s1: Option<&str>, s2: Option<&str>) -> bool {
+    match (s1, s2) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Port of `String_strchrnul(const char* s, int c)` from `XUtils.h:93`
+/// (`static inline`, the `!HAVE_STRCHRNUL` fallback branch). Returns
+/// the byte index of the first occurrence of `c` in `s`, or `s.len()`
+/// (the position of the terminating NUL) when `c` is not found — the
+/// index analog of the C pointer return.
+pub fn String_strchrnul(s: &str, c: u8) -> usize {
+    match s.bytes().position(|b| b == c) {
+        Some(i) => i,
+        None => s.len(),
+    }
+}
+
+/// Port of `String_safeStrncpy(char* restrict dest, const char*
+/// restrict src, size_t size)` from `XUtils.c:241`. Cited blocker for
+/// `DynamicMeter_getUiName`. Copies bytes from `src` into the fixed
+/// buffer `dest` (whose length plays the role of the C `size` arg),
+/// always NUL-terminating, and returns the number of bytes copied
+/// (excluding the terminator). Stops at `dest.len() - 1` bytes, at a
+/// NUL byte in `src`, or at the end of `src` — the last replacing the
+/// C reliance on a trailing NUL, so byte semantics match for a C
+/// string carried as bytes. Truncation is byte-level (may split a
+/// multi-byte UTF-8 sequence), matching the C copy.
+pub fn String_safeStrncpy(dest: &mut [u8], src: &[u8]) -> usize {
+    let size = dest.len();
+    assert!(size > 0);
+
+    let mut i = 0;
+    while i < size - 1 && i < src.len() && src[i] != 0 {
+        dest[i] = src[i];
+        i += 1;
+    }
+
+    dest[i] = 0;
+
+    i
 }
 
 /// Port of `compareRealNumbers(double a, double b)` from
@@ -194,6 +270,87 @@ mod tests {
         assert!(!String_contains_i("safari", "chrome|fox|edge", true));
         // multi=false ignores '|' — treats it literally
         assert!(!String_contains_i("firefox", "chrome|fox", false));
+    }
+
+    #[test]
+    fn string_starts_with_byte_prefix() {
+        assert!(String_startsWith("firefox", "fire"));
+        assert!(String_startsWith("abc", "")); // empty match always true
+        assert!(String_startsWith("abc", "abc")); // equal is a prefix
+        assert!(!String_startsWith("abc", "abcd")); // longer than s
+        assert!(!String_startsWith("abc", "b"));
+        // byte-level, not codepoint-level: partial UTF-8 prefix
+        assert!(String_startsWith("áb", "\u{e1}")); // full 'á'
+    }
+
+    #[test]
+    fn string_eq_byte_exact() {
+        assert!(String_eq("abc", "abc"));
+        assert!(!String_eq("abc", "abd"));
+        assert!(!String_eq("abc", "ab"));
+        assert!(String_eq("", ""));
+        assert!(!String_eq("", "x"));
+    }
+
+    #[test]
+    fn string_eq_nullable_null_semantics() {
+        // both NULL -> true (C pointer identity)
+        assert!(String_eq_nullable(None, None));
+        // both non-null and equal
+        assert!(String_eq_nullable(Some("x"), Some("x")));
+        // both non-null, unequal
+        assert!(!String_eq_nullable(Some("x"), Some("y")));
+        // exactly one NULL -> false
+        assert!(!String_eq_nullable(Some("x"), None));
+        assert!(!String_eq_nullable(None, Some("x")));
+        // empty-string is non-null: equal to itself, not to None
+        assert!(String_eq_nullable(Some(""), Some("")));
+        assert!(!String_eq_nullable(Some(""), None));
+    }
+
+    #[test]
+    fn string_strchrnul_index_or_len() {
+        assert_eq!(String_strchrnul("a=b", b'='), 1);
+        assert_eq!(String_strchrnul("abc", b'a'), 0);
+        // not found -> len (position of terminating NUL)
+        assert_eq!(String_strchrnul("abc", b'z'), 3);
+        assert_eq!(String_strchrnul("", b'x'), 0);
+        // first occurrence only
+        assert_eq!(String_strchrnul("a=b=c", b'='), 1);
+    }
+
+    #[test]
+    fn string_safe_strncpy_truncates_and_terminates() {
+        // exact-fit: 5 bytes + NUL into a 6-byte buffer
+        let mut buf = [0u8; 6];
+        assert_eq!(String_safeStrncpy(&mut buf, b"hello"), 5);
+        assert_eq!(&buf, b"hello\0");
+
+        // truncation boundary: only size-1 == 3 bytes fit
+        let mut buf = [0xFFu8; 4];
+        assert_eq!(String_safeStrncpy(&mut buf, b"hello"), 3);
+        assert_eq!(&buf, b"hel\0");
+
+        // size == 1: nothing copied, just the terminator
+        let mut buf = [0xFFu8; 1];
+        assert_eq!(String_safeStrncpy(&mut buf, b"x"), 0);
+        assert_eq!(&buf, b"\0");
+
+        // empty src: terminator only
+        let mut buf = [0xFFu8; 8];
+        assert_eq!(String_safeStrncpy(&mut buf, b""), 0);
+        assert_eq!(buf[0], 0);
+
+        // embedded NUL in src stops the copy (C src[i] truthiness)
+        let mut buf = [0xFFu8; 8];
+        assert_eq!(String_safeStrncpy(&mut buf, b"ab\0cd"), 2);
+        assert_eq!(&buf[..3], b"ab\0");
+
+        // byte-level truncation may split a UTF-8 sequence, matching C:
+        // 'á' is 0xC3 0xA1; a 2-byte buffer copies only 0xC3
+        let mut buf = [0u8; 2];
+        assert_eq!(String_safeStrncpy(&mut buf, "á".as_bytes()), 1);
+        assert_eq!(&buf, &[0xC3u8, 0x00]);
     }
 
     #[test]

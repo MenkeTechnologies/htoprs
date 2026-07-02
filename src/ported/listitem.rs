@@ -4,29 +4,31 @@
 //! `non_snake_case` is allowed for the whole module — matching the
 //! spec name-for-name is the point of the port.
 //!
-//! [`ListItem_compare`], [`ListItem_init`], and [`ListItem_append`] are
-//! ported: they only read/write the `value` string (and the plain
-//! `key`/`moving` scalars). [`ListItem_display`] is ported for its
-//! always-executed path — it appends `value` with `CRT_colors[DEFAULT_COLOR]`
-//! through the real [`RichString`]/[`ColorElements`] substrate — and the
-//! [`Object`] vtable is wired via `impl Object for ListItem` (dispatching
-//! `display`/`compare` faithfully). The `moving` prefix branch selects its
-//! glyph from `CRT_utf8` (`↕ ` vs `+ `), an unported `CRT.c:91` global that
-//! lives in `crt.rs` (off-limits to this module), so that one branch stays a
-//! `todo!()` — which makes `gen_port_report.py` classify `ListItem_display`
-//! as *stubbed*, not *ported*. `ListItem_new` (allocates via `AllocThis`)
-//! and `ListItem_delete` (frees through the `Object` cast) have no
-//! safe-Rust free-fn analog (construction is a struct literal; destruction
-//! is `Drop`), so they remain `todo!()` stubs.
+//! [`ListItem_compare`], [`ListItem_init`], [`ListItem_append`],
+//! [`ListItem_new`], and [`ListItem_display`] are ported. The comparison,
+//! init, and append paths only read/write the `value` string (and the plain
+//! `key`/`moving` scalars). [`ListItem_display`] renders both paths: the
+//! always-run append of `value` with `CRT_colors[DEFAULT_COLOR]` through the
+//! real [`RichString`]/[`ColorElements`] substrate, and the `moving` prefix
+//! branch, which selects its glyph (`↕ ` vs `+ `) from the now-available
+//! [`CRT_utf8`] (`CRT.c:91`, in `crt.rs`) and writes it via
+//! [`RichString_writeWide`]. The [`Object`] vtable is wired via
+//! `impl Object for ListItem` (dispatching `display`/`compare` faithfully).
+//! [`ListItem_new`] is the `AllocThis` constructor: it returns an owned
+//! `ListItem` after [`ListItem_init`], mirroring the `History_new`/
+//! `Affinity_new` owned-return idiom. `ListItem_delete` (frees through the
+//! `Object` cast) has no safe-Rust free-fn analog — destruction is `Drop` —
+//! so it remains a `todo!()` stub.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use std::cmp::Ordering;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
-use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::crt::{ColorElements, ColorScheme, CRT_utf8};
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::richstring::{RichString, RichString_appendWide};
+use crate::ported::richstring::{RichString, RichString_appendWide, RichString_writeWide};
 
 /// Minimal model of the C `ListItem` struct (`ListItem.h`). The C type
 /// embeds an `Object super` (vtable) as its first field; that is only
@@ -48,18 +50,20 @@ pub fn ListItem_delete() {
 /// C first draws a `RichString_writeWide` prefix (`CRT_utf8 ? "↕ " : "+ "`)
 /// in `CRT_colors[DEFAULT_COLOR]`, then always appends `value` in the same
 /// color. `CRT_colors[DEFAULT_COLOR]` is `DEFAULT_COLOR.packed(active
-/// scheme)`. The moving-glyph selection depends on the unported `CRT_utf8`
-/// global (`CRT.c:91`, in the off-limits `crt.rs`), so that branch cannot be
-/// ported faithfully yet and stays a `todo!()`; the always-run value append
-/// is ported exactly.
+/// scheme)`. The moving-glyph selection reads the [`CRT_utf8`] flag
+/// (`CRT.c:91`); the non-`HAVE_LIBNCURSESW` build has no `↕ ` alternative and
+/// always uses `"+ "`, but this port models the `HAVE_LIBNCURSESW` path.
 pub fn ListItem_display(this: &ListItem, out: &mut RichString) {
     let default_color = ColorElements::DEFAULT_COLOR.packed(ColorScheme::active());
     if this.moving {
         // C (HAVE_LIBNCURSESW): RichString_writeWide(out, CRT_colors[DEFAULT_COLOR],
         //                                             CRT_utf8 ? "↕ " : "+ ");
-        // The glyph choice needs the unported CRT_utf8 (CRT.c:91); crt.rs is
-        // off-limits to this module, so this branch is not portable yet.
-        todo!("ListItem.c:30: moving-glyph selection needs unported CRT_utf8 (CRT.c:91)");
+        let glyph: &[u8] = if CRT_utf8.load(AtomicOrdering::Relaxed) {
+            "↕ ".as_bytes()
+        } else {
+            "+ ".as_bytes()
+        };
+        RichString_writeWide(out, default_color, glyph);
     }
     RichString_appendWide(out, default_color, this.value.as_bytes());
 }
@@ -103,9 +107,20 @@ pub fn ListItem_init(this: &mut ListItem, value: &str, key: i32) {
     this.moving = false;
 }
 
-/// TODO: port of `ListItem* ListItem_new(const char* value, int key` from `ListItem.c:47`.
-pub fn ListItem_new() {
-    todo!("port of ListItem.c:47")
+/// Port of `ListItem* ListItem_new(const char* value, int key)` from
+/// `ListItem.c:47`. The C body is `AllocThis(ListItem)` followed by
+/// `ListItem_init(this, value, key)`, returning the fresh object. The
+/// heap allocation becomes an owned return value here — mirroring the
+/// `History_new`/`Affinity_new` owned-return idiom — and [`ListItem_init`]
+/// fills in `value`/`key` and clears `moving`.
+pub fn ListItem_new(value: &str, key: i32) -> ListItem {
+    let mut this = ListItem {
+        value: String::new(),
+        key: 0,
+        moving: false,
+    };
+    ListItem_init(&mut this, value, key);
+    this
 }
 
 /// Port of `ListItem_append(ListItem* this, const char* text)` from
@@ -245,15 +260,44 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CRT_utf8")]
-    fn display_moving_branch_is_blocked_on_crt_utf8() {
+    fn new_initializes_value_key_and_clears_moving() {
+        let it = ListItem_new("entry", 7);
+        assert_eq!(it.value, "entry");
+        assert_eq!(it.key, 7);
+        assert!(!it.moving);
+        // Owned return: an independent object each call (C AllocThis).
+        let other = ListItem_new("", -3);
+        assert_eq!(other.value, "");
+        assert_eq!(other.key, -3);
+        assert!(!other.moving);
+    }
+
+    #[test]
+    fn display_moving_branch_selects_glyph_by_crt_utf8() {
+        // Both glyph branches are exercised in one test because they mutate the
+        // process-shared CRT_utf8 global; splitting them would race under the
+        // parallel test runner. The moving prefix is written via
+        // RichString_writeWide (from index 0), then value is appended.
         let it = ListItem {
             value: "x".to_string(),
             key: 0,
             moving: true,
         };
+
+        // Non-UTF-8: ASCII "+ " prefix.
+        CRT_utf8.store(false, AtomicOrdering::Relaxed);
         let mut rs = RichString::new();
         ListItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "+ x");
+
+        // UTF-8: the "↕ " arrow prefix.
+        CRT_utf8.store(true, AtomicOrdering::Relaxed);
+        let mut rs = RichString::new();
+        ListItem_display(&it, &mut rs);
+        assert_eq!(rendered(&rs), "↕ x");
+
+        // Restore the shared global for other tests.
+        CRT_utf8.store(false, AtomicOrdering::Relaxed);
     }
 
     #[test]

@@ -23,9 +23,6 @@
 //!   `Vector_delete`/`FunctionBar_delete`/`RichString_delete`; in Rust the
 //!   owned fields are released by `Drop`, so there is no algorithm to port.
 //! - [`Panel_splice`] — takes a `Vector* from` (unported `Vector` type).
-//! - [`Panel_selectByTyping`] — needs the `eventHandlerState` scratch
-//!   buffer, `ListItem` downcasts, and the `HandlerResult` enum
-//!   (`MainPanel`/`ScreensPanel` search substrate).
 //! - The `PanelClass` vtable (`eventHandler`/`drawFunctionBar`/
 //!   `printHeader`) is not modeled: [`Panel`] is a plain struct, not an
 //!   `Object` subclass with a dispatch table. [`Panel_setSelected`] and
@@ -52,10 +49,11 @@
 use std::io::{self, Write};
 
 use crate::ported::crt::{
-    self, ColorElements, ColorScheme, KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT, KEY_NPAGE,
-    KEY_PPAGE, KEY_RIGHT, KEY_UP, KEY_WHEELDOWN, KEY_WHEELUP,
+    self, ColorElements, ColorScheme, ERR, KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT,
+    KEY_NPAGE, KEY_PPAGE, KEY_RIGHT, KEY_UP, KEY_WHEELDOWN, KEY_WHEELUP,
 };
 use crate::ported::functionbar::{FunctionBar, FunctionBar_draw, Ncurses};
+use crate::ported::listitem::ListItem;
 use crate::ported::object::Object;
 use crate::ported::richstring::{
     RichString, RichString_rewind, RichString_setAttr, RichString_size, RichString_sizeVal,
@@ -76,6 +74,65 @@ const CTRL_E: i32 = KEY_CTRL(b'E' as i32);
 const CARET: i32 = b'^' as i32;
 const DOLLAR: i32 = b'$' as i32;
 
+/// Port of `typedef enum HandlerResult_` (`Panel.h:23`). In C this is an
+/// enum whose members are distinct bits (`0x01`..`0x80`) OR-ed together by
+/// event handlers (e.g. `HANDLED | REDRAW`), so the faithful analog is a
+/// bitmask newtype — not a plain Rust enum, which cannot be OR-ed. The eight
+/// flag values match the C members bit-for-bit; `BitOr`/`BitOrAssign`/`BitAnd`
+/// reproduce the C `|`/`|=`/`&` used on `HandlerResult` values, and
+/// [`HandlerResult::contains`] ports the C `result & FLAG` membership test.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HandlerResult(pub u32);
+
+impl HandlerResult {
+    /// `HANDLED = 0x01` (`Panel.h:24`).
+    pub const HANDLED: HandlerResult = HandlerResult(0x01);
+    /// `IGNORED = 0x02` (`Panel.h:25`).
+    pub const IGNORED: HandlerResult = HandlerResult(0x02);
+    /// `BREAK_LOOP = 0x04` (`Panel.h:26`).
+    pub const BREAK_LOOP: HandlerResult = HandlerResult(0x04);
+    /// `REFRESH = 0x08` (`Panel.h:27`).
+    pub const REFRESH: HandlerResult = HandlerResult(0x08);
+    /// `REDRAW = 0x10` (`Panel.h:28`).
+    pub const REDRAW: HandlerResult = HandlerResult(0x10);
+    /// `RESCAN = 0x20` (`Panel.h:29`).
+    pub const RESCAN: HandlerResult = HandlerResult(0x20);
+    /// `RESIZE = 0x40` (`Panel.h:30`).
+    pub const RESIZE: HandlerResult = HandlerResult(0x40);
+    /// `SYNTH_KEY = 0x80` (`Panel.h:31`).
+    pub const SYNTH_KEY: HandlerResult = HandlerResult(0x80);
+
+    /// Ports the C membership test `result & FLAG` (non-zero == present).
+    pub fn contains(self, flag: HandlerResult) -> bool {
+        self.0 & flag.0 != 0
+    }
+}
+
+impl core::ops::BitOr for HandlerResult {
+    type Output = HandlerResult;
+    fn bitor(self, rhs: HandlerResult) -> HandlerResult {
+        HandlerResult(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for HandlerResult {
+    fn bitor_assign(&mut self, rhs: HandlerResult) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl core::ops::BitAnd for HandlerResult {
+    type Output = HandlerResult;
+    fn bitand(self, rhs: HandlerResult) -> HandlerResult {
+        HandlerResult(self.0 & rhs.0)
+    }
+}
+
+/// Port of `#define EVENT_SET_SELECTED (-1)` (`Panel.h:34`).
+pub const EVENT_SET_SELECTED: i32 = -1;
+/// Port of `#define EVENT_PANEL_LOST_FOCUS (-2)` (`Panel.h:35`).
+pub const EVENT_PANEL_LOST_FOCUS: i32 = -2;
+
 /// Port of htop's `struct Panel_` (`Panel.h:64`). See the module docs for
 /// the field mapping. `selectionColorId` is a [`ColorElements`] (C's
 /// `ColorElements selectionColorId`), so [`Panel_draw`] can index the color
@@ -92,6 +149,14 @@ pub struct Panel {
     pub oldSelected: i32,
     pub prevSelected: i32,
     pub selectedLen: usize,
+    /// Port of `void* eventHandlerState` (`Panel.h:73`). C uses it as a
+    /// lazily `xCalloc(100, 1)`'d NUL-terminated scratch buffer for the
+    /// incremental type-to-search in [`Panel_selectByTyping`]. Modeled as an
+    /// `Option<Vec<u8>>`: `None` == the C `NULL` (not yet allocated), `Some`
+    /// == the 100-byte zeroed buffer. Held as bytes (not `String`) because
+    /// the C code indexes it, NUL-terminates it, and `strncasecmp`s against
+    /// it byte-for-byte.
+    pub eventHandlerState: Option<Vec<u8>>,
     pub scrollV: i32,
     pub scrollH: i32,
     pub needsRedraw: bool,
@@ -122,6 +187,7 @@ impl Panel {
             oldSelected: 0,
             prevSelected: -1,
             selectedLen: 0,
+            eventHandlerState: None,
             scrollV: 0,
             scrollH: 0,
             needsRedraw: true,
@@ -176,6 +242,7 @@ pub fn Panel_init(this: &mut Panel, x: i32, y: i32, w: i32, h: i32, fuBar: Optio
     this.oldSelected = 0;
     this.prevSelected = -1;
     this.selectedLen = 0;
+    this.eventHandlerState = None; // C: this->eventHandlerState = NULL (Panel.c:56)
     this.needsRedraw = true;
     this.cursorOn = false;
     this.wasFocus = false;
@@ -634,12 +701,115 @@ pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
     true
 }
 
-/// TODO: port of `HandlerResult Panel_selectByTyping(Panel* this, int ch)`
-/// from `Panel.c:468`. Needs the `eventHandlerState` scratch buffer,
-/// `ListItem` value downcasts, `Panel_setSelected`, and the
-/// `HandlerResult` enum — search substrate not ported here.
-pub fn Panel_selectByTyping() {
-    todo!("port of Panel.c:468 — needs eventHandlerState + HandlerResult substrate")
+/// Port of `HandlerResult Panel_selectByTyping(Panel* this, int ch)` from
+/// `Panel.c:507` — the base `Panel_class.eventHandler`, an incremental
+/// type-to-search over the list's `ListItem` values.
+///
+/// Faithful port of the C control flow:
+/// - `'#'` is ignored outright.
+/// - The `eventHandlerState` scratch buffer is lazily allocated as 100
+///   zeroed bytes (`xCalloc(100, sizeof(char))`) and kept NUL-terminated.
+/// - A graphic char (`0 < ch < 255 && isgraph`, here `is_ascii_graphic`,
+///   which matches `isgraph` in the C locale: `0x21..=0x7e`) is appended to
+///   the buffer; on an empty buffer `'/'` becomes the `\001` search marker
+///   and `'q'` breaks the loop; a lone `\001` marker is dropped when the
+///   next char arrives.
+/// - It then scans items for the first whose value (after skipping leading
+///   spaces) case-insensitively starts with the buffer, via the same
+///   semantics as the C `strncasecmp(cur, buffer, len) == 0` (ASCII
+///   case-fold, per the C locale). No match ⇒ retry once treating the last
+///   char as the start of a new word.
+/// - A non-graphic, non-`ERR` char clears the buffer; `13` (Enter) breaks
+///   the loop; everything else is ignored.
+///
+/// `Panel_get(this, i)` yields a `&dyn Object`; the C cast
+/// `((ListItem*)…)->value` is reproduced by the `&dyn Any` downcast idiom
+/// used across the crate (the hard C cast panics here on a wrong class,
+/// where C would invoke UB). `eventHandlerState` is `take`n into a local so
+/// `this` stays free for `Panel_get`/`Panel_setSelected`, then restored on
+/// every exit path.
+pub fn Panel_selectByTyping(this: &mut Panel, ch: i32) -> HandlerResult {
+    let size = Panel_size(this);
+
+    if ch == '#' as i32 {
+        return HandlerResult::IGNORED;
+    }
+
+    if this.eventHandlerState.is_none() {
+        this.eventHandlerState = Some(vec![0u8; 100]); // xCalloc(100, sizeof(char))
+    }
+    // Take the buffer out so `this` can be borrowed for Panel_get /
+    // Panel_setSelected; it is restored before returning.
+    let mut buffer = this.eventHandlerState.take().unwrap();
+
+    let mut ch = ch;
+    // strlen(buffer): index of the first NUL (the C string length).
+    let strlen = |b: &[u8]| b.iter().position(|&c| c == 0).unwrap_or(b.len());
+
+    let result = 'done: {
+        if 0 < ch && ch < 255 && (ch as u8).is_ascii_graphic() {
+            let mut len = strlen(&buffer);
+            if len == 0 {
+                if ch == '/' as i32 {
+                    ch = 0x01; // '\001'
+                } else if ch == 'q' as i32 {
+                    break 'done HandlerResult::BREAK_LOOP;
+                }
+            } else if len == 1 && buffer[0] == 0x01 {
+                len -= 1;
+            }
+
+            if len < 99 {
+                buffer[len] = ch as u8;
+                buffer[len + 1] = b'\0';
+            }
+
+            for _try in 0..2 {
+                len = strlen(&buffer);
+                for i in 0..size {
+                    // C: const char* cur = ((ListItem*) Panel_get(this, i))->value;
+                    //    while (*cur == ' ') cur++;
+                    //    strncasecmp(cur, buffer, len) == 0
+                    let matched = {
+                        let obj = Panel_get(this, i);
+                        let any: &dyn core::any::Any = obj;
+                        let li = any
+                            .downcast_ref::<ListItem>()
+                            .expect("Panel_selectByTyping: panel item is not a ListItem");
+                        let val = li.value.as_bytes();
+                        let start = val.iter().position(|&c| c != b' ').unwrap_or(val.len());
+                        let cur = &val[start..];
+                        // strncasecmp over `len` bytes: buffer[..len] has no
+                        // interior NUL, so equality needs `cur` to be at least
+                        // `len` bytes and case-fold-equal on that prefix.
+                        cur.len() >= len && cur[..len].eq_ignore_ascii_case(&buffer[..len])
+                    };
+                    if matched {
+                        Panel_setSelected(this, i);
+                        break 'done HandlerResult::HANDLED;
+                    }
+                }
+
+                // if current word did not match, retry considering the
+                // character the start of a new word.
+                buffer[0] = ch as u8;
+                buffer[1] = b'\0';
+            }
+
+            break 'done HandlerResult::HANDLED;
+        } else if ch != ERR {
+            buffer[0] = b'\0';
+        }
+
+        if ch == 13 {
+            break 'done HandlerResult::BREAK_LOOP;
+        }
+
+        HandlerResult::IGNORED
+    };
+
+    this.eventHandlerState = Some(buffer);
+    result
 }
 
 /// Port of `int Panel_getCh(Panel* this)` from `Panel.c:526`.
@@ -1150,5 +1320,160 @@ mod tests {
         p.scrollV = 5;
         p.ensure_scroll(4, 10);
         assert_eq!(p.scrollV, 0);
+    }
+
+    // ── selectByTyping (incremental type-to-search) ───────────────────
+
+    fn with_items(values: &[&str]) -> Panel {
+        let mut p = blank();
+        for v in values {
+            p.items.push(li(v));
+        }
+        p
+    }
+
+    /// The NUL-terminated contents of the `eventHandlerState` scratch buffer.
+    fn search_buf(p: &Panel) -> String {
+        let b = p.eventHandlerState.as_ref().expect("buffer not allocated");
+        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        String::from_utf8(b[..end].to_vec()).unwrap()
+    }
+
+    #[test]
+    fn typing_selects_first_matching_prefix() {
+        let mut p = with_items(&["apple", "banana", "cherry"]);
+        let r = Panel_selectByTyping(&mut p, 'b' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(p.selected, 1); // "banana"
+        assert_eq!(search_buf(&p), "b");
+    }
+
+    #[test]
+    fn typing_narrows_selection_as_chars_accumulate() {
+        let mut p = with_items(&["bee", "banana", "bat"]);
+        // 'b' -> first "b*" is "bee" (index 0)
+        assert_eq!(Panel_selectByTyping(&mut p, 'b' as i32), HandlerResult::HANDLED);
+        assert_eq!(p.selected, 0);
+        // "ba" -> "banana" (index 1)
+        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        assert_eq!(p.selected, 1);
+        // "bat" -> "bat" (index 2)
+        assert_eq!(Panel_selectByTyping(&mut p, 't' as i32), HandlerResult::HANDLED);
+        assert_eq!(p.selected, 2);
+        assert_eq!(search_buf(&p), "bat");
+    }
+
+    #[test]
+    fn typing_is_case_insensitive() {
+        let mut p = with_items(&["apple", "Banana", "cherry"]);
+        // uppercase 'B' matches "Banana"; lowercase would too
+        assert_eq!(Panel_selectByTyping(&mut p, 'B' as i32), HandlerResult::HANDLED);
+        assert_eq!(p.selected, 1);
+
+        let mut q = with_items(&["apple", "Banana", "cherry"]);
+        assert_eq!(Panel_selectByTyping(&mut q, 'b' as i32), HandlerResult::HANDLED);
+        assert_eq!(q.selected, 1);
+    }
+
+    #[test]
+    fn no_match_keeps_selection_and_returns_handled() {
+        let mut p = with_items(&["apple", "banana"]);
+        p.selected = 1;
+        let r = Panel_selectByTyping(&mut p, 'z' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(p.selected, 1); // unchanged, no item starts with 'z'
+        assert_eq!(search_buf(&p), "z");
+    }
+
+    #[test]
+    fn leading_spaces_are_skipped_before_matching() {
+        let mut p = with_items(&["   indented", "other"]);
+        let r = Panel_selectByTyping(&mut p, 'i' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(p.selected, 0); // matches "indented" after skipping spaces
+    }
+
+    #[test]
+    fn retry_treats_last_char_as_start_of_new_word() {
+        let mut p = with_items(&["apple", "xray"]);
+        // 'z' -> no match; buffer "z"
+        assert_eq!(Panel_selectByTyping(&mut p, 'z' as i32), HandlerResult::HANDLED);
+        assert_eq!(p.selected, 0);
+        // 'x' -> buffer "zx" (no match on try 0), retry with just "x" -> "xray"
+        assert_eq!(Panel_selectByTyping(&mut p, 'x' as i32), HandlerResult::HANDLED);
+        assert_eq!(p.selected, 1);
+        // buffer was rewritten to the single retry char "x"
+        assert_eq!(search_buf(&p), "x");
+    }
+
+    #[test]
+    fn hash_is_ignored_and_leaves_buffer_unallocated() {
+        let mut p = with_items(&["apple"]);
+        let r = Panel_selectByTyping(&mut p, '#' as i32);
+        assert_eq!(r, HandlerResult::IGNORED);
+        assert!(p.eventHandlerState.is_none());
+    }
+
+    #[test]
+    fn q_on_empty_buffer_breaks_loop() {
+        let mut p = with_items(&["apple", "banana"]);
+        let r = Panel_selectByTyping(&mut p, 'q' as i32);
+        assert_eq!(r, HandlerResult::BREAK_LOOP);
+        // buffer stays empty (the 'q' was consumed as the quit key)
+        assert_eq!(search_buf(&p), "");
+    }
+
+    #[test]
+    fn q_after_text_is_a_normal_search_char() {
+        let mut p = with_items(&["apple", "aqua"]);
+        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        // buffer now "a"; 'q' extends it to "aq" -> matches "aqua"
+        let r = Panel_selectByTyping(&mut p, 'q' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(p.selected, 1);
+        assert_eq!(search_buf(&p), "aq");
+    }
+
+    #[test]
+    fn slash_marker_is_dropped_when_next_char_arrives() {
+        let mut p = with_items(&["apple"]);
+        // '/' on an empty buffer becomes the \001 search marker
+        let r = Panel_selectByTyping(&mut p, '/' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(p.eventHandlerState.as_ref().unwrap()[0], 0x01);
+        // next char drops the marker and searches for just that char
+        let r = Panel_selectByTyping(&mut p, 'a' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(p.selected, 0); // "apple"
+        assert_eq!(search_buf(&p), "a");
+    }
+
+    #[test]
+    fn nongraphic_char_clears_buffer_and_returns_ignored() {
+        let mut p = with_items(&["apple", "banana"]);
+        assert_eq!(Panel_selectByTyping(&mut p, 'b' as i32), HandlerResult::HANDLED);
+        assert_eq!(search_buf(&p), "b");
+        // ASCII backspace (0x08) is non-graphic, != ERR -> clears the buffer
+        let r = Panel_selectByTyping(&mut p, 0x08);
+        assert_eq!(r, HandlerResult::IGNORED);
+        assert_eq!(search_buf(&p), "");
+    }
+
+    #[test]
+    fn enter_clears_buffer_and_breaks_loop() {
+        let mut p = with_items(&["apple"]);
+        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        let r = Panel_selectByTyping(&mut p, 13);
+        assert_eq!(r, HandlerResult::BREAK_LOOP);
+        assert_eq!(search_buf(&p), ""); // buffer cleared by the non-graphic branch
+    }
+
+    #[test]
+    fn err_is_ignored_and_leaves_buffer_intact() {
+        let mut p = with_items(&["apple"]);
+        assert_eq!(Panel_selectByTyping(&mut p, 'a' as i32), HandlerResult::HANDLED);
+        let r = Panel_selectByTyping(&mut p, ERR);
+        assert_eq!(r, HandlerResult::IGNORED);
+        assert_eq!(search_buf(&p), "a"); // ERR does not clear the buffer
     }
 }
