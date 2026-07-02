@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void MaskItem_delete(Object* cast` from `AffinityPanel.c:48`.
 pub fn MaskItem_delete() {
     todo!("port of AffinityPanel.c:48")

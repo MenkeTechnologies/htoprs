@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `void ProcessTable_init(ProcessTable* this, const ObjectClass* klass, Machine* host, Hashtable* pidMatchList` from `ProcessTable.c:21`.
 pub fn ProcessTable_init() {
     todo!("port of ProcessTable.c:21")

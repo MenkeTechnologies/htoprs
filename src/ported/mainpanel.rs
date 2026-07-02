@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `void MainPanel_updateLabels(MainPanel* this, bool list, bool filter` from `MainPanel.c:32`.
 pub fn MainPanel_updateLabels() {
     todo!("port of MainPanel.c:32")

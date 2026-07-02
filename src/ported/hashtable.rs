@@ -74,7 +74,7 @@ const OEISprimes: [usize; 35] = [
 ];
 
 /// Port of `static size_t nextPrime(size_t n)` from `Hashtable.c:106`.
-/// Returns the smallest entry in [`OEISprimes`] that is `>= n` (the C
+/// Returns the smallest entry in `OEISprimes` that is `>= n` (the C
 /// `<=` test is inclusive). The C falls through to
 /// `CRT_fatalError("Hashtable: no prime found")` (which aborts) when no
 /// table entry is large enough; that is ported as a `panic!` with the

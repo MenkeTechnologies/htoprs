@@ -144,7 +144,7 @@ mod tests {
             Affinity_add(&mut a, 1000 + id);
         }
         Affinity_add(&mut a, 9999); // forces realloc/resize
-        // Prior contents survive the growth.
+                                    // Prior contents survive the growth.
         for id in 0..8u32 {
             assert_eq!(a.cpus[id as usize], 1000 + id);
         }

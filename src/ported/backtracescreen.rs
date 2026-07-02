@@ -235,7 +235,12 @@ mod tests {
         assert_eq!(getBasename("a/b/c"), "c");
     }
 
-    fn frame(index: u32, address: usize, obj: Option<&str>, demangle: Option<&str>) -> BacktracePanelRow {
+    fn frame(
+        index: u32,
+        address: usize,
+        obj: Option<&str>,
+        demangle: Option<&str>,
+    ) -> BacktracePanelRow {
         BacktracePanelRow {
             type_: BACKTRACE_PANEL_ROW_DATA_FRAME,
             frame: Some(BacktraceFrameData {
@@ -268,8 +273,14 @@ mod tests {
         let rows = vec![
             frame(3, 0xff, Some("/usr/lib/libc.so.6"), Some("demangled")),
             frame(150, 0x10000, Some("ld.so"), None),
-            BacktracePanelRow { type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION, frame: None },
-            BacktracePanelRow { type_: BACKTRACE_PANEL_ROW_ERROR, frame: None },
+            BacktracePanelRow {
+                type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION,
+                frame: None,
+            },
+            BacktracePanelRow {
+                type_: BACKTRACE_PANEL_ROW_ERROR,
+                frame: None,
+            },
         ];
         let mut h = seeded_helper();
         BacktracePanel_makePrintingHelper(&rows, &mut h);
@@ -293,8 +304,14 @@ mod tests {
         // zero maxima (countDigits(0,10)=1, countDigits(0,16)=1) do not
         // lower the seeded 1 / 5 floors.
         let rows = vec![
-            BacktracePanelRow { type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION, frame: None },
-            BacktracePanelRow { type_: BACKTRACE_PANEL_ROW_ERROR, frame: None },
+            BacktracePanelRow {
+                type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION,
+                frame: None,
+            },
+            BacktracePanelRow {
+                type_: BACKTRACE_PANEL_ROW_ERROR,
+                frame: None,
+            },
         ];
         let mut h = seeded_helper();
         h.hasDemangledNames = true; // must be cleared by the function

@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void DiskIOUpdateCache(const Machine* host` from `DiskIOMeter.c:47`.
 pub fn DiskIOUpdateCache() {
     todo!("port of DiskIOMeter.c:47")

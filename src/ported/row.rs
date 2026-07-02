@@ -83,7 +83,6 @@ pub enum PercentageAttr {
     Unchanged,
 }
 
-
 /// TODO: port of `void Row_init(Row* this, const Machine* host` from `Row.c:35`.
 pub fn Row_init() {
     todo!("port of Row.c:35")
@@ -309,9 +308,21 @@ pub fn Row_printCount(str: &mut RichString, number: u64, coloring: bool) {
     let scheme = ColorScheme::active();
     let color_of = |e: ColorElements| e.packed(scheme);
 
-    let large_number_color = if coloring { color_of(LARGE_NUMBER) } else { color_of(PROCESS) };
-    let megabytes_color = if coloring { color_of(PROCESS_MEGABYTES) } else { color_of(PROCESS) };
-    let shadow_color = if coloring { color_of(PROCESS_SHADOW) } else { color_of(PROCESS) };
+    let large_number_color = if coloring {
+        color_of(LARGE_NUMBER)
+    } else {
+        color_of(PROCESS)
+    };
+    let megabytes_color = if coloring {
+        color_of(PROCESS_MEGABYTES)
+    } else {
+        color_of(PROCESS)
+    };
+    let shadow_color = if coloring {
+        color_of(PROCESS_SHADOW)
+    } else {
+        color_of(PROCESS)
+    };
     let base_color = color_of(PROCESS);
 
     if number == u64::MAX {
@@ -356,14 +367,30 @@ pub fn Row_printTime(str: &mut RichString, total_hundredths: u64, coloring: bool
     let color_of = |e: ColorElements| e.packed(scheme);
 
     if total_hundredths == 0 {
-        let shadow_color = if coloring { color_of(PROCESS_SHADOW) } else { color_of(PROCESS) };
+        let shadow_color = if coloring {
+            color_of(PROCESS_SHADOW)
+        } else {
+            color_of(PROCESS)
+        };
         RichString_appendAscii(str, shadow_color, b" 0:00.00 ");
         return;
     }
 
-    let year_color = if coloring { color_of(LARGE_NUMBER) } else { color_of(PROCESS) };
-    let day_color = if coloring { color_of(PROCESS_GIGABYTES) } else { color_of(PROCESS) };
-    let hour_color = if coloring { color_of(PROCESS_MEGABYTES) } else { color_of(PROCESS) };
+    let year_color = if coloring {
+        color_of(LARGE_NUMBER)
+    } else {
+        color_of(PROCESS)
+    };
+    let day_color = if coloring {
+        color_of(PROCESS_GIGABYTES)
+    } else {
+        color_of(PROCESS)
+    };
+    let hour_color = if coloring {
+        color_of(PROCESS_MEGABYTES)
+    } else {
+        color_of(PROCESS)
+    };
     let base_color = color_of(PROCESS);
 
     let total_seconds = total_hundredths / 100;
@@ -374,7 +401,10 @@ pub fn Row_printTime(str: &mut RichString, total_hundredths: u64, coloring: bool
 
     if total_minutes < 60 {
         let hundredths = (total_hundredths % 100) as u32;
-        let buf = format!("{:2}:{:02}.{:02} ", total_minutes as u32, seconds, hundredths);
+        let buf = format!(
+            "{:2}:{:02}.{:02} ",
+            total_minutes as u32, seconds, hundredths
+        );
         RichString_appendnAscii(str, base_color, buf.as_bytes(), buf.len());
         return;
     }
@@ -436,7 +466,11 @@ pub fn Row_printNanoseconds(str: &mut RichString, total_nanoseconds: u64, colori
     let color_of = |e: ColorElements| e.packed(scheme);
 
     if total_nanoseconds == 0 {
-        let shadow_color = if coloring { color_of(PROCESS_SHADOW) } else { color_of(PROCESS) };
+        let shadow_color = if coloring {
+            color_of(PROCESS_SHADOW)
+        } else {
+            color_of(PROCESS)
+        };
         RichString_appendAscii(str, shadow_color, b"     0ns ");
         return;
     }
@@ -600,14 +634,20 @@ pub fn Row_printLeftAlignedField(str: &mut RichString, attr: i32, content: &[u8]
 /// release — same behavior): they are debug-only preconditions, not
 /// input validation, and the second is the assert embedded in `CLAMP`.
 pub fn Row_printPercentage(mut val: f32, n: usize, width: u8, attr: &mut PercentageAttr) -> String {
-    debug_assert!(n >= 6 && width >= 4, "Invalid width in Row_printPercentage()");
+    debug_assert!(
+        n >= 6 && width >= 4,
+        "Invalid width in Row_printPercentage()"
+    );
     // truncate in favour of abort in xSnprintf()
     // CLAMP(x, low, high) = (assert(low <= high), x > high ? high : MAXIMUM(x, low))
     let high = n - 2;
     debug_assert!(4 <= high); // CLAMP's embedded assert(low <= high)
     let w = width as usize;
     let width = (if w > high { high } else { w.max(4) }) as u8;
-    debug_assert!((width as usize) < n - 1, "Insufficient space to print column");
+    debug_assert!(
+        (width as usize) < n - 1,
+        "Insufficient space to print column"
+    );
 
     // isNonnegative(val) from Macros.h:141 (isgreaterequal(x, 0.0)):
     // val >= 0.0, false for NaN. Rust's `>=` is quiet for NaN. Inlined
@@ -629,7 +669,12 @@ pub fn Row_printPercentage(mut val: f32, n: usize, width: u8, attr: &mut Percent
         }
 
         // C: xSnprintf(buffer, n, "%*.*f ", width, precision, val)
-        return format!("{:>width$.precision$} ", val, width = width as usize, precision = precision);
+        return format!(
+            "{:>width$.precision$} ",
+            val,
+            width = width as usize,
+            precision = precision
+        );
     }
 
     *attr = PercentageAttr::Shadow;
@@ -668,20 +713,29 @@ mod tests {
     #[test]
     fn zero_is_shadow_and_zero_point_zero() {
         // 0.0 < 0.05 => Shadow; width 5, precision 1; "%5.1f " of 0.0.
-        assert_eq!(run(0.0, 7, 5), ("  0.0 ".to_string(), PercentageAttr::Shadow));
+        assert_eq!(
+            run(0.0, 7, 5),
+            ("  0.0 ".to_string(), PercentageAttr::Shadow)
+        );
     }
 
     #[test]
     fn below_shadow_threshold_is_shadow() {
         // 0.04 < 0.05 => Shadow; rounds to "0.0" at precision 1.
-        assert_eq!(run(0.04, 7, 5), ("  0.0 ".to_string(), PercentageAttr::Shadow));
+        assert_eq!(
+            run(0.04, 7, 5),
+            ("  0.0 ".to_string(), PercentageAttr::Shadow)
+        );
     }
 
     #[test]
     fn mid_range_leaves_attr_unchanged() {
         // 0.05 <= 50.0 < 99.9 => no branch fires, attr stays Unchanged.
         // "%5.1f " of 50.0 => " 50.0 ".
-        assert_eq!(run(50.0, 7, 5), (" 50.0 ".to_string(), PercentageAttr::Unchanged));
+        assert_eq!(
+            run(50.0, 7, 5),
+            (" 50.0 ".to_string(), PercentageAttr::Unchanged)
+        );
     }
 
     #[test]
@@ -698,33 +752,48 @@ mod tests {
     fn at_ninety_nine_nine_is_megabytes_precision_one() {
         // 99.9 >= 99.9 => Megabytes; width 4 but 99.9 > 99.9 is FALSE,
         // so precision stays 1, val stays 99.9 => "99.9 ".
-        assert_eq!(run(99.9, 6, 4), ("99.9 ".to_string(), PercentageAttr::Megabytes));
+        assert_eq!(
+            run(99.9, 6, 4),
+            ("99.9 ".to_string(), PercentageAttr::Megabytes)
+        );
     }
 
     #[test]
     fn hundred_at_width_five_keeps_one_decimal() {
         // >= 99.9 => Megabytes; width != 4 so precision 1, val 100.0.
         // "%5.1f " of 100.0 => "100.0 ".
-        assert_eq!(run(100.0, 7, 5), ("100.0 ".to_string(), PercentageAttr::Megabytes));
+        assert_eq!(
+            run(100.0, 7, 5),
+            ("100.0 ".to_string(), PercentageAttr::Megabytes)
+        );
     }
 
     #[test]
     fn mem_percent_width_four_collapses_to_integer() {
         // MEM% column: width == 4 && val > 99.9 => precision 0, val=100.
         // "%4.0f " of 100.0 => " 100 ". Also >= 99.9 => Megabytes.
-        assert_eq!(run(100.0, 6, 4), (" 100 ".to_string(), PercentageAttr::Megabytes));
+        assert_eq!(
+            run(100.0, 6, 4),
+            (" 100 ".to_string(), PercentageAttr::Megabytes)
+        );
     }
 
     #[test]
     fn negative_is_na_and_shadow() {
         // val < 0.0 (not nonnegative) => Shadow; "%5.5s " of "N/A".
-        assert_eq!(run(-1.0, 7, 5), ("  N/A ".to_string(), PercentageAttr::Shadow));
+        assert_eq!(
+            run(-1.0, 7, 5),
+            ("  N/A ".to_string(), PercentageAttr::Shadow)
+        );
     }
 
     #[test]
     fn nan_is_na_and_shadow() {
         // isNonnegative(NaN) is false => Shadow + N/A path.
-        assert_eq!(run(f32::NAN, 7, 5), ("  N/A ".to_string(), PercentageAttr::Shadow));
+        assert_eq!(
+            run(f32::NAN, 7, 5),
+            ("  N/A ".to_string(), PercentageAttr::Shadow)
+        );
     }
 
     #[test]
@@ -732,7 +801,10 @@ mod tests {
         // width 200 clamped to CLAMP(200, 4, n-2) = 4 (n=6). 50.0 is
         // mid-range, width==4 but not > 99.9 => precision 1.
         // "%4.1f " of 50.0 => "50.0 ".
-        assert_eq!(run(50.0, 6, 200), ("50.0 ".to_string(), PercentageAttr::Unchanged));
+        assert_eq!(
+            run(50.0, 6, 200),
+            ("50.0 ".to_string(), PercentageAttr::Unchanged)
+        );
     }
 
     // ── RichString number formatters ──────────────────────────────────
@@ -754,7 +826,11 @@ mod tests {
 
     /// The stored attr of every valid cell.
     fn cell_attrs(r: &RichString) -> Vec<i32> {
-        r.chptr.iter().take(r.chlen as usize).map(|c| c.attr).collect()
+        r.chptr
+            .iter()
+            .take(r.chlen as usize)
+            .map(|c| c.attr)
+            .collect()
     }
 
     /// `CRT_colors[element]` as the append layer stores it (masked to the

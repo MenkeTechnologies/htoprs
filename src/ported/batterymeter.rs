@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void BatteryMeter_updateValues(Meter* this` from `BatteryMeter.c:27`.
 pub fn BatteryMeter_updateValues() {
     todo!("port of BatteryMeter.c:27")

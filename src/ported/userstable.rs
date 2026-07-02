@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `UsersTable* UsersTable_new(void` from `UsersTable.c:20`.
 pub fn UsersTable_new() {
     todo!("port of UsersTable.c:20")

@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void DateTimeMeter_updateValues(Meter* this` from `DateTimeMeter.c:32`.
 pub fn DateTimeMeter_updateValues() {
     todo!("port of DateTimeMeter.c:32")

@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void HostnameMeter_updateValues(Meter* this` from `HostnameMeter.c:21`.
 pub fn HostnameMeter_updateValues() {
     todo!("port of HostnameMeter.c:21")

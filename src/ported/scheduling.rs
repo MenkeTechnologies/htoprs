@@ -72,6 +72,11 @@ pub fn Scheduling_formatPolicy(policy: i32) -> &'static str {
     }
 }
 
+/// TODO: port of `void Scheduling_readProcessPolicy(Process* proc` from `Scheduling.c:162`.
+pub fn Scheduling_readProcessPolicy() {
+    todo!("port of Scheduling.c:162")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,9 +113,4 @@ mod tests {
         // Bare flag with no base policy masks down to SCHED_OTHER (0).
         assert_eq!(Scheduling_formatPolicy(SCHED_RESET_ON_FORK), "OTHER");
     }
-}
-
-/// TODO: port of `void Scheduling_readProcessPolicy(Process* proc` from `Scheduling.c:162`.
-pub fn Scheduling_readProcessPolicy() {
-    todo!("port of Scheduling.c:162")
 }

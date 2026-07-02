@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void MemorySwapMeter_updateValues(Meter* this` from `MemorySwapMeter.c:29`.
 pub fn MemorySwapMeter_updateValues() {
     todo!("port of MemorySwapMeter.c:29")

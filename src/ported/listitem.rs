@@ -135,7 +135,11 @@ mod tests {
     use super::*;
 
     fn item(value: &str) -> ListItem {
-        ListItem { value: value.to_string(), key: 0, moving: false }
+        ListItem {
+            value: value.to_string(),
+            key: 0,
+            moving: false,
+        }
     }
 
     #[test]
@@ -165,7 +169,11 @@ mod tests {
 
     #[test]
     fn init_sets_value_key_and_clears_moving() {
-        let mut it = ListItem { value: "old".to_string(), key: -1, moving: true };
+        let mut it = ListItem {
+            value: "old".to_string(),
+            key: -1,
+            moving: true,
+        };
         ListItem_init(&mut it, "new", 42);
         assert_eq!(it.value, "new");
         assert_eq!(it.key, 42);
@@ -174,12 +182,20 @@ mod tests {
 
     /// Visible characters of the valid `[0, chlen)` range.
     fn rendered(rs: &RichString) -> String {
-        rs.chptr.iter().take(rs.chlen as usize).map(|c| c.chars).collect()
+        rs.chptr
+            .iter()
+            .take(rs.chlen as usize)
+            .map(|c| c.chars)
+            .collect()
     }
 
     #[test]
     fn display_appends_value_in_default_color() {
-        let it = ListItem { value: "hello".to_string(), key: 0, moving: false };
+        let it = ListItem {
+            value: "hello".to_string(),
+            key: 0,
+            moving: false,
+        };
         let mut rs = RichString::new();
         ListItem_display(&it, &mut rs);
         assert_eq!(rendered(&rs), "hello");
@@ -193,7 +209,11 @@ mod tests {
 
     #[test]
     fn object_display_dispatches_to_listitem_display() {
-        let it = ListItem { value: "abc".to_string(), key: 0, moving: false };
+        let it = ListItem {
+            value: "abc".to_string(),
+            key: 0,
+            moving: false,
+        };
         let mut rs = RichString::new();
         // Dispatch through the Object vtable, not the free fn directly.
         Object::display(&it, &mut rs);
@@ -202,17 +222,36 @@ mod tests {
 
     #[test]
     fn object_compare_dispatches_to_listitem_compare() {
-        let a = ListItem { value: "apple".to_string(), key: 0, moving: false };
-        let b = ListItem { value: "banana".to_string(), key: 0, moving: false };
+        let a = ListItem {
+            value: "apple".to_string(),
+            key: 0,
+            moving: false,
+        };
+        let b = ListItem {
+            value: "banana".to_string(),
+            key: 0,
+            moving: false,
+        };
         assert_eq!(a.compare(&b), -1);
         assert_eq!(b.compare(&a), 1);
-        assert_eq!(a.compare(&ListItem { value: "apple".to_string(), key: 9, moving: true }), 0);
+        assert_eq!(
+            a.compare(&ListItem {
+                value: "apple".to_string(),
+                key: 9,
+                moving: true
+            }),
+            0
+        );
     }
 
     #[test]
     #[should_panic(expected = "CRT_utf8")]
     fn display_moving_branch_is_blocked_on_crt_utf8() {
-        let it = ListItem { value: "x".to_string(), key: 0, moving: true };
+        let it = ListItem {
+            value: "x".to_string(),
+            key: 0,
+            moving: true,
+        };
         let mut rs = RichString::new();
         ListItem_display(&it, &mut rs);
     }

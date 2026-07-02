@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `Table* Table_init(Table* this, const ObjectClass* klass, Machine* host` from `Table.c:26`.
 pub fn Table_init() {
     todo!("port of Table.c:26")

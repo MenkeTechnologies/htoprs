@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void HeaderOptionsPanel_delete(Object* object` from `HeaderOptionsPanel.c:27`.
 pub fn HeaderOptionsPanel_delete() {
     todo!("port of HeaderOptionsPanel.c:27")

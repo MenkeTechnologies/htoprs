@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `ProcessLocksScreen* ProcessLocksScreen_new(const Process* process` from `ProcessLocksScreen.c:23`.
 pub fn ProcessLocksScreen_new() {
     todo!("port of ProcessLocksScreen.c:23")

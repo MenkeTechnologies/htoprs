@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void IncMode_reset(IncMode* mode` from `IncSet.c:24`.
 pub fn IncMode_reset() {
     todo!("port of IncSet.c:24")

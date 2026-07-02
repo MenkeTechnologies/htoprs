@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void UptimeMeter_updateValues(Meter* this` from `UptimeMeter.c:22`.
 pub fn UptimeMeter_updateValues() {
     todo!("port of UptimeMeter.c:22")

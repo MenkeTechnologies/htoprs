@@ -103,11 +103,17 @@ mod tests {
     use super::*;
 
     fn meter(name: &str) -> DynamicMeter {
-        DynamicMeter { name: name.to_string() }
+        DynamicMeter {
+            name: name.to_string(),
+        }
     }
 
     fn iter(name: &str) -> DynamicIterator {
-        DynamicIterator { name: name.to_string(), key: 0, found: false }
+        DynamicIterator {
+            name: name.to_string(),
+            key: 0,
+            found: false,
+        }
     }
 
     #[test]

@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void FileDescriptorMeter_updateValues(Meter* this` from `FileDescriptorMeter.c:30`.
 pub fn FileDescriptorMeter_updateValues() {
     todo!("port of FileDescriptorMeter.c:30")

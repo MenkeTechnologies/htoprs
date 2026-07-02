@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `TraceScreen* TraceScreen_new(const Process* process` from `TraceScreen.c:37`.
 pub fn TraceScreen_new() {
     todo!("port of TraceScreen.c:37")

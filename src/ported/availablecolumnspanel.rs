@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void AvailableColumnsPanel_delete(Object* object` from `AvailableColumnsPanel.c:32`.
 pub fn AvailableColumnsPanel_delete() {
     todo!("port of AvailableColumnsPanel.c:32")

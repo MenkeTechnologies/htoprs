@@ -60,8 +60,10 @@ pub fn TasksMeter_updateValues(this: &mut Meter) {
 
     this.values[0] = pt.kernelThreads as f64;
     this.values[1] = pt.userlandThreads as f64;
-    this.values[2] =
-        pt.totalTasks.wrapping_sub(pt.kernelThreads).wrapping_sub(pt.userlandThreads) as f64;
+    this.values[2] = pt
+        .totalTasks
+        .wrapping_sub(pt.kernelThreads)
+        .wrapping_sub(pt.userlandThreads) as f64;
     this.values[3] = u32::min(pt.runningTasks, host.activeCPUs) as f64;
 
     this.txtBuffer = format!(
@@ -80,7 +82,13 @@ pub fn TasksMeter_display() {
 mod tests {
     use super::*;
 
-    fn meter(totalTasks: u32, runningTasks: u32, userlandThreads: u32, kernelThreads: u32, activeCPUs: u32) -> Meter {
+    fn meter(
+        totalTasks: u32,
+        runningTasks: u32,
+        userlandThreads: u32,
+        kernelThreads: u32,
+        activeCPUs: u32,
+    ) -> Meter {
         Meter {
             values: [0.0; 4],
             txtBuffer: String::new(),

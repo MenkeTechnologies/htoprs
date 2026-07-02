@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void ScreenListItem_delete(Object* cast` from `ScreensPanel.c:28`.
 pub fn ScreenListItem_delete() {
     todo!("port of ScreensPanel.c:28")

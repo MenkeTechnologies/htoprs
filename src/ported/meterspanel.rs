@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `void MetersPanel_cleanup(void` from `MetersPanel.c:38`.
 pub fn MetersPanel_cleanup() {
     todo!("port of MetersPanel.c:38")

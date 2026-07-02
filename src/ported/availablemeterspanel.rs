@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void AvailableMetersPanel_delete(Object* object` from `AvailableMetersPanel.c:34`.
 pub fn AvailableMetersPanel_delete() {
     todo!("port of AvailableMetersPanel.c:34")

@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void DisplayOptionsPanel_delete(Object* object` from `DisplayOptionsPanel.c:29`.
 pub fn DisplayOptionsPanel_delete() {
     todo!("port of DisplayOptionsPanel.c:29")

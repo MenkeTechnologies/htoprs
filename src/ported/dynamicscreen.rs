@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `Hashtable* DynamicScreens_new(void` from `DynamicScreen.c:22`.
 pub fn DynamicScreens_new() {
     todo!("port of DynamicScreen.c:22")

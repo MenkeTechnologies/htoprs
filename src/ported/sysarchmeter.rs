@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void SysArchMeter_updateValues(Meter* this` from `SysArchMeter.c:22`.
 pub fn SysArchMeter_updateValues() {
     todo!("port of SysArchMeter.c:22")

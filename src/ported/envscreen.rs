@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `EnvScreen* EnvScreen_new(Process* process` from `EnvScreen.c:25`.
 pub fn EnvScreen_new() {
     todo!("port of EnvScreen.c:25")

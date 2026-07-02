@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `Panel* SignalsPanel_new(int preSelectedSignal` from `SignalsPanel.c:23`.
 pub fn SignalsPanel_new() {
     todo!("port of SignalsPanel.c:23")

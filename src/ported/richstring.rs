@@ -160,7 +160,7 @@ impl Default for RichString {
 /// between the inline `chstr` buffer and a `xMalloc`/`xRealloc` heap buffer
 /// (with `memcpy`/`free` bookkeeping); the owned `Vec` subsumes both, so
 /// those branches collapse into the single buffer growth done by
-/// [`RichString::set_char`].
+/// `RichString::set_char`.
 pub fn RichString_extendLen(this: &mut RichString, len: usize) {
     this.set_char(len, '\0');
     this.chlen = len as i32;
@@ -302,7 +302,7 @@ pub fn RichString_writeFromWide(
 /// number of characters written.
 ///
 /// The `wcwidth`-based column accounting is ported structurally, but the
-/// per-character width uses [`RichString::column_width`] (a fixed 1) rather
+/// per-character width uses `RichString::column_width` (a fixed 1) rather
 /// than libc `wcwidth` — a faithful multi-width `wcwidth` needs Unicode
 /// East-Asian-Width tables unavailable without a dependency. So `*columns`
 /// is exactly "characters written" here: identical to htop for narrow
@@ -402,7 +402,10 @@ pub fn RichString_appendChr(this: &mut RichString, attrs: i32, c: char, count: i
     let new_len = from + count;
     RichString_setLen(this, new_len as usize);
     for i in (from as usize)..(new_len as usize) {
-        this.chptr[i] = RichCell { chars: c, attr: attrs };
+        this.chptr[i] = RichCell {
+            chars: c,
+            attr: attrs,
+        };
     }
 }
 

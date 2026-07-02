@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void CategoriesPanel_delete(Object* object` from `CategoriesPanel.c:37`.
 pub fn CategoriesPanel_delete() {
     todo!("port of CategoriesPanel.c:37")

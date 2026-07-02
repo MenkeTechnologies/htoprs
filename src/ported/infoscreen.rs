@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `InfoScreen* InfoScreen_init(InfoScreen* this, const Process* process, FunctionBar* bar, int height, const char* panelHeader` from `InfoScreen.c:31`.
 pub fn InfoScreen_init() {
     todo!("port of InfoScreen.c:31")

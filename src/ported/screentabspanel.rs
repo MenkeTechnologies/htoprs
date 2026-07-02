@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void ScreenNamesPanel_fill(ScreenNamesPanel* this, DynamicScreen* ds` from `ScreenTabsPanel.c:37`.
 pub fn ScreenNamesPanel_fill() {
     todo!("port of ScreenTabsPanel.c:37")

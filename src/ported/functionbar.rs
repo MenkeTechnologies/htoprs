@@ -148,7 +148,10 @@ mod tests {
     fn setlabel_replaces_matching_event() {
         let mut b = bar(&["F1", "F2", "F3"], &["a", "b", "c"], &[1, 2, 3]);
         FunctionBar_setLabel(&mut b, 2, "xyz");
-        assert_eq!(b.functions, vec!["a".to_string(), "xyz".to_string(), "c".to_string()]);
+        assert_eq!(
+            b.functions,
+            vec!["a".to_string(), "xyz".to_string(), "c".to_string()]
+        );
     }
 
     #[test]

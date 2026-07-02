@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void LoadAverageMeter_updateValues(Meter* this` from `LoadAverageMeter.c:42`.
 pub fn LoadAverageMeter_updateValues() {
     todo!("port of LoadAverageMeter.c:42")

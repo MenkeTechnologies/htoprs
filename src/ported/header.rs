@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `Header* Header_new(Machine* host, HeaderLayout hLayout` from `Header.c:31`.
 pub fn Header_new() {
     todo!("port of Header.c:31")

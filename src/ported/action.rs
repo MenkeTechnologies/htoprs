@@ -56,8 +56,7 @@ pub const HTOP_REDRAW_BAR: Htop_Reaction = 0x20;
 pub const HTOP_UPDATE_PANELHDR: Htop_Reaction = 0x40 | HTOP_REFRESH;
 /// `HTOP_RESIZE = 0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR`
 /// — `Action.h:30`.
-pub const HTOP_RESIZE: Htop_Reaction =
-    0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
+pub const HTOP_RESIZE: Htop_Reaction = 0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
 
 /// Minimal model of `State` from `Action.h:35`.
 ///
@@ -382,7 +381,7 @@ mod tests {
         assert_eq!(HTOP_RECALCULATE, 0x03); // 0x02 | 0x01
         assert_eq!(HTOP_QUIT, 0x10);
         assert_eq!(HTOP_UPDATE_PANELHDR, 0x41); // 0x40 | 0x01
-        // 0x80 | 0x01 | 0x20 | (0x40 | 0x01)
+                                                // 0x80 | 0x01 | 0x20 | (0x40 | 0x01)
         assert_eq!(HTOP_RESIZE, 0xE1);
     }
 
@@ -390,7 +389,11 @@ mod tests {
     /// `HTOP_QUIT` (`Action.c:439-441`).
     #[test]
     fn action_quit_returns_htop_quit() {
-        let st = State { pauseUpdate: false, hideSelection: false, hideMeters: false };
+        let st = State {
+            pauseUpdate: false,
+            hideSelection: false,
+            hideMeters: false,
+        };
         assert_eq!(actionQuit(&st), HTOP_QUIT);
         assert_eq!(actionQuit(&st), 0x10);
     }
@@ -399,11 +402,15 @@ mod tests {
     /// `HTOP_RESIZE | HTOP_KEEP_FOLLOWING` (`Action.c:300-303`).
     #[test]
     fn action_toggle_hide_meters_flips_and_returns_resize() {
-        let mut st = State { pauseUpdate: false, hideSelection: false, hideMeters: false };
+        let mut st = State {
+            pauseUpdate: false,
+            hideSelection: false,
+            hideMeters: false,
+        };
         let r = actionToggleHideMeters(&mut st);
         assert!(st.hideMeters);
         assert_eq!(r, 0xE1 | 0x08); // HTOP_RESIZE | HTOP_KEEP_FOLLOWING
-        // Second toggle returns to the original state (pure boolean flip).
+                                    // Second toggle returns to the original state (pure boolean flip).
         let r2 = actionToggleHideMeters(&mut st);
         assert!(!st.hideMeters);
         assert_eq!(r2, r);
@@ -417,7 +424,11 @@ mod tests {
     /// (`Action.c:681-684`).
     #[test]
     fn action_toggle_pause_update_flips_and_returns_refresh() {
-        let mut st = State { pauseUpdate: false, hideSelection: false, hideMeters: false };
+        let mut st = State {
+            pauseUpdate: false,
+            hideSelection: false,
+            hideMeters: false,
+        };
         let r = actionTogglePauseUpdate(&mut st);
         assert!(st.pauseUpdate);
         assert_eq!(r, 0x01 | 0x20 | 0x08);

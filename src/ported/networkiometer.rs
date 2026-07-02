@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void NetworkIOMeter_updateValues(Meter* this` from `NetworkIOMeter.c:38`.
 pub fn NetworkIOMeter_updateValues() {
     todo!("port of NetworkIOMeter.c:38")

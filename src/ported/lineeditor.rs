@@ -127,11 +127,21 @@ pub fn moveCursorRight(this: &mut LineEditor) {
 pub fn moveCursorWordLeft(this: &mut LineEditor) {
     let mut pos = this.cursor;
     // skip whitespace before cursor
-    while pos > 0 && matches!(this.buffer[pos - 1], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+    while pos > 0
+        && matches!(
+            this.buffer[pos - 1],
+            b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'
+        )
+    {
         pos -= 1;
     }
     // skip non-whitespace (the word itself)
-    while pos > 0 && !matches!(this.buffer[pos - 1], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+    while pos > 0
+        && !matches!(
+            this.buffer[pos - 1],
+            b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'
+        )
+    {
         pos -= 1;
     }
     this.cursor = pos;
@@ -171,7 +181,8 @@ pub fn deleteCharAt(this: &mut LineEditor) -> bool {
         return false;
     }
     // memmove(buffer + cursor, buffer + cursor + 1, len - cursor)
-    this.buffer.copy_within(this.cursor + 1..this.len + 1, this.cursor);
+    this.buffer
+        .copy_within(this.cursor + 1..this.len + 1, this.cursor);
     this.len -= 1;
     true
 }
@@ -182,7 +193,8 @@ pub fn insertChar(this: &mut LineEditor, ch: u8) -> bool {
         return false;
     }
     // memmove(buffer + cursor + 1, buffer + cursor, len - cursor + 1)
-    this.buffer.copy_within(this.cursor..this.len + 1, this.cursor + 1);
+    this.buffer
+        .copy_within(this.cursor..this.len + 1, this.cursor + 1);
     this.buffer[this.cursor] = ch;
     this.cursor += 1;
     this.len += 1;

@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static size_t getIndexForType(char type` from `OpenFilesScreen.c:49`.
 pub fn getIndexForType() {
     todo!("port of OpenFilesScreen.c:49")

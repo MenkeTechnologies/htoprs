@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `int main(int argc, char** argv` from `htop.c:16`.
 pub fn main() {
     todo!("port of htop.c:16")

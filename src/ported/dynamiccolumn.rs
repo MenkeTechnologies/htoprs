@@ -43,7 +43,11 @@ pub struct DynamicIterator<'a> {
 /// visited column's name equals the iterator's search name (C
 /// `String_eq`, i.e. exact `strcmp == 0`), record the column and its
 /// key into the iterator. `ht_key_t` is C `unsigned int`.
-pub fn DynamicColumn_compare<'a>(key: u32, value: &'a DynamicColumn, iter: &mut DynamicIterator<'a>) {
+pub fn DynamicColumn_compare<'a>(
+    key: u32,
+    value: &'a DynamicColumn,
+    iter: &mut DynamicIterator<'a>,
+) {
     if iter.name == value.name {
         iter.data = Some(value);
         iter.key = key;
@@ -90,13 +94,19 @@ mod tests {
     use super::*;
 
     fn col(name: &str) -> DynamicColumn {
-        DynamicColumn { name: name.to_string() }
+        DynamicColumn {
+            name: name.to_string(),
+        }
     }
 
     #[test]
     fn compare_records_match_and_key() {
         let cpu = col("cpu");
-        let mut iter = DynamicIterator { name: "cpu", data: None, key: 0 };
+        let mut iter = DynamicIterator {
+            name: "cpu",
+            data: None,
+            key: 0,
+        };
         DynamicColumn_compare(7, &cpu, &mut iter);
         assert_eq!(iter.key, 7);
         assert!(matches!(iter.data, Some(c) if c.name == "cpu"));
@@ -105,7 +115,11 @@ mod tests {
     #[test]
     fn compare_ignores_non_match() {
         let mem = col("mem");
-        let mut iter = DynamicIterator { name: "cpu", data: None, key: 0 };
+        let mut iter = DynamicIterator {
+            name: "cpu",
+            data: None,
+            key: 0,
+        };
         DynamicColumn_compare(3, &mem, &mut iter);
         // no match: iterator left untouched (C leaves .data=NULL, .key=0)
         assert_eq!(iter.key, 0);
@@ -116,7 +130,11 @@ mod tests {
     fn compare_is_exact_case_sensitive_strcmp() {
         // String_eq is strcmp==0: case-sensitive, no trimming
         let upper = col("CPU");
-        let mut iter = DynamicIterator { name: "cpu", data: None, key: 0 };
+        let mut iter = DynamicIterator {
+            name: "cpu",
+            data: None,
+            key: 0,
+        };
         DynamicColumn_compare(9, &upper, &mut iter);
         assert_eq!(iter.key, 0);
         assert!(iter.data.is_none());
@@ -127,7 +145,11 @@ mod tests {
         // C callback overwrites on every match; a later duplicate wins
         let a = col("dup");
         let b = col("dup");
-        let mut iter = DynamicIterator { name: "dup", data: None, key: 0 };
+        let mut iter = DynamicIterator {
+            name: "dup",
+            data: None,
+            key: 0,
+        };
         DynamicColumn_compare(1, &a, &mut iter);
         DynamicColumn_compare(2, &b, &mut iter);
         assert_eq!(iter.key, 2);

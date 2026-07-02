@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `ScreenManager* ScreenManager_new(Header* header, Machine* host, State* state, bool owner` from `ScreenManager.c:31`.
 pub fn ScreenManager_new() {
     todo!("port of ScreenManager.c:31")

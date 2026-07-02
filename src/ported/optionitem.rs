@@ -152,7 +152,10 @@ pub fn NumberItem_display(this: &NumberItem, out: &mut RichString) {
         written = buffer.len();
         RichString_appendnAscii(out, check_mark, buffer.as_bytes(), written);
     } else if this.scale > 0 {
-        let buffer = format!("{}", (10f64.powi(this.scale) * NumberItem_get(this) as f64) as i32);
+        let buffer = format!(
+            "{}",
+            (10f64.powi(this.scale) * NumberItem_get(this) as f64) as i32
+        );
         written = buffer.len();
         RichString_appendnAscii(out, check_mark, buffer.as_bytes(), written);
     } else {
@@ -173,19 +176,27 @@ pub fn NumberItem_display(this: &NumberItem, out: &mut RichString) {
 /// (see [`Object_isA`]). Only the `extends` link is modeled here; the C
 /// `.kind` field lives on `OptionItemClass`, which is not needed for display
 /// dispatch.
-static OptionItem_class: ObjectClass = ObjectClass { extends: Some(&Object_class) };
+static OptionItem_class: ObjectClass = ObjectClass {
+    extends: Some(&Object_class),
+};
 
 /// Port of `const OptionItemClass TextItem_class` (`OptionItem.c:86`):
 /// `.super.extends = Class(OptionItem)`, `.super.display = TextItem_display`.
-static TextItem_class: ObjectClass = ObjectClass { extends: Some(&OptionItem_class) };
+static TextItem_class: ObjectClass = ObjectClass {
+    extends: Some(&OptionItem_class),
+};
 
 /// Port of `const OptionItemClass CheckItem_class` (`OptionItem.c:96`):
 /// `.super.extends = Class(OptionItem)`, `.super.display = CheckItem_display`.
-static CheckItem_class: ObjectClass = ObjectClass { extends: Some(&OptionItem_class) };
+static CheckItem_class: ObjectClass = ObjectClass {
+    extends: Some(&OptionItem_class),
+};
 
 /// Port of `const OptionItemClass NumberItem_class` (`OptionItem.c:106`):
 /// `.super.extends = Class(OptionItem)`, `.super.display = NumberItem_display`.
-static NumberItem_class: ObjectClass = ObjectClass { extends: Some(&OptionItem_class) };
+static NumberItem_class: ObjectClass = ObjectClass {
+    extends: Some(&OptionItem_class),
+};
 
 impl Object for TextItem {
     fn klass(&self) -> &'static ObjectClass {
@@ -474,12 +485,19 @@ mod tests {
 
     /// Visible characters of the valid `[0, chlen)` range.
     fn rendered(rs: &RichString) -> String {
-        rs.chptr.iter().take(rs.chlen as usize).map(|c| c.chars).collect()
+        rs.chptr
+            .iter()
+            .take(rs.chlen as usize)
+            .map(|c| c.chars)
+            .collect()
     }
 
     #[test]
     fn check_item_get_set_toggle() {
-        let mut it = CheckItem { value: false, text: String::new() };
+        let mut it = CheckItem {
+            value: false,
+            text: String::new(),
+        };
         assert!(!CheckItem_get(&it));
         CheckItem_set(&mut it, true);
         assert!(CheckItem_get(&it));
@@ -498,23 +516,35 @@ mod tests {
 
     #[test]
     fn text_item_display_renders_label_in_help_bold() {
-        let it = TextItem { text: "General".to_string() };
+        let it = TextItem {
+            text: "General".to_string(),
+        };
         let mut rs = RichString::new();
         TextItem_display(&it, &mut rs);
         assert_eq!(rendered(&rs), "General");
         for i in 0..rs.chlen as usize {
-            assert_eq!(rs.chptr[i].attr, attr_of(ColorElements::HELP_BOLD), "attr at {i}");
+            assert_eq!(
+                rs.chptr[i].attr,
+                attr_of(ColorElements::HELP_BOLD),
+                "attr at {i}"
+            );
         }
     }
 
     #[test]
     fn check_item_display_checked_and_unchecked_glyphs() {
-        let checked = CheckItem { value: true, text: "Tree view".to_string() };
+        let checked = CheckItem {
+            value: true,
+            text: "Tree view".to_string(),
+        };
         let mut rs = RichString::new();
         CheckItem_display(&checked, &mut rs);
         assert_eq!(rendered(&rs), "[x]    Tree view");
 
-        let unchecked = CheckItem { value: false, text: "Tree view".to_string() };
+        let unchecked = CheckItem {
+            value: false,
+            text: "Tree view".to_string(),
+        };
         let mut rs2 = RichString::new();
         CheckItem_display(&unchecked, &mut rs2);
         assert_eq!(rendered(&rs2), "[ ]    Tree view");
@@ -522,7 +552,10 @@ mod tests {
 
     #[test]
     fn check_item_display_attrs_per_cell() {
-        let it = CheckItem { value: true, text: "ab".to_string() };
+        let it = CheckItem {
+            value: true,
+            text: "ab".to_string(),
+        };
         let mut rs = RichString::new();
         CheckItem_display(&it, &mut rs);
         // "[x]    ab" -> idx0 '[' box, idx1 'x' mark, idx2..=6 "]    " box,
@@ -603,12 +636,17 @@ mod tests {
 
     #[test]
     fn object_display_dispatches_for_each_kind() {
-        let t = TextItem { text: "T".to_string() };
+        let t = TextItem {
+            text: "T".to_string(),
+        };
         let mut rs = RichString::new();
         Object::display(&t, &mut rs);
         assert_eq!(rendered(&rs), "T");
 
-        let c = CheckItem { value: false, text: "C".to_string() };
+        let c = CheckItem {
+            value: false,
+            text: "C".to_string(),
+        };
         let mut rs2 = RichString::new();
         Object::display(&c, &mut rs2);
         assert_eq!(rendered(&rs2), "[ ]    C");

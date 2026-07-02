@@ -197,8 +197,12 @@ mod tests {
     // htop's `const ObjectClass Foo_class = { .extends = Class(Bar) }`
     // pattern. Identity is by address, so these must be `static`.
     static BASE: ObjectClass = ObjectClass { extends: None };
-    static MID: ObjectClass = ObjectClass { extends: Some(&BASE) };
-    static LEAF: ObjectClass = ObjectClass { extends: Some(&MID) };
+    static MID: ObjectClass = ObjectClass {
+        extends: Some(&BASE),
+    };
+    static LEAF: ObjectClass = ObjectClass {
+        extends: Some(&MID),
+    };
     // An unrelated root class: distinct address, same (empty) shape.
     static OTHER: ObjectClass = ObjectClass { extends: None };
 
@@ -214,7 +218,11 @@ mod tests {
         fn display(&self, out: &mut RichString) {
             // Emit the number's decimal text through the real ported
             // RichString ASCII-append path (attr 0).
-            crate::ported::richstring::RichString_appendAscii(out, 0, self.n.to_string().as_bytes());
+            crate::ported::richstring::RichString_appendAscii(
+                out,
+                0,
+                self.n.to_string().as_bytes(),
+            );
         }
         fn compare(&self, other: &dyn Object) -> i32 {
             // C casts the `const void*` back to the concrete type; the
@@ -301,7 +309,12 @@ mod tests {
         let obj = Num { n: 42 };
         let mut out = empty_richstring();
         obj.display(&mut out);
-        let got: String = out.chptr.iter().take(out.chlen as usize).map(|c| c.chars).collect();
+        let got: String = out
+            .chptr
+            .iter()
+            .take(out.chlen as usize)
+            .map(|c| c.chars)
+            .collect();
         assert_eq!(got, "42");
         assert_eq!(out.chlen, 2);
     }

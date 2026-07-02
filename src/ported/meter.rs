@@ -295,22 +295,41 @@ mod tests {
 
     /// `METERMODE_DEFAULT_SUPPORTED` (`MeterMode.h:21`): all four real
     /// modes supported = bits 1..4 set.
-    const ALL_MODES: u32 =
-        (1 << BAR_METERMODE) | (1 << TEXT_METERMODE) | (1 << GRAPH_METERMODE) | (1 << LED_METERMODE);
+    const ALL_MODES: u32 = (1 << BAR_METERMODE)
+        | (1 << TEXT_METERMODE)
+        | (1 << GRAPH_METERMODE)
+        | (1 << LED_METERMODE);
 
     fn mode_meter(mode: MeterModeId, supportedModes: u32) -> Meter {
-        Meter { values: vec![], curItems: 0, mode, supportedModes }
+        Meter {
+            values: vec![],
+            curItems: 0,
+            mode,
+            supportedModes,
+        }
     }
 
     #[test]
     fn next_supported_mode_cycles_through_all_modes() {
         // With every mode supported, cycling advances 1->2->3->4 and wraps
         // 4->1 (LED back to BAR).
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, ALL_MODES)), TEXT_METERMODE);
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(TEXT_METERMODE, ALL_MODES)), GRAPH_METERMODE);
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(GRAPH_METERMODE, ALL_MODES)), LED_METERMODE);
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, ALL_MODES)),
+            TEXT_METERMODE
+        );
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(TEXT_METERMODE, ALL_MODES)),
+            GRAPH_METERMODE
+        );
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(GRAPH_METERMODE, ALL_MODES)),
+            LED_METERMODE
+        );
         // highest mode wraps to the lowest supported mode
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(LED_METERMODE, ALL_MODES)), BAR_METERMODE);
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(LED_METERMODE, ALL_MODES)),
+            BAR_METERMODE
+        );
     }
 
     #[test]
@@ -318,8 +337,14 @@ mod tests {
         // Only BAR and LED supported: BAR -> LED (skips TEXT/GRAPH),
         // LED wraps back to BAR.
         let supported = (1 << BAR_METERMODE) | (1 << LED_METERMODE);
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, supported)), LED_METERMODE);
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(LED_METERMODE, supported)), BAR_METERMODE);
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, supported)),
+            LED_METERMODE
+        );
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(LED_METERMODE, supported)),
+            BAR_METERMODE
+        );
     }
 
     #[test]
@@ -327,7 +352,10 @@ mod tests {
         // Only TEXT supported: the mask above TEXT is empty, so it falls
         // back to the full set and returns TEXT again.
         let supported = 1 << TEXT_METERMODE;
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(TEXT_METERMODE, supported)), TEXT_METERMODE);
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(TEXT_METERMODE, supported)),
+            TEXT_METERMODE
+        );
     }
 
     #[test]
@@ -335,6 +363,9 @@ mod tests {
         // mode below the lowest supported bit: BAR (1) current, but only
         // GRAPH and LED supported -> next is GRAPH.
         let supported = (1 << GRAPH_METERMODE) | (1 << LED_METERMODE);
-        assert_eq!(Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, supported)), GRAPH_METERMODE);
+        assert_eq!(
+            Meter_nextSupportedMode(&mode_meter(BAR_METERMODE, supported)),
+            GRAPH_METERMODE
+        );
     }
 }

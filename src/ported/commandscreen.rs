@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `static void CommandScreen_scan(InfoScreen* this` from `CommandScreen.c:22`.
 pub fn CommandScreen_scan() {
     todo!("port of CommandScreen.c:22")

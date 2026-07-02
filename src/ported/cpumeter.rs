@@ -238,8 +238,15 @@ mod tests {
             let (l_start, l_count) = AllCPUsMeter_getRange(&meter("LeftCPUs", cpus));
             let (r_start, r_count) = AllCPUsMeter_getRange(&meter("RightCPUs", cpus));
             assert_eq!(l_start, 0, "left always starts at 0 (cpus={cpus})");
-            assert_eq!(r_start, l_count, "right starts where left ends (cpus={cpus})");
-            assert_eq!(l_count + r_count, cpus as i32, "halves sum to cpus (cpus={cpus})");
+            assert_eq!(
+                r_start, l_count,
+                "right starts where left ends (cpus={cpus})"
+            );
+            assert_eq!(
+                l_count + r_count,
+                cpus as i32,
+                "halves sum to cpus (cpus={cpus})"
+            );
             // Left never smaller than right (ceiling half on the left).
             assert!(l_count >= r_count, "left >= right (cpus={cpus})");
         }
