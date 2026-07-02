@@ -1,3 +1,0 @@
-[submodule "vendor/htop"]
-	path = vendor/htop
-	url = https://github.com/htop-dev/htop.git
