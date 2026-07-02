@@ -57,10 +57,18 @@ enforced mechanically, following the same precedent as `zshrs`.
 
 The pure-logic layers are ported — string/math utilities, the container
 sort/search algorithms, the prime table, and the human-readable unit
-formatter. The rest of the C source (every remaining top-level `.c` file) is
-scaffolded with `todo!()` stubs so the full surface is laid out and ready to
-fill in. Overall and per-file coverage — real ports vs stubs — lives in
-`docs/port_report.html` (derived from source at run time — nothing hardcoded).
+formatter (detailed below). Partial ports also cover the faithfully-portable
+subset of eight more files: `Process.c` (cmdline/comm string parsing, process
+state char), `LineEditor.c` (text-buffer editing and cursor motion),
+`OptionItem.c` (`CheckItem`/`NumberItem` accessors and editing),
+`RichString.c` (`RichString_findChar`), `ListItem.c` (`ListItem_compare`),
+`Affinity.c` (`Affinity_add`), `History.c` (the command-history ring), and
+`Row.c` (`Row_printPercentage`). Functions that need still-unported substrate
+(ncurses/`RichString` drawing, `CRT` colors, `Panel`, `Object` vtables,
+syscalls) remain honest `todo!()` stubs; the rest of the C source is likewise
+scaffolded with stubs so the full surface is laid out. Overall and per-file
+coverage — real ports vs stubs — lives in `docs/port_report.html` (derived
+from source at run time — nothing hardcoded).
 
 **`XUtils.c`** — string / math utilities:
 

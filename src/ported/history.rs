@@ -1,47 +1,444 @@
-//! Stub scaffold for `History.c` — NOT yet ported.
+//! Port of `History.c` — htop's LineEditor command-history ring buffer.
 //!
-//! Every `pub fn` below is a placeholder (`todo!()`) named after a real
-//! htop C function so the port-purity gate accepts the module and the
-//! port surface is laid out. Replace each stub with a faithful port of
-//! the C body, updating the signature and the doc comment to `Port of
-//! `History.c`:<line>.` as you go. `gen_port_report.py` counts these
-//! `todo!()` bodies as *stubbed*, not *ported*, so scaffolding does not
-//! inflate coverage.
+//! This is the *top-level* `History.c` (the one whose `History.h`
+//! includes `LineEditor.h`), i.e. the command-history ring used by the
+//! incremental line editor, NOT any screen/graph history. The struct is
+//! an oldest-first array of strings capped at `HISTORY_MAX_ENTRIES`,
+//! with a browse `position` (`count` == "at new input") and a `saved`
+//! scratch buffer for the in-progress input while browsing.
+//!
+//! C names are preserved verbatim (htop uses `CamelCase_snake`), so
+//! `non_snake_case` is allowed for the whole module — matching the spec
+//! name-for-name is the point of the port. Each C function takes
+//! `History* this`; the faithful analog is a free fn taking
+//! `this: &mut History` / `this: &History` (the same shape `Vector.c`'s
+//! port uses: free fns, not methods).
+//!
+//! Ported (self-contained, no unported substrate):
+//! - `History_new` (`History.c:43`) — allocates the ring (capacity 64),
+//!   loads from file if a filename is given, then parks `position` at
+//!   `count`. It is the spec for the struct's initial state, so porting
+//!   it is how the struct is "modeled faithfully".
+//! - `History_load` (`History.c:22`) — `static` in C; reads the history
+//!   file line by line, strips trailing `\n`/`\r`, skips empty lines,
+//!   and feeds each line through `History_add`. Only reachable from
+//!   `History_new` in C.
+//! - `History_save` (`History.c:68`) — writes the (tail of the) ring to
+//!   the history file, one entry per line, with `0600` perms.
+//! - `History_add` (`History.c:86`) — dedup + grow/rotate + append.
+//! - `History_resetPosition` (`History.c:149`) — parks the browse
+//!   cursor at "new input" and clears `saved`.
+//!
+//! Stubbed (cannot be ported faithfully yet):
+//! - `History_delete` (`History.c:60`) — frees the heap array, the
+//!   `filename` string, and the struct itself. There is no faithful
+//!   safe-Rust analog: `History` owns its `Vec<String>`/`String`
+//!   fields, so `Drop` frees them automatically. A hand-written
+//!   free-everything routine has nothing to do.
+//! - `History_navigate` (`History.c:120`) — depends on `LineEditor`
+//!   (`LineEditor_getText`), which lives in `LineEditor.c`, an
+//!   as-yet-unported stub module. Porting it now would require inventing
+//!   substrate, so it stays a `todo!()` stub.
+//!
+//! Not replicated: the C reader uses a fixed `char line[LINEEDITOR_MAX +
+//! 2]` (130-byte) `fgets` buffer, which would split any file line longer
+//! than 129 bytes into multiple history entries. History strings
+//! originate from the line editor and never exceed `LINEEDITOR_MAX`, so
+//! that split is unreachable in practice; the task frames load/save as
+//! "read/write lines", and reading whole lines is the faithful analog of
+//! that intent. `String_eq(a, b)` (`XUtils.h:60`, `strcmp(a,b) == 0`) is
+//! inlined as Rust `==` on the strings.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::os::unix::fs::OpenOptionsExt;
 
-/// TODO: port of `static void History_load(History* this` from `History.c:22`.
-pub fn History_load() {
-    todo!("port of History.c:22")
+/// Port of `#define HISTORY_MAX_ENTRIES 512` from `History.h`.
+const HISTORY_MAX_ENTRIES: usize = 512;
+
+/// Port of `#define LINEEDITOR_MAX 128` from `LineEditor.h:14`. Sizes
+/// the `saved` scratch buffer (`char saved[LINEEDITOR_MAX + 1]`) and the
+/// C reader's line buffer.
+const LINEEDITOR_MAX: usize = 128;
+
+/// Port of `struct History_` from `History.h`. `entries` is the
+/// oldest-first ring (the C `char** entries`); `count` and `capacity`
+/// mirror the C bookkeeping — `capacity` is tracked explicitly because
+/// the grow-vs-rotate branch in `History_add` keys off it. The struct
+/// owns its strings, so the C `char** entries` / `char* filename` heap
+/// blocks become `Vec<String>` / `Option<String>` and free themselves.
+pub struct History {
+    /// C `char** entries` — history strings, oldest first. Invariant:
+    /// `entries.len() == count`.
+    pub entries: Vec<String>,
+    /// C `size_t count` — current number of entries.
+    pub count: usize,
+    /// C `size_t capacity` — allocated capacity; gates grow vs rotate.
+    pub capacity: usize,
+    /// C `size_t position` — browse cursor; `count` == "at new input".
+    pub position: usize,
+    /// C `char saved[LINEEDITOR_MAX + 1]` — saved current input while
+    /// browsing. Modeled as an owned `String`.
+    pub saved: String,
+    /// C `char* filename` — history file path (`None` == no read/write).
+    pub filename: Option<String>,
 }
 
-/// TODO: port of `History* History_new(const char* filename` from `History.c:43`.
-pub fn History_new() {
-    todo!("port of History.c:43")
+/// Port of `static void History_load(History* this)` from
+/// `History.c:22`. Reads the history file line by line, strips trailing
+/// `\n`/`\r` (the C `while` loop strips both, handling `\r\n`), skips
+/// empty lines, and adds each remaining line via `History_add`. Returns
+/// early (no-op) when `filename` is `None` or the file cannot be opened,
+/// exactly like the C `!this->filename` / `!fp` guards.
+pub fn History_load(this: &mut History) {
+    // Clone the path so `this` is free to be borrowed mutably by
+    // `History_add` inside the loop.
+    let filename = match &this.filename {
+        Some(f) => f.clone(),
+        None => return,
+    };
+
+    let file = match File::open(&filename) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        // strip trailing newline / carriage return
+        let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+        if line.is_empty() {
+            continue;
+        }
+
+        History_add(this, line);
+    }
 }
 
-/// TODO: port of `void History_delete(History* this` from `History.c:60`.
+/// Port of `History* History_new(const char* filename)` from
+/// `History.c:43`. Allocates the ring with `capacity == 64`, an empty
+/// `saved`, and the (optional) filename; loads from the file if a
+/// filename was given; then parks `position` at `count` so browsing
+/// starts at "new input".
+pub fn History_new(filename: Option<&str>) -> History {
+    let mut this = History {
+        entries: Vec::with_capacity(64),
+        count: 0,
+        capacity: 64,
+        position: 0,
+        saved: String::new(),
+        filename: filename.map(|s| s.to_string()),
+    };
+
+    if this.filename.is_some() {
+        History_load(&mut this);
+    }
+
+    this.position = this.count;
+
+    this
+}
+
+/// TODO: port of `void History_delete(History* this` from
+/// `History.c:60`. Heap-free only (frees the array, the filename, and
+/// the struct); `History` owns its fields and frees them via `Drop`, so
+/// there is no faithful body to port. Left as a stub.
 pub fn History_delete() {
     todo!("port of History.c:60")
 }
 
-/// TODO: port of `void History_save(const History* this` from `History.c:68`.
-pub fn History_save() {
-    todo!("port of History.c:68")
+/// Port of `void History_save(const History* this)` from
+/// `History.c:68`. Writes the tail of the ring — from `start` to `count`
+/// where `start = count > HISTORY_MAX_ENTRIES ? count - HISTORY_MAX_ENTRIES : 0`
+/// — one entry per line. Opens with `O_WRONLY | O_CREAT | O_TRUNC` and
+/// mode `0600`, matching the C `open(...)`; returns early (no-op) when
+/// `filename` is `None` or the open fails.
+pub fn History_save(this: &History) {
+    let filename = match &this.filename {
+        Some(f) => f,
+        None => return,
+    };
+
+    let file = match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(filename)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    let mut fp = BufWriter::new(file);
+    let start = if this.count > HISTORY_MAX_ENTRIES {
+        this.count - HISTORY_MAX_ENTRIES
+    } else {
+        0
+    };
+    for i in start..this.count {
+        // fprintf(fp, "%s\n", ...) — write errors are ignored, as in C.
+        let _ = writeln!(fp, "{}", this.entries[i]);
+    }
+    let _ = fp.flush();
 }
 
-/// TODO: port of `void History_add(History* this, const char* entry` from `History.c:86`.
-pub fn History_add() {
-    todo!("port of History.c:86")
+/// Port of `void History_add(History* this, const char* entry)` from
+/// `History.c:86`. No-op for an empty entry. Removes a prior identical
+/// entry if present (only the first match — the C loop `break`s), grows
+/// the capacity by doubling up to `HISTORY_MAX_ENTRIES` or, once at that
+/// cap, drops the oldest entry, then appends the new entry and resets
+/// the browse position to "new input". `String_eq` (`strcmp == 0`) is
+/// inlined as `==`; `xReallocArray`'s capacity growth has no observable
+/// effect beyond the tracked `capacity` field, which gates the
+/// grow-vs-rotate branch.
+pub fn History_add(this: &mut History, entry: &str) {
+    if entry.is_empty() {
+        return;
+    }
+
+    // Deduplicate: remove previous identical entry if present.
+    for i in 0..this.count {
+        if this.entries[i] == entry {
+            this.entries.remove(i);
+            this.count -= 1;
+            break;
+        }
+    }
+
+    // Grow array if needed.
+    if this.count >= this.capacity {
+        if this.capacity < HISTORY_MAX_ENTRIES {
+            this.capacity = (this.capacity * 2).min(HISTORY_MAX_ENTRIES);
+        } else {
+            // Drop oldest entry.
+            this.entries.remove(0);
+            this.count -= 1;
+        }
+    }
+
+    this.entries.push(entry.to_string());
+    this.count += 1;
+
+    // Reset position to "at new input".
+    this.position = this.count;
+    this.saved.clear();
 }
 
-/// TODO: port of `const char* History_navigate(History* this, LineEditor* editor, bool back` from `History.c:120`.
+/// TODO: port of `const char* History_navigate(History* this,
+/// LineEditor* editor, bool back` from `History.c:120`. Depends on
+/// `LineEditor` (`LineEditor_getText`), which lives in the as-yet
+/// unported `LineEditor.c` stub module — cannot be ported faithfully
+/// without inventing substrate. Left as a stub.
 pub fn History_navigate() {
     todo!("port of History.c:120")
 }
 
-/// TODO: port of `void History_resetPosition(History* this` from `History.c:149`.
-pub fn History_resetPosition() {
-    todo!("port of History.c:149")
+/// Port of `void History_resetPosition(History* this)` from
+/// `History.c:149`. Parks the browse cursor at "new input"
+/// (`position = count`) and clears the `saved` scratch buffer
+/// (`saved[0] = '\0'`).
+pub fn History_resetPosition(this: &mut History) {
+    this.position = this.count;
+    this.saved.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Unique, self-cleaning temp path for file-I/O tests (headless-safe).
+    fn temp_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "htoprs_history_{}_{}_{}_{}",
+            std::process::id(),
+            tag,
+            nanos,
+            n
+        ));
+        p
+    }
+
+    #[test]
+    fn new_none_defaults() {
+        let h = History_new(None);
+        assert!(h.entries.is_empty());
+        assert_eq!(h.count, 0);
+        assert_eq!(h.capacity, 64);
+        assert_eq!(h.position, 0);
+        assert!(h.saved.is_empty());
+        assert!(h.filename.is_none());
+    }
+
+    #[test]
+    fn add_appends_and_parks_position() {
+        let mut h = History_new(None);
+        h.position = 0; // pretend we were browsing
+        h.saved.push_str("in progress");
+        History_add(&mut h, "one");
+        History_add(&mut h, "two");
+        assert_eq!(h.entries, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(h.count, 2);
+        assert_eq!(h.position, 2); // parked at "new input"
+        assert!(h.saved.is_empty()); // cleared on add
+    }
+
+    #[test]
+    fn add_ignores_empty_entry() {
+        let mut h = History_new(None);
+        History_add(&mut h, "");
+        assert_eq!(h.count, 0);
+        assert!(h.entries.is_empty());
+    }
+
+    #[test]
+    fn add_dedups_and_moves_to_end() {
+        let mut h = History_new(None);
+        History_add(&mut h, "a");
+        History_add(&mut h, "b");
+        History_add(&mut h, "c");
+        // Re-adding "a" removes the old "a" and appends it at the end.
+        History_add(&mut h, "a");
+        assert_eq!(
+            h.entries,
+            vec!["b".to_string(), "c".to_string(), "a".to_string()]
+        );
+        assert_eq!(h.count, 3);
+    }
+
+    #[test]
+    fn add_dedup_of_immediate_repeat() {
+        let mut h = History_new(None);
+        History_add(&mut h, "same");
+        History_add(&mut h, "same");
+        // The prior identical entry is removed, then re-appended: no dup.
+        assert_eq!(h.entries, vec!["same".to_string()]);
+        assert_eq!(h.count, 1);
+    }
+
+    #[test]
+    fn add_rotates_dropping_oldest_at_cap() {
+        let mut h = History_new(None);
+        // Add more than the cap of unique entries.
+        let total = HISTORY_MAX_ENTRIES + 88; // 600
+        for i in 0..total {
+            History_add(&mut h, &format!("e{}", i));
+        }
+        assert_eq!(h.count, HISTORY_MAX_ENTRIES);
+        assert_eq!(h.entries.len(), HISTORY_MAX_ENTRIES);
+        // Oldest surviving = e{total - cap}; newest = e{total - 1}.
+        let oldest = total - HISTORY_MAX_ENTRIES; // 88
+        assert_eq!(h.entries.first().unwrap(), &format!("e{}", oldest));
+        assert_eq!(h.entries.last().unwrap(), &format!("e{}", total - 1));
+        assert_eq!(h.position, HISTORY_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn capacity_doubles_up_to_cap() {
+        let mut h = History_new(None);
+        assert_eq!(h.capacity, 64);
+        for i in 0..65 {
+            History_add(&mut h, &format!("e{}", i));
+        }
+        // Crossing 64 doubled capacity to 128.
+        assert_eq!(h.capacity, 128);
+        for i in 65..300 {
+            History_add(&mut h, &format!("e{}", i));
+        }
+        // 64 -> 128 -> 256 -> 512, then it stops at the cap.
+        assert_eq!(h.capacity, HISTORY_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn reset_position_parks_and_clears() {
+        let mut h = History_new(None);
+        History_add(&mut h, "a");
+        History_add(&mut h, "b");
+        h.position = 0;
+        h.saved.push_str("browsing");
+        History_resetPosition(&mut h);
+        assert_eq!(h.position, h.count);
+        assert_eq!(h.position, 2);
+        assert!(h.saved.is_empty());
+    }
+
+    #[test]
+    fn load_missing_file_is_noop() {
+        let path = temp_path("missing");
+        let _ = fs::remove_file(&path);
+        let h = History_new(Some(path.to_str().unwrap()));
+        assert_eq!(h.count, 0);
+        assert!(h.entries.is_empty());
+    }
+
+    #[test]
+    fn load_strips_newlines_skips_blanks_and_dedups() {
+        let path = temp_path("load");
+        // Blank line skipped, \r\n stripped, duplicate "a" deduped
+        // (History_add removes the earlier "a" and re-appends it).
+        fs::write(&path, "a\n\nb\r\na\n").unwrap();
+        let h = History_new(Some(path.to_str().unwrap()));
+        assert_eq!(h.entries, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(h.count, 2);
+        // position parked at count by History_new.
+        assert_eq!(h.position, 2);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_writes_one_entry_per_line() {
+        let path = temp_path("save");
+        let mut h = History_new(Some(path.to_str().unwrap()));
+        History_add(&mut h, "first");
+        History_add(&mut h, "second");
+        History_save(&h);
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "first\nsecond\n");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_then_load_roundtrip() {
+        let save_path = temp_path("rt_save");
+        let mut h = History_new(Some(save_path.to_str().unwrap()));
+        History_add(&mut h, "alpha");
+        History_add(&mut h, "beta");
+        History_add(&mut h, "gamma");
+        History_save(&h);
+
+        let reloaded = History_new(Some(save_path.to_str().unwrap()));
+        assert_eq!(
+            reloaded.entries,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+        assert_eq!(reloaded.count, 3);
+        let _ = fs::remove_file(&save_path);
+    }
+
+    #[test]
+    fn save_none_filename_is_noop() {
+        // Constructing with no filename and saving must not panic.
+        let mut h = History_new(None);
+        History_add(&mut h, "x");
+        History_save(&h); // no filename -> returns immediately
+        assert_eq!(h.count, 1);
+    }
 }

@@ -56,9 +56,38 @@ pub fn RichString_appendChr() {
     todo!("port of RichString.c:166")
 }
 
-/// TODO: port of `int RichString_findChar(const RichString* this, char c, int start` from `RichString.c:175`.
-pub fn RichString_findChar() {
-    todo!("port of RichString.c:175")
+/// Minimal model of htop's `RichString` (`RichString.h:42`) carrying
+/// only the two fields [`RichString_findChar`] reads: the per-cell base
+/// character sequence and the logical length. The full C struct also
+/// holds per-cell ncurses attributes and an internal `chstr` buffer,
+/// neither of which `findChar` touches.
+pub struct RichString {
+    /// Per-cell base character. In the ncursesw build this is
+    /// `cchar_t.chars[0]`; otherwise `chtype & 0xff`.
+    pub chptr: Vec<char>,
+    /// Number of valid characters (`this->chlen`) — the search bound.
+    pub chlen: i32,
+}
+
+/// Port of `RichString.c:175`. Searches `this`'s character sequence for
+/// `c` starting at index `start`, returning the first matching index or
+/// `-1` when absent. Mirrors the `HAVE_LIBNCURSESW` variant, which
+/// widens the byte with `btowc(c)` and compares against `chars[0]`; the
+/// non-ncursesw variant (`RichString.c:226`, `(*ch & 0xff) == (chtype)c`)
+/// has identical search behavior. The loop runs over `[start, chlen)`,
+/// so a `start` at or past `chlen` — and an empty string — returns `-1`
+/// immediately.
+pub fn RichString_findChar(this: &RichString, c: char, start: i32) -> i32 {
+    // `const wchar_t wc = btowc(c)` — widen the search byte.
+    let wc = c;
+    let mut i = start;
+    while i < this.chlen {
+        if this.chptr[i as usize] == wc {
+            return i;
+        }
+        i += 1;
+    }
+    -1
 }
 
 /// TODO: port of `void RichString_delete(RichString* this` from `RichString.c:238`.
@@ -99,4 +128,59 @@ pub fn RichString_appendnAscii() {
 /// TODO: port of `int RichString_writeAscii(RichString* this, int attrs, const char* data` from `RichString.c:269`.
 pub fn RichString_writeAscii() {
     todo!("port of RichString.c:269")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rs(s: &str) -> RichString {
+        let chptr: Vec<char> = s.chars().collect();
+        let chlen = chptr.len() as i32;
+        RichString { chptr, chlen }
+    }
+
+    #[test]
+    fn finds_first_match_from_start_zero() {
+        let s = rs("hello");
+        assert_eq!(RichString_findChar(&s, 'l', 0), 2);
+        assert_eq!(RichString_findChar(&s, 'h', 0), 0);
+        assert_eq!(RichString_findChar(&s, 'o', 0), 4);
+    }
+
+    #[test]
+    fn start_offset_skips_earlier_matches() {
+        let s = rs("hello");
+        // first 'l' is at 2; starting at 3 finds the second 'l' at 3
+        assert_eq!(RichString_findChar(&s, 'l', 3), 3);
+        // starting past both 'l's finds nothing
+        assert_eq!(RichString_findChar(&s, 'l', 4), -1);
+    }
+
+    #[test]
+    fn absent_char_returns_minus_one() {
+        let s = rs("hello");
+        assert_eq!(RichString_findChar(&s, 'z', 0), -1);
+    }
+
+    #[test]
+    fn empty_string_returns_minus_one() {
+        let s = rs("");
+        assert_eq!(RichString_findChar(&s, 'a', 0), -1);
+    }
+
+    #[test]
+    fn start_at_or_past_end_returns_minus_one() {
+        let s = rs("abc");
+        // start == chlen: loop body never runs
+        assert_eq!(RichString_findChar(&s, 'c', 3), -1);
+        // start > chlen
+        assert_eq!(RichString_findChar(&s, 'a', 10), -1);
+    }
+
+    #[test]
+    fn start_equal_to_match_index_finds_it() {
+        let s = rs("abc");
+        assert_eq!(RichString_findChar(&s, 'c', 2), 2);
+    }
 }
