@@ -594,7 +594,10 @@ mod tests {
         let mut settings = Settings {
             hLayout: HeaderLayout::HF_ONE_100,
             hColumns: vec![MeterColumnSetting::default()],
+            screens: Vec::new(),
+            ssIndex: 0,
             changed: false,
+            lastUpdate: 0,
         };
 
         Header_writeBackToSettings(&h, &mut settings);
@@ -620,7 +623,10 @@ mod tests {
         let mut settings = Settings {
             hLayout: HeaderLayout::HF_TWO_50_50,
             hColumns: vec![MeterColumnSetting::default(), MeterColumnSetting::default()],
+            screens: Vec::new(),
+            ssIndex: 0,
             changed: false,
+            lastUpdate: 0,
         };
 
         Header_writeBackToSettings(&h, &mut settings);

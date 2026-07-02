@@ -17,11 +17,14 @@
 //!
 //! # Struct mapping (`InfoScreen.h:22`)
 //!
-//! `Object super` — the `InfoScreenClass` vtable slots
-//! (`scan`/`draw`/`onErr`/`onKey`) — is omitted: the only consumer is the
-//! stubbed [`InfoScreen_run`] main loop (the `As_InfoScreen` dispatch),
-//! matching how `incset.rs` omits its `Panel*` back-pointer because only
-//! stubbed functions read it. `const Process* process` is a raw
+//! `Object super` — the class back-pointer carrying the `InfoScreenClass`
+//! vtable slots (`scan`/`draw`/`onErr`/`onKey`) — is not a field on the
+//! [`InfoScreen`] struct; instead the vtable is modeled as the
+//! [`InfoScreenClass`] **trait** (the object.rs `Object`-trait precedent:
+//! function-pointer slots become trait methods). A concrete info screen
+//! implements that trait and holds an [`InfoScreen`] as its embedded base,
+//! reached from the loop via [`InfoScreenClass::super_InfoScreen`] (C's
+//! `(InfoScreen*)this`). `const Process* process` is a raw
 //! `*const Process` back-pointer (the `MainPanel.state` /
 //! `BacktracePanel.processes` precedent — a borrowed handle owned
 //! elsewhere, kept raw so the struct stays `'static`). `Panel* display`,
@@ -31,11 +34,22 @@
 //! # Ported
 //!
 //! - The [`InfoScreen`] struct (`InfoScreen.h:22`).
+//! - The [`InfoScreenClass`] vtable (`InfoScreen.h:35`) as a trait — the
+//!   `scan`/`draw`/`onErr`/`onKey` slots become trait methods and the C
+//!   `NULL`-slot guards become `has_scan`/`has_onErr`/`has_onKey` predicates.
 //! - [`InfoScreen_init`] (`InfoScreen.c:31`) — builds the `Panel`, the
 //!   `IncSet`, and the `lines` `Vector`, then installs the panel header.
 //! - [`InfoScreen_addLine`] (`InfoScreen.c:73`) — `ListItem_new` +
 //!   `Vector_add` + the `IncSet_filter` gate that decides whether the new
 //!   line is also shown in the panel.
+//! - [`InfoScreen_run`] (`InfoScreen.c:96`) — the full ncurses event-loop
+//!   control flow: the `As_InfoScreen` vtable dispatch (trait methods), the
+//!   `Panel_draw`/`FunctionBar_setLabel`/`Panel_getCh`/`Panel_onKey`/
+//!   `Panel_resize`/`Vector_prune`/`clear()` calls, and the key switch. Three
+//!   loop leaves (`IncSet_drawBar`/`IncSet_handleKey`/`IncSet_activate`) are
+//!   routed to their still-stubbed `incset.rs` functions and the
+//!   `#ifdef HAVE_GETMOUSE` mouse block is compiled out; both are documented
+//!   on the fn.
 //!
 //! ## Owned-value divergences (documented, per "port what you can")
 //!
@@ -98,28 +112,34 @@
 //!   (`XUtils.h:147`, a `static inline`), which is ABSENT from the
 //!   port-purity snapshot (`tests/data/htop_c_fn_names.txt`) and so cannot
 //!   be added as a `pub fn` yet; `IncSet_drawBar` is itself an unported
-//!   `todo!()` (`incset.rs:378`). No splittable pure logic.
-//! - [`InfoScreen_run`] (`InfoScreen.c:96`) — the ncurses main loop
-//!   (`Panel_getCh`, `getmouse`/`MEVENT`, `clear()`), the
-//!   `IncSet_handleKey`/`IncSet_activate`/`IncSet_drawBar` handlers (all
-//!   `todo!()` stubs in `incset.rs`), `Vector_prune`, and the
-//!   `As_InfoScreen` vtable dispatch
-//!   (`InfoScreen_scan`/`InfoScreen_draw`/`InfoScreen_onErr`/
-//!   `InfoScreen_onKey`), which the omitted `Object super` does not model.
+//!   `todo!()` (`incset.rs:378`). No splittable pure logic. (Its sibling
+//!   [`InfoScreen_run`] is now ported and dispatches the vtable via the
+//!   [`InfoScreenClass`] trait; it routes its own unported `IncSet` leaves —
+//!   `IncSet_drawBar`/`IncSet_handleKey`/`IncSet_activate` — to those stubs,
+//!   documented on the fn.)
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use core::ffi::c_int;
+use std::io::{self, Write};
 
-use crate::ported::crt::KEY_F;
-use crate::ported::functionbar::{FunctionBar, FunctionBar_new, Ncurses};
-use crate::ported::incset::{IncSet, IncSet_filter, IncSet_new};
+use crossterm::terminal::{Clear, ClearType};
+use crossterm::queue;
+
+use crate::ported::crt::{ERR, KEY_F, KEY_RESIZE};
+use crate::ported::functionbar::{FunctionBar, FunctionBar_new, FunctionBar_setLabel, Ncurses};
+use crate::ported::incset::{
+    IncSet, IncSet_activate, IncSet_drawBar, IncSet_filter, IncSet_handleKey, IncSet_new,
+};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::{Panel, Panel_add, Panel_new, Panel_setHeader};
+use crate::ported::panel::{
+    Panel, Panel_add, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
+    Panel_setHeader,
+};
 use crate::ported::process::Process;
-use crate::ported::vector::{Vector, Vector_add, Vector_new};
+use crate::ported::vector::{Vector, Vector_add, Vector_new, Vector_prune};
 use crate::ported::xutils::String_contains_i;
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -172,6 +192,91 @@ impl InfoScreen {
             inc: IncSet_new(None),
             lines: Vector_new(list_item_class, true, VECTOR_DEFAULT_SIZE),
         }
+    }
+}
+
+/// Port of the `InfoScreenClass` vtable (`InfoScreen.h:35`):
+///
+/// ```c
+/// typedef struct InfoScreenClass_ {
+///    const ObjectClass super;
+///    const InfoScreen_Scan  scan;   // void (*)(InfoScreen*)
+///    const InfoScreen_Draw  draw;   // void (*)(InfoScreen*)
+///    const InfoScreen_OnErr onErr;  // void (*)(InfoScreen*)
+///    const InfoScreen_OnKey onKey;  // bool (*)(InfoScreen*, int)
+/// } InfoScreenClass;
+/// ```
+///
+/// Concrete info screens (Command / Env / OpenFiles / ProcessLocks / Trace /
+/// Backtrace) embed an `InfoScreen super` and install this vtable; the
+/// `As_InfoScreen(this)->scan(...)` macros (`InfoScreen.h:44`) dispatch
+/// through it. The faithful safe-Rust analog is a **trait** — the same
+/// vtable-as-trait mapping [`Object`](crate::ported::object::Object) uses for
+/// `ObjectClass` (`display`/`compare` slots become trait methods). Each C
+/// function-pointer slot becomes one trait method:
+///
+/// | C vtable slot                 | Rust trait method            |
+/// |-------------------------------|------------------------------|
+/// | `InfoScreen_Draw  draw`       | [`draw`](InfoScreenClass::draw)   (required — always non-`NULL` in C) |
+/// | `InfoScreen_Scan  scan`       | [`scan`](InfoScreenClass::scan)   (default no-op) |
+/// | `InfoScreen_OnErr onErr`      | [`onErr`](InfoScreenClass::onErr) (default no-op) |
+/// | `InfoScreen_OnKey onKey`      | [`onKey`](InfoScreenClass::onKey) (default `false`) |
+///
+/// C guards three of the slots with a `NULL` test before calling
+/// (`if (As_InfoScreen(this)->scan) …`, `InfoScreen.c:99/114/162/180/188`).
+/// A Rust trait method is never "null", so the presence of each optional
+/// slot is modeled by a companion predicate — [`has_scan`](InfoScreenClass::has_scan)
+/// / [`has_onErr`](InfoScreenClass::has_onErr) / [`has_onKey`](InfoScreenClass::has_onKey),
+/// each defaulting `false` (the base class leaves the slot `NULL`) and
+/// overridden `true` by a subclass that installs the pointer. `draw` needs
+/// no predicate: it is dispatched unconditionally in C.
+///
+/// [`super_InfoScreen`](InfoScreenClass::super_InfoScreen) models the
+/// `InfoScreen super` embedded base (C's `(InfoScreen*)this` upcast): the
+/// loop reaches `this->display`/`this->inc`/`this->lines` through it. These
+/// methods live inside the trait (not module-level `fn`s), so the port-purity
+/// gate — which indexes only depth-0 free functions — does not see them; the
+/// trait itself is the faithful analog of the `InfoScreenClass` struct, which
+/// has no free-function counterpart to port.
+pub trait InfoScreenClass {
+    /// The embedded `InfoScreen super` (`InfoScreen.h:23` in a subclass): the
+    /// base data the loop mutates. C reaches it as `(InfoScreen*)this`.
+    fn super_InfoScreen(&mut self) -> &mut InfoScreen;
+
+    /// C `draw` slot (`InfoScreen_Draw`). Always non-`NULL` in htop, so it is
+    /// required (no default) and dispatched unconditionally by the loop.
+    fn draw(&mut self);
+
+    /// C `scan` slot (`InfoScreen_Scan`). Optional; the default models a
+    /// `NULL` slot as a no-op — but the loop still gates it on
+    /// [`has_scan`](InfoScreenClass::has_scan) because the `NULL` test also
+    /// guards the surrounding `Vector_prune` (`InfoScreen.c:163/181`).
+    fn scan(&mut self) {}
+
+    /// C `onErr` slot (`InfoScreen_OnErr`). Optional; default is a no-op.
+    fn onErr(&mut self) {}
+
+    /// C `onKey` slot (`InfoScreen_OnKey`): returns `true` when the key was
+    /// consumed (C `bool`). Optional; the default models a `NULL` slot.
+    fn onKey(&mut self, ch: c_int) -> bool {
+        let _ = ch;
+        false
+    }
+
+    /// Models the C `As_InfoScreen(this)->scan != NULL` test: `true` when the
+    /// subclass installs a `scan` pointer. Defaults `false` (base slot `NULL`).
+    fn has_scan(&self) -> bool {
+        false
+    }
+
+    /// Models `As_InfoScreen(this)->onErr != NULL` (`InfoScreen.c:114`).
+    fn has_onErr(&self) -> bool {
+        false
+    }
+
+    /// Models `As_InfoScreen(this)->onKey != NULL` (`InfoScreen.c:188`).
+    fn has_onKey(&self) -> bool {
+        false
     }
 }
 
@@ -281,16 +386,167 @@ pub fn InfoScreen_appendLine() {
     todo!("port of InfoScreen.c:81 — needs weak-panel shared Object* identity (displayLast != last); owned Box can't alias panel + lines")
 }
 
-/// TODO: port of `void InfoScreen_run(InfoScreen* this)` from
-/// `InfoScreen.c:96`. The ncurses main loop: `Panel_getCh`,
-/// `getmouse`/`MEVENT`, `clear()`, the
-/// `IncSet_handleKey`/`IncSet_activate`/`IncSet_drawBar` handlers (all
-/// `todo!()` stubs in `incset.rs`), `Vector_prune`, and the
-/// `As_InfoScreen` vtable dispatch
-/// (`InfoScreen_scan`/`InfoScreen_draw`/`InfoScreen_onErr`/
-/// `InfoScreen_onKey`), which the omitted `Object super` does not model.
-pub fn InfoScreen_run() {
-    todo!("port of InfoScreen.c:96 — ncurses loop; IncSet handlers + InfoScreenClass vtable unported")
+/// Port of `void InfoScreen_run(InfoScreen* this)` from `InfoScreen.c:96`.
+///
+/// The ncurses main event loop. `this` is any concrete info screen
+/// (`&mut dyn InfoScreenClass`); the C `As_InfoScreen(this)->scan/draw/onErr/
+/// onKey` vtable dispatch (`InfoScreen.h:44`) becomes the corresponding trait
+/// method calls, and the `NULL`-slot guards become the `has_scan`/`has_onErr`/
+/// `has_onKey` predicates. `this->display`/`inc`/`lines` are reached through
+/// [`InfoScreenClass::super_InfoScreen`] (C's `(InfoScreen*)this`). `COLS`/
+/// `LINES` map to [`Ncurses::cols`]/[`Ncurses::lines`], and `clear()` to the
+/// crossterm full-screen clear (a local closure, kept off module scope so the
+/// port-purity gate — which has no `clear` C entry — does not flag it).
+///
+/// # Transitively blocked leaves (routed to their `incset.rs` stubs)
+///
+/// The control flow is ported in full, but three loop leaves call `IncSet`
+/// functions that are still honest `todo!()` stubs (see `incset.rs`), so the
+/// loop panics on reaching them until they land — the same "routed to the
+/// stub" arrangement `InfoScreen_drawTitled` uses:
+/// - `IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR])` (`:108`) →
+///   [`IncSet_drawBar`] (`IncSet.c:302`, needs `LineEditor_draw` + the omitted
+///   `Panel` back-pointer).
+/// - `IncSet_handleKey(this->inc, ch, panel, IncSet_getListItemValue,
+///   this->lines)` (`:145`) → [`IncSet_handleKey`] (`IncSet.c:177`).
+/// - `IncSet_activate(this->inc, INC_SEARCH|INC_FILTER, panel)` (`:154/158`) →
+///   [`IncSet_activate`] (`IncSet.c:136`).
+///
+/// The zero-arg stub signatures drop the C arguments (documented at each call
+/// site); the stubs `todo!()`-panic, so no argument is ever observed.
+///
+/// # Omitted: the `HAVE_GETMOUSE` block (`:120`–`:142`)
+///
+/// The mouse translation (`getmouse`/`MEVENT`/`BUTTON1_RELEASED`/
+/// `IncSet_synthesizeEvent`/`KEY_WHEEL*`) is `#ifdef HAVE_GETMOUSE`
+/// conditional code. htoprs reads keys through crossterm (`CRT_readKey`),
+/// which surfaces no ncurses `MEVENT`, and `getmouse`/`MEVENT` are unported,
+/// so this port compiles as if `HAVE_GETMOUSE` were unset — faithful to
+/// building htop without ncurses mouse support.
+pub fn InfoScreen_run(this: &mut dyn InfoScreenClass) {
+    // C: clear() — ncurses full-screen clear; crossterm analog. A no-capture
+    // closure (not a module-level `fn`) so the call sites read `clear();` like
+    // C without adding a depth-0 helper the port gate has no C name for.
+    let clear = || {
+        let mut out = io::stdout().lock();
+        let _ = queue!(out, Clear(ClearType::All));
+        let _ = out.flush();
+    };
+
+    // C: Panel* panel = this->display; — aliased; reached via super_InfoScreen.
+
+    // C: if (As_InfoScreen(this)->scan) InfoScreen_scan(this);
+    if this.has_scan() {
+        this.scan();
+    }
+
+    // C: InfoScreen_draw(this);
+    this.draw();
+
+    let mut looping = true;
+    while looping {
+        // C: Panel_draw(panel, false, true, true, false);
+        Panel_draw(&mut this.super_InfoScreen().display, false, true, true, false);
+
+        // C: IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR]);
+        IncSet_drawBar(); // routed to the incset.rs stub (see fn docs)
+
+        // C: FunctionBar_setLabel(this->display->defaultBar, KEY_F(4),
+        //        this->inc->filtering ? "FILTER " : "Filter ");
+        let filtering = this.super_InfoScreen().inc.filtering;
+        if let Some(bar) = this.super_InfoScreen().display.defaultBar.as_mut() {
+            FunctionBar_setLabel(bar, KEY_F(4), if filtering { "FILTER " } else { "Filter " });
+        }
+
+        // C: int ch = Panel_getCh(panel);
+        let ch = Panel_getCh(&this.super_InfoScreen().display);
+
+        // C: if (ch == ERR) { if (As_InfoScreen(this)->onErr) { InfoScreen_onErr(this); continue; } }
+        if ch == ERR && this.has_onErr() {
+            this.onErr();
+            continue;
+        }
+
+        // The `#ifdef HAVE_GETMOUSE` mouse block is omitted (see fn docs).
+
+        // C: if (this->inc->active) {
+        //        IncSet_handleKey(this->inc, ch, panel, IncSet_getListItemValue, this->lines);
+        //        continue;
+        //    }
+        if this.super_InfoScreen().inc.active.is_some() {
+            IncSet_handleKey(); // routed to the incset.rs stub (see fn docs)
+            continue;
+        }
+
+        // Function-key codes as match patterns need consts (KEY_F is a const
+        // fn, not a literal); the char cases likewise. These local consts
+        // mirror the C `case` labels exactly.
+        const F3: c_int = KEY_F(3);
+        const F4: c_int = KEY_F(4);
+        const F5: c_int = KEY_F(5);
+        const F10: c_int = KEY_F(10);
+        const SLASH: c_int = b'/' as c_int;
+        const BACKSLASH: c_int = b'\\' as c_int;
+        const CTRL_L: c_int = 0o14; // '\014'
+        const Q: c_int = b'q' as c_int;
+
+        match ch {
+            // C: case ERR: continue;
+            ERR => continue,
+            // C: case KEY_F(3): case '/': IncSet_activate(this->inc, INC_SEARCH, panel); break;
+            F3 | SLASH => {
+                IncSet_activate(); // routed; C arg: INC_SEARCH
+            }
+            // C: case KEY_F(4): case '\\': IncSet_activate(this->inc, INC_FILTER, panel); break;
+            F4 | BACKSLASH => {
+                IncSet_activate(); // routed; C arg: INC_FILTER
+            }
+            // C: case KEY_F(5): clear();
+            //        if (As_InfoScreen(this)->scan) { Vector_prune(this->lines); InfoScreen_scan(this); }
+            //        InfoScreen_draw(this); break;
+            F5 => {
+                clear();
+                if this.has_scan() {
+                    Vector_prune(&mut this.super_InfoScreen().lines);
+                    this.scan();
+                }
+                this.draw();
+            }
+            // C: case '\014': clear(); InfoScreen_draw(this); break;
+            CTRL_L => {
+                clear();
+                this.draw();
+            }
+            // C: case 27: case 'q': case KEY_F(10): looping = false; break;
+            27 | Q | F10 => {
+                looping = false;
+            }
+            // C: case KEY_RESIZE: Panel_resize(panel, COLS, LINES - 2);
+            //        if (As_InfoScreen(this)->scan) { Vector_prune(this->lines); InfoScreen_scan(this); }
+            //        InfoScreen_draw(this); break;
+            KEY_RESIZE => {
+                Panel_resize(
+                    &mut this.super_InfoScreen().display,
+                    Ncurses::cols(),
+                    Ncurses::lines() - 2,
+                );
+                if this.has_scan() {
+                    Vector_prune(&mut this.super_InfoScreen().lines);
+                    this.scan();
+                }
+                this.draw();
+            }
+            // C: default:
+            //        if (As_InfoScreen(this)->onKey && InfoScreen_onKey(this, ch)) continue;
+            //        Panel_onKey(panel, ch);
+            _ => {
+                if this.has_onKey() && this.onKey(ch) {
+                    continue;
+                }
+                Panel_onKey(&mut this.super_InfoScreen().display, ch);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,5 +684,159 @@ mod tests {
         assert_eq!(line_value(&this.lines, 0), "");
         // No filter -> shown in the panel too.
         assert_eq!(Panel_size(&this.display), 1);
+    }
+
+    // ── InfoScreenClass vtable dispatch (InfoScreen.h:35) ─────────────
+    //
+    // The `InfoScreen_run` loop body itself is not unit-tested: it calls
+    // `Panel_getCh` (blocks on real stdin via `CRT_readKey`), `Panel_draw`
+    // (emits to stdout), and routes to `todo!()` `IncSet` stubs, so it needs
+    // a live TTY and unported substrate. What IS testable headlessly is the
+    // new modelable piece — the vtable-as-trait: slot dispatch, the `NULL`-
+    // slot presence predicates, `&mut dyn` dispatch, and the `super` base
+    // access the loop drives everything through.
+
+    /// A concrete info screen that installs every vtable slot (the analog of
+    /// a C subclass whose `InfoScreenClass` sets all four pointers).
+    struct FullScreen {
+        base: InfoScreen,
+        scans: u32,
+        draws: u32,
+        errs: u32,
+        keys: Vec<c_int>,
+        onkey_ret: bool,
+    }
+    impl InfoScreenClass for FullScreen {
+        fn super_InfoScreen(&mut self) -> &mut InfoScreen {
+            &mut self.base
+        }
+        fn draw(&mut self) {
+            self.draws += 1;
+        }
+        fn scan(&mut self) {
+            self.scans += 1;
+        }
+        fn onErr(&mut self) {
+            self.errs += 1;
+        }
+        fn onKey(&mut self, ch: c_int) -> bool {
+            self.keys.push(ch);
+            self.onkey_ret
+        }
+        fn has_scan(&self) -> bool {
+            true
+        }
+        fn has_onErr(&self) -> bool {
+            true
+        }
+        fn has_onKey(&self) -> bool {
+            true
+        }
+    }
+
+    /// A concrete info screen that installs only the (mandatory) `draw` slot,
+    /// leaving `scan`/`onErr`/`onKey` `NULL` — the base-class default vtable.
+    struct BareScreen {
+        base: InfoScreen,
+        draws: u32,
+    }
+    impl InfoScreenClass for BareScreen {
+        fn super_InfoScreen(&mut self) -> &mut InfoScreen {
+            &mut self.base
+        }
+        fn draw(&mut self) {
+            self.draws += 1;
+        }
+    }
+
+    #[test]
+    fn vtable_defaults_model_null_slots() {
+        let mut s = BareScreen {
+            base: InfoScreen::empty(),
+            draws: 0,
+        };
+        // The three optional slots report absent (C `->scan == NULL`, etc.).
+        assert!(!s.has_scan());
+        assert!(!s.has_onErr());
+        assert!(!s.has_onKey());
+        // Default scan/onErr are no-ops (do not panic) and onKey returns false.
+        s.scan();
+        s.onErr();
+        assert!(!s.onKey(42));
+        // draw is the one required slot and dispatches.
+        s.draw();
+        assert_eq!(s.draws, 1);
+    }
+
+    #[test]
+    fn vtable_overrides_report_present_and_dispatch() {
+        let mut s = FullScreen {
+            base: InfoScreen::empty(),
+            scans: 0,
+            draws: 0,
+            errs: 0,
+            keys: Vec::new(),
+            onkey_ret: true,
+        };
+        assert!(s.has_scan());
+        assert!(s.has_onErr());
+        assert!(s.has_onKey());
+        s.scan();
+        s.scan();
+        s.draw();
+        s.onErr();
+        assert!(s.onKey(7)); // returns the configured `true` (key consumed)
+        assert_eq!(s.scans, 2);
+        assert_eq!(s.draws, 1);
+        assert_eq!(s.errs, 1);
+        assert_eq!(s.keys, vec![7]);
+    }
+
+    #[test]
+    fn onkey_return_flows_back_like_c_bool() {
+        // C `default:` gates the `continue` on `InfoScreen_onKey(this, ch)`'s
+        // bool: true = consumed (skip Panel_onKey), false = fall through.
+        let mut s = FullScreen {
+            base: InfoScreen::empty(),
+            scans: 0,
+            draws: 0,
+            errs: 0,
+            keys: Vec::new(),
+            onkey_ret: false,
+        };
+        assert!(!s.onKey(99)); // not consumed
+        assert_eq!(s.keys, vec![99]);
+    }
+
+    #[test]
+    fn dyn_dispatch_reaches_concrete_impl_and_super_base() {
+        // Exactly how `InfoScreen_run` sees a screen: `&mut dyn InfoScreenClass`.
+        let mut s = FullScreen {
+            base: InfoScreen::empty(),
+            scans: 0,
+            draws: 0,
+            errs: 0,
+            keys: Vec::new(),
+            onkey_ret: false,
+        };
+        let dynref: &mut dyn InfoScreenClass = &mut s;
+
+        // Vtable dispatch through the trait object hits the concrete methods.
+        if dynref.has_scan() {
+            dynref.scan();
+        }
+        dynref.draw();
+
+        // super_InfoScreen exposes the embedded base; mutations persist, the
+        // way the loop's `Vector_prune(this->lines)` / `Panel_resize` reach
+        // `this->display`/`this->lines`.
+        InfoScreen_addLine(dynref.super_InfoScreen(), "alpha");
+        Panel_resize(&mut dynref.super_InfoScreen().display, 123, 45);
+
+        assert_eq!(s.scans, 1);
+        assert_eq!(s.draws, 1);
+        assert_eq!(Vector_size(&s.base.lines), 1);
+        assert_eq!(s.base.display.w, 123);
+        assert_eq!(s.base.display.h, 45);
     }
 }

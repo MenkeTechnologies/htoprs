@@ -10,16 +10,24 @@
 //!
 //! The [`MetersPanel`] struct (`MetersPanel.h:21`) is *partially* modeled:
 //! the embedded `Panel super` becomes `super_` (the `super`-keyword
-//! workaround the sibling panels use) and the `bool moving` flag is carried
-//! verbatim. Those two fields are all [`MetersPanel_setMoving`] reads, so it
-//! ports faithfully. The remaining five C fields have no faithful owned
-//! analog and are omitted (see the stub notes): `meters` is a `Vector*` of
-//! `Meter` **shared with and owned by** the `Header` (aliasing the header's
-//! store — an owned field would break the shared mutation the event handler
-//! depends on), and `Meter` does not even `impl Object`, so it cannot be held
-//! in a ported [`crate::ported::vector::Vector`]; `leftNeighbor`/
-//! `rightNeighbor` are self-referential `MetersPanel*` cross-links; `scr`/
-//! `settings` are back-pointers — together a cyclic shared-mutable graph.
+//! workaround the sibling panels use), the `bool moving` flag is carried
+//! verbatim, and `meters` is now a ported [`crate::ported::vector::Vector`]
+//! of `Meter` boxed as `Object` (`Meter` now `impl Object`, so it can live
+//! in a `Vector` wherever C stores an `Object*`). In C `meters` is a
+//! `Vector*` **shared with and owned by** the `Header`; the owned `Vector`
+//! model here takes ownership of that store instead of aliasing it (there is
+//! no safe-Rust way to model two owners of one `Vector`). This is faithful
+//! for every operation that reads or mutates a MetersPanel's *own* `meters`
+//! column — which is all of [`moveToNeighbor`], [`MetersPanel_setMoving`],
+//! and [`MetersPanel_new`] — and is the same owned-`Vector`-subsumes-a-shared-
+//! `Vector*` decision `panel.rs`/`vector.rs` already took. The remaining
+//! three C fields have no faithful owned analog and are omitted (see the stub
+//! notes): `leftNeighbor`/`rightNeighbor` are self-referential `MetersPanel*`
+//! cross-links between the two columns, and `scr`/`settings` are
+//! back-pointers to the owning `ScreenManager`/shared `Settings` — modeling
+//! any of them as an owned field would form an ownership cycle (the
+//! `ScreenManager` owns the `MetersPanel`s through its `panels` `Vector`, and
+//! these fields point back at it).
 //!
 //! Ported:
 //! - `MetersPanel_cleanup` (`MetersPanel.c:38`) — frees the file-static
@@ -38,6 +46,24 @@
 //!   and swaps `currentBar` between the default bar ([`Panel_setDefaultBar`])
 //!   and a clone of the shared `Meters_movingBar` (the same owned-clone of a
 //!   C shared `FunctionBar*` that `Panel_setDefaultBar` already relies on).
+//! - `moveToNeighbor` (`MetersPanel.c:74`) — relocates the selected meter to
+//!   a neighbor column. `neighbor` is a *parameter* (not the omitted
+//!   `leftNeighbor`/`rightNeighbor` field), so it ports as
+//!   `neighbor: Option<&mut MetersPanel>`: takes the `Meter` out of `this`'s
+//!   `meters` ([`Vector_take`]) and its panel row ([`Panel_remove`]), inserts
+//!   the meter into `neighbor`'s `meters` ([`Vector_insert`]), rebuilds the
+//!   row from the now-relocated meter via [`Meter_toListItem`]
+//!   ([`Panel_insert`]), moves the selection, and toggles move mode on both
+//!   columns. Every step is a pure own-`meters`/own-`super` op.
+//! - `MetersPanel_new` (`MetersPanel.c:209`) — the constructor. Builds the
+//!   default `FunctionBar` (`MetersFunctions`), lazily builds the shared
+//!   `Meters_movingBar` (`MetersMovingFunctions`), `Panel_init`s the embedded
+//!   panel, takes ownership of the passed-in `meters` `Vector`, sets the
+//!   header, and populates the panel with one [`Meter_toListItem`] row per
+//!   meter. The C `Settings*`/`ScreenManager*` params are **dropped** (like
+//!   `Panel_new` drops its `type`/`owner`): they are stored only into the
+//!   omitted `settings`/`scr` back-pointer fields, and the neighbor
+//!   cross-links C nulls here are likewise absent.
 //!
 //! Stubbed (cannot be ported faithfully yet):
 //! - `MetersPanel_delete` (`MetersPanel.c:45`) — `Panel_done(&this->super);
@@ -45,28 +71,23 @@
 //!   are released by `Drop` in Rust; there is no algorithm to port (same
 //!   rationale as every other `*_delete` in the ported tree). `Panel_done`
 //!   is itself an unported stub in `panel.rs`.
-//! - `moveToNeighbor` (`MetersPanel.c:74`) — relocates the selected meter to
-//!   a neighbor column. Blocked by (a) `Meter_toListItem` (`Meter.c:571`),
-//!   absent from the ported tree; (b) the `Meter`-holding shared `meters`
-//!   `Vector*` on both `this` and `neighbor` (`Meter` is not an `Object`, and
-//!   the two columns alias/share the header's store); (c) the
-//!   self-referential `neighbor: MetersPanel*` cross-link — none of which the
-//!   owned struct models.
 //! - `MetersPanel_eventHandler` (`MetersPanel.c:95`) — the key dispatcher.
-//!   Some arms are pure `Panel`/`Vector` ops, but the function as a whole
-//!   cannot port: the restyle arm needs `Meter_toListItem` (absent) +
-//!   `Meter_setMode` (ported) over the `Meter`-holding `meters` `Vector*`;
-//!   the side-move arms need the blocked `moveToNeighbor`; and the shared
-//!   tail block needs `this->scr->header` (`ScreenManager` models no `header`
-//!   field), `this->settings->changed`/`lastUpdate` (`Settings` models
-//!   neither), `Header_calculateHeight`, and `ScreenManager_resize`
-//!   (`ScreenManager.c:107`, a `todo!()` stub). It also returns
-//!   [`crate::ported::panel::HandlerResult`] (now modeled) but stays stubbed
-//!   on the above.
-//! - `MetersPanel_new` (`MetersPanel.c:209`) — the constructor. Blocked by
-//!   `Meter_toListItem` (absent) and by the shared `Vector* meters` /
-//!   `scr` / `settings` inputs it stores (the aliasing/back-pointer fields
-//!   the struct omits).
+//!   The individual arms are now portable (restyle via `Meter_setMode` +
+//!   `Meter_toListItem` over the owned `meters`; up/down via `Vector_moveUp`/
+//!   `Vector_moveDown` + the panel; delete via `Vector_remove`; the toggle
+//!   via `MetersPanel_setMoving`), but the function as a whole cannot port
+//!   for two structural reasons: (a) its C signature is
+//!   `(Panel* super, int ch)` and immediately downcasts
+//!   `this = (MetersPanel*) super` — the owned model has no `Panel`→
+//!   `MetersPanel` upcast, so there is no faithful entry point; (b) the
+//!   side-move arms read `this->rightNeighbor`/`this->leftNeighbor` (the
+//!   omitted self-referential cross-link fields) and the shared tail block
+//!   reads `this->scr->header` / `this->settings->changed`+`lastUpdate` (the
+//!   omitted `scr`/`settings` back-pointer fields). The tail's *callees*
+//!   (`Header_calculateHeight`, `ScreenManager_resize`) and the fields they
+//!   touch (`ScreenManager.header`, `Settings.changed`/`lastUpdate`) are all
+//!   ported now — only the back-pointer path to reach them is missing. Left
+//!   as a stub; returns [`crate::ported::panel::HandlerResult`] (modeled).
 //!
 //! Not modeled: the `MetersPanel_class` `PanelClass` vtable
 //! (`MetersPanel.c:201`) — like the other `PanelClass` initializers, the
@@ -75,12 +96,39 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use core::any::Any;
+use core::ffi::c_int;
 use std::sync::Mutex;
 
 use crate::ported::crt::ColorElements;
-use crate::ported::functionbar::FunctionBar;
+use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
 use crate::ported::listitem::ListItem;
-use crate::ported::panel::{Panel, Panel_setDefaultBar, Panel_setSelectionColor, Panel_size};
+use crate::ported::meter::{Meter, Meter_toListItem};
+use crate::ported::panel::{
+    Panel, Panel_add, Panel_insert, Panel_new, Panel_remove, Panel_setDefaultBar, Panel_setHeader,
+    Panel_setSelected, Panel_setSelectionColor, Panel_size,
+};
+use crate::ported::vector::{Vector, Vector_get, Vector_insert, Vector_size, Vector_take};
+
+/// Port of `static const char* const MetersFunctions[]` from
+/// `MetersPanel.c:28` — the standard (non-moving) F-key layout:
+/// `F4=Style F7=MoveUp F8=MoveDn F9=Delete F10=Done`. The trailing `NULL`
+/// terminator is dropped (a Rust slice length is the terminator, matching
+/// how `functionbar.rs` ports the `FunctionBar_F*` tables).
+const MetersFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "Style ", "      ", "      ", "MoveUp", "MoveDn", "Delete",
+    "Done  ",
+];
+
+/// Port of `static const char* const MetersMovingFunctions[]` from
+/// `MetersPanel.c:35` — the move-mode F-key layout, adding
+/// `F5=MoveLt F6=MoveRt` to the standard set. UTF-8 arrows are avoided
+/// upstream (they display full-width on some terminals), so the labels are
+/// ASCII verbatim. Trailing `NULL` dropped as above.
+const MetersMovingFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "Style ", "MoveLt", "MoveRt", "MoveUp", "MoveDn", "Delete",
+    "Done  ",
+];
 
 /// Port of `static FunctionBar* Meters_movingBar = NULL` from
 /// `MetersPanel.c:36`. The file-static moving-mode function bar, lazily
@@ -121,18 +169,22 @@ pub fn MetersPanel_delete() {
     todo!("port of MetersPanel.c:45 — Drop releases the panel")
 }
 
-/// Partial model of the C `MetersPanel` struct (`MetersPanel.h:21`). Only
-/// the two fields [`MetersPanel_setMoving`] touches are modeled: `super_`
-/// (the embedded `Panel super`; `super` is a Rust keyword — same rename the
-/// sibling panels use) and `moving`. The other five C fields have no
-/// faithful owned analog and are omitted — see the module docs: `meters` is
-/// a `Vector*` of `Meter` shared with (and owned by) the `Header` (and
-/// `Meter` is not a ported `Object`), `leftNeighbor`/`rightNeighbor` are
-/// self-referential `MetersPanel*` cross-links, and `scr`/`settings` are
-/// back-pointers.
+/// Partial model of the C `MetersPanel` struct (`MetersPanel.h:21`). Three
+/// of the six C fields are modeled: `super_` (the embedded `Panel super`;
+/// `super` is a Rust keyword — same rename the sibling panels use), `meters`
+/// (a ported [`Vector`] of `Meter` boxed as `Object`, owning the column's
+/// meter store — C aliases the `Header`'s `Vector*`, but the owned model
+/// takes ownership; see the module docs), and `moving`. The other three C
+/// fields have no faithful owned analog and are omitted: `leftNeighbor`/
+/// `rightNeighbor` are self-referential `MetersPanel*` cross-links and
+/// `scr`/`settings` are back-pointers to the owning `ScreenManager`/shared
+/// `Settings` — any owned analog would form an ownership cycle.
 pub struct MetersPanel {
     /// C `Panel super`.
     pub super_: Panel,
+    /// C `Vector* meters` (a `Vector` of `Meter*`), owned here rather than
+    /// aliased.
+    pub meters: Vector,
     /// C `bool moving`.
     pub moving: bool,
 }
@@ -207,45 +259,172 @@ pub fn MetersPanel_setMoving(this: &mut MetersPanel, moving: bool) {
     super_.needsRedraw = true;
 }
 
-/// TODO: port of `static inline bool moveToNeighbor(MetersPanel* this,
-/// MetersPanel* neighbor, int selected)` from `MetersPanel.c:74`. Blocked by
-/// `Meter_toListItem` (`Meter.c:571`), absent from the ported tree; by the
-/// `Meter`-holding shared `meters` `Vector*` on both `this` and `neighbor`
-/// (`Meter` is not a ported `Object`, and the two columns alias the header's
-/// store); and by the self-referential `neighbor: MetersPanel*` cross-link
-/// the owned struct omits. Left as a stub.
-pub fn moveToNeighbor() {
-    todo!("port of MetersPanel.c:74 — needs Meter_toListItem + Meter-in-Vector + neighbor cross-link")
+/// Port of `static inline bool moveToNeighbor(MetersPanel* this,
+/// MetersPanel* neighbor, int selected)` from `MetersPanel.c:74`.
+///
+/// ```c
+/// Panel* super = &this->super;
+/// if (this->moving) {
+///    if (neighbor) {
+///       if (selected < Vector_size(this->meters)) {
+///          MetersPanel_setMoving(this, false);
+///          Meter* meter = (Meter*) Vector_take(this->meters, selected);
+///          Panel_remove(super, selected);
+///          Vector_insert(neighbor->meters, selected, meter);
+///          Panel_insert(&(neighbor->super), selected, (Object*) Meter_toListItem(meter, false));
+///          Panel_setSelected(&(neighbor->super), selected);
+///          MetersPanel_setMoving(neighbor, true);
+///          return true;
+///       }
+///    }
+/// }
+/// return false;
+/// ```
+///
+/// The C `MetersPanel* neighbor` parameter maps to `Option<&mut MetersPanel>`
+/// (`NULL` ⇒ `None`) — it is a caller-supplied column, not the omitted
+/// `leftNeighbor`/`rightNeighbor` field, so nothing about the aliasing gap
+/// blocks it. `this` and `neighbor` are disjoint `&mut MetersPanel`s, so
+/// each `this->meters`/`neighbor->meters` and `this->super`/`neighbor->super`
+/// access is a clean borrow.
+///
+/// The one ordering nuance: C keeps the `Meter*` after `Vector_insert`
+/// (the pointer is copied into `neighbor->meters`) and reads it via
+/// `Meter_toListItem(meter, …)`. An owned `Box<dyn Object>` is *moved* into
+/// `Vector_insert`, so the list row is rebuilt by reading the meter back out
+/// of `neighbor->meters` at `selected` ([`Vector_get`] + `downcast_ref`) —
+/// the same object, now living in the neighbor column. `Panel_remove`'s
+/// returned `Box` is dropped (freeing the old `ListItem`, exactly as the C
+/// owner-`Vector` frees it).
+pub fn moveToNeighbor(this: &mut MetersPanel, neighbor: Option<&mut MetersPanel>, selected: c_int) -> bool {
+    if this.moving {
+        if let Some(neighbor) = neighbor {
+            if selected < Vector_size(&this.meters) {
+                MetersPanel_setMoving(this, false);
+
+                // Meter* meter = (Meter*) Vector_take(this->meters, selected);
+                let meter = Vector_take(&mut this.meters, selected);
+                // Panel_remove(super, selected); (returned ListItem freed by Drop)
+                let _ = Panel_remove(&mut this.super_, selected);
+                // Vector_insert(neighbor->meters, selected, meter);
+                Vector_insert(&mut neighbor.meters, selected, meter);
+                // (Object*) Meter_toListItem(meter, false) — meter now lives in
+                // neighbor->meters at `selected`; read it back to build the row.
+                let item = {
+                    let obj = Vector_get(&neighbor.meters, selected as usize);
+                    let any: &dyn Any = obj;
+                    let m = any
+                        .downcast_ref::<Meter>()
+                        .expect("moveToNeighbor: meters element is not a Meter");
+                    Meter_toListItem(m, false)
+                };
+                // Panel_insert(&(neighbor->super), selected, ...);
+                Panel_insert(&mut neighbor.super_, selected, Box::new(item));
+                Panel_setSelected(&mut neighbor.super_, selected);
+
+                MetersPanel_setMoving(neighbor, true);
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// TODO: port of `static HandlerResult MetersPanel_eventHandler(Panel* super,
-/// int ch)` from `MetersPanel.c:95`. The restyle arm needs `Meter_toListItem`
-/// (absent) over the `Meter`-holding `meters` `Vector*`; the side-move arms
-/// need the blocked [`moveToNeighbor`]; and the shared tail block needs
-/// `this->scr->header` (`ScreenManager` models no `header` field),
-/// `this->settings->changed`/`lastUpdate` (`Settings` models neither),
-/// `Header_calculateHeight`, and `ScreenManager_resize` (`ScreenManager.c:107`,
-/// a `todo!()` stub). Returns [`crate::ported::panel::HandlerResult`] (now
-/// modeled) but stays stubbed on the above. Left as a stub.
+/// int ch)` from `MetersPanel.c:95`. The individual switch arms are now
+/// portable ([`moveToNeighbor`] is ported, `Meter_setMode`/`Meter_toListItem`
+/// exist, the `Vector`/`Panel` list ops exist), but the function cannot port
+/// as a unit: (a) its C signature is `(Panel* super, int ch)` and downcasts
+/// `this = (MetersPanel*) super` — the owned model has no `Panel`→
+/// `MetersPanel` upcast, so there is no faithful entry point; (b) the
+/// side-move arms read the omitted `this->rightNeighbor`/`this->leftNeighbor`
+/// cross-link fields, and the shared tail block reads the omitted
+/// `this->scr`/`this->settings` back-pointer fields (`this->scr->header`,
+/// `this->settings->changed`+`lastUpdate`). The tail callees
+/// (`Header_calculateHeight`, `ScreenManager_resize`) and the fields they
+/// touch are all ported — only the back-pointer path is missing. Returns
+/// [`crate::ported::panel::HandlerResult`] (modeled). Left as a stub.
 pub fn MetersPanel_eventHandler() {
-    todo!("port of MetersPanel.c:95 — needs Meter_toListItem + moveToNeighbor + scr->header/settings/ScreenManager_resize")
+    todo!("port of MetersPanel.c:95 — needs Panel->MetersPanel upcast + rightNeighbor/leftNeighbor + scr/settings back-pointers")
 }
 
-/// TODO: port of `MetersPanel* MetersPanel_new(Settings* settings,
+/// Port of `MetersPanel* MetersPanel_new(Settings* settings,
 /// const char* header, Vector* meters, ScreenManager* scr)` from
-/// `MetersPanel.c:209`. Blocked by `Meter_toListItem` (`Meter.c:571`, absent)
-/// and by the shared `Vector* meters` / `scr` / `settings` inputs it stores —
-/// the aliasing/back-pointer fields the [`MetersPanel`] struct omits (see the
-/// module header). Left as a stub.
-pub fn MetersPanel_new() {
-    todo!("port of MetersPanel.c:209 — needs Meter_toListItem + shared meters Vector + scr/settings")
+/// `MetersPanel.c:209`.
+///
+/// ```c
+/// MetersPanel* this = AllocThis(MetersPanel);
+/// Panel* super = &this->super;
+/// FunctionBar* fuBar = FunctionBar_new(MetersFunctions, NULL, NULL);
+/// if (!Meters_movingBar)
+///    Meters_movingBar = FunctionBar_new(MetersMovingFunctions, NULL, NULL);
+/// Panel_init(super, 1, 1, 1, 1, Class(ListItem), true, fuBar);
+/// this->settings = settings; this->meters = meters; this->scr = scr;
+/// this->moving = false; this->rightNeighbor = NULL; this->leftNeighbor = NULL;
+/// Panel_setHeader(super, header);
+/// for (int i = 0; i < Vector_size(meters); i++)
+///    Panel_add(super, (Object*) Meter_toListItem(Vector_get(meters, i), false));
+/// return this;
+/// ```
+///
+/// The `Settings*`/`ScreenManager*` params are dropped: they are stored only
+/// into the omitted `settings`/`scr` back-pointer fields (the same reason
+/// `Panel_new` drops its `type`/`owner`), and the `rightNeighbor`/
+/// `leftNeighbor` NULL-init is the absence of those omitted cross-link
+/// fields. `meters` is taken by value — the owned `Vector` model owns the
+/// column store rather than aliasing the `Header`'s. `Panel_init(super, 1,
+/// 1, 1, 1, Class(ListItem), true, fuBar)` is [`Panel_new`] at those coords
+/// (which drops the `Class(ListItem)`/`true` `Vector`-typing args). Each row
+/// is built by reading a meter out of the now-owned `meters` and running it
+/// through [`Meter_toListItem`].
+pub fn MetersPanel_new(header: &str, meters: Vector) -> MetersPanel {
+    // FunctionBar* fuBar = FunctionBar_new(MetersFunctions, NULL, NULL);
+    let fu_bar = FunctionBar_new(Some(&MetersFunctions), None, None);
+    // if (!Meters_movingBar) Meters_movingBar = FunctionBar_new(MetersMovingFunctions, NULL, NULL);
+    {
+        let mut bar = Meters_movingBar.lock().unwrap();
+        if bar.is_none() {
+            *bar = Some(FunctionBar_new(Some(&MetersMovingFunctions), None, None));
+        }
+    }
+    // Panel_init(super, 1, 1, 1, 1, Class(ListItem), true, fuBar);
+    let super_ = Panel_new(1, 1, 1, 1, Some(fu_bar));
+
+    // this->meters = meters; this->moving = false; (neighbors NULL == omitted)
+    let mut this = MetersPanel {
+        super_,
+        meters,
+        moving: false,
+    };
+
+    // Panel_setHeader(super, header);
+    Panel_setHeader(&mut this.super_, header);
+
+    // for (int i = 0; i < Vector_size(meters); i++)
+    //    Panel_add(super, (Object*) Meter_toListItem(Vector_get(meters, i), false));
+    for i in 0..Vector_size(&this.meters) {
+        let item = {
+            let obj = Vector_get(&this.meters, i as usize);
+            let any: &dyn Any = obj;
+            let m = any
+                .downcast_ref::<Meter>()
+                .expect("MetersPanel_new: meters element is not a Meter");
+            Meter_toListItem(m, false)
+        };
+        Panel_add(&mut this.super_, Box::new(item));
+    }
+
+    this
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ported::meter::Meter_class;
     use crate::ported::object::Object;
-    use crate::ported::panel::Panel_new;
+    use crate::ported::panel::{Panel_get, Panel_new, Panel_size};
+    use crate::ported::richstring::RichString_sizeVal;
+    use crate::ported::vector::{Vector_add, Vector_new};
 
     // Every test that reads or writes the process-shared `Meters_movingBar`
     // static acquires this first, so they run sequentially rather than racing
@@ -281,8 +460,25 @@ mod tests {
         })
     }
 
+    // An empty owned `Vector` typed for `Meter` elements (C
+    // `Vector_new(Class(Meter), true, size)`).
+    fn empty_meters() -> Vector {
+        Vector_new(&Meter_class.super_, true, 4)
+    }
+
+    // A `Meter` boxed as `Object`, with a fixed setup-menu ui-name and
+    // reserved mode 0 (so `Meter_toListItem`'s label is exactly `name`).
+    fn meter(name: &'static str) -> Box<dyn Object> {
+        Box::new(Meter {
+            uiName: name,
+            mode: 0,
+            ..Meter::empty()
+        })
+    }
+
     // A MetersPanel whose embedded Panel holds `n` non-moving ListItems and a
     // known default FunctionBar (so Panel_setDefaultBar's restore is visible).
+    // Its `meters` Vector is left empty (setMoving reads only super_/moving).
     fn mp(n: usize) -> MetersPanel {
         let mut super_ = Panel_new(1, 1, 1, 1, Some(default_bar()));
         for i in 0..n {
@@ -290,8 +486,15 @@ mod tests {
         }
         MetersPanel {
             super_,
+            meters: empty_meters(),
             moving: false,
         }
+    }
+
+    // Read the value string of the panel row at index `i`.
+    fn row_value(m: &MetersPanel, i: usize) -> String {
+        let any: &dyn Any = Panel_get(&m.super_, i as i32);
+        any.downcast_ref::<ListItem>().unwrap().value.clone()
     }
 
     fn item_moving(m: &MetersPanel, i: usize) -> bool {
@@ -393,6 +596,138 @@ mod tests {
             ColorElements::PANEL_SELECTION_FOLLOW
         );
         assert_eq!(m.super_.currentBar, Some(moving_bar()));
+
+        *Meters_movingBar.lock().unwrap() = None;
+    }
+
+    // ── MetersPanel_new ───────────────────────────────────────────────
+
+    #[test]
+    fn new_owns_meters_populates_rows_and_sets_header() {
+        // MetersPanel_new lazily inits the shared Meters_movingBar static.
+        let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *Meters_movingBar.lock().unwrap() = None;
+
+        let mut meters = empty_meters();
+        Vector_add(&mut meters, meter("CPU"));
+        Vector_add(&mut meters, meter("Mem"));
+
+        let m = MetersPanel_new("Meters", meters);
+
+        assert!(!m.moving);
+        // Owns the passed-in meters store.
+        assert_eq!(Vector_size(&m.meters), 2);
+        // One panel row per meter, labelled by Meter_toListItem (mode 0 => name).
+        assert_eq!(Panel_size(&m.super_), 2);
+        assert_eq!(row_value(&m, 0), "CPU");
+        assert_eq!(row_value(&m, 1), "Mem");
+        // Header was set.
+        assert_eq!(RichString_sizeVal(&m.super_.header), "Meters".len() as i32);
+        // currentBar is the default MetersFunctions bar.
+        assert_eq!(
+            m.super_.currentBar.as_ref().unwrap().functions,
+            MetersFunctions.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        // The moving-mode bar static was lazily built.
+        assert!(Meters_movingBar.lock().unwrap().is_some());
+
+        *Meters_movingBar.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn new_with_empty_meters_has_no_rows() {
+        let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let m = MetersPanel_new("Empty", empty_meters());
+        assert_eq!(Vector_size(&m.meters), 0);
+        assert_eq!(Panel_size(&m.super_), 0);
+        *Meters_movingBar.lock().unwrap() = None;
+    }
+
+    // ── moveToNeighbor ────────────────────────────────────────────────
+
+    #[test]
+    fn move_to_neighbor_relocates_meter_and_row_when_moving() {
+        let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *Meters_movingBar.lock().unwrap() = Some(moving_bar());
+
+        // `this` owns one meter "CPU"; `neighbor` starts empty.
+        let mut meters = empty_meters();
+        Vector_add(&mut meters, meter("CPU"));
+        let mut this = MetersPanel_new("Left", meters);
+        let mut neighbor = MetersPanel_new("Right", empty_meters());
+
+        // Enter move mode on `this` with the CPU row selected.
+        this.super_.selected = 0;
+        MetersPanel_setMoving(&mut this, true);
+        assert!(this.moving);
+
+        let moved = moveToNeighbor(&mut this, Some(&mut neighbor), 0);
+
+        assert!(moved);
+        // Meter + row left `this`.
+        assert_eq!(Vector_size(&this.meters), 0);
+        assert_eq!(Panel_size(&this.super_), 0);
+        assert!(!this.moving); // MetersPanel_setMoving(this, false)
+        // Meter + row arrived in `neighbor`.
+        assert_eq!(Vector_size(&neighbor.meters), 1);
+        assert_eq!(Panel_size(&neighbor.super_), 1);
+        assert_eq!(row_value(&neighbor, 0), "CPU");
+        assert_eq!(neighbor.super_.selected, 0);
+        assert!(neighbor.moving); // MetersPanel_setMoving(neighbor, true)
+
+        *Meters_movingBar.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn move_to_neighbor_is_noop_when_not_moving() {
+        let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut meters = empty_meters();
+        Vector_add(&mut meters, meter("CPU"));
+        let mut this = MetersPanel_new("Left", meters);
+        let mut neighbor = MetersPanel_new("Right", empty_meters());
+
+        // this.moving is false: the guard fails, nothing moves.
+        assert!(!moveToNeighbor(&mut this, Some(&mut neighbor), 0));
+        assert_eq!(Vector_size(&this.meters), 1);
+        assert_eq!(Vector_size(&neighbor.meters), 0);
+
+        *Meters_movingBar.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn move_to_neighbor_is_noop_when_neighbor_is_none() {
+        let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *Meters_movingBar.lock().unwrap() = Some(moving_bar());
+
+        let mut meters = empty_meters();
+        Vector_add(&mut meters, meter("CPU"));
+        let mut this = MetersPanel_new("Left", meters);
+        this.super_.selected = 0;
+        MetersPanel_setMoving(&mut this, true);
+
+        // No neighbor column: nothing moves, but `this` stays in move mode.
+        assert!(!moveToNeighbor(&mut this, None, 0));
+        assert_eq!(Vector_size(&this.meters), 1);
+        assert!(this.moving);
+
+        *Meters_movingBar.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn move_to_neighbor_is_noop_when_selected_out_of_range() {
+        let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *Meters_movingBar.lock().unwrap() = Some(moving_bar());
+
+        let mut meters = empty_meters();
+        Vector_add(&mut meters, meter("CPU"));
+        let mut this = MetersPanel_new("Left", meters);
+        let mut neighbor = MetersPanel_new("Right", empty_meters());
+        MetersPanel_setMoving(&mut this, true);
+
+        // selected == size (1) is not < Vector_size -> false, nothing moves.
+        assert!(!moveToNeighbor(&mut this, Some(&mut neighbor), 1));
+        assert_eq!(Vector_size(&this.meters), 1);
+        assert_eq!(Vector_size(&neighbor.meters), 0);
 
         *Meters_movingBar.lock().unwrap() = None;
     }

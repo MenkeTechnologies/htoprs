@@ -29,6 +29,19 @@
 //! its `static X_class: MeterClass` and `Meter_new` (not yet ported) would
 //! seed those instance fields from it.
 //!
+//! # `Object` subclassing
+//!
+//! htop's `struct Meter_ { Object super; … }` (`Meter.h:112`) IS an `Object`
+//! subclass, and `MeterClass_ { const ObjectClass super; … }` (`Meter.h:59`)
+//! embeds an `ObjectClass`. That inheritance is reproduced here: [`MeterClass`]
+//! carries the embedded [`ObjectClass`] as its `super_` field (rooted at
+//! `Object_class` per `Meter_class.super = { .extends = Class(Object) }`,
+//! `Meter.c:446`), and [`Meter`] implements the [`Object`] trait —
+//! `klass()` returns `&Meter_class.super_`, `display()` dispatches through the
+//! instance-mirrored `Object` display slot. This lets a `Meter` be boxed as
+//! `Box<dyn Object>` and stored in a ported `Vector` / `Hashtable` wherever C
+//! stores an `Object*`.
+//!
 //! Ported:
 //! - `Meter_humanUnit` (`Meter.c:473`) — kibibytes → human-readable string.
 //! - `Meter_computeSum` (`Meter.c:51`) — `static`; sums the live positive
@@ -71,6 +84,7 @@ use std::io::Write;
 use crate::ported::crt::{ColorElements, ColorScheme, CRT_colorSchemes};
 use crate::ported::functionbar::Ncurses;
 use crate::ported::listitem::{ListItem, ListItem_new};
+use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
     RichString, RichString_appendChr, RichString_appendWide, RichString_delete,
     RichString_getCharVal, RichString_printoffnVal, RichString_setAttrn, RichString_setChar,
@@ -195,13 +209,25 @@ pub type MeterGetUiName = fn(&Meter) -> String;
 pub type MeterDisplay = fn(&Meter, &mut RichString);
 
 /// Port of `typedef struct MeterClass_` from `Meter.h:59` — the meter
-/// vtable. The C `const ObjectClass super` is flattened here to its one
-/// meter-relevant slot (`display`); the remaining fn-pointer slots and the
-/// const-data block are reproduced field-for-field. Instances are `static`
-/// (stable address = type identity), matching C's `const MeterClass`
-/// globals. See the module docs for why the base renderers read
-/// instance-mirrored fields rather than dispatching through this vtable.
+/// vtable. The C `const ObjectClass super` (`Meter.h:60`) is modeled as the
+/// embedded [`ObjectClass`] `super_` field (first field, matching C), which
+/// carries the class-chain `extends` link `Object_isA` walks; the one
+/// meter-relevant display slot of that base class (`ObjectClass.display`) is
+/// mirrored separately as the `display` field, because the ported
+/// [`ObjectClass`] models only `extends` (its `display`/`delete`/`compare`
+/// slots live on the [`Object`] trait, not the struct — see `object.rs`).
+/// The remaining fn-pointer slots and the const-data block are reproduced
+/// field-for-field. Instances are `static` (stable address = type identity),
+/// matching C's `const MeterClass` globals, so `&Meter_class.super_` is a
+/// stable `&'static ObjectClass` usable as the meter's class identity. See
+/// the module docs for why the base renderers read instance-mirrored fields
+/// rather than dispatching through this vtable.
 pub struct MeterClass {
+    /// C `const ObjectClass super` (`Meter.h:60`) — the embedded base
+    /// class. Only its `extends` link is modeled here (the ported
+    /// [`ObjectClass`] carries nothing else); its `display` slot is
+    /// mirrored by the sibling `display` field below.
+    pub super_: ObjectClass,
     /// `ObjectClass super.display` — the `Object_display` slot.
     pub display: Option<MeterDisplay>,
     pub init: Option<MeterInit>,
@@ -226,10 +252,14 @@ pub struct MeterClass {
 
 /// Port of `const MeterClass Meter_class` from `Meter.c:446`:
 /// `{ .super = { .extends = Class(Object) } }`. Every other slot is `NULL` /
-/// `0` in the C initializer, i.e. `None` / defaults here. The `extends` link
-/// lives in `object.rs`'s class model; this base meter class carries no
-/// meter-specific behavior of its own.
+/// `0` in the C initializer, i.e. `None` / defaults here. The embedded
+/// `super_` roots the class chain at `Object_class` (C `Class(Object)` =
+/// `&Object_class`); this base meter class carries no meter-specific behavior
+/// of its own.
 pub static Meter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Object_class),
+    },
     display: None,
     init: None,
     done: None,
@@ -255,8 +285,16 @@ pub static Meter_class: MeterClass = MeterClass {
 /// `{ DEFAULT_COLOR }`.
 static BlankMeter_attributes: [i32; 1] = [ColorElements::DEFAULT_COLOR as i32];
 
-/// Port of `const MeterClass BlankMeter_class` from `Meter.c:603`.
+/// Port of `const MeterClass BlankMeter_class` from `Meter.c:603`. Its
+/// C `.super` sets `.extends = Class(Meter)`, `.delete = Meter_delete`, and
+/// `.display = BlankMeter_display`. `Class(Meter)` is `(const ObjectClass*)
+/// &Meter_class`, i.e. the embedded `Meter_class.super_`, so `super_.extends`
+/// points there; `.delete` maps to `Drop` (see `object.rs`) so it is not
+/// modeled, and `.display` is carried by the sibling `display` field.
 pub static BlankMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
     display: Some(BlankMeter_display),
     init: None,
     done: None,
@@ -430,6 +468,40 @@ impl Meter {
     /// (associated fn) so the port-purity gate ignores it.
     fn crt_colors(idx: i32) -> i32 {
         CRT_colorSchemes[ColorScheme::active() as usize][idx as usize]
+    }
+}
+
+/// C `struct Meter_ { Object super; … }` (`Meter.h:112`) makes every `Meter`
+/// an `Object` subclass, and `MeterClass_ { const ObjectClass super; … }`
+/// (`Meter.h:59`) embeds the base class the runtime dispatches through. This
+/// `impl` reproduces that inheritance so a ported `Meter` can live in a
+/// [`Vector`](crate::ported::vector::Vector) / `Hashtable` wherever the C
+/// stores an `Object*` (the precondition MetersPanel's meter-list machinery
+/// needs).
+impl Object for Meter {
+    /// C `this->super.klass`, set by `Object_setClass(this, type)` in
+    /// `Meter_new` (`Meter.c:453`) to the concrete `MeterClass*`. The ported
+    /// `Meter` carries no per-instance klass pointer (no concrete meter type
+    /// is migrated yet), so the base `Meter_class`'s embedded `ObjectClass`
+    /// is returned — `&Meter_class.super_`, the class rooted at `Object_class`
+    /// (C `Meter_class.super = { .extends = Class(Object) }`, `Meter.c:446`).
+    fn klass(&self) -> &'static ObjectClass {
+        &Meter_class.super_
+    }
+
+    /// C `Object_display` dispatch through `As_Meter(this)->super.display`
+    /// (`Meter.h:60`). Mirrored on the instance as the `display` slot: when
+    /// set, dispatch to it (`BlankMeter_display` and friends); when `NULL`,
+    /// the C `Object_display` macro `assert`s non-`NULL`, so an unset slot
+    /// aborts — modeled here by the trait's default panic, matching
+    /// [`Object::display`]'s contract.
+    fn display(&self, out: &mut RichString) {
+        match self.display {
+            Some(display) => display(self, out),
+            None => unimplemented!(
+                "Object::display: Meter class has no display method (C NULL vtable slot)"
+            ),
+        }
     }
 }
 
@@ -1401,6 +1473,69 @@ mod tests {
             ..Meter::empty()
         };
         assert_eq!(Meter_toListItem(&m, false).value, "a".repeat(40));
+    }
+
+    // ── Object subclassing ────────────────────────────────────────────
+
+    #[test]
+    fn meter_klass_is_rooted_at_object() {
+        // A Meter's class identity is Meter_class.super_, whose extends chain
+        // walks up to Object_class (C Meter_class.super = { .extends =
+        // Class(Object) }).
+        let m = Meter::empty();
+        let k = m.klass();
+        assert!(core::ptr::eq(k, &Meter_class.super_));
+        assert!(crate::ported::object::Object_isA(
+            Some(&m as &dyn Object),
+            &Meter_class.super_
+        ));
+        assert!(crate::ported::object::Object_isA(
+            Some(&m as &dyn Object),
+            &Object_class
+        ));
+    }
+
+    #[test]
+    fn meter_display_dispatches_through_object_trait() {
+        // Object::display routes to the instance display slot (BlankMeter_display
+        // here — a no-op), not a panic.
+        let m = Meter {
+            display: Some(BlankMeter_display),
+            ..Meter::empty()
+        };
+        let mut out = RichString::new();
+        Object::display(&m, &mut out);
+        assert_eq!(out.chlen, 0);
+    }
+
+    #[test]
+    fn meter_roundtrips_through_ported_vector_as_object() {
+        // The unblocking invariant: a Meter boxes as Box<dyn Object> and lives
+        // in a ported Vector wherever C stores an Object*. Round-trip: add,
+        // get, downcast back to the concrete Meter, read a mirrored field.
+        use crate::ported::vector::{Vector_add, Vector_get, Vector_new, Vector_size};
+
+        let mut v = Vector_new(&Meter_class.super_, true, 10);
+
+        let m = Meter {
+            caption: "CPU".to_string(),
+            param: 7,
+            ..Meter::empty()
+        };
+        Vector_add(&mut v, Box::new(m));
+        assert_eq!(Vector_size(&v), 1);
+
+        let got: &dyn Object = Vector_get(&v, 0);
+        // klass identity survives the Object* round-trip.
+        assert!(core::ptr::eq(got.klass(), &Meter_class.super_));
+        // downcast the trait object back to the concrete Meter (C casts the
+        // Object* back to Meter*).
+        let any: &dyn core::any::Any = got;
+        let back = any
+            .downcast_ref::<Meter>()
+            .expect("stored object downcasts back to Meter");
+        assert_eq!(back.caption, "CPU");
+        assert_eq!(back.param, 7);
     }
 
     #[test]

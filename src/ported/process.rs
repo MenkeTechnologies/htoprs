@@ -22,7 +22,14 @@
 //!
 //! Still stubbed (need unported substrate): [`Process_compare`] and
 //! [`Process_compareByParent`] (read `settings->ss` / `ScreenSettings`),
-//! [`Process_getCommand`] (reads `host->settings`), and the
+//! [`Process_getCommand`] (reads `host->settings->showThreadNames` — the
+//! ported `Settings` subset has no `showThreadNames` field and `Row::host`
+//! is an opaque pointer), [`Process_makeCommandStr`] (every branch is
+//! driven by a `Settings` flag; the ported subset models none of
+//! `showMergedCommand` / `showProgramPath` / `findCommInCmdline` /
+//! `stripExeFromCmdline` / `showThreadNames` / `shadowDistPathPrefix` /
+//! `lastUpdate`, and it also needs `CRT_treeStr[TREE_STR_VERT]`, the
+//! `CMDLINE_HIGHLIGHT_FLAG_*` constants, and `CRT_colors[...]`), and the
 //! writeField / init-display / syscall / filter functions. The `COMM`
 //! sort case in [`Process_compareByKey_Base`] delegates to the stubbed
 //! [`Process_getCommand`], so that one case is not exercisable until the
@@ -517,9 +524,26 @@ pub fn stpcpyWithNewlineConversion(dst: &mut Vec<u8>, src: &[u8]) {
     }
 }
 
-/// TODO: port of `void Process_makeCommandStr(Process* this, const Settings* settings` from `Process.c:183`.
+/// TODO: port of `void Process_makeCommandStr(Process* this, const
+/// Settings* settings)` from `Process.c:183`. Core inputs entirely
+/// unmodeled: every branch is driven by a `Settings` flag, and the
+/// ported `Settings` subset (`settings.rs`) models none of the seven it
+/// reads — `showMergedCommand`, `showProgramPath`, `findCommInCmdline`,
+/// `stripExeFromCmdline`, `showThreadNames`, `shadowDistPathPrefix`
+/// (`Process.c:186-191`), and `lastUpdate` (`Process.c:193`, the
+/// cache-invalidation stamp). It further needs the field separator
+/// `CRT_treeStr[TREE_STR_VERT]` (`Process.c:213`) — the `TREE_STR` tables
+/// are unported — and the `CMDLINE_HIGHLIGHT_FLAG_*` constants + the
+/// `CRT_colors[...]` palette (`Process.c:307-310`), neither defined in
+/// the port. The pure Process-field inputs it consumes (`cmdline`,
+/// `procComm`, `procExe`, `cmdlineBasenameStart/End`,
+/// `procExeBasenameOffset`, `procExeDeleted`, `usesDeletedLib`, `state`)
+/// *are* modeled, and its string helpers [`stpcpyWithNewlineConversion`],
+/// [`findCommInCmdline`], [`matchCmdlinePrefixWithExeSuffix`] are ported —
+/// but with the Settings flags absent there is no faithful subset to
+/// port, so the whole body stays a stub.
 pub fn Process_makeCommandStr() {
-    todo!("port of Process.c:183")
+    todo!("port of Process.c:183 — needs Settings flags (showMergedCommand/showProgramPath/findCommInCmdline/stripExeFromCmdline/showThreadNames/shadowDistPathPrefix/lastUpdate) + CRT_treeStr + CMDLINE_HIGHLIGHT_FLAG_* + CRT_colors")
 }
 
 /// TODO: port of `void Process_writeCommand(const Process* this, int attr, int baseAttr, RichString* str` from `Process.c:471`.
@@ -566,15 +590,21 @@ pub fn Process_done() {
 }
 
 /// TODO: port of `const char* Process_getCommand(const Process* this)`
-/// from `Process.c:808`. Not portable yet: reads
-/// `this->super.host->settings->showThreadNames` — the unported
-/// `Machine` / `Settings` substrate ([`Row::host`](crate::ported::row::Row::host)
-/// is an opaque pointer). Signature is set so the `COMM` case of
-/// [`Process_compareByKey_Base`] can call it faithfully; the body stays a
-/// stub. Returns the command bytes (C `const char*`).
+/// from `Process.c:831`. Blocked on a single missing input:
+/// `this->super.host->settings->showThreadNames` (`Process.c:834`). Two
+/// gaps make it unreachable — [`Row::host`](crate::ported::row::Row::host)
+/// is an opaque `*const c_void` (the `Machine` deref to reach `settings`
+/// is unavailable), and even given `settings`, the ported `Settings`
+/// subset (`settings.rs`) carries no `showThreadNames` field. The other
+/// three inputs the C body reads *are* modeled — `mergedCommand.str`
+/// ([`Process::mergedCommand`]), `cmdline` ([`Process::cmdline`]), and
+/// [`Process_isUserlandThread`] — so only the flag blocks it. Signature is
+/// set so the `COMM` case of [`Process_compareByKey_Base`] can call it
+/// faithfully; the body stays a stub. Returns the command bytes
+/// (C `const char*`).
 pub fn Process_getCommand(this: &Process) -> Option<&[u8]> {
     let _ = this;
-    todo!("port of Process.c:808 — needs Machine/Settings substrate")
+    todo!("port of Process.c:831 — needs settings->showThreadNames (Settings subset lacks the field; Row::host is an opaque pointer)")
 }
 
 /// TODO: port of `static const char* Process_getSortKey(const Process* this` from `Process.c:818`.

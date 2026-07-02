@@ -15,6 +15,10 @@
 //!   string building into a buffer (the C `OutputFunc`/`FILE*` sink is
 //!   modeled as a `&mut String`, since the config text is identical).
 //! * `ScreenSettings_invertSortOrder` and the `readonly` latch pair.
+//! * `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
+//!   — the pure `static inline` accessors from `Settings.h`, field reads
+//!   over the now-modeled `ScreenSettings` (they never touch
+//!   `Process_fields[]`, only branch on `treeView`/`treeViewAlwaysByPID`).
 //!
 //! Stubbed (cannot be ported faithfully yet — the specific blocker is
 //! named on each stub below):
@@ -29,9 +33,18 @@
 //!   which are still `todo!()` stubs in `dynamiccolumn.rs`.
 //! * The screen constructors `Settings_newScreen` /
 //!   `Settings_newDynamicScreen` / `Settings_initScreenSettings` /
-//!   `Settings_defaultScreens` sit on top of that field family plus the
-//!   full `ScreenSettings`/`screens[]` array model and `Platform_*`
-//!   (`Platform_defaultScreens`, `Platform_addDynamicScreen`).
+//!   `Settings_defaultScreens` remain stubbed. The `Settings.screens`
+//!   array is now modeled (a `Vec<ScreenSettings>`, the C
+//!   `ScreenSettings** screens` + `nScreens`), and `ScreenSettings` itself
+//!   is fully modeled (all `Settings.h:42` fields except `table`, whose
+//!   `Table` type is unported and is only written by the stubbed
+//!   `Settings_newDynamicScreen`). But each constructor still bottoms out
+//!   on the stubbed field family — `Settings_initScreenSettings`'s first
+//!   act is `ScreenSettings_readFields`, and `Settings_newScreen` /
+//!   `Settings_newDynamicScreen` compute their `sortKey` via `toFieldIndex`
+//!   / `Process_fields[sortKey].defaultSortDesc` — and `Settings_defaultScreens`
+//!   additionally needs the unported `Platform_defaultScreens` /
+//!   `Platform_defaultDynamicScreens`.
 //! * `Settings_read` / `Settings_write` / `Settings_new` /
 //!   `signal_safe_fprintf` are the file-I/O layer (`open`/`fstat`/
 //!   `mkstemp`/`rename`/`realpath`, env reads, `Platform_*`) sitting on
@@ -119,16 +132,28 @@ pub struct MeterColumnSetting {
     pub modes: Option<Vec<MeterModeId>>,
 }
 
-/// A subset of htop's `Settings` (`Settings.h:57`) holding only the
-/// fields the ported meter/layout functions touch: the header layout and
-/// its per-column meter settings, plus the `changed` dirty flag that
-/// `Settings_setHeaderLayout` sets. Every other field (filenames,
-/// display toggles, screens, dynamic-column hashtables, …) is omitted
-/// because no ported function reads or writes it.
+/// A subset of htop's `Settings` (`Settings.h:57`) holding the fields the
+/// ported meter/layout/screen functions touch. The header layout and its
+/// per-column meter settings, plus the `changed` dirty flag that
+/// `Settings_setHeaderLayout` sets, plus the screen model.
+///
+/// `screens` fuses the C `ScreenSettings** screens` (a `NULL`-terminated
+/// heap array) and its `unsigned int nScreens` count into one owned
+/// `Vec<ScreenSettings>` — `screens.len()` is `nScreens`, and the C
+/// `NULL` terminator is not modeled (Rust length-bounds the array).
+/// `ssIndex` is the C `unsigned int ssIndex` (index of the active screen;
+/// the C `ScreenSettings* ss` back-pointer is not modeled — the index
+/// suffices and avoids a self-referential borrow). `lastUpdate` is the C
+/// `uint64_t lastUpdate`. The remaining `Settings.h` fields (filenames,
+/// display toggles, dynamic-column hashtables, `colorScheme`, `delay`, …)
+/// are omitted because no ported function reads or writes them.
 pub struct Settings {
     pub hLayout: HeaderLayout,
     pub hColumns: Vec<MeterColumnSetting>,
+    pub screens: Vec<ScreenSettings>,
+    pub ssIndex: u32,
     pub changed: bool,
+    pub lastUpdate: u64,
 }
 
 /// C `atoi` semantics as used throughout `Settings.c` (e.g. the meter
@@ -371,9 +396,13 @@ pub fn ScreenSettings_readFields() {
 }
 
 /// TODO: port of `static ScreenSettings* Settings_initScreenSettings(ScreenSettings* ss, Settings* this, const char* columns` from `Settings.c:254`.
-/// Calls the stubbed `ScreenSettings_readFields` and manages the full
-/// `screens[]` array, which is not modeled in this minimal `Settings` —
-/// left stubbed.
+/// The `screens[]` array management (append `ss`, bump `nScreens`, keep the
+/// `NULL` terminator) is now modelable against `Settings.screens`, but the
+/// function's *first* statement is `ScreenSettings_readFields(ss,
+/// this->dynamicColumns, columns)`, which is stubbed on the platform
+/// `Process_fields[]` table and `DynamicColumn` hashtable. Porting only the
+/// array append would drop the field-parse the function exists to perform,
+/// so it stays an honest stub blocked on `ScreenSettings_readFields`.
 pub fn Settings_initScreenSettings() {
     todo!("port of Settings.c:254")
 }
@@ -505,15 +534,61 @@ pub fn Settings_new() {
     todo!("port of Settings.c:794")
 }
 
-/// A subset of htop's `ScreenSettings` (`Settings.h:42`) holding only
-/// the three fields `ScreenSettings_invertSortOrder` touches. The other
-/// fields (`heading`, `dynamic`, `table`, `fields`, `flags`, `sortKey`,
-/// `treeSortKey`, `treeViewAlwaysByPID`, `allBranchesCollapsed`) are
-/// omitted because this ported function never reads or writes them.
+/// Port of `RowField` (`RowField.h:60` — `typedef int32_t RowField`). The
+/// screen sort keys and field list are `RowField`s: reserved process-field
+/// ids (see [`crate::ported::process::ProcessField`]) plus runtime
+/// dynamic-column ids past `ROW_DYNAMIC_FIELDS`, so the raw `int32_t` is
+/// modeled directly rather than the narrower `ProcessField` enum.
+pub type RowField = i32;
+
+/// Port of htop's `ScreenSettings` (`Settings.h:42`). All C fields are
+/// modeled except `table` (`struct Table_*`): `Table.c` is unported and
+/// the only writer of that field, `Settings_newDynamicScreen`, is itself
+/// stubbed, so there is nothing to hold. The C `char* heading` /
+/// `char* dynamic` (either may be `NULL`) become `Option<String>`, and
+/// `RowField* fields` (a heap array sized to `LAST_PROCESSFIELD`) becomes
+/// an owned `Vec<RowField>`.
+#[derive(Default, Clone, Debug)]
 pub struct ScreenSettings {
-    pub treeView: bool,
+    pub heading: Option<String>,
+    pub dynamic: Option<String>,
+    pub fields: Vec<RowField>,
+    pub flags: u32,
     pub direction: i32,
     pub treeDirection: i32,
+    pub sortKey: RowField,
+    pub treeSortKey: RowField,
+    pub treeView: bool,
+    pub treeViewAlwaysByPID: bool,
+    pub allBranchesCollapsed: bool,
+    pub stableTreeView: i32,
+}
+
+/// Port of `ScreenSettings_getActiveSortKey` (`Settings.h:121`, a pure
+/// `static inline`). In tree view the active key is `treeSortKey`, unless
+/// `treeViewAlwaysByPID` forces the hardcoded `PID` field (`1`, per
+/// `RowField.h:14`); in flat view it is `sortKey`.
+pub fn ScreenSettings_getActiveSortKey(this: &ScreenSettings) -> RowField {
+    if this.treeView {
+        if this.treeViewAlwaysByPID {
+            1
+        } else {
+            this.treeSortKey
+        }
+    } else {
+        this.sortKey
+    }
+}
+
+/// Port of `ScreenSettings_getActiveDirection` (`Settings.h:127`, a pure
+/// `static inline`). Returns `treeDirection` in tree view, else
+/// `direction`.
+pub fn ScreenSettings_getActiveDirection(this: &ScreenSettings) -> i32 {
+    if this.treeView {
+        this.treeDirection
+    } else {
+        this.direction
+    }
 }
 
 /// Port of `Settings.c:913`. Flips the active sort direction between `1`
@@ -583,7 +658,10 @@ mod tests {
         Settings {
             hLayout: HeaderLayout::HF_TWO_50_50,
             hColumns: vec![MeterColumnSetting::default(), MeterColumnSetting::default()],
+            screens: Vec::new(),
+            ssIndex: 0,
             changed: false,
+            lastUpdate: 0,
         }
     }
 
@@ -874,6 +952,7 @@ mod tests {
             treeView: false,
             direction: 1,
             treeDirection: 1,
+            ..Default::default()
         };
         ScreenSettings_invertSortOrder(&mut ss);
         assert_eq!(ss.direction, -1);
@@ -889,6 +968,7 @@ mod tests {
             treeView: true,
             direction: 1,
             treeDirection: 1,
+            ..Default::default()
         };
         ScreenSettings_invertSortOrder(&mut ss);
         assert_eq!(ss.treeDirection, -1);
@@ -902,9 +982,62 @@ mod tests {
             treeView: false,
             direction: 5,
             treeDirection: 0,
+            ..Default::default()
         };
         ScreenSettings_invertSortOrder(&mut ss);
         assert_eq!(ss.direction, 1);
+    }
+
+    #[test]
+    fn active_sort_key_picks_field_by_view_mode() {
+        // flat view -> sortKey, regardless of the tree fields
+        let ss = ScreenSettings {
+            treeView: false,
+            sortKey: 47,     // PERCENT_CPU
+            treeSortKey: 49, // USER
+            treeViewAlwaysByPID: true,
+            ..Default::default()
+        };
+        assert_eq!(ScreenSettings_getActiveSortKey(&ss), 47);
+
+        // tree view without alwaysByPID -> treeSortKey
+        let ss = ScreenSettings {
+            treeView: true,
+            sortKey: 47,
+            treeSortKey: 49,
+            treeViewAlwaysByPID: false,
+            ..Default::default()
+        };
+        assert_eq!(ScreenSettings_getActiveSortKey(&ss), 49);
+
+        // tree view WITH alwaysByPID -> hardcoded PID field (1)
+        let ss = ScreenSettings {
+            treeView: true,
+            sortKey: 47,
+            treeSortKey: 49,
+            treeViewAlwaysByPID: true,
+            ..Default::default()
+        };
+        assert_eq!(ScreenSettings_getActiveSortKey(&ss), 1);
+    }
+
+    #[test]
+    fn active_direction_picks_by_view_mode() {
+        let ss = ScreenSettings {
+            treeView: false,
+            direction: -1,
+            treeDirection: 1,
+            ..Default::default()
+        };
+        assert_eq!(ScreenSettings_getActiveDirection(&ss), -1);
+
+        let ss = ScreenSettings {
+            treeView: true,
+            direction: -1,
+            treeDirection: 1,
+            ..Default::default()
+        };
+        assert_eq!(ScreenSettings_getActiveDirection(&ss), 1);
     }
 
     #[test]
