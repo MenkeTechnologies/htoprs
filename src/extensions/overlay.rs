@@ -478,6 +478,34 @@ pub fn overlay_active() -> bool {
     OVERLAY.with(|o| o.borrow().any_active())
 }
 
+/// The active theme's modal colors, resolved to `ratatui::Color`. Other
+/// extension modals ([`super::panels`]) paint with these so they track the
+/// chosen theme instead of a fixed palette — the same `theme` fields
+/// [`draw_help`] reads.
+pub struct ModalPalette {
+    pub bg: Color,
+    pub border: Color,
+    pub title: Color,
+    pub text: Color,
+    pub accent: Color,
+    pub sel_bg: Color,
+}
+
+/// Snapshot the live theme's modal palette (see [`ModalPalette`]).
+pub fn modal_palette() -> ModalPalette {
+    OVERLAY.with(|o| {
+        let t = &o.borrow().theme;
+        ModalPalette {
+            bg: tr(t.help_bg),
+            border: tr(t.help_border),
+            title: tr(t.help_title),
+            text: tr(t.help_val),
+            accent: tr(t.help_key),
+            sel_bg: tr(t.select_bg),
+        }
+    })
+}
+
 /// The current border inset in cells (1 when the border is on, else 0). The
 /// `Ncurses` draw shim shrinks the usable `cols`/`lines` by twice this and
 /// offsets every positioned draw by this, so htop lays its whole UI out inside
@@ -835,7 +863,18 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
                 ("q", "Quit"),
             ],
         ),
-        ("", &[]),
+        (
+            "MONITOR",
+            &[
+                ("f", "Find (fuzzy)"),
+                ("r", "Filter (regex)"),
+                ("d", "Snapshot/diff"),
+                ("o", "Export"),
+                ("A", "Alerts"),
+                ("G", "CPU graph"),
+                ("v", "Sparkline col"),
+            ],
+        ),
     ];
 
     let cw = ((bw as usize).saturating_sub(4)) / 3;
@@ -1363,6 +1402,10 @@ mod tests {
         assert!(joined.contains("HTOPRS"));
         assert!(joined.contains("KEYBOARD SHORTCUTS"));
         assert!(joined.contains("THEME"));
+        // The monitoring extensions must stay listed here — the help is the
+        // discoverability surface for the f/r/d/o/A/G/v hotkeys.
+        assert!(joined.contains("MONITOR"));
+        assert!(joined.contains("CPU graph"));
     }
 
     #[test]

@@ -33,7 +33,7 @@ use crate::extensions::alerts::{AlertEngine, Firing, Metric, Rule};
 use crate::extensions::filter::{Compiled, Field, Filter, FilterStore};
 use crate::extensions::graph::Scalar;
 use crate::extensions::model::Proc;
-use crate::extensions::overlay::{blit, draw_box, ncurses_to_keycode, set_str};
+use crate::extensions::overlay::{blit, draw_box, modal_palette, ncurses_to_keycode, set_str, ModalPalette};
 use crate::extensions::procring::ProcRing;
 use crate::extensions::snapshot::{diff, Diff, Snapshot};
 use crate::extensions::{export, finder};
@@ -369,66 +369,68 @@ impl PanelState {
     // ── rendering ─────────────────────────────────────────────────────────
 
     fn render(&self, buf: &mut Buffer, area: Rect) {
+        let s = Sty::new();
         match self.modal {
-            Modal::Finder => self.render_finder(buf, area),
-            Modal::Filter => self.render_filter(buf, area),
-            Modal::Diff => self.render_diff(buf, area),
+            Modal::Finder => self.render_finder(buf, area, &s),
+            Modal::Filter => self.render_filter(buf, area, &s),
+            Modal::Diff => self.render_diff(buf, area, &s),
             Modal::Export => self.render_lines(
                 buf,
                 area,
+                &s,
                 "Export — current table written",
                 self.export_msg
                     .lines()
-                    .map(|l| (l.to_string(), body()))
+                    .map(|l| (l.to_string(), s.body))
                     .collect(),
             ),
-            Modal::Alerts => self.render_alerts(buf, area),
-            Modal::Graph => self.render_graph(buf, area),
+            Modal::Alerts => self.render_alerts(buf, area, &s),
+            Modal::Graph => self.render_graph(buf, area, &s),
             Modal::None => {}
         }
     }
 
     /// Draw a centered box titled `title` holding `lines` of pre-styled text.
-    fn render_lines(&self, buf: &mut Buffer, area: Rect, title: &str, lines: Vec<(String, Style)>) {
+    fn render_lines(&self, buf: &mut Buffer, area: Rect, s: &Sty, title: &str, lines: Vec<(String, Style)>) {
         let inner_w = lines
             .iter()
-            .map(|(s, _)| s.chars().count())
+            .map(|(t, _)| t.chars().count())
             .chain(std::iter::once(title.chars().count()))
             .max()
             .unwrap_or(20)
             .clamp(24, area.width.saturating_sub(4).max(24) as usize);
         let bw = (inner_w as u16 + 4).min(area.width);
         let bh = (lines.len() as u16 + 4).min(area.height);
-        let (x0, y0) = draw_box(buf, area, bw, bh, Color::Black, border());
-        set_str(buf, x0 + 2, y0, &format!(" {title} "), title_style(), bw - 3);
-        for (i, (s, st)) in lines.iter().enumerate() {
+        let (x0, y0) = draw_box(buf, area, bw, bh, s.bg, s.border);
+        set_str(buf, x0 + 2, y0, &format!(" {title} "), s.title, bw - 3);
+        for (i, (t, st)) in lines.iter().enumerate() {
             if i as u16 + 1 >= bh - 1 {
                 break;
             }
-            set_str(buf, x0 + 2, y0 + 2 + i as u16, s, *st, bw - 3);
+            set_str(buf, x0 + 2, y0 + 2 + i as u16, t, *st, bw - 3);
         }
     }
 
-    fn render_finder(&self, buf: &mut Buffer, area: Rect) {
+    fn render_finder(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
         let mut lines = Vec::new();
         lines.push((
             format!("> {}▏", self.finder_query),
-            body().add_modifier(Modifier::BOLD),
+            s.body.add_modifier(Modifier::BOLD),
         ));
         lines.push((
             format!("{} matches · ↑/↓ move · Enter jump · Esc cancel", self.finder_hits.len()),
-            dim(),
+            s.dim,
         ));
         for (row, m) in self.finder_hits.iter().take(LIST_ROWS).enumerate() {
             let Some(p) = self.table.get(m.idx) else { continue };
             let line = format!("{:>7}  {:<14} {}", p.pid, trunc(&p.comm, 14), trunc(&p.cmdline, 48));
-            let st = if row == self.finder_sel { selected() } else { body() };
+            let st = if row == self.finder_sel { s.sel } else { s.body };
             lines.push((line, st));
         }
-        self.render_lines(buf, area, "Fuzzy process finder", lines);
+        self.render_lines(buf, area, s, "Fuzzy process finder", lines);
     }
 
-    fn render_filter(&self, buf: &mut Buffer, area: Rect) {
+    fn render_filter(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
         let field = match self.filter_field {
             Field::Any => "any",
             Field::Comm => "comm",
@@ -437,56 +439,56 @@ impl PanelState {
         };
         let mode = if self.filter_regex { "regex" } else { "substring" };
         let mut lines = vec![
-            (format!("/ {}▏", self.filter_query), body().add_modifier(Modifier::BOLD)),
+            (format!("/ {}▏", self.filter_query), s.body.add_modifier(Modifier::BOLD)),
             (
                 format!("field: {field}  mode: {mode}  · Tab field · ~ regex · Enter save · Esc close"),
-                dim(),
+                s.dim,
             ),
         ];
         match self.compiled_filter() {
             Some(c) => {
                 let hits: Vec<&Proc> = self.table.iter().filter(|p| c.matches(p)).collect();
-                lines.push((format!("{} live matches", hits.len()), body()));
+                lines.push((format!("{} live matches", hits.len()), s.body));
                 for p in hits.iter().take(LIST_ROWS - 2) {
                     lines.push((
                         format!("{:>7}  {:<14} {}", p.pid, trunc(&p.comm, 14), trunc(&p.cmdline, 46)),
-                        body(),
+                        s.body,
                     ));
                 }
             }
             None if !self.filter_query.is_empty() => {
-                lines.push(("invalid regex".to_string(), alert_style()))
+                lines.push(("invalid regex".to_string(), s.alert))
             }
             None => {}
         }
         if !self.filter_msg.is_empty() {
-            lines.push((self.filter_msg.clone(), title_style()));
+            lines.push((self.filter_msg.clone(), s.title));
         }
         if !self.filters.filters.is_empty() {
             let names: Vec<&str> = self.filters.filters.iter().map(|f| f.name.as_str()).collect();
-            lines.push((format!("saved: {}", names.join(", ")), dim()));
+            lines.push((format!("saved: {}", names.join(", ")), s.dim));
         }
-        self.render_lines(buf, area, "Regex / saved filters", lines);
+        self.render_lines(buf, area, s, "Regex / saved filters", lines);
     }
 
-    fn render_diff(&self, buf: &mut Buffer, area: Rect) {
+    fn render_diff(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
         let mut lines = Vec::new();
         match &self.diff {
             None => {
                 let n = self.baseline.as_ref().map(|b| b.procs.len()).unwrap_or(0);
-                lines.push((format!("baseline captured — {n} processes"), body()));
-                lines.push(("press d again to diff against it".into(), dim()));
+                lines.push((format!("baseline captured — {n} processes"), s.body));
+                lines.push(("press d again to diff against it".into(), s.dim));
             }
             Some(d) => {
                 lines.push((
                     format!("+{} started  -{} exited  ~{} changed", d.added.len(), d.removed.len(), d.changed.len()),
-                    body().add_modifier(Modifier::BOLD),
+                    s.body.add_modifier(Modifier::BOLD),
                 ));
                 for p in d.added.iter().take(5) {
-                    lines.push((format!("+ {:>7} {}", p.pid, trunc(&p.comm, 40)), started()));
+                    lines.push((format!("+ {:>7} {}", p.pid, trunc(&p.comm, 40)), s.started));
                 }
                 for p in d.removed.iter().take(5) {
-                    lines.push((format!("- {:>7} {}", p.pid, trunc(&p.comm, 40)), alert_style()));
+                    lines.push((format!("- {:>7} {}", p.pid, trunc(&p.comm, 40)), s.alert));
                 }
                 for c in d.changed.iter().take(6) {
                     lines.push((
@@ -494,29 +496,29 @@ impl PanelState {
                             "~ {:>7} {} cpu {:.0}→{:.0}",
                             c.pid, trunc(&c.after.comm, 20), c.before.cpu, c.after.cpu
                         ),
-                        body(),
+                        s.body,
                     ));
                 }
             }
         }
-        lines.push(("r reset baseline · w write json · Esc close".into(), dim()));
-        self.render_lines(buf, area, "Snapshot diff", lines);
+        lines.push(("r reset baseline · w write json · Esc close".into(), s.dim));
+        self.render_lines(buf, area, s, "Snapshot diff", lines);
     }
 
-    fn render_alerts(&self, buf: &mut Buffer, area: Rect) {
-        let mut lines = vec![("rules:".to_string(), dim())];
+    fn render_alerts(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
+        let mut lines = vec![("rules:".to_string(), s.dim)];
         for r in self.alerts_rules_view() {
-            lines.push((r, body()));
+            lines.push((r, s.body));
         }
-        lines.push((format!("firing now: {}", self.firings.len()), title_style()));
+        lines.push((format!("firing now: {}", self.firings.len()), s.title));
         for f in self.firings.iter().take(LIST_ROWS - 4) {
             lines.push((
                 format!("! {:>7}  {}  = {:.0}  ({} ticks)", f.pid, f.rule, f.value, f.sustained),
-                alert_style(),
+                s.alert,
             ));
         }
-        lines.push(("Esc close".into(), dim()));
-        self.render_lines(buf, area, "Threshold alerts", lines);
+        lines.push(("Esc close".into(), s.dim));
+        self.render_lines(buf, area, s, "Threshold alerts", lines);
     }
 
     fn alerts_rules_view(&self) -> Vec<String> {
@@ -532,25 +534,25 @@ impl PanelState {
             .collect()
     }
 
-    fn render_graph(&self, buf: &mut Buffer, area: Rect) {
+    fn render_graph(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
         let width = 48usize;
         let height = 6usize;
         let max = self.cpu_peak.max(1.0);
         let rows = self.cpu_hist.render(width, height, max);
         let mut lines: Vec<(String, Style)> =
-            vec![(format!("total CPU — peak {max:.0}%  ({} samples)", self.cpu_hist.len()), dim())];
+            vec![(format!("total CPU — peak {max:.0}%  ({} samples)", self.cpu_hist.len()), s.dim)];
         for r in rows {
-            lines.push((r, spark_style()));
+            lines.push((r, s.spark));
         }
         match self.selected_pid {
             Some(pid) => {
                 let spark = self.ring.cpu_sparkline(pid, width, 100.0);
-                lines.push((format!("pid {pid}: {spark}"), spark_style()));
+                lines.push((format!("pid {pid}: {spark}"), s.spark));
             }
-            None => lines.push(("(select a process for its CPU history)".into(), dim())),
+            None => lines.push(("(select a process for its CPU history)".into(), s.dim)),
         }
-        lines.push(("Esc close".into(), dim()));
-        self.render_lines(buf, area, "CPU history graph", lines);
+        lines.push(("Esc close".into(), s.dim));
+        self.render_lines(buf, area, s, "CPU history graph", lines);
     }
 }
 
@@ -594,31 +596,38 @@ fn write_artifact(name: &str, contents: &str) -> Option<String> {
     Some(path.display().to_string())
 }
 
-// ─── style helpers (fixed palette — modals are theme-independent chrome) ─────
+// ─── styles (resolved from the active theme, so modals track the colorscheme) ─
 
-fn border() -> Style {
-    Style::default().fg(Color::Cyan)
+/// The modal's styles for one frame, built from the live theme palette. The
+/// alert/started colors stay semantic (red = over-threshold, green = started)
+/// but on the themed background so they blend with the chosen colorscheme.
+struct Sty {
+    bg: Color,
+    border: Style,
+    title: Style,
+    body: Style,
+    dim: Style,
+    sel: Style,
+    alert: Style,
+    started: Style,
+    spark: Style,
 }
-fn title_style() -> Style {
-    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-}
-fn body() -> Style {
-    Style::default().fg(Color::White).bg(Color::Black)
-}
-fn dim() -> Style {
-    Style::default().fg(Color::DarkGray).bg(Color::Black)
-}
-fn selected() -> Style {
-    Style::default().fg(Color::Black).bg(Color::Cyan)
-}
-fn alert_style() -> Style {
-    Style::default().fg(Color::Red).bg(Color::Black).add_modifier(Modifier::BOLD)
-}
-fn started() -> Style {
-    Style::default().fg(Color::Green).bg(Color::Black)
-}
-fn spark_style() -> Style {
-    Style::default().fg(Color::Cyan).bg(Color::Black)
+
+impl Sty {
+    fn new() -> Self {
+        let p: ModalPalette = modal_palette();
+        Sty {
+            bg: p.bg,
+            border: Style::default().fg(p.border),
+            title: Style::default().fg(p.title).bg(p.bg).add_modifier(Modifier::BOLD),
+            body: Style::default().fg(p.text).bg(p.bg),
+            dim: Style::default().fg(Color::Indexed(240)).bg(p.bg),
+            sel: Style::default().fg(p.bg).bg(p.accent),
+            alert: Style::default().fg(Color::Red).bg(p.bg).add_modifier(Modifier::BOLD),
+            started: Style::default().fg(Color::Green).bg(p.bg),
+            spark: Style::default().fg(p.accent).bg(p.bg),
+        }
+    }
 }
 
 fn trunc(s: &str, w: usize) -> String {
@@ -711,10 +720,13 @@ pub fn draw_spark_col<W: Write>(out: &mut W, y: i32, x: i32, w: i32, pid: u32) {
         if !s.spark_col || w as usize <= SPARK_W + 2 {
             return;
         }
+        // `cpu_sparkline` already returns exactly `SPARK_W` glyphs, so print the
+        // whole string. `mvaddnstr`'s `n` is a *byte* limit and the braille
+        // glyphs are 3 bytes each — an `n`-slice lands mid-char and panics.
         let spark = s.ring.cpu_sparkline(pid, SPARK_W, 100.0);
         let sx = x + w - SPARK_W as i32;
         Ncurses::attrset(out, ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()));
-        Ncurses::mvaddnstr(out, y, sx, &spark, SPARK_W as i32);
+        Ncurses::mvaddstr(out, y, sx, &spark);
         Ncurses::attrset(out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
     });
 }
@@ -787,5 +799,21 @@ mod tests {
         }
         assert!(alert_attr(999).is_some());
         assert!(alert_attr(1).is_none());
+    }
+
+    #[test]
+    fn spark_col_never_panics_on_braille() {
+        // Regression: the braille sparkline is 3-byte glyphs; a byte-length
+        // `mvaddnstr` slice landed mid-char and panicked. Enable the column,
+        // build up history, and render into a sink — must not panic.
+        dispatch_key(0x76); // 'v' on
+        for t in 0..40 {
+            PANELS.with(|p| p.borrow_mut().ingest(synthetic_table(t), Some(200)));
+        }
+        let mut sink: Vec<u8> = Vec::new();
+        // pid 200 has ~40 samples -> a full-width multi-byte sparkline.
+        draw_spark_col(&mut sink, 3, 0, 80, 200);
+        assert!(!sink.is_empty());
+        dispatch_key(0x76); // 'v' off (leave state clean)
     }
 }
