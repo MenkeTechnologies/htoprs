@@ -193,11 +193,10 @@ pub fn DragonFlyBSDProcess_rowWriteField(super_: &dyn Object, str: &mut RichStri
 /// Port of `static int DragonFlyBSDProcess_compareByKey(const Process* v1,
 /// const Process* v2, ProcessField key)` (`DragonFlyBSDProcess.c:90`).
 /// Compares on the `JID`/`JAIL` jail fields, delegating other keys to
-/// [`Process_compareByKey_Base`]. `key` is a [`RowField`] (not the shared
-/// `ProcessField` enum) so DragonFly's `JID`/`JAIL` ids are representable;
-/// consequently this is not yet wired into the `ProcessClass.compareByKey`
-/// slot (which is typed `ProcessField`) — that awaits the slot's `RowField`
-/// reconciliation (which also unblocks `Process_compare`).
+/// [`Process_compareByKey_Base`]. `key` is a [`RowField`] (int, per C) so
+/// DragonFly's `JID`/`JAIL` ids are representable; the `ProcessClass`
+/// `compareByKey` slot is now `RowField`-typed, so this is wired into the
+/// class vtable.
 pub fn DragonFlyBSDProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: RowField) -> i32 {
     let p1 = (v1 as &dyn Any)
         .downcast_ref::<DragonFlyBSDProcess>()
@@ -234,7 +233,7 @@ pub static DragonFlyBSDProcess_class: ProcessClass = ProcessClass {
         sortKeyString: Some(Process_rowGetSortKey),
         compareByParent: Some(Process_compareByParent),
     },
-    compareByKey: None,
+    compareByKey: Some(DragonFlyBSDProcess_compareByKey),
 };
 
 impl Object for DragonFlyBSDProcess {
@@ -259,6 +258,12 @@ impl Object for DragonFlyBSDProcess {
         Some(&self.super_)
     }
 
+    /// C `As_Process(this)` — `DragonFlyBSDProcess`'s [`ProcessClass`] vtable,
+    /// whose `compareByKey` slot is `DragonFlyBSDProcess_compareByKey`.
+    fn process_class(&self) -> Option<&'static ProcessClass> {
+        Some(&DragonFlyBSDProcess_class)
+    }
+
     /// C `DragonFlyBSDProcess_class.super.super.display = Row_display`.
     fn display(&self, out: &mut RichString) {
         Row_display(self, out)
@@ -267,10 +272,9 @@ impl Object for DragonFlyBSDProcess {
     /// C `.compare = Process_compare`, downcasting the peer to
     /// `DragonFlyBSDProcess` and comparing the embedded `Process` bases.
     fn compare(&self, other: &dyn Object) -> i32 {
-        let o = (other as &dyn Any)
-            .downcast_ref::<DragonFlyBSDProcess>()
-            .expect("DragonFlyBSDProcess compare across incompatible classes");
-        Process_compare(&self.super_, &o.super_)
+        // Pass the concrete objects (not the embedded `Process`) so
+        // `Process_compare` dispatches `DragonFlyBSDProcess`'s `compareByKey`.
+        Process_compare(self, other)
     }
 }
 

@@ -173,6 +173,16 @@ pub trait Object: core::any::Any {
     fn as_process(&self) -> Option<&crate::ported::process::Process> {
         None
     }
+
+    /// C `As_Process(this)` — the concrete
+    /// [`ProcessClass`](crate::ported::process::ProcessClass) vtable for a
+    /// `Process`-derived object, or `None` otherwise. `Process_compare` reads
+    /// the `compareByKey` slot through this to dispatch a platform's
+    /// key comparator (`LinuxProcess`/`DragonFlyBSDProcess`). The default
+    /// models a non-`Process` object.
+    fn process_class(&self) -> Option<&'static crate::ported::process::ProcessClass> {
+        None
+    }
 }
 
 /// Port of `bool Object_isA(const Object* o, const ObjectClass* klass)`

@@ -662,15 +662,17 @@ pub type RowField = i32;
 /// / `char* dynamic` (either may be `NULL`) become `Option<String>`, and
 /// `RowField* fields` (a heap array sized to `LAST_PROCESSFIELD`) becomes
 /// an owned `Vec<RowField>`. The C `struct Table_* table` is modeled as an
-/// `Option<TableHandle>` (the opaque table id used across the port; `None` =
-/// C `NULL`), keeping `ScreenSettings` the single canonical config type that
-/// both [`crate::ported::machine`] and the panels share.
+/// `Option<TableHandle>` (a raw `*mut Table` in the crate's pointer-graph
+/// ownership model; `None` = C `NULL`), keeping `ScreenSettings` the single
+/// canonical config type that both [`crate::ported::machine`] and the panels
+/// share.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct ScreenSettings {
     pub heading: Option<String>,
     pub dynamic: Option<String>,
-    /// C `struct Table_* table` — the table this screen drives (`None` =
-    /// `NULL`, defaulted to the process table by
+    /// C `struct Table_* table` — the table this screen drives, a raw
+    /// `*mut Table` ([`TableHandle`]; `None` = `NULL`, defaulted to the
+    /// process table by
     /// [`crate::ported::machine::Machine_populateTablesFromSettings`]).
     pub table: Option<TableHandle>,
     pub fields: Vec<RowField>,

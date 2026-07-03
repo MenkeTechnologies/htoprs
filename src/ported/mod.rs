@@ -80,3 +80,17 @@ pub mod xutils;
 // coverage tracking is unaffected by the cfg.
 #[cfg(target_os = "macos")]
 pub mod darwin;
+
+// The FreeBSD platform layer binds freebsd-only `sysctl` MIBs and structs
+// (`ifmibdata`, `loadavg`, …), so it is compiled only on FreeBSD — mirroring
+// htop's per-platform build. The port-purity gate and port report scan the
+// source as text, so coverage tracking is unaffected by the cfg.
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
+
+// The NetBSD platform layer binds netbsd-only `sysctl` MIBs / `getifaddrs`
+// `if_data` and `loadavg`, so it is compiled only on NetBSD — mirroring htop's
+// per-platform build. The port-purity gate and port report scan the source as
+// text, so coverage tracking is unaffected by the cfg.
+#[cfg(target_os = "netbsd")]
+pub mod netbsd;

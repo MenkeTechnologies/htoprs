@@ -2090,12 +2090,8 @@ pub fn print_backtrace() {
 
     // BACKTRACE_RETURN_TYPE nptrs = backtrace(backtraceArray, ARRAYSIZE(backtraceArray));
     // BACKTRACE_RETURN_TYPE is `c_int` on both target platforms.
-    let nptrs = unsafe {
-        libc::backtrace(
-            backtrace_array.as_mut_ptr(),
-            backtrace_array.len() as libc::c_int,
-        )
-    };
+    let nptrs =
+        unsafe { libc::backtrace(backtrace_array.as_mut_ptr(), backtrace_array.len() as _) };
     if nptrs > 0 {
         unsafe {
             libc::backtrace_symbols_fd(backtrace_array.as_ptr(), nptrs, libc::STDERR_FILENO);

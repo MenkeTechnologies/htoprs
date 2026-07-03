@@ -429,6 +429,12 @@ impl Object for LinuxProcess {
         Some(&self.super_)
     }
 
+    /// C `As_Process(this)` — `LinuxProcess`'s [`ProcessClass`] vtable, whose
+    /// `compareByKey` slot is `LinuxProcess_compareByKey`.
+    fn process_class(&self) -> Option<&'static ProcessClass> {
+        Some(&LinuxProcess_class)
+    }
+
     /// C `LinuxProcess_class.super.super.display = Row_display`.
     fn display(&self, out: &mut RichString) {
         crate::ported::row::Row_display(self, out)
@@ -440,10 +446,9 @@ impl Object for LinuxProcess {
     /// embedded bases — stubbed pending the `Settings` substrate, matching
     /// the C wiring (and `Process`'s own `Object::compare`).
     fn compare(&self, other: &dyn Object) -> i32 {
-        let o = (other as &dyn Any)
-            .downcast_ref::<LinuxProcess>()
-            .expect("LinuxProcess compare called across incompatible classes");
-        Process_compare(&self.super_, &o.super_)
+        // Pass the concrete objects (not the embedded `Process`) so
+        // `Process_compare` dispatches `LinuxProcess`'s `compareByKey` slot.
+        Process_compare(self, other)
     }
 }
 
@@ -970,7 +975,7 @@ pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, fie
 /// `HAVE_OPENVZ`/`HAVE_VSERVER` are off (matching [`Process_fields`]), so the
 /// `CTID`/`VPID`/`VXID` arms are absent exactly as the C `#ifdef`s omit them;
 /// `HAVE_DELAYACCT` is on.
-pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: ProcessField) -> i32 {
+pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: RowField) -> i32 {
     let p1 = (v1 as &dyn Any)
         .downcast_ref::<LinuxProcess>()
         .expect("LinuxProcess_compareByKey: v1 is not a LinuxProcess");
@@ -978,70 +983,70 @@ pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: ProcessF
         .downcast_ref::<LinuxProcess>()
         .expect("LinuxProcess_compareByKey: v2 is not a LinuxProcess");
     match key {
-        ProcessField::M_DRS => spaceship_number!(p1.m_drs, p2.m_drs),
-        ProcessField::M_LRS => spaceship_number!(p1.m_lrs, p2.m_lrs),
-        ProcessField::M_TRS => spaceship_number!(p1.m_trs, p2.m_trs),
-        ProcessField::M_SHARE => spaceship_number!(p1.m_share, p2.m_share),
-        ProcessField::M_PRIV => spaceship_number!(p1.m_priv, p2.m_priv),
-        ProcessField::M_PSS => spaceship_number!(p1.m_pss, p2.m_pss),
-        ProcessField::M_SWAP => spaceship_number!(p1.m_swap, p2.m_swap),
-        ProcessField::M_PSSWP => spaceship_number!(p1.m_psswp, p2.m_psswp),
-        ProcessField::UTIME => spaceship_number!(p1.utime, p2.utime),
-        ProcessField::CUTIME => spaceship_number!(p1.cutime, p2.cutime),
-        ProcessField::STIME => spaceship_number!(p1.stime, p2.stime),
-        ProcessField::CSTIME => spaceship_number!(p1.cstime, p2.cstime),
-        ProcessField::RCHAR => spaceship_number!(p1.io_rchar, p2.io_rchar),
-        ProcessField::WCHAR => spaceship_number!(p1.io_wchar, p2.io_wchar),
-        ProcessField::SYSCR => spaceship_number!(p1.io_syscr, p2.io_syscr),
-        ProcessField::SYSCW => spaceship_number!(p1.io_syscw, p2.io_syscw),
-        ProcessField::RBYTES => spaceship_number!(p1.io_read_bytes, p2.io_read_bytes),
-        ProcessField::WBYTES => spaceship_number!(p1.io_write_bytes, p2.io_write_bytes),
-        ProcessField::CNCLWB => {
+        k if k == ProcessField::M_DRS as RowField => spaceship_number!(p1.m_drs, p2.m_drs),
+        k if k == ProcessField::M_LRS as RowField => spaceship_number!(p1.m_lrs, p2.m_lrs),
+        k if k == ProcessField::M_TRS as RowField => spaceship_number!(p1.m_trs, p2.m_trs),
+        k if k == ProcessField::M_SHARE as RowField => spaceship_number!(p1.m_share, p2.m_share),
+        k if k == ProcessField::M_PRIV as RowField => spaceship_number!(p1.m_priv, p2.m_priv),
+        k if k == ProcessField::M_PSS as RowField => spaceship_number!(p1.m_pss, p2.m_pss),
+        k if k == ProcessField::M_SWAP as RowField => spaceship_number!(p1.m_swap, p2.m_swap),
+        k if k == ProcessField::M_PSSWP as RowField => spaceship_number!(p1.m_psswp, p2.m_psswp),
+        k if k == ProcessField::UTIME as RowField => spaceship_number!(p1.utime, p2.utime),
+        k if k == ProcessField::CUTIME as RowField => spaceship_number!(p1.cutime, p2.cutime),
+        k if k == ProcessField::STIME as RowField => spaceship_number!(p1.stime, p2.stime),
+        k if k == ProcessField::CSTIME as RowField => spaceship_number!(p1.cstime, p2.cstime),
+        k if k == ProcessField::RCHAR as RowField => spaceship_number!(p1.io_rchar, p2.io_rchar),
+        k if k == ProcessField::WCHAR as RowField => spaceship_number!(p1.io_wchar, p2.io_wchar),
+        k if k == ProcessField::SYSCR as RowField => spaceship_number!(p1.io_syscr, p2.io_syscr),
+        k if k == ProcessField::SYSCW as RowField => spaceship_number!(p1.io_syscw, p2.io_syscw),
+        k if k == ProcessField::RBYTES as RowField => spaceship_number!(p1.io_read_bytes, p2.io_read_bytes),
+        k if k == ProcessField::WBYTES as RowField => spaceship_number!(p1.io_write_bytes, p2.io_write_bytes),
+        k if k == ProcessField::CNCLWB as RowField => {
             spaceship_number!(p1.io_cancelled_write_bytes, p2.io_cancelled_write_bytes)
         }
-        ProcessField::IO_READ_RATE => {
+        k if k == ProcessField::IO_READ_RATE as RowField => {
             compareRealNumbers(p1.io_rate_read_bps, p2.io_rate_read_bps)
         }
-        ProcessField::IO_WRITE_RATE => {
+        k if k == ProcessField::IO_WRITE_RATE as RowField => {
             compareRealNumbers(p1.io_rate_write_bps, p2.io_rate_write_bps)
         }
-        ProcessField::IO_RATE => {
+        k if k == ProcessField::IO_RATE as RowField => {
             compareRealNumbers(LinuxProcess_totalIORate(p1), LinuxProcess_totalIORate(p2))
         }
-        ProcessField::CGROUP => spaceship_nullstr!(
+        k if k == ProcessField::CGROUP as RowField => spaceship_nullstr!(
             p1.cgroup.as_deref().map(str::as_bytes),
             p2.cgroup.as_deref().map(str::as_bytes)
         ),
-        ProcessField::CCGROUP => spaceship_nullstr!(
+        k if k == ProcessField::CCGROUP as RowField => spaceship_nullstr!(
             p1.cgroup_short.as_deref().map(str::as_bytes),
             p2.cgroup_short.as_deref().map(str::as_bytes)
         ),
-        ProcessField::CONTAINER => spaceship_nullstr!(
+        k if k == ProcessField::CONTAINER as RowField => spaceship_nullstr!(
             p1.container_short.as_deref().map(str::as_bytes),
             p2.container_short.as_deref().map(str::as_bytes)
         ),
-        ProcessField::OOM => spaceship_number!(p1.oom, p2.oom),
-        ProcessField::PERCENT_CPU_DELAY => {
+        k if k == ProcessField::OOM as RowField => spaceship_number!(p1.oom, p2.oom),
+        k if k == ProcessField::PERCENT_CPU_DELAY as RowField => {
             compareRealNumbers(p1.cpu_delay_percent as f64, p2.cpu_delay_percent as f64)
         }
-        ProcessField::PERCENT_IO_DELAY => {
+        k if k == ProcessField::PERCENT_IO_DELAY as RowField => {
             compareRealNumbers(p1.blkio_delay_percent as f64, p2.blkio_delay_percent as f64)
         }
-        ProcessField::PERCENT_SWAP_DELAY => {
+        k if k == ProcessField::PERCENT_SWAP_DELAY as RowField => {
             compareRealNumbers(p1.swapin_delay_percent as f64, p2.swapin_delay_percent as f64)
         }
-        ProcessField::IO_PRIORITY => spaceship_number!(
+        k if k == ProcessField::IO_PRIORITY as RowField => spaceship_number!(
             LinuxProcess_effectiveIOPriority(p1),
             LinuxProcess_effectiveIOPriority(p2)
         ),
-        ProcessField::CTXT => spaceship_number!(p1.ctxt_diff, p2.ctxt_diff),
-        ProcessField::SECATTR => spaceship_nullstr!(
+        k if k == ProcessField::CTXT as RowField => spaceship_number!(p1.ctxt_diff, p2.ctxt_diff),
+        k if k == ProcessField::SECATTR as RowField => spaceship_nullstr!(
             p1.secattr.as_deref().map(str::as_bytes),
             p2.secattr.as_deref().map(str::as_bytes)
         ),
-        ProcessField::AUTOGROUP_ID => spaceship_number!(p1.autogroup_id, p2.autogroup_id),
-        ProcessField::AUTOGROUP_NICE => spaceship_number!(p1.autogroup_nice, p2.autogroup_nice),
-        ProcessField::GPU_PERCENT => {
+        k if k == ProcessField::AUTOGROUP_ID as RowField => spaceship_number!(p1.autogroup_id, p2.autogroup_id),
+        k if k == ProcessField::AUTOGROUP_NICE as RowField => spaceship_number!(p1.autogroup_nice, p2.autogroup_nice),
+        k if k == ProcessField::GPU_PERCENT as RowField => {
             let r = compareRealNumbers(p1.gpu_percent as f64, p2.gpu_percent as f64);
             if r != 0 {
                 r
@@ -1049,8 +1054,8 @@ pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: ProcessF
                 spaceship_number!(p1.gpu_time, p2.gpu_time)
             }
         }
-        ProcessField::GPU_TIME => spaceship_number!(p1.gpu_time, p2.gpu_time),
-        ProcessField::ISCONTAINER => spaceship_number!(
+        k if k == ProcessField::GPU_TIME as RowField => spaceship_number!(p1.gpu_time, p2.gpu_time),
+        k if k == ProcessField::ISCONTAINER as RowField => spaceship_number!(
             p1.super_.isRunningInContainer as i32,
             p2.super_.isRunningInContainer as i32
         ),
@@ -1188,20 +1193,20 @@ mod tests {
 
         a.utime = 10;
         b.utime = 20;
-        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::UTIME) < 0);
-        assert!(LinuxProcess_compareByKey(&b as &dyn Object, &a as &dyn Object, ProcessField::UTIME) > 0);
+        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::UTIME as RowField) < 0);
+        assert!(LinuxProcess_compareByKey(&b as &dyn Object, &a as &dyn Object, ProcessField::UTIME as RowField) > 0);
 
         // GPU_PERCENT ties break on gpu_time.
         a.gpu_percent = 5.0;
         b.gpu_percent = 5.0;
         a.gpu_time = 100;
         b.gpu_time = 200;
-        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::GPU_PERCENT) < 0);
+        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::GPU_PERCENT as RowField) < 0);
 
         // Reserved key (PID) → base comparison, ordered by Row id.
         a.super_.super_.id = 7;
         b.super_.super_.id = 3;
-        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::PID) > 0);
+        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::PID as RowField) > 0);
     }
 
     /// [`LinuxProcess_rowWriteField`] renders Linux platform fields and
@@ -1267,5 +1272,41 @@ mod tests {
         (&lp as &dyn Object).display(&mut out);
         // PID (>=6 cols) + STATE "R " (2) were both written by the vtable slot.
         assert!(RichString_size(&out) >= 8);
+    }
+
+    /// [`Process_compare`] reads the active sort key from the host settings and
+    /// dispatches the concrete `LinuxProcess` `compareByKey` slot (via
+    /// `process_class`), then applies the sort direction.
+    #[test]
+    fn process_compare_dispatches_platform_key_and_direction() {
+        use crate::ported::process::Process_compare;
+        use crate::ported::settings::{ScreenSettings, Settings};
+
+        let mut machine = Machine::default();
+        let mut settings = Settings::default();
+        settings.screens = vec![ScreenSettings {
+            fields: vec![ProcessField::UTIME as RowField],
+            sortKey: ProcessField::UTIME as RowField,
+            direction: 1,
+            ..Default::default()
+        }];
+        machine.settings = Some(settings);
+
+        let mut a = LinuxProcess_new(core::ptr::null());
+        let mut b = LinuxProcess_new(core::ptr::null());
+        a.super_.super_.host = &machine as *const Machine as *const c_void;
+        b.super_.super_.host = &machine as *const Machine as *const c_void;
+        a.utime = 10;
+        b.utime = 20;
+        a.super_.super_.id = 1;
+        b.super_.super_.id = 2;
+
+        // Ascending UTIME: a(10) < b(20).
+        assert!(Process_compare(&a as &dyn Object, &b as &dyn Object) < 0);
+        assert!(Process_compare(&b as &dyn Object, &a as &dyn Object) > 0);
+
+        // Descending flips the result.
+        machine.settings.as_mut().unwrap().screens[0].direction = -1;
+        assert!(Process_compare(&a as &dyn Object, &b as &dyn Object) > 0);
     }
 }

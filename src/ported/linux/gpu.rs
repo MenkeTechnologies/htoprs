@@ -142,7 +142,16 @@ pub fn GPU_readProcessData(
         {
             unsafe { libc::__errno_location() }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        #[cfg(any(target_os = "netbsd", target_os = "openbsd"))]
+        {
+            unsafe { libc::__errno() }
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        )))]
         {
             unsafe { libc::__error() }
         }

@@ -88,6 +88,7 @@ use std::collections::HashMap;
 
 use crate::ported::crt::{ColorElements, ColorScheme, TreeStr};
 use crate::ported::machine::Machine;
+use crate::ported::panel::Panel;
 use crate::ported::process::ProcessField;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendWide, RichString_getCharVal,
@@ -128,9 +129,10 @@ pub struct Table {
     /// C `int stableLastIdx` (`Table.h:38`) — panel index where the
     /// `stableId` row was placed in the last rebuild.
     pub stableLastIdx: i32,
-    /// C `struct Panel_* panel` — opaque handle (ncurses `Panel`, never
-    /// dereferenced by a ported fn).
-    pub panel: Option<usize>,
+    /// C `struct Panel_* panel` — the `Panel` this table renders into, set
+    /// by [`Table_setPanel`] and read by `Table_rebuildPanel`. A raw
+    /// `*mut Panel` mirroring htop's pointer graph; null until wired.
+    pub panel: *mut Panel,
     /// The `isDirty` flag of the C `rows` Vector: set by soft-remove in
     /// [`Table_removeIndex`], cleared by [`Table_compact`].
     pub rows_isDirty: bool,
@@ -151,7 +153,7 @@ impl Table {
             following: -1,
             stableId: -1,
             stableLastIdx: 0,
-            panel: None,
+            panel: core::ptr::null_mut(),
             rows_isDirty: false,
         }
     }
@@ -212,10 +214,9 @@ pub fn Table_delete() {
 }
 
 /// Port of `void Table_setPanel(Table* this, Panel* panel)` from
-/// `Table.c:51`. Stores the panel handle (opaque; the ncurses `Panel` is
-/// never dereferenced by a ported fn).
-pub fn Table_setPanel(this: &mut Table, panel: usize) {
-    this.panel = Some(panel);
+/// `Table.c:51`. C: `this->panel = panel;` — stores the `Panel*` verbatim.
+pub fn Table_setPanel(this: &mut Table, panel: *mut Panel) {
+    this.panel = panel;
 }
 
 /// Port of `void Table_add(Table* this, Row* row)` from `Table.c:55`.

@@ -12,6 +12,8 @@
 //! - [`Machine_populateTablesFromSettings`] (`Machine.c:76`) — default
 //!   each screen's table to the process table, record the first as
 //!   active, and register each.
+//! - [`Machine_setTablesPanel`] (`Machine.c:94`) — point every registered
+//!   table at the shared main `Panel`.
 //!
 //! # Struct model
 //!
@@ -28,10 +30,13 @@
 //! - `monotonicMs` / `prevMonotonicMs` / `realtimeMs` — sample clocks;
 //!   `Table_add` / `Table_cleanupRow` read `monotonicMs`.
 //! - `tables` / `tableCount` / `activeTable` / `processTable` — the
-//!   table set. Tables are opaque [`TableHandle`]s: the ported functions
-//!   only compare them by identity (`this->tables[i] == table`) and
-//!   never dereference them, so the pointer's identity (`usize`) is all
-//!   that is needed. A null `Table*` is `None`. C tracks `tableCount`
+//!   table set. Following the crate's chosen ownership model, each is a
+//!   raw [`TableHandle`] (`*mut Table`) mirroring htop's `Table*` 1:1:
+//!   `Machine` borrows tables it does not own. The dedup loop compares by
+//!   pointer identity (`this->tables[i] == table`), and
+//!   [`Machine_setTablesPanel`] dereferences each to wire its panel. Null
+//!   is never stored in `tables`; the nullable `activeTable`/`processTable`
+//!   use `Option<TableHandle>` (`None` = C `NULL`). C tracks `tableCount`
 //!   separately from the `tables` array; that is mirrored (invariant
 //!   `tableCount == tables.len()`) so the dedup loop bound reads exactly
 //!   like the C `for`.
@@ -48,18 +53,23 @@
 //! - [`Machine_done`] (`Machine.c:53`) — `hwloc_topology_destroy`,
 //!   `Object_delete`, `free`: teardown of unported machinery (`Drop`
 //!   releases the owned Rust fields).
-//! - [`Machine_setTablesPanel`] (`Machine.c:94`) — delegates to
-//!   `Table_setPanel`, wiring an ncurses `Panel` not ported.
 //! - [`Machine_scanTables`] (`Machine.c:100`) — `Platform_gettime_monotonic`,
 //!   the `Row_*ColumnWidth` helpers, and `Table_scanPrepare`/`_scanIterate`/
 //!   `_scanCleanup` dispatch: syscalls plus unported scan machinery.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-/// A stand-in for htop's `Table*` — an opaque identity handle. The
-/// ported functions only compare tables by pointer equality and never
-/// dereference them, so the identity (`usize`) is all that is needed.
-pub type TableHandle = usize;
+use crate::ported::panel::Panel;
+use crate::ported::table::{Table, Table_setPanel};
+
+/// htop's `Table*` — a raw pointer to a [`Table`]. The crate mirrors
+/// htop's C pointer graph 1:1 (raw-pointer ownership model): `Machine`
+/// holds borrowed `Table*`s it does not own. Ported functions compare
+/// them by identity and [`Machine_setTablesPanel`] dereferences them;
+/// null is never stored in [`Machine::tables`], while the nullable
+/// `activeTable`/`processTable`/`ScreenSettings::table` slots use
+/// `Option<TableHandle>` with `None` = C `NULL`.
+pub type TableHandle = *mut Table;
 
 /// htop's `Settings` and `ScreenSettings` are a single struct each in the C
 /// source; the canonical Rust port lives in [`crate::ported::settings`].
@@ -194,11 +204,19 @@ pub fn Machine_populateTablesFromSettings(
     }
 }
 
-/// TODO: port of `void Machine_setTablesPanel(Machine* this, Panel*
-/// panel)` from `Machine.c:94`. Delegates to `Table_setPanel`, wiring an
-/// ncurses `Panel` not ported.
-pub fn Machine_setTablesPanel() {
-    todo!("port of Machine.c:94 — needs ncurses Panel")
+/// Port of `void Machine_setTablesPanel(Machine* this, Panel* panel)` from
+/// `Machine.c:94`. Points every registered table at the shared main
+/// `Panel` by calling [`Table_setPanel`] on each `this->tables[i]`. The C
+/// walks `[0, tableCount)` and passes the one `Panel*` through unchanged;
+/// each `this.tables[i]` is a raw `*mut Table` that is dereferenced here
+/// (the panel it stores is later read by `Table_rebuildPanel`).
+pub fn Machine_setTablesPanel(this: &mut Machine, panel: *mut Panel) {
+    for i in 0..this.tableCount {
+        // C: `Table_setPanel(this->tables[i], panel)`.
+        unsafe {
+            Table_setPanel(&mut *this.tables[i], panel);
+        }
+    }
 }
 
 /// TODO: port of `void Machine_scanTables(Machine* this)` from
@@ -213,19 +231,27 @@ pub fn Machine_scanTables() {
 mod tests {
     use super::*;
 
+    // Distinct non-null `*mut Table` stand-ins. The ported functions only
+    // store and identity-compare these (never dereference), exactly as the
+    // C tests would use distinct `Table*` values.
+    const T10: TableHandle = 10 as TableHandle;
+    const T20: TableHandle = 20 as TableHandle;
+    const T30: TableHandle = 30 as TableHandle;
+    const T42: TableHandle = 42 as TableHandle;
+
     #[test]
     fn addTable_dedup_keeps_first_occurrence_and_ignores_repeats() {
         let mut m = Machine::default();
 
-        Machine_addTable(&mut m, 10);
-        Machine_addTable(&mut m, 20);
+        Machine_addTable(&mut m, T10);
+        Machine_addTable(&mut m, T20);
         // Re-adding an already-registered table is a no-op (C returns
         // early on pointer match).
-        Machine_addTable(&mut m, 10);
-        Machine_addTable(&mut m, 20);
-        Machine_addTable(&mut m, 30);
+        Machine_addTable(&mut m, T10);
+        Machine_addTable(&mut m, T20);
+        Machine_addTable(&mut m, T30);
 
-        assert_eq!(m.tables, vec![10, 20, 30]);
+        assert_eq!(m.tables, vec![T10, T20, T30]);
         assert_eq!(m.tableCount, 3);
         // Invariant the C maintains: tableCount tracks the array length.
         assert_eq!(m.tableCount, m.tables.len());
@@ -237,9 +263,9 @@ mod tests {
         assert_eq!(m.tableCount, 0);
         assert!(m.tables.is_empty());
 
-        Machine_addTable(&mut m, 42);
+        Machine_addTable(&mut m, T42);
 
-        assert_eq!(m.tables, vec![42]);
+        assert_eq!(m.tables, vec![T42]);
         assert_eq!(m.tableCount, 1);
     }
 
@@ -257,16 +283,17 @@ mod tests {
         // defaulted to processTable in place, and — since both then equal
         // processTable — only one entry is registered.
         let mut m = Machine::default();
+        let pt: TableHandle = 7 as TableHandle;
 
-        Machine_populateTablesFromSettings(&mut m, settings_with_screens(2), 7);
+        Machine_populateTablesFromSettings(&mut m, settings_with_screens(2), pt);
 
         let s = m.settings.as_ref().unwrap();
-        assert_eq!(s.screens[0].table, Some(7));
-        assert_eq!(s.screens[1].table, Some(7));
+        assert_eq!(s.screens[0].table, Some(pt));
+        assert_eq!(s.screens[1].table, Some(pt));
 
-        assert_eq!(m.processTable, Some(7));
-        assert_eq!(m.activeTable, Some(7)); // first screen's table
-        assert_eq!(m.tables, vec![7]); // deduped
+        assert_eq!(m.processTable, Some(pt));
+        assert_eq!(m.activeTable, Some(pt)); // first screen's table
+        assert_eq!(m.tables, vec![pt]); // deduped
         assert_eq!(m.tableCount, 1);
     }
 
@@ -275,16 +302,18 @@ mod tests {
         // First screen has an explicit table (not overwritten); second is
         // null (defaulted to processTable); third repeats the first
         // (deduped away).
+        let explicit: TableHandle = 100 as TableHandle;
+        let pt: TableHandle = 9 as TableHandle;
         let settings = Settings {
             screens: vec![
                 ScreenSettings {
-                    table: Some(100),
+                    table: Some(explicit),
                     treeView: false,
                     ..Default::default()
                 },
                 ScreenSettings::default(),
                 ScreenSettings {
-                    table: Some(100),
+                    table: Some(explicit),
                     treeView: false,
                     ..Default::default()
                 },
@@ -293,27 +322,49 @@ mod tests {
         };
         let mut m = Machine::default();
 
-        Machine_populateTablesFromSettings(&mut m, settings, 9);
+        Machine_populateTablesFromSettings(&mut m, settings, pt);
 
         let s = m.settings.as_ref().unwrap();
-        assert_eq!(s.screens[0].table, Some(100)); // untouched
-        assert_eq!(s.screens[1].table, Some(9)); // defaulted
-        assert_eq!(s.screens[2].table, Some(100)); // untouched
+        assert_eq!(s.screens[0].table, Some(explicit)); // untouched
+        assert_eq!(s.screens[1].table, Some(pt)); // defaulted
+        assert_eq!(s.screens[2].table, Some(explicit)); // untouched
 
-        assert_eq!(m.activeTable, Some(100)); // first screen wins
-        assert_eq!(m.tables, vec![100, 9]); // 100 registered once, 9 next
+        assert_eq!(m.activeTable, Some(explicit)); // first screen wins
+        assert_eq!(m.tables, vec![explicit, pt]); // 100 registered once, 9 next
         assert_eq!(m.tableCount, 2);
     }
 
     #[test]
     fn populate_with_no_screens_registers_nothing() {
         let mut m = Machine::default();
+        let pt: TableHandle = 5 as TableHandle;
 
-        Machine_populateTablesFromSettings(&mut m, settings_with_screens(0), 5);
+        Machine_populateTablesFromSettings(&mut m, settings_with_screens(0), pt);
 
-        assert_eq!(m.processTable, Some(5));
+        assert_eq!(m.processTable, Some(pt));
         assert_eq!(m.activeTable, None); // loop never runs
         assert!(m.tables.is_empty());
         assert_eq!(m.tableCount, 0);
+    }
+
+    #[test]
+    fn setTablesPanel_points_every_table_at_the_panel() {
+        // Real, address-stable Tables so setTablesPanel can dereference
+        // them and store the panel; a distinct non-null `*mut Panel`
+        // stand-in is written into each and read back.
+        use crate::ported::panel::Panel;
+        let mut t0 = Box::new(Table::empty());
+        let mut t1 = Box::new(Table::empty());
+        let panel = 0xABCD as *mut Panel;
+
+        let mut m = Machine::default();
+        Machine_addTable(&mut m, &mut *t0 as *mut Table);
+        Machine_addTable(&mut m, &mut *t1 as *mut Table);
+
+        Machine_setTablesPanel(&mut m, panel);
+
+        // C `Table_setPanel` stores the pointer verbatim on each table.
+        assert_eq!(t0.panel, panel);
+        assert_eq!(t1.panel, panel);
     }
 }

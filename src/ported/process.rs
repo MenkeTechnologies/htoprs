@@ -63,7 +63,10 @@ use crate::ported::row::{
     Row_updateFieldWidth,
 };
 use crate::ported::scheduling::Scheduling_formatPolicy;
-use crate::ported::settings::{RowField, Settings, Settings_isReadonly};
+use crate::ported::settings::{
+    RowField, ScreenSettings_getActiveDirection, ScreenSettings_getActiveSortKey, Settings,
+    Settings_isReadonly,
+};
 use crate::ported::table::Table;
 use crate::ported::xutils::{compareRealNumbers, String_startsWith};
 use core::any::Any;
@@ -462,7 +465,7 @@ impl Default for ProcessState {
 /// Port of `typedef int (*Process_CompareByKey)(const Process*, const
 /// Process*, ProcessField)` (`Process.h:242`). The C `const Process*`
 /// receivers are `&dyn Object` here (downcast by the slot).
-pub type Process_CompareByKey = fn(&dyn Object, &dyn Object, ProcessField) -> i32;
+pub type Process_CompareByKey = fn(&dyn Object, &dyn Object, RowField) -> i32;
 
 /// Port of `typedef struct ProcessClass_` (`Process.h:244`) — the `Process`
 /// vtable, embedding [`RowClass`] (`super_`) and adding the `compareByKey`
@@ -524,22 +527,21 @@ impl Object for Process {
         Some(self)
     }
 
+    /// C `As_Process(this)` — `Process`'s [`ProcessClass`] vtable.
+    fn process_class(&self) -> Option<&'static ProcessClass> {
+        Some(&Process_class)
+    }
+
     /// C `Process_class.super.super.display = Row_display`.
     fn display(&self, out: &mut RichString) {
         Row_display(self, out)
     }
 
-    /// C `Process_class.super.super.compare = Process_compare`. Downcasts
-    /// the trait object back to `Process` (the safe-Rust analog of the C
-    /// `const void*` cast) and delegates to [`Process_compare`] — which
-    /// is stubbed pending the `Settings` substrate, so this dispatches to
-    /// a `todo!()` for now, matching the C wiring.
+    /// C `Process_class.super.super.compare = Process_compare`. Delegates to
+    /// [`Process_compare`], which reads the sort key from the host settings
+    /// and dispatches the concrete `compareByKey` slot.
     fn compare(&self, other: &dyn Object) -> i32 {
-        let any: &dyn Any = other;
-        let o = any
-            .downcast_ref::<Process>()
-            .expect("Process_compare called across incompatible classes");
-        Process_compare(self, o)
+        Process_compare(self, other)
     }
 }
 
@@ -872,10 +874,7 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
             b"/nix/store/",
             b"/run/current-system/",
         ];
-        PREFIXES
-            .iter()
-            .find(|p| s.starts_with(p))
-            .map(|p| p.len())
+        PREFIXES.iter().find(|p| s.starts_with(p)).map(|p| p.len())
     };
 
     // Shortcuts to the source strings as slices ("(zombie)" fallback below).
@@ -892,12 +891,12 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
     } else {
         0
     };
-    let mut cmdline_basename_len = if cmdline_present && cmdline_basename_end > cmdline_basename_start
-    {
-        cmdline_basename_end - cmdline_basename_start
-    } else {
-        0
-    };
+    let mut cmdline_basename_len =
+        if cmdline_present && cmdline_basename_end > cmdline_basename_start {
+            cmdline_basename_end - cmdline_basename_start
+        } else {
+            0
+        };
 
     // Exe / cmdline prefix matching (mirrors the C block).
     let mut match_len = 0usize;
@@ -926,7 +925,8 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
             const THREAD: &[u8] = b"/proc/thread-self/exe";
             let sep_self = cmdline.get(SELF.len()).copied().unwrap_or(0);
             let sep_thread = cmdline.get(THREAD.len()).copied().unwrap_or(0);
-            if cmdline.starts_with(SELF) && (sep_self == 0 || sep_self == b' ' || sep_self == b'\n') {
+            if cmdline.starts_with(SELF) && (sep_self == 0 || sep_self == b' ' || sep_self == b'\n')
+            {
                 match_len = SELF.len();
             } else if cmdline.starts_with(THREAD)
                 && (sep_thread == 0 || sep_thread == b' ' || sep_thread == b'\n')
@@ -967,11 +967,26 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
             } else {
                 0
             };
-            write_highlight!(off, cmdline_basename_len, base_attr, CMDLINE_HIGHLIGHT_FLAG_BASENAME);
+            write_highlight!(
+                off,
+                cmdline_basename_len,
+                base_attr,
+                CMDLINE_HIGHLIGHT_FLAG_BASENAME
+            );
             if proc_exe_deleted {
-                write_highlight!(off, cmdline_basename_len, del_exe_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+                write_highlight!(
+                    off,
+                    cmdline_basename_len,
+                    del_exe_attr,
+                    CMDLINE_HIGHLIGHT_FLAG_DELETED
+                );
             } else if uses_deleted_lib {
-                write_highlight!(off, cmdline_basename_len, del_lib_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+                write_highlight!(
+                    off,
+                    cmdline_basename_len,
+                    del_lib_attr,
+                    CMDLINE_HIGHLIGHT_FLAG_DELETED
+                );
             }
         }
 
@@ -1038,33 +1053,65 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
             }
         }
         if have_comm_in_exe {
-            write_highlight!(exe_basename_offset, comm_len, comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
+            write_highlight!(
+                exe_basename_offset,
+                comm_len,
+                comm_attr,
+                CMDLINE_HIGHLIGHT_FLAG_COMM
+            );
         }
-        write_highlight!(exe_basename_offset, exe_basename_len, base_attr, CMDLINE_HIGHLIGHT_FLAG_BASENAME);
+        write_highlight!(
+            exe_basename_offset,
+            exe_basename_len,
+            base_attr,
+            CMDLINE_HIGHLIGHT_FLAG_BASENAME
+        );
         if proc_exe_deleted {
-            write_highlight!(exe_basename_offset, exe_basename_len, del_exe_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+            write_highlight!(
+                exe_basename_offset,
+                exe_basename_len,
+                del_exe_attr,
+                CMDLINE_HIGHLIGHT_FLAG_DELETED
+            );
         } else if uses_deleted_lib {
-            write_highlight!(exe_basename_offset, exe_basename_len, del_lib_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+            write_highlight!(
+                exe_basename_offset,
+                exe_basename_len,
+                del_lib_attr,
+                CMDLINE_HIGHLIGHT_FLAG_DELETED
+            );
         }
         buf.extend_from_slice(proc_exe_s);
     } else {
         if have_comm_in_exe {
             write_highlight!(0, comm_len, comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
         }
-        write_highlight!(0, exe_basename_len, base_attr, CMDLINE_HIGHLIGHT_FLAG_BASENAME);
+        write_highlight!(
+            0,
+            exe_basename_len,
+            base_attr,
+            CMDLINE_HIGHLIGHT_FLAG_BASENAME
+        );
         if proc_exe_deleted {
-            write_highlight!(0, exe_basename_len, del_exe_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+            write_highlight!(
+                0,
+                exe_basename_len,
+                del_exe_attr,
+                CMDLINE_HIGHLIGHT_FLAG_DELETED
+            );
         } else if uses_deleted_lib {
-            write_highlight!(0, exe_basename_len, del_lib_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+            write_highlight!(
+                0,
+                exe_basename_len,
+                del_lib_attr,
+                CMDLINE_HIGHLIGHT_FLAG_DELETED
+            );
         }
         buf.extend_from_slice(&proc_exe_s[exe_basename_offset.min(proc_exe_s.len())..]);
     }
 
     let mut have_comm_field = false;
-    if !have_comm_in_exe
-        && !have_comm_in_cmdline
-        && (!is_userland_thread || show_thread_names)
-    {
+    if !have_comm_in_exe && !have_comm_in_cmdline && (!is_userland_thread || show_thread_names) {
         write_separator!();
         write_highlight!(0, proc_comm_s.len(), comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
         buf.extend_from_slice(proc_comm_s);
@@ -1153,7 +1200,11 @@ pub fn Process_writeCommand(this: &Process, attr: i32, baseAttr: i32, str: &mut 
                 }
             }
 
-            RichString_appendWide(str, attr, &cmdline_bytes[cmd_offset.min(cmdline_bytes.len())..]);
+            RichString_appendWide(
+                str,
+                attr,
+                &cmdline_bytes[cmd_offset.min(cmdline_bytes.len())..],
+            );
             if settings.highlightBaseName {
                 RichString_setAttrn(str, baseAttr, str_start, len);
             }
@@ -1263,7 +1314,11 @@ pub fn Process_writeField(this: &Process, str: &mut RichString, field: RowField)
             // Build the tree-prefix glyphs (C accumulates into `buffer`).
             let last_item = indent < 0;
             let mut tree = String::new();
-            let mut ind: u32 = if indent < 0 { (-indent) as u32 } else { indent as u32 };
+            let mut ind: u32 = if indent < 0 {
+                (-indent) as u32
+            } else {
+                indent as u32
+            };
             while ind > 1 {
                 if ind & 1 != 0 {
                     tree.push_str(TreeStr::TREE_STR_VERT.glyph());
@@ -1701,11 +1756,11 @@ pub fn Process_setPriority(this: &mut Process, priority: i32) -> bool {
     }
 
     let who = Process_getPid(this) as libc::id_t;
-    let old_prio = unsafe { libc::getpriority(libc::PRIO_PROCESS, who) };
+    let old_prio = unsafe { libc::getpriority(libc::PRIO_PROCESS, who as _) };
 
-    let err = unsafe { libc::setpriority(libc::PRIO_PROCESS, who, priority) };
+    let err = unsafe { libc::setpriority(libc::PRIO_PROCESS, who as _, priority) };
 
-    if err == 0 && old_prio != unsafe { libc::getpriority(libc::PRIO_PROCESS, who) } {
+    if err == 0 && old_prio != unsafe { libc::getpriority(libc::PRIO_PROCESS, who as _) } {
         this.nice = priority;
     }
     err == 0
@@ -1764,9 +1819,37 @@ pub fn Process_rowSendSignal(super_: &dyn Object, sgn: Arg) -> bool {
 /// comparison it dispatches to *is* ported (see
 /// [`Process_compareByKey_Base`]); only the active-key/direction lookup
 /// is missing. Signature matches the two-`Process` C comparator.
-pub fn Process_compare(p1: &Process, p2: &Process) -> i32 {
-    let _ = (p1, p2);
-    todo!("port of Process.c:914 — needs Settings/ScreenSettings substrate")
+pub fn Process_compare(v1: &dyn Object, v2: &dyn Object) -> i32 {
+    let p1 = v1.as_process().expect("Process_compare: v1 is not a Process");
+    let p2 = v2.as_process().expect("Process_compare: v2 is not a Process");
+
+    // C `const ScreenSettings* ss = p1->super.host->settings->ss;`
+    let host = unsafe { &*(p1.super_.host as *const Machine) };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Process_compare: host->settings is NULL");
+    let ss = &settings.screens[settings.ssIndex as usize];
+
+    let key = ScreenSettings_getActiveSortKey(ss);
+
+    // C `Process_compareByKey(p1, p2, key)` macro: dispatch the concrete
+    // `As_Process(p1)->compareByKey` slot if set, else the base comparator.
+    let result = match v1.process_class().and_then(|pc| pc.compareByKey) {
+        Some(f) => f(v1, v2, key),
+        None => Process_compareByKey_Base(p1, p2, key),
+    };
+
+    // Tie-breaker (keeps tree mode stable): order by PID.
+    if result == 0 {
+        return spaceship_number!(Process_getPid(p1), Process_getPid(p2));
+    }
+
+    if ScreenSettings_getActiveDirection(ss) == 1 {
+        result
+    } else {
+        -result
+    }
 }
 
 /// Port of `int Process_compareByParent(const Row* r1, const Row* r2)`
@@ -1902,7 +1985,9 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: RowField) -> i
         k if k == PF::NLWP as RowField => spaceship_number!(p1.nlwp, p2.nlwp),
         k if k == PF::PGRP as RowField => spaceship_number!(p1.pgrp, p2.pgrp),
         k if k == PF::PID as RowField => spaceship_number!(Process_getPid(p1), Process_getPid(p2)),
-        k if k == PF::PPID as RowField => spaceship_number!(Process_getParent(p1), Process_getParent(p2)),
+        k if k == PF::PPID as RowField => {
+            spaceship_number!(Process_getParent(p1), Process_getParent(p2))
+        }
         k if k == PF::PRIORITY as RowField => spaceship_number!(p1.priority, p2.priority),
         k if k == PF::PROCESSOR as RowField => spaceship_number!(p1.processor, p2.processor),
         k if k == PF::SCHEDULERPOLICY as RowField => {
@@ -2436,9 +2521,18 @@ mod tests {
         let mut b = proc();
         Process_setPid(&mut a, 100);
         Process_setPid(&mut b, 200);
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::PID as RowField), -1);
-        assert_eq!(Process_compareByKey_Base(&b, &a, ProcessField::PID as RowField), 1);
-        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::PID as RowField), 0);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::PID as RowField),
+            -1
+        );
+        assert_eq!(
+            Process_compareByKey_Base(&b, &a, ProcessField::PID as RowField),
+            1
+        );
+        assert_eq!(
+            Process_compareByKey_Base(&a, &a, ProcessField::PID as RowField),
+            0
+        );
     }
 
     #[test]
@@ -2486,8 +2580,14 @@ mod tests {
         let mut b = proc();
         a.state = ProcessState::RUNNING; // 3
         b.state = ProcessState::SLEEPING; // 14
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::STATE as RowField), -1);
-        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::STATE as RowField), 0);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::STATE as RowField),
+            -1
+        );
+        assert_eq!(
+            Process_compareByKey_Base(&a, &a, ProcessField::STATE as RowField),
+            0
+        );
     }
 
     #[test]
@@ -2551,12 +2651,18 @@ mod tests {
         a.starttime_ctime = 200; // started later => smaller elapsed
         b.starttime_ctime = 100;
         // SPACESHIP(200,100)=1 => r=-1.
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED as RowField), -1);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED as RowField),
+            -1
+        );
         // Equal starttime => tie-break by pid.
         b.starttime_ctime = 200;
         Process_setPid(&mut a, 3);
         Process_setPid(&mut b, 8);
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED as RowField), -1);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED as RowField),
+            -1
+        );
     }
 
     #[test]
@@ -2567,10 +2673,16 @@ mod tests {
         a.tty_name = Some("tty1".to_string());
         let b = proc(); // no tty_name => "\x7f"
                         // "tty1" (t=0x74) < "\x7f" => real tty sorts first.
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::TTY as RowField), -1);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::TTY as RowField),
+            -1
+        );
         // Two missing ttys compare equal (both "\x7f").
         let c = proc();
-        assert_eq!(Process_compareByKey_Base(&b, &c, ProcessField::TTY as RowField), 0);
+        assert_eq!(
+            Process_compareByKey_Base(&b, &c, ProcessField::TTY as RowField),
+            0
+        );
     }
 
     #[test]
@@ -2579,10 +2691,16 @@ mod tests {
         let mut b = proc();
         a.user = Some("alice".to_string());
         b.user = Some("bob".to_string());
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::USER as RowField), -1);
+        assert_eq!(
+            Process_compareByKey_Base(&a, &b, ProcessField::USER as RowField),
+            -1
+        );
         // NULL user compares as "" (sorts first).
         let c = proc();
-        assert_eq!(Process_compareByKey_Base(&c, &a, ProcessField::USER as RowField), -1);
+        assert_eq!(
+            Process_compareByKey_Base(&c, &a, ProcessField::USER as RowField),
+            -1
+        );
     }
 
     #[test]
@@ -2926,13 +3044,19 @@ mod tests {
         assert_eq!(p.mergedCommand.str.as_deref(), Some("/usr/bin/foo bar"));
         assert!(p.mergedCommand.highlightCount >= 1);
         let hl = &p.mergedCommand.highlights[0];
-        assert_eq!((hl.offset, hl.length, hl.flags), (9, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME));
+        assert_eq!(
+            (hl.offset, hl.length, hl.flags),
+            (9, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME)
+        );
 
         // showProgramPath = false → basename only, highlight at offset 0.
         let p = mk(false);
         assert_eq!(p.mergedCommand.str.as_deref(), Some("foo bar"));
         let hl = &p.mergedCommand.highlights[0];
-        assert_eq!((hl.offset, hl.length, hl.flags), (0, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME));
+        assert_eq!(
+            (hl.offset, hl.length, hl.flags),
+            (0, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME)
+        );
     }
 
     /// [`Process_updateCPUFieldWidths`]: never shrinks below 4, and grows for
