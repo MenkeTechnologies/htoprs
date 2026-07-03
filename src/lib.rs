@@ -62,4 +62,5 @@
 #![allow(clippy::erasing_op)]
 #![allow(clippy::needless_late_init)]
 
+pub mod extensions;
 pub mod ported;

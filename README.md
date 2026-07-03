@@ -37,6 +37,10 @@ enforced mechanically, following the same precedent as `zshrs`.
   (default `~/forkedRepos/htop`) to point at either.
 - **Port tree:** `src/ported/<file>.rs` — one Rust module per C file. Each `fn`
   carries a `/// Port of` citation naming its `<File>.c:<line>` origin.
+- **Extensions tree:** `src/extensions/<name>.rs` — htoprs-original code that is
+  not a translation of htop C and is therefore exempt from the port-purity gate.
+  `extensions::theme` holds the named color-scheme system (31 built-in 6-color
+  palettes plus custom-theme plumbing), ported from iftoprs.
 - **Port-purity gate (`build.rs`):** on every `cargo build` / `cargo test` /
   `cargo check` that touches `src/ported/`, every free `fn` name is checked
   against the htop C-function snapshot at `tests/data/htop_c_fn_names.txt`. A
