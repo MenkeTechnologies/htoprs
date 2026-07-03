@@ -165,6 +165,14 @@ pub fn CPUMeter_getUiName(this: &Meter) -> String {
 }
 
 // CPUMeter.h `CPU_METER_*` indices / count.
+const CPU_METER_NICE: usize = 0;
+const CPU_METER_NORMAL: usize = 1;
+const CPU_METER_KERNEL: usize = 2;
+const CPU_METER_IRQ: usize = 3;
+const CPU_METER_SOFTIRQ: usize = 4;
+const CPU_METER_STEAL: usize = 5;
+const CPU_METER_GUEST: usize = 6;
+const CPU_METER_IOWAIT: usize = 7;
 const CPU_METER_FREQUENCY: usize = 8;
 const CPU_METER_ITEMCOUNT: usize = 10;
 
@@ -261,9 +269,96 @@ pub fn CPUMeter_updateValues(this: &mut crate::ported::meter::Meter) {
     this.txtBuffer = format!("{cpu_usage}{sep}{cpu_frequency}");
 }
 
-/// TODO: port of `static void CPUMeter_display(const Object* cast, RichString* out` from `CPUMeter.c:147`.
-pub fn CPUMeter_display() {
-    todo!("port of CPUMeter.c:147: needs RichString append helpers, CRT_colors, CPU_METER_* constants, and Meter.values/curItems")
+/// Port of `static void CPUMeter_display(const Object* cast, RichString*
+/// out)` from `CPUMeter.c:147`. Appends the labeled per-class percentages —
+/// the 8-class detailed line (`:`/`sy:`/`ni:`/`hi:`/`si:`/`st:`/`gu:`/`wa:`)
+/// or the 4-class summary line (`:`/`sys:`/`low:`/`vir:`), each colored by
+/// its `CRT_colors` class entry — plus the optional `freq:` field. `absent`/
+/// `offline` short-circuit as in [`CPUMeter_updateValues`]. Temperature is
+/// omitted (no `BUILD_WITH_CPU_TEMP`). `isNonnegative(x)` is `x >= 0.0`.
+pub fn CPUMeter_display(
+    this: &crate::ported::meter::Meter,
+    out: &mut crate::ported::richstring::RichString,
+) {
+    use crate::ported::crt::{ColorElements as CE, ColorScheme};
+    use crate::ported::richstring::{
+        RichString_appendAscii, RichString_appendnAscii, RichString_appendnWide,
+    };
+    let scheme = ColorScheme::active();
+
+    let (detailed, show_frequency, existing_cpus) = {
+        let host = this
+            .host
+            .as_ref()
+            .expect("CPUMeter_display: this->host (C dereferences it)")
+            .borrow();
+        let s = host
+            .super_
+            .settings
+            .as_ref()
+            .expect("CPUMeter_display: host->settings");
+        (s.detailedCPUTime, s.showCPUFrequency, host.super_.existingCPUs)
+    };
+
+    // "%5.1f%% " — width-5 float, "%", trailing space.
+    let pct = |v: f64| -> String { format!("{v:5.1}% ") };
+
+    if this.param > existing_cpus {
+        RichString_appendAscii(out, CE::METER_SHADOW.packed(scheme), b" absent");
+        return;
+    }
+    if this.curItems == 0 {
+        RichString_appendAscii(out, CE::METER_SHADOW.packed(scheme), b" offline");
+        return;
+    }
+
+    let v = &this.values;
+    let text = CE::METER_TEXT.packed(scheme);
+    let buffer = pct(v[CPU_METER_NORMAL]);
+    RichString_appendAscii(out, text, b":");
+    RichString_appendnAscii(out, CE::CPU_NORMAL.packed(scheme), buffer.as_bytes(), buffer.len());
+
+    if detailed {
+        for (label, idx, color, gated) in [
+            ("sy:", CPU_METER_KERNEL, CE::CPU_SYSTEM, false),
+            ("ni:", CPU_METER_NICE, CE::CPU_NICE_TEXT, false),
+            ("hi:", CPU_METER_IRQ, CE::CPU_IRQ, false),
+            ("si:", CPU_METER_SOFTIRQ, CE::CPU_SOFTIRQ, false),
+            ("st:", CPU_METER_STEAL, CE::CPU_STEAL, true),
+            ("gu:", CPU_METER_GUEST, CE::CPU_GUEST, true),
+            ("wa:", CPU_METER_IOWAIT, CE::CPU_IOWAIT, false),
+        ] {
+            if gated && !(v[idx] >= 0.0) {
+                continue; // isNonnegative gate for steal/guest
+            }
+            let buffer = pct(v[idx]);
+            RichString_appendAscii(out, text, label.as_bytes());
+            RichString_appendnAscii(out, color.packed(scheme), buffer.as_bytes(), buffer.len());
+        }
+    } else {
+        let buffer = pct(v[CPU_METER_KERNEL]);
+        RichString_appendAscii(out, text, b"sys:");
+        RichString_appendnAscii(out, CE::CPU_SYSTEM.packed(scheme), buffer.as_bytes(), buffer.len());
+        let buffer = pct(v[CPU_METER_NICE]);
+        RichString_appendAscii(out, text, b"low:");
+        RichString_appendnAscii(out, CE::CPU_NICE_TEXT.packed(scheme), buffer.as_bytes(), buffer.len());
+        if v[CPU_METER_IRQ] >= 0.0 {
+            let buffer = pct(v[CPU_METER_IRQ]);
+            RichString_appendAscii(out, text, b"vir:");
+            RichString_appendnAscii(out, CE::CPU_GUEST.packed(scheme), buffer.as_bytes(), buffer.len());
+        }
+    }
+
+    if show_frequency {
+        let f = v[CPU_METER_FREQUENCY];
+        let buffer = if f >= 0.0 {
+            format!("{:>4}MHz ", f as u32)
+        } else {
+            "N/A     ".to_string()
+        };
+        RichString_appendAscii(out, text, b"freq: ");
+        RichString_appendnWide(out, CE::METER_VALUE.packed(scheme), buffer.as_bytes(), buffer.len());
+    }
 }
 
 /// TODO: port of `static void AllCPUsMeter_updateValues(Meter* this` from `CPUMeter.c:255`.
@@ -524,5 +619,29 @@ mod cpu_data_tests {
         m.param = 5; // 5 > existingCPUs(0)
         super::CPUMeter_updateValues(&mut m);
         assert_eq!(m.txtBuffer, "absent");
+    }
+
+    fn text(r: &crate::ported::richstring::RichString) -> String {
+        (0..r.chlen as usize).map(|i| r.chptr[i].chars).collect()
+    }
+
+    #[test]
+    fn display_summary_line() {
+        // Summary line: ":" + normal + "sys:" + kernel + "low:" + nice.
+        let cpu = CPUData {
+            online: true,
+            totalPeriod: 100,
+            userPeriod: 50,   // normal 50.0
+            nicePeriod: 10,   // nice 10.0
+            systemAllPeriod: 20, // kernel 20.0 (summary)
+            ..Default::default()
+        };
+        let settings = Settings { detailedCPUTime: false, ..Default::default() };
+        let mut m = hosted(cpu, settings, 8);
+        super::CPUMeter_updateValues(&mut m);
+        let mut out = crate::ported::richstring::RichString::new();
+        super::CPUMeter_display(&m, &mut out);
+        // IRQ = steal+guest = 0 (nonnegative) → "vir:" 0.0 shown.
+        assert_eq!(text(&out), ": 50.0% sys: 20.0% low: 10.0% vir:  0.0% ");
     }
 }
