@@ -44,3 +44,15 @@ serde_json = "1.0"
 # Extensions-only: regex matching for the saved-filters extension
 # (extensions::filter). Foundational crate, vendorable and durable.
 regex = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libmedium = "0.13.4"
+# Linux-only: pure-Rust generic-netlink client used by the delay-accounting
+# port (linux/LibNl.c) to query the kernel TASKSTATS family. No FFI/dlopen —
+# neli speaks the netlink wire protocol directly over an AF_NETLINK socket.
+neli = "0.6"
+# Linux-only: pure-Rust systemd D-Bus client for the SystemdMeter port
+# (linux/SystemdMeter.c updateViaLib). No FFI/dlopen — zbus speaks the D-Bus
+# wire protocol directly over the system/session bus socket. The blocking
+# module mirrors htop's synchronous sd-bus property reads.
+zbus = "5"

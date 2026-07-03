@@ -108,8 +108,10 @@ pub struct ZswapStats {
 /// `LinuxMachine::cpuData` is the aggregate ("average") CPU; indices
 /// `1..=existingCPUs` are the physical threads.
 ///
-/// The `#ifdef HAVE_SENSORS_SENSORS_H double temperature` field is omitted
-/// (no-sensors build variant; see module docs).
+/// The `#ifdef HAVE_SENSORS_SENSORS_H double temperature` field is included
+/// (populated by `LibSensors_getCPUTemperatures`; see `libsensors.rs`, which
+/// substitutes the pure-Rust `libmedium` hwmon reader for the C libsensors
+/// FFI). NaN denotes "no reading".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CPUData {
     pub totalTime: u64,
@@ -139,6 +141,11 @@ pub struct CPUData {
     pub guestPeriod: u64,
 
     pub frequency: f64,
+
+    /// `#ifdef HAVE_SENSORS_SENSORS_H double temperature` — per-thread CPU
+    /// temperature in degrees Celsius (NaN when unknown). Filled by
+    /// `LibSensors_getCPUTemperatures`.
+    pub temperature: f64,
 
     /// different for each CPU socket
     pub physicalID: i32,
