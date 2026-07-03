@@ -121,17 +121,18 @@ use crate::ported::hashtable::Hashtable_get;
 use crate::ported::header::{Header, Header_writeBackToSettings};
 use crate::ported::incset::{IncSet_activate, IncSet_filter, IncSet_reset, IncType};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
-use crate::ported::listitem::{ListItem, ListItem_new};
+use crate::ported::listitem::{ListItem, ListItem_getRef, ListItem_new};
 use crate::ported::machine::{Machine, Machine_scanTables};
 use crate::ported::mainpanel::{
     MainPanel, MainPanel_foreachRow, MainPanel_selectedRow, MainPanel_setFunctionBar,
 };
 use crate::ported::object::{Arg, Object};
 use crate::ported::panel::{
-    Panel, PanelClass, PanelItem, Panel_add, Panel_draw, Panel_getSelected, Panel_move, Panel_new,
-    Panel_onKey, Panel_resize, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor,
-    Panel_size,
+    Panel, PanelClass, PanelItem, Panel_add, Panel_draw, Panel_getSelected, Panel_insert,
+    Panel_move, Panel_new, Panel_onKey, Panel_resize, Panel_setHeader, Panel_setSelected,
+    Panel_setSelectionColor, Panel_size,
 };
+use crate::ported::userstable::{UsersTable, UsersTable_foreach};
 use crate::ported::process::{
     Process, ProcessField, Process_rowChangePriorityBy, Process_rowSendSignal,
 };
@@ -1465,8 +1466,72 @@ pub fn actionKill(st: &mut State) -> Htop_Reaction {
 /// and sets `host->userId` from the pick. Blocked on the unported
 /// `UsersTable_foreach` (the machine's `usersTable` is an opaque handle) and
 /// `Vector_insertionSort`.
-pub fn actionFilterByUser(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:548 — UsersTable_foreach (opaque usersTable) + Vector_insertionSort unported")
+pub fn actionFilterByUser(st: &mut State) -> Htop_Reaction {
+    // C: Panel* usersPanel = Panel_new(0,0,0,0, Class(ListItem), true,
+    //       FunctionBar_newEnterEsc("Show   ", "Cancel "));
+    let mut usersPanel = Panel_new(
+        0,
+        0,
+        0,
+        0,
+        Some(FunctionBar_newEnterEsc("Show   ", "Cancel ")),
+    );
+    Panel_setHeader(&mut usersPanel, "Show processes of:");
+
+    // C: UsersTable_foreach(host->usersTable, addUserToVector, usersPanel);
+    // `usersTable` is an opaque handle; it is `None` on darwin (the machine is
+    // built with no table), so no per-user rows are added — the faithful result
+    // for an empty table.
+    // SAFETY: host aliases the caller-owned Machine for the run.
+    let usersTable = unsafe { (*st.host).usersTable };
+    if let Some(ptr) = usersTable {
+        // SAFETY: the handle is the Machine-owned UsersTable pointer for the run.
+        let ut = unsafe { &*(ptr as *const UsersTable) };
+        UsersTable_foreach(ut, &mut |uid, name| {
+            addUserToVector(uid as i32, name, &mut usersPanel);
+        });
+    }
+
+    // C: Vector_insertionSort(usersPanel->items); — sort the ListItems by name.
+    // The port models items as `Vec<PanelItem>`, so sort it directly by each
+    // ListItem's value (the same order the C Object compare produces).
+    usersPanel.items.sort_by(|a, b| {
+        let name = |it: &PanelItem| -> String {
+            match it {
+                PanelItem::Owned(o) => (o.as_ref() as &dyn core::any::Any)
+                    .downcast_ref::<ListItem>()
+                    .map(|li| ListItem_getRef(li).to_string())
+                    .unwrap_or_default(),
+                PanelItem::Borrowed(_) => String::new(),
+            }
+        };
+        name(a).cmp(&name(b))
+    });
+
+    // C: ListItem* allUsers = ListItem_new("All users", -1);
+    //    Panel_insert(usersPanel, 0, (Object*) allUsers);
+    Panel_insert(&mut usersPanel, 0, Box::new(ListItem_new("All users", -1)));
+
+    // C: const ListItem* picked = (ListItem*) Action_pickFromVector(st, usersPanel, 19, false);
+    let picked = Action_pickFromVector(st, Box::new(usersPanel), 19, false);
+    if let Some(obj) = picked {
+        if let Some(li) = (obj.as_ref() as &dyn core::any::Any).downcast_ref::<ListItem>() {
+            // C: if (picked == allUsers) host->userId = (uid_t)-1;
+            //    else Action_setUserOnly(ListItem_getRef(picked), &host->userId);
+            if li.key == -1 {
+                // SAFETY: host aliases the caller-owned Machine.
+                unsafe {
+                    (*st.host).userId = u32::MAX; // (uid_t)-1 == all users
+                }
+            } else {
+                let name = ListItem_getRef(li).to_string();
+                // SAFETY: host aliases the caller-owned Machine.
+                Action_setUserOnly(&name, unsafe { &mut (*st.host).userId });
+            }
+        }
+    }
+
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
 /// Port of `Htop_Reaction Action_follow(State* st)` from `Action.c:568`. Pins
