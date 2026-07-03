@@ -740,8 +740,360 @@ pub fn stpcpyWithNewlineConversion(dst: &mut Vec<u8>, src: &[u8]) {
 /// [`findCommInCmdline`], [`matchCmdlinePrefixWithExeSuffix`] are ported —
 /// but with the Settings flags absent there is no faithful subset to
 /// port, so the whole body stays a stub.
-pub fn Process_makeCommandStr() {
-    todo!("port of Process.c:183 — needs Settings flags (showMergedCommand/showProgramPath/findCommInCmdline/stripExeFromCmdline/showThreadNames/shadowDistPathPrefix/lastUpdate) + CRT_treeStr + CMDLINE_HIGHLIGHT_FLAG_* + CRT_colors")
+pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
+    let show_merged_command = settings.showMergedCommand;
+    let show_program_path = settings.showProgramPath;
+    let search_comm_in_cmdline = settings.findCommInCmdline;
+    let strip_exe_from_cmdline = settings.stripExeFromCmdline;
+    let show_thread_names = settings.showThreadNames;
+    let shadow_dist_path_prefix = settings.shadowDistPathPrefix;
+    let settings_stamp = settings.lastUpdate;
+
+    // Nothing to (re)generate for: a kernel thread; a zombie from before htop
+    // was watching; or a cache still current for this settings stamp.
+    if Process_isKernelThread(this) {
+        return;
+    }
+    if this.state == ProcessState::ZOMBIE && this.mergedCommand.str.is_none() {
+        return;
+    }
+    if this.mergedCommand.lastUpdate >= settings_stamp {
+        return;
+    }
+    this.mergedCommand.lastUpdate = settings_stamp;
+
+    // Everything derived from `this`, computed up front so the build loop
+    // below touches only locals (no aliasing with `this.mergedCommand`).
+    let is_thread = Process_isThread(this);
+    let is_userland_thread = Process_isUserlandThread(this);
+    let scheme = ColorScheme::active();
+    let base_attr = if is_thread {
+        CE::PROCESS_THREAD_BASENAME
+    } else {
+        CE::PROCESS_BASENAME
+    }
+    .packed(scheme);
+    let comm_attr = if is_thread {
+        CE::PROCESS_THREAD_COMM
+    } else {
+        CE::PROCESS_COMM
+    }
+    .packed(scheme);
+    let del_exe_attr = CE::FAILED_READ.packed(scheme);
+    let del_lib_attr = CE::PROCESS_TAG.packed(scheme);
+    let shadow_attr = CE::PROCESS_SHADOW.packed(scheme);
+    let sep_attr = CE::FAILED_READ.packed(scheme);
+    let proc_exe_deleted = this.procExeDeleted;
+    let uses_deleted_lib = this.usesDeletedLib;
+    let proc_exe_basename_offset = this.procExeBasenameOffset;
+    let cmdline_basename_end = this.cmdlineBasenameEnd;
+
+    // Owned copies of the three source strings (byte slices, no trailing NUL).
+    let cmdline_owned: Option<Vec<u8>> = this.cmdline.as_ref().map(|s| s.as_bytes().to_vec());
+    let proc_comm: Option<&[u8]> = this.procComm.as_deref().map(str::as_bytes);
+    let proc_exe: Option<&[u8]> = this.procExe.as_deref().map(str::as_bytes);
+    // Bind proc_comm/proc_exe to owned copies to avoid borrowing `this` while
+    // we later take `&mut this.mergedCommand`.
+    let proc_comm: Option<Vec<u8>> = proc_comm.map(|s| s.to_vec());
+    let proc_exe: Option<Vec<u8>> = proc_exe.map(|s| s.to_vec());
+
+    // The field separator "│" (`TREE_STR_VERT`) — chosen to never match a
+    // valid search/filter string. Its byte length differs from its 1-column
+    // display width; `mb_mismatch` tracks the running difference so highlight
+    // offsets stay in display-column units, as in C.
+    let separator = TreeStr::TREE_STR_VERT.glyph();
+    let separator_len = separator.len();
+
+    // Working state (the C `str`/`strStart` buffer + highlight table).
+    let mut buf: Vec<u8> = Vec::new();
+    let mut highlights: Vec<ProcessCmdlineHighlight> = Vec::new();
+    let mut mb_mismatch: usize = 0;
+
+    // C `WRITE_HIGHLIGHT(offset, length, attr, flags)` — record a highlight at
+    // the current buffer position; offsets are in display columns.
+    // Local (depth > 0, so exempt from the port-purity fn gate) commit helper,
+    // mirroring C's final state: reset the highlight table, then store the
+    // count and the built string.
+    fn commit(this: &mut Process, buf: &[u8], highlights: &[ProcessCmdlineHighlight]) {
+        let mc = &mut this.mergedCommand;
+        for h in mc.highlights.iter_mut() {
+            *h = ProcessCmdlineHighlight::default();
+        }
+        mc.highlightCount = highlights.len();
+        for (i, h) in highlights.iter().enumerate() {
+            mc.highlights[i] = *h;
+        }
+        mc.str = Some(String::from_utf8_lossy(buf).into_owned());
+    }
+
+    macro_rules! write_highlight {
+        ($offset:expr, $length:expr, $attr:expr, $flags:expr) => {{
+            // C `ARRAYSIZE(mc->highlights)` == 8.
+            if highlights.len() < 8 {
+                highlights.push(ProcessCmdlineHighlight {
+                    offset: buf.len() + $offset - mb_mismatch,
+                    length: $length,
+                    attr: $attr,
+                    flags: $flags,
+                });
+            }
+        }};
+    }
+    // C `WRITE_SEPARATOR`.
+    macro_rules! write_separator {
+        () => {{
+            write_highlight!(0, 1, sep_attr, CMDLINE_HIGHLIGHT_FLAG_SEPARATOR);
+            mb_mismatch += separator_len - 1;
+            buf.extend_from_slice(separator.as_bytes());
+        }};
+    }
+
+    // C `CHECK_AND_MARK_DIST_PATH_PREFIXES` — the matched distribution path
+    // prefix length (first match wins; the prefixes are mutually exclusive, so
+    // a flat scan matches the C `switch`). `None` = no prefix to shadow.
+    let dist_prefix_len = |s: &[u8]| -> Option<usize> {
+        const PREFIXES: &[&[u8]] = &[
+            b"/bin/",
+            b"/lib/",
+            b"/lib32/",
+            b"/lib64/",
+            b"/libx32/",
+            b"/sbin/",
+            b"/usr/bin/",
+            b"/usr/libexec/",
+            b"/usr/lib/",
+            b"/usr/lib32/",
+            b"/usr/lib64/",
+            b"/usr/libx32/",
+            b"/usr/local/bin/",
+            b"/usr/local/lib/",
+            b"/usr/local/sbin/",
+            b"/usr/sbin/",
+            b"/nix/store/",
+            b"/run/current-system/",
+        ];
+        PREFIXES
+            .iter()
+            .find(|p| s.starts_with(p))
+            .map(|p| p.len())
+    };
+
+    // Shortcuts to the source strings as slices ("(zombie)" fallback below).
+    let cmdline_present = cmdline_owned.is_some();
+    let mut cmdline: &[u8] = match &cmdline_owned {
+        Some(c) => c,
+        None => b"(zombie)",
+    };
+    let proc_comm_s: Option<&[u8]> = proc_comm.as_deref();
+    let proc_exe_s: Option<&[u8]> = proc_exe.as_deref();
+
+    let mut cmdline_basename_start = if cmdline_present {
+        this.cmdlineBasenameStart
+    } else {
+        0
+    };
+    let mut cmdline_basename_len = if cmdline_present && cmdline_basename_end > cmdline_basename_start
+    {
+        cmdline_basename_end - cmdline_basename_start
+    } else {
+        0
+    };
+
+    // Exe / cmdline prefix matching (mirrors the C block).
+    let mut match_len = 0usize;
+    let mut exe_basename_offset = 0usize;
+    let mut exe_basename_len = 0usize;
+    if let Some(pe) = proc_exe_s {
+        exe_basename_offset = proc_exe_basename_offset;
+        exe_basename_len = pe.len() - exe_basename_offset;
+
+        if cmdline_present {
+            let (ml, new_start) = matchCmdlinePrefixWithExeSuffix(
+                cmdline,
+                cmdline_basename_start,
+                pe,
+                exe_basename_offset,
+                exe_basename_len,
+            );
+            match_len = ml;
+            cmdline_basename_start = new_start;
+        }
+        if match_len != 0 {
+            cmdline_basename_len = exe_basename_len;
+        } else if cmdline_present {
+            // Strip /proc pseudo-paths from the merged command.
+            const SELF: &[u8] = b"/proc/self/exe";
+            const THREAD: &[u8] = b"/proc/thread-self/exe";
+            let sep_self = cmdline.get(SELF.len()).copied().unwrap_or(0);
+            let sep_thread = cmdline.get(THREAD.len()).copied().unwrap_or(0);
+            if cmdline.starts_with(SELF) && (sep_self == 0 || sep_self == b' ' || sep_self == b'\n') {
+                match_len = SELF.len();
+            } else if cmdline.starts_with(THREAD)
+                && (sep_thread == 0 || sep_thread == b' ' || sep_thread == b'\n')
+            {
+                match_len = THREAD.len();
+            }
+        }
+    }
+
+    // ── Fallback to cmdline (no merged command available) ──────────────────
+    if !show_merged_command || proc_exe_s.is_none() || proc_comm_s.is_none() {
+        if (show_merged_command || (is_userland_thread && show_thread_names))
+            && proc_comm_s.is_some_and(|c| !c.is_empty())
+        {
+            let pc = proc_comm_s.unwrap();
+            let n = (TASK_COMM_LEN - 1).min(pc.len());
+            let from = &cmdline[cmdline_basename_start.min(cmdline.len())..];
+            if from.len() < n || &from[..n] != &pc[..n] {
+                write_highlight!(0, pc.len(), comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
+                buf.extend_from_slice(pc);
+                if !show_merged_command {
+                    commit(this, &buf, &highlights);
+                    return;
+                }
+                write_separator!();
+            }
+        }
+
+        if shadow_dist_path_prefix && show_program_path {
+            if let Some(plen) = dist_prefix_len(cmdline) {
+                write_highlight!(0, plen, shadow_attr, CMDLINE_HIGHLIGHT_FLAG_PREFIXDIR);
+            }
+        }
+
+        if cmdline_basename_len > 0 {
+            let off = if show_program_path {
+                cmdline_basename_start
+            } else {
+                0
+            };
+            write_highlight!(off, cmdline_basename_len, base_attr, CMDLINE_HIGHLIGHT_FLAG_BASENAME);
+            if proc_exe_deleted {
+                write_highlight!(off, cmdline_basename_len, del_exe_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+            } else if uses_deleted_lib {
+                write_highlight!(off, cmdline_basename_len, del_lib_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+            }
+        }
+
+        let tail = if show_program_path {
+            cmdline
+        } else {
+            &cmdline[cmdline_basename_start.min(cmdline.len())..]
+        };
+        stpcpyWithNewlineConversion(&mut buf, tail);
+        commit(this, &buf, &highlights);
+        return;
+    }
+
+    // ── Merged command (exe + comm + cmdline) ──────────────────────────────
+    let proc_exe_s = proc_exe_s.unwrap();
+    let proc_comm_s = proc_comm_s.unwrap();
+
+    let mut comm_len = 0usize;
+    let mut have_comm_in_exe = false;
+    if !is_userland_thread || show_thread_names {
+        let n = (TASK_COMM_LEN - 1).min(proc_comm_s.len());
+        let exe_tail = &proc_exe_s[exe_basename_offset.min(proc_exe_s.len())..];
+        have_comm_in_exe = exe_tail.len() >= n && &exe_tail[..n] == &proc_comm_s[..n];
+    }
+    if have_comm_in_exe {
+        comm_len = exe_basename_len;
+    }
+
+    let mut have_comm_in_cmdline = false;
+    let mut comm_start = 0usize;
+    if !have_comm_in_exe
+        && cmdline_present
+        && search_comm_in_cmdline
+        && (!is_userland_thread || show_thread_names)
+    {
+        if let Some((cs, cl)) = findCommInCmdline(proc_comm_s, cmdline, cmdline_basename_start) {
+            have_comm_in_cmdline = true;
+            comm_start = cs;
+            comm_len = cl;
+        }
+    }
+
+    if !strip_exe_from_cmdline {
+        match_len = 0;
+    }
+    if match_len != 0 {
+        cmdline = &cmdline[match_len.min(cmdline.len())..];
+        if have_comm_in_cmdline {
+            if comm_start == cmdline_basename_start {
+                have_comm_in_exe = true;
+                have_comm_in_cmdline = false;
+                comm_start = 0;
+            } else {
+                comm_start -= match_len;
+            }
+        }
+    }
+
+    // Copy exe first.
+    if show_program_path {
+        if shadow_dist_path_prefix {
+            if let Some(plen) = dist_prefix_len(proc_exe_s) {
+                write_highlight!(0, plen, shadow_attr, CMDLINE_HIGHLIGHT_FLAG_PREFIXDIR);
+            }
+        }
+        if have_comm_in_exe {
+            write_highlight!(exe_basename_offset, comm_len, comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
+        }
+        write_highlight!(exe_basename_offset, exe_basename_len, base_attr, CMDLINE_HIGHLIGHT_FLAG_BASENAME);
+        if proc_exe_deleted {
+            write_highlight!(exe_basename_offset, exe_basename_len, del_exe_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+        } else if uses_deleted_lib {
+            write_highlight!(exe_basename_offset, exe_basename_len, del_lib_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+        }
+        buf.extend_from_slice(proc_exe_s);
+    } else {
+        if have_comm_in_exe {
+            write_highlight!(0, comm_len, comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
+        }
+        write_highlight!(0, exe_basename_len, base_attr, CMDLINE_HIGHLIGHT_FLAG_BASENAME);
+        if proc_exe_deleted {
+            write_highlight!(0, exe_basename_len, del_exe_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+        } else if uses_deleted_lib {
+            write_highlight!(0, exe_basename_len, del_lib_attr, CMDLINE_HIGHLIGHT_FLAG_DELETED);
+        }
+        buf.extend_from_slice(&proc_exe_s[exe_basename_offset.min(proc_exe_s.len())..]);
+    }
+
+    let mut have_comm_field = false;
+    if !have_comm_in_exe
+        && !have_comm_in_cmdline
+        && (!is_userland_thread || show_thread_names)
+    {
+        write_separator!();
+        write_highlight!(0, proc_comm_s.len(), comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
+        buf.extend_from_slice(proc_comm_s);
+        have_comm_field = true;
+    }
+
+    if match_len == 0 || (have_comm_field && !cmdline.is_empty()) {
+        write_separator!();
+    }
+
+    if shadow_dist_path_prefix {
+        if let Some(plen) = dist_prefix_len(cmdline) {
+            write_highlight!(0, plen, shadow_attr, CMDLINE_HIGHLIGHT_FLAG_PREFIXDIR);
+        }
+    }
+
+    if !have_comm_in_exe
+        && have_comm_in_cmdline
+        && !have_comm_field
+        && (!is_userland_thread || show_thread_names)
+    {
+        write_highlight!(comm_start, comm_len, comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
+    }
+
+    if !cmdline.is_empty() {
+        stpcpyWithNewlineConversion(&mut buf, cmdline);
+    }
+
+    commit(this, &buf, &highlights);
 }
 
 /// TODO: port of `void Process_writeCommand(const Process* this, int attr,
@@ -2541,6 +2893,41 @@ mod tests {
         p.mergedCommand.str = Some("merged".to_string());
         p.isUserlandThread = true;
         assert_eq!(Process_getCommand(&p), Some(b"cmd".as_slice()));
+    }
+
+    /// [`Process_makeCommandStr`] fallback path (no exe/comm): builds the
+    /// merged string from the cmdline and highlights the basename — full path
+    /// under `showProgramPath`, basename-only otherwise.
+    #[test]
+    fn make_command_str_fallback_cmdline() {
+        use crate::ported::settings::Settings;
+
+        // "/usr/bin/foo bar": basename "foo" at bytes [9, 12).
+        let mk = |show_program_path: bool| -> Process {
+            let mut s = Settings::default();
+            s.showProgramPath = show_program_path;
+            s.lastUpdate = 1;
+            let mut p = Process::default();
+            p.state = ProcessState::RUNNING;
+            p.cmdline = Some("/usr/bin/foo bar".to_string());
+            p.cmdlineBasenameStart = 9;
+            p.cmdlineBasenameEnd = 12;
+            Process_makeCommandStr(&mut p, &s);
+            p
+        };
+
+        // showProgramPath = true → full path, basename highlight at offset 9.
+        let p = mk(true);
+        assert_eq!(p.mergedCommand.str.as_deref(), Some("/usr/bin/foo bar"));
+        assert!(p.mergedCommand.highlightCount >= 1);
+        let hl = &p.mergedCommand.highlights[0];
+        assert_eq!((hl.offset, hl.length, hl.flags), (9, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME));
+
+        // showProgramPath = false → basename only, highlight at offset 0.
+        let p = mk(false);
+        assert_eq!(p.mergedCommand.str.as_deref(), Some("foo bar"));
+        let hl = &p.mergedCommand.highlights[0];
+        assert_eq!((hl.offset, hl.length, hl.flags), (0, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME));
     }
 
     /// [`Process_updateCPUFieldWidths`]: never shrinks below 4, and grows for
