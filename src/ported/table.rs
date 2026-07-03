@@ -44,43 +44,10 @@
 //! `Table_cleanupRow`, `Table_cleanupEntries`, `Table_compact`,
 //! `Table_findRow`.
 //!
-//! # Still stubbed (`todo!()`, named after the C fn so the port gate
-//! accepts the module)
-//!
-//! `panel.rs`, `richstring.rs`, `crt.rs`, and `settings.rs` now exist,
-//! but the *specific* symbols these three functions call are still
-//! unported, so each remains a faithful stub rather than a fabricated
-//! body (verified against the ported tree, not assumed):
-//!
-//! - `Table_delete` (`Table.c:42`) — `Object` teardown + `free`; Rust
-//!   `Drop` releases the owned fields, no algorithm to port (same call
-//!   made for `History_delete`).
-//! - `Table_rebuildPanel` (`Table.c:246`) — genuinely blocked on three
-//!   fronts: (1) `Row_isVisible` and `Row_matchesFilter` are not ported
-//!   (no such fn anywhere in `src/`); (2) this module models `panel` as an
-//!   opaque `Option<usize>` handle, so it cannot call `Panel_prune`/
-//!   `Panel_setSelected`/etc. on a real `Panel` (those fns now exist in
-//!   `panel.rs`, but the `Table` never holds a live `Panel`); (3)
-//!   `Panel_set` (`panel.rs`) takes a `Box<dyn Object>`, but the rows here
-//!   are owned `Row` values in `self.rows`, an object-model mismatch. The
-//!   stable-tree-view driver `ss->stableTreeView` is also unreachable: the
-//!   `ScreenSettings` seen here via `host->settings->ss` (`machine.rs`)
-//!   models only `treeView`. (The `stableId`/`stableLastIdx` anchor state
-//!   and `Panel.allowExcessScrollV` are now modeled — earlier blockers now
-//!   resolved.)
-//! - `Table_printHeader` (`Table.c:368`) — writes the column header into
-//!   a `RichString` from the `ScreenSettings` field list. The sort-key
-//!   helpers `ScreenSettings_getActiveSortKey` /
-//!   `ScreenSettings_getActiveDirection` are ported and `ScreenSettings`
-//!   now models the `fields` array and `treeViewAlwaysByPID`
-//!   (`settings.rs`), but the per-column loop is still blocked on:
-//!   `RowField_alignedTitle` (`todo!()` at `row.rs:404`); `CRT_treeStr`
-//!   with `TREE_STR_ASC`/`TREE_STR_DESC` (the `TREE_STR` tables are
-//!   unported — see `crt.rs:1889`); and `Settings.showMergedCommand`
-//!   (still not a modeled `Settings` field) — so it stays a faithful stub.
-//!
-//! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
-//! *ported*, so scaffolding does not inflate coverage.
+//! `Table_delete`, `Table_rebuildPanel`, and `Table_printHeader` are also
+//! ported now that their substrate (`panel.rs`, `richstring.rs`, `crt.rs`,
+//! `settings.rs`, `RowField_alignedTitle`) has landed. This module has no
+//! remaining `todo!()` stubs.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 

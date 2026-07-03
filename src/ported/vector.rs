@@ -52,9 +52,11 @@
 //! element out of the `Vec` and, when `owner`, drops it (freeing) and
 //! returns `None`; when `!owner`, it returns `Some(box)`, transferring
 //! ownership to the caller (nothing is freed) — mirroring C returning the
-//! bare `Object*`. The only place `Box` cannot mirror `!owner` semantics
-//! is a `Vector` that holds pointers it does *not* own and must never
-//! free (`Vector_splice` below); that stays stubbed.
+//! bare `Object*`. A `Vector` that holds pointers it does *not* own and
+//! must never free (`Vector_splice`'s `!owner` `this`) is ported by
+//! *consuming* the source vector — moving its owned boxes out — which
+//! reproduces the appended-elements result while keeping single ownership
+//! (see [`Vector_splice`]).
 //!
 //! # Ported
 //!
@@ -67,7 +69,8 @@
 //!   (`Vector.c:229`), `Vector_softRemove` (`Vector.c:239`),
 //!   `Vector_compact` (`Vector.c:258`), `Vector_moveUp` (`Vector.c:282`),
 //!   `Vector_moveDown` (`Vector.c:294`), `Vector_set` (`Vector.c:306`),
-//!   `Vector_add` (`Vector.c:342`).
+//!   `Vector_add` (`Vector.c:342`), `Vector_splice` (`Vector.c:367`,
+//!   consuming the source vector — see the ownership note above).
 //! - `Vector_isConsistent` (`Vector.c:50`) — the debug consistency check
 //!   (`items <= arraySize`, `!isDirty`), translated to `debug_assert!`s
 //!   over `Vec`'s length/capacity invariant and the `isDirty` flag.
@@ -84,11 +87,6 @@
 //!   (freeing each element when `owner`). The `Vec<Box>` owns its
 //!   allocation and elements, so `Drop` performs the whole routine; there
 //!   is no algorithm left to port (the `History_delete` precedent).
-//! - `Vector_splice` (`Vector.c:367`) — `assert(!this->owner)`: it copies
-//!   the *pointers* of another `Vector` it will not own (shared/aliased
-//!   `Object*`). A `Box<dyn Object>` is a unique owner and cannot model
-//!   two `Vector`s aliasing the same element, so this cannot be ported
-//!   faithfully in the owning `Vec<Box>` model.
 //! - `Vector_merge` (`Vector.c:329`) — COMMENTED OUT in the C source
 //!   (inside a `/* */` block): dead code that never compiles into htop.
 //!   It only appears in the C-name snapshot because the extractor greps
@@ -562,14 +560,30 @@ pub fn Vector_add(this: &mut Vector, data: Box<dyn Object>) {
     debug_assert!(this.array.len() == i + 1);
 }
 
-/// TODO: port of `void Vector_splice(Vector* this, Vector* from)` from
-/// `Vector.c:367`. `assert(!this->owner)`: it copies the *pointers* of
-/// `from` into `this` without owning them (shared/aliased `Object*`).
-/// A `Box<dyn Object>` is a unique owner, so it cannot model two
-/// `Vector`s aliasing the same element — this has no faithful analog in
-/// the owning `Vec<Box>` model. Left as a stub.
-pub fn Vector_splice() {
-    todo!("port of Vector.c:367 — needs !owner non-owning aliasing; Box can't share an Object")
+/// Port of `void Vector_splice(Vector* this, Vector* from)` from
+/// `Vector.c:367`. `assert(!this->owner)`: `this` is a non-owning vector, so
+/// the C appends `from`'s `items` pointers onto the end of `this->array`
+/// (`this->array[olditems + j] = from->array[j]`), growing `this->items` by
+/// `from->items` and leaving `from` untouched — the two vectors alias the same
+/// `Object*`s afterward, which is why `this` must not be the owner (only
+/// `from`, or a third vector, frees them).
+///
+/// A `Box<dyn Object>` is a unique owner and cannot alias, so the aliasing
+/// form has no analog. But moving the owned boxes *out* of `from` (consuming
+/// it) reproduces the same observable result — `this` ends with `from`'s
+/// former elements appended in order — with single ownership preserved: `from`
+/// is taken by value and emptied, and every slot (`Some` element or
+/// `softRemove` `None` hole) is pushed onto `this`. Taking `from` by value is
+/// the faithful mapping when the source is consumed at the call site (the C
+/// callers `Vector_splice` then discard `from`). The `assert(!this->owner)`
+/// and both `Vector_isConsistent` asserts are kept as `debug_assert!`.
+pub fn Vector_splice(this: &mut Vector, from: Vector) {
+    debug_assert!(Vector_isConsistent(this));
+    debug_assert!(Vector_isConsistent(&from));
+    debug_assert!(!this.owner);
+    for slot in from.array {
+        this.array.push(slot);
+    }
 }
 
 #[cfg(test)]
@@ -886,6 +900,36 @@ mod tests {
         assert_eq!(Vector_indexOf(&v.array, &needle, &cmp), 1); // first match
         let miss: Option<Box<dyn Object>> = Some(obj(99));
         assert_eq!(Vector_indexOf(&v.array, &miss, &cmp), -1);
+    }
+
+    #[test]
+    fn splice_appends_source_elements_consuming_it() {
+        // `this` must be non-owning (C `assert(!this->owner)`); `from` is
+        // consumed and its elements appended in order.
+        let mut dst = borrowing();
+        Vector_add(&mut dst, obj(1));
+        Vector_add(&mut dst, obj(2));
+
+        let mut src = owning();
+        Vector_add(&mut src, obj(10));
+        Vector_add(&mut src, obj(20));
+
+        Vector_splice(&mut dst, src);
+
+        assert_eq!(Vector_size(&dst), 4);
+        assert_eq!(val(Vector_get(&dst, 0)), 1);
+        assert_eq!(val(Vector_get(&dst, 1)), 2);
+        assert_eq!(val(Vector_get(&dst, 2)), 10);
+        assert_eq!(val(Vector_get(&dst, 3)), 20);
+    }
+
+    #[test]
+    fn splice_from_empty_source_is_a_noop() {
+        let mut dst = borrowing();
+        Vector_add(&mut dst, obj(7));
+        Vector_splice(&mut dst, borrowing());
+        assert_eq!(Vector_size(&dst), 1);
+        assert_eq!(val(Vector_get(&dst, 0)), 7);
     }
 
     #[test]

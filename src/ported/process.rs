@@ -38,7 +38,7 @@
 //! `stripExeFromCmdline` / `showThreadNames` / `shadowDistPathPrefix` /
 //! `lastUpdate`, and it also needs `CRT_treeStr[TREE_STR_VERT]`, the
 //! `CMDLINE_HIGHLIGHT_FLAG_*` constants, and `CRT_colors[...]`), and the
-//! writeField / init-display / filter functions. The `COMM`
+//! writeField / init-display functions. The `COMM`
 //! sort case in [`Process_compareByKey_Base`] delegates to the stubbed
 //! [`Process_getCommand`], so that one case is not exercisable until the
 //! `Settings` substrate lands (every other case is pure and tested).
@@ -51,7 +51,9 @@
 
 use crate::ported::crt::{ColorElements as CE, ColorScheme, TreeStr};
 use crate::ported::dynamiccolumn::DynamicColumn_writeField;
+use crate::ported::hashtable::Hashtable_get;
 use crate::ported::machine::Machine;
+use crate::ported::processtable::ProcessTable;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendWide, RichString_setAttrn, RichString_size,
@@ -68,7 +70,7 @@ use crate::ported::settings::{
     Settings_isReadonly,
 };
 use crate::ported::table::Table;
-use crate::ported::xutils::{compareRealNumbers, String_startsWith};
+use crate::ported::xutils::{compareRealNumbers, String_contains_i, String_startsWith};
 use core::any::Any;
 use core::ffi::c_void;
 use core::ops::Deref;
@@ -485,9 +487,8 @@ impl Deref for ProcessClass {
 
 /// Port of `const ProcessClass Process_class` from `Process.c:1113`. The
 /// `RowClass` vtable wires `isHighlighted`, `isVisible`, `writeField`,
-/// `sortKeyString`, and `compareByParent`; `matchesFilter` stays `None` (its
-/// port is blocked on the `ProcessTable`/`pidMatchList` substrate) and
-/// `compareByKey` is `None` on the base `Process` (only `LinuxProcess` sets
+/// `sortKeyString`, `compareByParent`, and `matchesFilter`; `compareByKey`
+/// is `None` on the base `Process` (only `LinuxProcess` sets
 /// it). `.compare = Process_compare` and `.delete` are realized by the
 /// [`Object`] impl / `Drop`.
 pub static Process_class: ProcessClass = ProcessClass {
@@ -498,7 +499,7 @@ pub static Process_class: ProcessClass = ProcessClass {
         isHighlighted: Some(Process_rowIsHighlighted),
         isVisible: Some(Process_rowIsVisible),
         writeField: Some(Process_rowWriteField),
-        matchesFilter: None,
+        matchesFilter: Some(Process_rowMatchesFilter),
         sortKeyString: Some(Process_rowGetSortKey),
         compareByParent: Some(Process_compareByParent),
     },
@@ -1751,32 +1752,69 @@ pub fn Process_rowIsVisible(super_: &dyn Object, table: &Table) -> bool {
     Process_isVisible(this, settings)
 }
 
-/// TODO: port of `static bool Process_matchesFilter(const Process* this,
-/// const Table* table)` from `Process.c:878`. The first two of its three
-/// filter branches are now expressible — `table->host->userId` /
-/// `this->st_uid` and `table->incFilter` +
-/// `String_contains_i(Process_getCommand(this), …)` all have modeled
-/// substrate — but the third is not: it does
-/// `Hashtable_get(pt->pidMatchList, Process_getThreadGroup(this))` on the
-/// active `ProcessTable`'s `pidMatchList`, which this port models as an
-/// *opaque* `Option<usize>` handle (`processtable.rs`), not a real
-/// [`Hashtable`](crate::ported::hashtable::Hashtable). Making it a real
-/// `Hashtable` would change [`ProcessTable::pidMatchList`]'s type, and its
-/// `ProcessTable_init` signature is threaded through the platform
-/// `ProcessTable_new` constructors in `darwin/`/`linux/` — files outside
-/// this port's edit scope. Porting only the first two branches would
-/// silently drop the pid-filter, a behavior change, so the whole body
-/// stays a faithful stub until `pidMatchList` becomes a real `Hashtable`.
-pub fn Process_matchesFilter() {
-    todo!("port of Process.c:878 — pidMatchList is an opaque Option<usize>, not a real Hashtable")
+/// Port of `static bool Process_matchesFilter(const Process* this, const
+/// Table* table)` from `Process.c:878`. Returns whether the display must
+/// filter this process out, via the three C mechanisms: (1) a per-user view
+/// (`host->userId != -1 && st_uid != userId`); (2) the incremental filter
+/// (`incFilter` set and not a case-insensitive substring of the command);
+/// (3) the pid-match list (`pidMatchList` set and the thread group absent
+/// from it).
+///
+/// Signature mapping: `host->userId` is `(uid_t)-1` when unset — `u32::MAX`
+/// here. `Process_getCommand` returns `&[u8]` (bytes from an owned
+/// `String`, valid UTF-8); [`String_contains_i`] takes `&str`, so the bytes
+/// are re-borrowed as `&str` (a `None`/invalid command maps to `""`, as the
+/// filter never matches on an absent command). `host->activeTable` is a
+/// borrowed `*mut Table`; the C `(const ProcessTable*) host->activeTable`
+/// downcast is the `#[repr(C)]` `*const ProcessTable` cast (the base `Table`
+/// sits at offset 0). The C `assert(Object_isA(pt, &ProcessTable_class))` is
+/// dropped — the port models no `Object`/class tag on `ProcessTable`.
+/// `pidMatchList` is a borrowed `*mut Hashtable`, dereferenced for
+/// [`Hashtable_get`] keyed by [`Process_getThreadGroup`].
+pub fn Process_matchesFilter(this: &Process, table: &Table) -> bool {
+    // const Machine* host = table->host;
+    let host = unsafe { &*table.host };
+    if host.userId != u32::MAX && this.st_uid != host.userId {
+        return true;
+    }
+
+    // const char* incFilter = table->incFilter;
+    if let Some(incFilter) = table.incFilter.as_deref() {
+        let cmd_bytes = Process_getCommand(this).unwrap_or(b"");
+        let cmd = core::str::from_utf8(cmd_bytes).unwrap_or("");
+        if !String_contains_i(cmd, incFilter, true) {
+            return true;
+        }
+    }
+
+    // const ProcessTable* pt = (const ProcessTable*) host->activeTable;
+    let pt = unsafe {
+        let t = host
+            .activeTable
+            .expect("Process_matchesFilter: host->activeTable is NULL");
+        &*(t as *const ProcessTable)
+    };
+    if let Some(pml) = pt.pidMatchList {
+        let list = unsafe { &*pml };
+        if Hashtable_get(list, Process_getThreadGroup(this) as u32).is_none() {
+            return true;
+        }
+    }
+
+    false
 }
 
-/// TODO: port of `bool Process_rowMatchesFilter(const Row* super, const
-/// Table* table)` from `Process.c:895`. Downcasts then delegates to
-/// [`Process_matchesFilter`], which is itself blocked on the opaque
-/// `pidMatchList` handle (see there), so this delegation stays stubbed too.
-pub fn Process_rowMatchesFilter() {
-    todo!("port of Process.c:895 — delegates to still-stubbed Process_matchesFilter")
+/// Port of `bool Process_rowMatchesFilter(const Row* super, const Table*
+/// table)` from `Process.c:895`. Casts the `Row*` to `Process*` (the
+/// `Object_isA` guard + `Any` downcast idiom) and delegates to
+/// [`Process_matchesFilter`]. Wired into the `Process_class` `matchesFilter`
+/// [`RowClass`] slot.
+pub fn Process_rowMatchesFilter(super_: &dyn Object, table: &Table) -> bool {
+    debug_assert!(Object_isA(Some(super_), &Process_class));
+    let this = super_
+        .as_process()
+        .expect("Process_rowMatchesFilter: row is not a Process");
+    Process_matchesFilter(this, table)
 }
 
 /// Port of `void Process_init(Process* this, const Machine* host)` from

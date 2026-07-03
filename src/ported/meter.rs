@@ -459,6 +459,12 @@ pub struct Meter {
     /// (`Meter.h:94`) — the class value-update slot mirrored onto the
     /// instance (like `display`), dispatched by `Header_updateData`.
     pub updateValues: Option<MeterUpdateValues>,
+    /// C `Meter_initFn(this)` = `As_Meter(this)->init` (`Meter.h:87`) — the
+    /// class one-time init slot mirrored onto the instance (like
+    /// `updateValues`), dispatched by `Header_reinit` (`if (Meter_initFn(meter))
+    /// Meter_init(meter)`). `None` ⇒ the class provides no `init` (C `NULL`
+    /// slot), so `Header_reinit` skips it.
+    pub init: Option<MeterInit>,
     /// C `Meter_updateModeFn(this)` — the class `updateMode` slot.
     pub updateMode: Option<MeterUpdateMode>,
     /// C `Meter_drawFn(this)` — the class `draw` slot (distinct from the
@@ -512,6 +518,7 @@ impl Meter {
             getUiName: None,
             display: None,
             updateValues: None,
+            init: None,
             updateMode: None,
             classDraw: None,
             draw: None,
@@ -610,6 +617,7 @@ pub fn Meter_new(
         getUiName: type_.getUiName,
         display: type_.display,
         updateValues: type_.updateValues,
+        init: type_.init,
         updateMode: type_.updateMode,
         classDraw: type_.draw,
         ..Meter::empty()

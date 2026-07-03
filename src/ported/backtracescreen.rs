@@ -20,11 +20,10 @@
 //!   `generic/UnwindPtrace.c`), so it is not reproduced.
 //! - `BacktracePanel_eventHandler` (`:208`) — the key-dispatch switch;
 //!   `HandlerResult` is now ported, so the `'p'`/`F3` full-path-toggle arm
-//!   is live (relabels the bar, rebuilds the header). The `F5` refresh arm
-//!   prunes then calls the still-blocked `populateFrames` (below), so it
-//!   reaches that `todo!()` — the `ColumnsPanel_eventHandler` partial-port
-//!   precedent. The `HAVE_DEMANGLING` `F2` arm is omitted (the crate's
-//!   no-optional-dependency variant, as with `makeBacktrace`).
+//!   is live (relabels the bar, rebuilds the header) and the `F5` refresh arm
+//!   prunes then calls the now-ported `populateFrames` (below). The
+//!   `HAVE_DEMANGLING` `F2` arm is omitted (the crate's no-optional-dependency
+//!   variant, as with `makeBacktrace`).
 //! - `BacktracePanelRow_displayError` (`:416`) — appends the row's own
 //!   error string in `CRT_colors[DEFAULT_COLOR]` via
 //!   [`RichString_appendAscii`].
@@ -37,47 +36,49 @@
 //! - `BacktracePanelRow_highlightBasename` (`:283`) — repaints the object
 //!   basename column when it matches the process executable's basename;
 //!   reads the same `process` back-pointer. Its sole C caller
-//!   (`displayFrame`) is still blocked, so it has no live caller yet.
-//! - `BacktracePanelRow_display` (`:425`) — the dispatch switch; the
-//!   `ERROR` arm (calls `displayError`) and the `PROCESS_INFORMATION` arm
-//!   (calls the now-ported `displayInformation`) are live. The `DATA_FRAME`
-//!   arm stays `todo!()` (its `displayFrame` needs the self-referential
-//!   `panel` back-pointer), mirroring the `ListItem_display` partial-port.
+//!   (the now-ported `displayFrame`) drives it when `settings->highlightBaseName`.
+//! - `BacktracePanelRow_display` (`:425`) — the dispatch switch; all three
+//!   arms are now live (`ERROR`→`displayError`, `PROCESS_INFORMATION`→
+//!   `displayInformation`, `DATA_FRAME`→the now-ported `displayFrame`).
+//! - `BacktracePanelRow_displayFrame` (`:356`) — reads the row's
+//!   **self-referential** `const BacktracePanel* panel` back-pointer for
+//!   `panel->printingHelper` / `panel->displayOptions` /
+//!   `panel->settings->highlightBaseName`, modeled as a sound raw pointer
+//!   (`BacktracePanel_new` boxes the panel so its address is stable and it
+//!   owns every row it displays — see [`BacktracePanelRow::panel`]).
+//! - `BacktracePanel_populateFrames` (`:168`) — builds the panel rows via
+//!   `BacktracePanelRow_new(this)`, wiring `row->panel = this`, and adds them
+//!   through `Panel_add` (the row implements the [`Object`] vtable with a
+//!   `display` slot dispatching to `BacktracePanelRow_display`).
+//! - `BacktracePanel_new` (`:248`) — returns a `Box<BacktracePanel>` (the C
+//!   `AllocThis` heap object) so the self-referential `row->panel`
+//!   back-pointers stay valid across the return move; seeds the helper, sets
+//!   `displayOptions` from `settings->showProgramPath`, and populates frames.
+//! - `BacktracePanelRow_new` (`:444`) — stores the self-referential
+//!   `const BacktracePanel*` back-pointer, otherwise `Default`.
 //!
 //! Stubbed (cannot be ported faithfully yet — blocker named on each):
 //! - `BacktraceFrameData_delete` (`:82`), `BacktracePanel_delete` (`:277`),
 //!   `BacktracePanelRow_delete` (`:450`) — pure `free()` / `Vector_delete`
 //!   chains; owned Rust fields are released by `Drop`, so there is no body
 //!   to port (same call as `History_delete`).
-//! - `BacktracePanelRow_displayFrame` (`:356`) — reads the row's
-//!   `const BacktracePanel* panel` back-pointer for `panel->printingHelper`
-//!   / `panel->displayOptions` / `panel->settings->highlightBaseName`.
-//!   Unlike the `process` back-pointer, `panel` is **self-referential** (the
-//!   panel owns the row in `super.items` while the row points back at the
-//!   panel), which the owned-value model cannot keep address-stable across a
-//!   by-value move — porting it would dangle. Its formatting body and the
-//!   `highlightBasename` callee are ported; only the `panel` deref is missing.
-//! - `BacktracePanel_populateFrames` (`:168`) — adds rows to the panel as
-//!   `Object`s (`Panel_add`) with `row->panel = this`, the self-referential
-//!   panel back-pointer above; the rows would also need an `Object` vtable
-//!   impl the row does not yet carry.
-//! - `BacktracePanel_new` (`:248`) — calls `populateFrames` (blocked); it
-//!   also stores the self-referential panel by value on return, which would
-//!   dangle every row's `panel` back-pointer.
-//! - `BacktracePanelRow_new` (`:444`) — its sole non-default action is
-//!   `this->panel = panel`, the self-referential `const BacktracePanel*`
-//!   back-pointer above.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{A_BOLD, ColorElements, ColorScheme, KEY_CTRL, KEY_F};
-use crate::ported::functionbar::FunctionBar_setLabel;
-use crate::ported::panel::{HandlerResult, Panel, Panel_delete, Panel_prune, Panel_setHeader};
+use crate::ported::functionbar::{FunctionBar_new, FunctionBar_setLabel};
+use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::panel::{
+    HandlerResult, Panel, Panel_add, Panel_delete, Panel_get, Panel_new, Panel_prune,
+    Panel_setHeader, Panel_size,
+};
 use crate::ported::process::{
     CMDLINE_HIGHLIGHT_FLAG_BASENAME, Process, Process_getPid, Process_isThread,
 };
 use crate::ported::richstring::{
-    RichString, RichString_appendAscii, RichString_appendnWide, RichString_setAttrn,
+    RichString, RichString_appendAscii, RichString_appendnAscii, RichString_appendnWide,
+    RichString_setAttrn,
 };
 use crate::ported::settings::Settings;
 
@@ -128,11 +129,11 @@ pub struct BacktracePanelPrintingHelper {
 /// [`BacktracePanel`] already uses for its own `processes`/`settings`. It is
 /// read (via `unsafe` deref) by [`BacktracePanelRow_displayInformation`] and
 /// [`BacktracePanelRow_highlightBasename`]. The C `const BacktracePanel*
-/// panel` back-pointer is still omitted: unlike `process` it is
-/// **self-referential** (the panel owns the row in `super.items` while the
-/// row points back at the panel), which the owned-value model cannot make
-/// address-stable — see the [`BacktracePanelRow_displayFrame`] /
-/// [`BacktracePanel_populateFrames`] blockers in the module docs.
+/// panel` back-pointer — **self-referential** (the panel owns the row in
+/// `super.items` while the row points back at the panel) — is modeled as a
+/// sound raw pointer in the [`panel`](BacktracePanelRow::panel) field:
+/// [`BacktracePanel_new`] boxes the panel so its address is stable and it
+/// outlives every row, which [`BacktracePanelRow_displayFrame`] relies on.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BacktracePanelRow {
     pub type_: i32,
@@ -142,12 +143,63 @@ pub struct BacktracePanelRow {
     /// back-pointer to externally-owned memory (`Default` = null). Never
     /// dereferenced unless the row was built pointing at a live `Process`.
     pub process: *const Process,
+    /// C `const BacktracePanel* panel` (`BacktraceScreen.h:55`) — the
+    /// **self-referential** back-pointer: the panel owns this row in
+    /// `super.items` while the row points back at the panel.
+    ///
+    /// SAFETY: modeled as a raw `*const BacktracePanel` exactly as C does.
+    /// [`BacktracePanel_new`] returns a `Box<BacktracePanel>`, so the panel is
+    /// heap-allocated and address-stable (the C `AllocThis` heap object); a
+    /// row's `panel` pointer is set to that stable address in
+    /// [`BacktracePanel_populateFrames`]. The panel owns every row it adds for
+    /// the panel's whole lifetime, so the pointer is only dereferenced (by
+    /// [`BacktracePanelRow_displayFrame`]) while the owner is alive and has not
+    /// moved — the invariant the assignment's weak-back-pointer idiom relies on.
+    /// `Default` = null (a free-standing row not yet added to a panel).
+    pub panel: *const BacktracePanel,
 }
 
 /// Port of `enum BacktraceScreenDisplayOptions_` (`BacktraceScreen.c:65`) —
 /// the bitmask stored in `BacktracePanel.displayOptions`.
 const DEMANGLE_NAME_FUNCTION: i32 = 1 << 0;
 const SHOW_FULL_PATH_OBJECT: i32 = 1 << 1;
+
+/// Port of `static const char* const BacktraceScreenFunctions[]`
+/// (`BacktraceScreen.c:33`), minus the trailing `NULL` (Rust length
+/// terminates). The `HAVE_DEMANGLING`-gated leading `"Mangle  "` entry is
+/// omitted — this crate compiles the no-optional-dependency variant (as
+/// [`BacktracePanel_makeBacktrace`] does for `!HAVE_LIBUNWIND_PTRACE`), so
+/// `HAVE_DEMANGLING` is treated as undefined.
+const BacktraceScreenFunctions: [&str; 3] = ["Full Path", "Refresh", "Done   "];
+
+/// Port of `static const char* const BacktraceScreenKeys[]`
+/// (`BacktraceScreen.c:43`), minus the `HAVE_DEMANGLING` `"F2"` entry.
+const BacktraceScreenKeys: [&str; 3] = ["F3", "F5", "Esc"];
+
+/// Port of `static const int BacktraceScreenEvents[]`
+/// (`BacktraceScreen.c:53`), minus the `HAVE_DEMANGLING` `KEY_F(2)` entry.
+const BacktraceScreenEvents: [i32; 3] = [KEY_F(3), KEY_F(5), 27];
+
+/// Port of `const ObjectClass BacktracePanelRow_class` (`BacktraceScreen.c`).
+/// Class identity is `const ObjectClass` pointer identity (the object.rs
+/// precedent); the C `.display = BacktracePanelRow_display` slot is the
+/// [`Object::display`] override below.
+static BacktracePanelRow_class: ObjectClass = ObjectClass {
+    extends: Some(&Object_class),
+};
+
+impl Object for BacktracePanelRow {
+    /// C `this->klass` set to `&BacktracePanelRow_class`.
+    fn klass(&self) -> &'static ObjectClass {
+        &BacktracePanelRow_class
+    }
+
+    /// C `.display = BacktracePanelRow_display` — dispatches to the ported
+    /// [`BacktracePanelRow_display`].
+    fn display(&self, out: &mut RichString) {
+        BacktracePanelRow_display(self, out);
+    }
+}
 
 /// Key-code constants for the [`BacktracePanel_eventHandler`] dispatch.
 /// The C `switch` uses `KEY_F(3)` / `KEY_F(5)` / `KEY_CTRL('L')` / `'p'`
@@ -334,14 +386,91 @@ pub fn BacktracePanel_makeBacktrace(
     *error = Some("The backtrace screen is not implemented".to_string());
 }
 
-/// TODO: port of `static void BacktracePanel_populateFrames(BacktracePanel*
-/// this)` from `BacktraceScreen.c:168`. Blocked: it appends
-/// `BacktracePanelRow`s to the panel as `Object`s (`Panel_add`), but a row
-/// carries the `const Process*` / `const BacktracePanel*` back-pointers,
-/// which prevent it from being `'static` and therefore from being stored as
-/// `Box<dyn Object>` in `Panel.items`.
-pub fn BacktracePanel_populateFrames() {
-    todo!("port of BacktraceScreen.c:168")
+/// Port of `static void BacktracePanel_populateFrames(BacktracePanel* this)`
+/// from `BacktraceScreen.c:168`. For every process in `this->processes`,
+/// builds a `PROCESS_INFORMATION` header row, then either the `DATA_FRAME`
+/// rows from a successful backtrace or a single `ERROR` row, and adds each to
+/// the panel (`Panel_add`); finally rebuilds the printing helper and header.
+///
+/// Each row is created by [`BacktracePanelRow_new`]`(this)`, wiring the
+/// **self-referential** `row->panel = this` back-pointer to the panel's stable
+/// heap address (see [`BacktracePanelRow::panel`]). The C `Vector* data`
+/// (`Vector_new(Class(BacktraceFrameData), false, …)`) is the owned
+/// `Vec<BacktraceFrameData>`; `Vector_prune(data)` becomes `data.clear()`,
+/// `Vector_delete(data)` is the `Vec` drop. The `#else`
+/// [`BacktracePanel_makeBacktrace`] always sets `error`, so the `DATA_FRAME`
+/// loop is unreachable in this crate's variant (no libunwind), but the full
+/// structure is ported faithfully.
+pub fn BacktracePanel_populateFrames(this: &mut BacktracePanel) {
+    // C: char* error = NULL;
+    let mut error: Option<String> = None;
+
+    // C: Vector* data = Vector_new(Class(BacktraceFrameData), false, VECTOR_DEFAULT_SIZE);
+    let mut data: Vec<BacktraceFrameData> = Vec::new();
+
+    // The `this` used for every `BacktracePanelRow_new(this)` back-pointer.
+    // SAFETY: see BacktracePanelRow::panel — `this` is the heap-stable panel
+    // (BacktracePanel_new boxes it) that will own every row added below, so the
+    // pointer stays valid for as long as any row can be displayed.
+    let self_ptr: *const BacktracePanel = this as *const BacktracePanel;
+
+    // C: for (int i = 0; i < Vector_size(this->processes); i++)
+    let nproc = this.processes.len();
+    for i in 0..nproc {
+        // C: const Process* process = (Process*)Vector_get(this->processes, i);
+        let process: *const Process = this.processes[i];
+
+        // C: BacktracePanel_makeBacktrace(data, Process_getPid(process), &error);
+        // SAFETY: `processes` holds borrowed handles to live, externally-owned
+        // Process objects (the BacktracePanel.processes idiom).
+        let pid = Process_getPid(unsafe { &*process });
+        BacktracePanel_makeBacktrace(&mut data, pid, &mut error);
+
+        // C: BacktracePanelRow* header = BacktracePanelRow_new(this); ...
+        let mut header = BacktracePanelRow_new(self_ptr);
+        header.process = process;
+        header.type_ = BACKTRACE_PANEL_ROW_PROCESS_INFORMATION;
+        Panel_add(&mut this.super_, Box::new(header));
+
+        if error.is_none() {
+            // C: for (int j = 0; j < Vector_size(data); j++) { row DATA_FRAME }
+            for j in 0..data.len() {
+                let mut row = BacktracePanelRow_new(self_ptr);
+                row.process = process;
+                row.type_ = BACKTRACE_PANEL_ROW_DATA_FRAME;
+                // C: row->data.frame = (BacktraceFrameData*)Vector_get(data, j);
+                row.frame = Some(data[j].clone());
+                Panel_add(&mut this.super_, Box::new(row));
+            }
+        } else {
+            // C: errorRow->data.error = error; error = NULL;
+            let mut errorRow = BacktracePanelRow_new(self_ptr);
+            errorRow.process = process;
+            errorRow.type_ = BACKTRACE_PANEL_ROW_ERROR;
+            errorRow.error = error.take();
+            Panel_add(&mut this.super_, Box::new(errorRow));
+        }
+
+        // C: Vector_prune(data);
+        data.clear();
+    }
+    // C: Vector_delete(data); — the Vec drops here.
+
+    // C: BacktracePanel_makePrintingHelper(this, &this->printingHelper);
+    // The C reads this->super.items; the ported helper takes a row slice, so
+    // the rows just added to the panel are gathered back out (clones).
+    let rows: Vec<BacktracePanelRow> = (0..Panel_size(&this.super_))
+        .map(|k| {
+            let obj: &dyn core::any::Any = Panel_get(&this.super_, k);
+            obj.downcast_ref::<BacktracePanelRow>()
+                .expect("BacktracePanel items are BacktracePanelRow")
+                .clone()
+        })
+        .collect();
+    BacktracePanel_makePrintingHelper(&rows, &mut this.printingHelper);
+
+    // C: BacktracePanel_displayHeader(this);
+    BacktracePanel_displayHeader(this);
 }
 
 /// Port of `static HandlerResult BacktracePanel_eventHandler(Panel* super,
@@ -355,10 +484,8 @@ pub fn BacktracePanel_populateFrames() {
 /// [`SHOW_FULL_PATH_OBJECT`], relabels the function bar via the ported
 /// [`FunctionBar_setLabel`], marks the panel dirty, and rebuilds the header
 /// via [`BacktracePanel_displayHeader`]. The `KEY_CTRL('L')` / `KEY_F(5)`
-/// refresh arm prunes the panel (ported [`Panel_prune`]) and then calls
-/// [`BacktracePanel_populateFrames`], which is still a documented `todo!()`
-/// (below); that call therefore panics before returning — the honest
-/// transitive block, the same partial-port shape as `ColumnsPanel_eventHandler`.
+/// refresh arm prunes the panel (ported [`Panel_prune`]) and then rebuilds it
+/// via the now-ported [`BacktracePanel_populateFrames`].
 pub fn BacktracePanel_eventHandler(this: &mut BacktracePanel, ch: i32) -> HandlerResult {
     let result = HandlerResult::IGNORED;
 
@@ -387,7 +514,7 @@ pub fn BacktracePanel_eventHandler(this: &mut BacktracePanel, ch: i32) -> Handle
         // C: case KEY_CTRL('L'): case KEY_F(5):
         KEY_CTRL_L | KEY_F5 => {
             Panel_prune(&mut this.super_);
-            BacktracePanel_populateFrames();
+            BacktracePanel_populateFrames(this);
         }
 
         _ => {}
@@ -396,12 +523,73 @@ pub fn BacktracePanel_eventHandler(this: &mut BacktracePanel, ch: i32) -> Handle
     result
 }
 
-/// TODO: port of `BacktracePanel* BacktracePanel_new(Vector* processes,
-/// const Settings* settings)` from `BacktraceScreen.c:248`. Blocked: reads
-/// `settings->showProgramPath` (a `Settings` field the partial `settings.rs`
-/// port does not model) and calls `BacktracePanel_populateFrames` (blocked).
-pub fn BacktracePanel_new() {
-    todo!("port of BacktraceScreen.c:248")
+/// Port of `BacktracePanel* BacktracePanel_new(Vector* processes, const
+/// Settings* settings)` from `BacktraceScreen.c:248`.
+///
+/// Returns a **`Box<BacktracePanel>`** — the faithful analog of the C
+/// `AllocThis(BacktracePanel)` heap object: boxing keeps the panel
+/// address-stable across the return move, which is what makes the
+/// self-referential `row->panel` back-pointers set in
+/// [`BacktracePanel_populateFrames`] sound (see [`BacktracePanelRow::panel`]).
+/// Seeds the printing helper with the header-label width floors, computes
+/// `displayOptions` from `settings->showProgramPath`, builds the panel from the
+/// backtrace function bar (`FunctionBar_new`), relabels the F3 key, and
+/// populates the frames. The C `Vector* processes` is the owned
+/// `Vec<*const Process>` of borrowed process handles; `const Settings*` is the
+/// raw `*const Settings` back-pointer (both non-owning, as in C).
+pub fn BacktracePanel_new(
+    processes: Vec<*const Process>,
+    settings: *const Settings,
+) -> Box<BacktracePanel> {
+    // C: this->displayOptions = DEMANGLE_NAME_FUNCTION |
+    //        (settings->showProgramPath ? SHOW_FULL_PATH_OBJECT : 0) | 0;
+    // SAFETY: `settings` is a live, externally-owned Settings (the caller's).
+    let showProgramPath = unsafe { &*settings }.showProgramPath;
+    let displayOptions =
+        DEMANGLE_NAME_FUNCTION | if showProgramPath { SHOW_FULL_PATH_OBJECT } else { 0 };
+
+    // C: Panel_init(super, 1, 1, 0, 1, Class(BacktracePanelRow), true,
+    //        FunctionBar_new(BacktraceScreenFunctions, ...Keys, ...Events));
+    let bar = FunctionBar_new(
+        Some(&BacktraceScreenFunctions[..]),
+        Some(&BacktraceScreenKeys[..]),
+        Some(&BacktraceScreenEvents[..]),
+    );
+
+    let mut this = Box::new(BacktracePanel {
+        super_: Panel_new(1, 1, 0, 1, Some(bar)),
+        processes,
+        // C: header-label width floors (BacktraceScreen.c:251-255).
+        printingHelper: BacktracePanelPrintingHelper {
+            maxAddrLen: "ADDRESS".len() - "0x".len(),
+            maxFrameNumLen: "#".len(),
+            maxObjNameLen: "FILE".len(),
+            maxObjPathLen: "FILE".len(),
+            hasDemangledNames: false,
+        },
+        settings,
+        displayOptions,
+    });
+
+    // C: FunctionBar_setLabel(super->defaultBar, KEY_F(3),
+    //        showFullPathObject ? "Basename " : "Full Path");
+    let showFullPathObject = (this.displayOptions & SHOW_FULL_PATH_OBJECT) != 0;
+    if let Some(bar) = this.super_.defaultBar.as_mut() {
+        FunctionBar_setLabel(
+            bar,
+            KEY_F(3),
+            if showFullPathObject {
+                "Basename "
+            } else {
+                "Full Path"
+            },
+        );
+    }
+
+    // C: BacktracePanel_populateFrames(this);
+    BacktracePanel_populateFrames(&mut this);
+
+    this
 }
 
 /// Port of `void BacktracePanel_delete(Object* object)` from
@@ -437,9 +625,8 @@ pub fn BacktracePanel_delete(this: BacktracePanel) {
 /// and `objectPathStart >= 0` become a `debug_assert!` (the `usize`
 /// `objectPathStart` is `>= 0` by construction).
 ///
-/// Its sole C caller is [`BacktracePanelRow_displayFrame`], which is still a
-/// documented `todo!()` (the self-referential `panel` back-pointer), so this
-/// has no live caller in the port yet; the body is a faithful standalone port.
+/// Its sole C caller is the now-ported [`BacktracePanelRow_displayFrame`],
+/// which drives it when `panel->settings->highlightBaseName` is set.
 pub fn BacktracePanelRow_highlightBasename(
     row: &BacktracePanelRow,
     out: &mut RichString,
@@ -584,22 +771,113 @@ pub fn BacktracePanelRow_displayInformation(row: &BacktracePanelRow, out: &mut R
     );
 }
 
-/// TODO: port of `static void BacktracePanelRow_displayFrame(const Object*
-/// super, RichString* out)` from `BacktraceScreen.c:356`. Blocked on the
-/// row's `const BacktracePanel* panel` back-pointer, which it dereferences
-/// for `panel->printingHelper` / `panel->displayOptions` /
-/// `panel->settings->highlightBaseName`. Unlike the `process` back-pointer
-/// (externally owned, ported as a sound raw pointer), `panel` is
-/// **self-referential** — the panel owns this row in `super.items` while the
-/// row points back at the panel — and the owned-value model cannot keep that
-/// pointer address-stable across a by-value move of the panel. Porting it
-/// would introduce a dangling self-reference (the same blocker that gates
-/// [`BacktracePanel_populateFrames`] / [`BacktracePanel_new`] /
-/// [`BacktracePanelRow_new`]). The frame-formatting logic itself and its
-/// [`BacktracePanelRow_highlightBasename`] callee are ported; only the
-/// `panel` deref is missing substrate.
-pub fn BacktracePanelRow_displayFrame() {
-    todo!("port of BacktraceScreen.c:356 — reads row->panel (self-referential back-pointer, no address-stable model)")
+/// Port of `static void BacktracePanelRow_displayFrame(const Object* super,
+/// RichString* out)` from `BacktraceScreen.c:356`. Renders a stack-frame line
+/// (`#`, address, object, function+offset) into `out`.
+///
+/// Reads the row's **self-referential** `const BacktracePanel* panel`
+/// back-pointer (see [`BacktracePanelRow::panel`]) for
+/// `panel->printingHelper` / `panel->displayOptions` /
+/// `panel->settings->highlightBaseName`, modeled as a sound raw pointer now
+/// that [`BacktracePanel_new`] boxes the panel (heap-stable, owns its rows). The
+/// C `xAsprintf("%*u 0x%0*zx %n%-*s %s", …)` maps to Rust `format!`; the `%n`
+/// conversion (byte offset of the object column) becomes the length of the
+/// pre-object prefix. The line is appended in `CRT_colors[DEFAULT_COLOR]` when
+/// the frame has a raw `functionName`, else `CRT_colors[PROCESS_SHADOW]`
+/// (dimmed), via [`RichString_appendnAscii`]; when the settings request it, the
+/// object basename is repainted by [`BacktracePanelRow_highlightBasename`]. The
+/// C `INT_MAX` width-cast asserts become `debug_assert!`s.
+pub fn BacktracePanelRow_displayFrame(row: &BacktracePanelRow, out: &mut RichString) {
+    debug_assert_eq!(row.type_, BACKTRACE_PANEL_ROW_DATA_FRAME);
+
+    // C: const BacktracePanel* panel = row->panel;
+    // SAFETY: see BacktracePanelRow::panel — the boxed panel owns this row and
+    // outlives its display, so the deref is valid whenever a row is rendered.
+    let panel: &BacktracePanel = unsafe { &*row.panel };
+    let printingHelper = &panel.printingHelper;
+    let displayOptions = panel.displayOptions;
+
+    // C: const BacktraceFrameData* frame = row->data.frame;
+    let frame = row
+        .frame
+        .as_ref()
+        .expect("DATA_FRAME row must carry a frame");
+
+    // C: const char* functionName = "???";
+    //    if ((displayOptions & DEMANGLE_NAME_FUNCTION) && frame->demangleFunctionName) …
+    //    else if (frame->functionName) …
+    let functionName: &str = if (displayOptions & DEMANGLE_NAME_FUNCTION) != 0
+        && frame.demangleFunctionName.is_some()
+    {
+        frame.demangleFunctionName.as_deref().unwrap()
+    } else if let Some(f) = frame.functionName.as_deref() {
+        f
+    } else {
+        "???"
+    };
+
+    // C: xAsprintf(&completeFunctionName, "%s+0x%zx", functionName, frame->offset);
+    let completeFunctionName = format!("{}+0x{:x}", functionName, frame.offset);
+
+    // C: size_t objectLength = printingHelper->maxObjPathLen;
+    //    const char* objectDisplayed = frame->objectPath;
+    //    if (!(displayOptions & SHOW_FULL_PATH_OBJECT)) { objectLength = maxObjNameLen;
+    //        if (frame->objectPath) objectDisplayed = getBasename(frame->objectPath); }
+    let mut objectLength = printingHelper.maxObjPathLen;
+    let mut objectDisplayed: Option<&str> = frame.objectPath.as_deref();
+    if (displayOptions & SHOW_FULL_PATH_OBJECT) == 0 {
+        objectLength = printingHelper.maxObjNameLen;
+        if let Some(op) = frame.objectPath.as_deref() {
+            objectDisplayed = Some(getBasename(op));
+        }
+    }
+
+    let maxAddrLen = printingHelper.maxAddrLen;
+
+    // The parameters for printf are of type int; guard against overflow of the
+    // (int) width casts, exactly as the C asserts do.
+    debug_assert!(printingHelper.maxFrameNumLen <= i32::MAX as usize);
+    debug_assert!(maxAddrLen <= i32::MAX as usize);
+    debug_assert!(objectLength <= i32::MAX as usize);
+
+    // C: xAsprintf(&line, "%*u 0x%0*zx %n%-*s %s", …). The `%n` captures the
+    // byte offset just past the "%*u 0x%0*zx " prefix (the object column start).
+    let prefix = format!(
+        "{:>fnw$} 0x{:0aw$x} ",
+        frame.index,
+        frame.address,
+        fnw = printingHelper.maxFrameNumLen,
+        aw = maxAddrLen,
+    );
+    let objectPathStart = prefix.len();
+    let line = format!(
+        "{}{:<objw$} {}",
+        prefix,
+        objectDisplayed.unwrap_or("-"),
+        completeFunctionName,
+        objw = objectLength,
+    );
+    let len = line.len();
+
+    // C: int colors = frame->functionName ? CRT_colors[DEFAULT_COLOR]
+    //                                      : CRT_colors[PROCESS_SHADOW];
+    let scheme = ColorScheme::active();
+    let colors = if frame.functionName.is_some() {
+        ColorElements::DEFAULT_COLOR.packed(scheme)
+    } else {
+        ColorElements::PROCESS_SHADOW.packed(scheme)
+    };
+
+    // C: RichString_appendnAscii(out, colors, line, len);
+    RichString_appendnAscii(out, colors, line.as_bytes(), len);
+
+    // C: if (panel->settings->highlightBaseName)
+    //        BacktracePanelRow_highlightBasename(row, out, line, objectPathStart);
+    // SAFETY: panel->settings is a live, externally-owned Settings.
+    let settings: &Settings = unsafe { &*panel.settings };
+    if settings.highlightBaseName {
+        BacktracePanelRow_highlightBasename(row, out, &line, objectPathStart);
+    }
 }
 
 /// Port of `static void BacktracePanelRow_displayError(const Object* super,
@@ -621,17 +899,14 @@ pub fn BacktracePanelRow_displayError(row: &BacktracePanelRow, out: &mut RichStr
 /// RichString* out)` from `BacktraceScreen.c:425`. Dispatches on the row
 /// type. The `BACKTRACE_PANEL_ROW_ERROR` arm calls
 /// [`BacktracePanelRow_displayError`] and the `BACKTRACE_PANEL_ROW_PROCESS_INFORMATION`
-/// arm calls [`BacktracePanelRow_displayInformation`] (both now ported — they
-/// read only the sound `row->process` back-pointer). The `DATA_FRAME` arm calls
-/// [`BacktracePanelRow_displayFrame`], which reads the row's **self-referential**
-/// `const BacktracePanel* panel` back-pointer (not modeled — see the module
-/// docs), so that arm stays `todo!()` — the same partial-port shape as
-/// `ListItem_display`.
+/// arm calls [`BacktracePanelRow_displayInformation`] (both read only the
+/// sound `row->process` back-pointer). The `DATA_FRAME` arm calls the
+/// now-ported [`BacktracePanelRow_displayFrame`], which reads the row's
+/// **self-referential** `const BacktracePanel* panel` back-pointer (modeled as
+/// a sound raw pointer — see [`BacktracePanelRow::panel`]).
 pub fn BacktracePanelRow_display(row: &BacktracePanelRow, out: &mut RichString) {
     match row.type_ {
-        BACKTRACE_PANEL_ROW_DATA_FRAME => {
-            todo!("BacktraceScreen.c:431 — BacktracePanelRow_displayFrame reads row->panel (self-referential back-pointer, no address-stable model) + settings->highlightBaseName")
-        }
+        BACKTRACE_PANEL_ROW_DATA_FRAME => BacktracePanelRow_displayFrame(row, out),
         BACKTRACE_PANEL_ROW_PROCESS_INFORMATION => {
             BacktracePanelRow_displayInformation(row, out)
         }
@@ -640,13 +915,17 @@ pub fn BacktracePanelRow_display(row: &BacktracePanelRow, out: &mut RichString) 
     }
 }
 
-/// TODO: port of `BacktracePanelRow* BacktracePanelRow_new(const
-/// BacktracePanel* panel)` from `BacktraceScreen.c:444`. Blocked: after
-/// `AllocThis` zero-inits the row, its sole action is `this->panel = panel`
-/// — storing the unmodeled `const BacktracePanel*` back-pointer. Porting it
-/// without that field would drop the one meaningful assignment.
-pub fn BacktracePanelRow_new() {
-    todo!("port of BacktraceScreen.c:444")
+/// Port of `BacktracePanelRow* BacktracePanelRow_new(const BacktracePanel*
+/// panel)` from `BacktraceScreen.c:444`. C `AllocThis` zero-inits the row, then
+/// its sole action is `this->panel = panel`. The Rust analog is an owned,
+/// otherwise-`Default` row (the C heap allocation becomes the owned return) with
+/// the self-referential [`panel`](BacktracePanelRow::panel) back-pointer stored;
+/// [`BacktracePanel_populateFrames`] then fills in `type`/`process`/`data`.
+pub fn BacktracePanelRow_new(panel: *const BacktracePanel) -> BacktracePanelRow {
+    BacktracePanelRow {
+        panel,
+        ..BacktracePanelRow::default()
+    }
 }
 
 /// Port of `void BacktracePanelRow_delete(Object* object)` from
@@ -666,7 +945,9 @@ pub fn BacktracePanelRow_delete(this: BacktracePanelRow) {
         frame,
         error,
         process,
+        panel,
     } = this;
+    let _ = panel;
     match type_ {
         BACKTRACE_PANEL_ROW_DATA_FRAME => {
             if let Some(frame) = frame {
@@ -738,6 +1019,7 @@ mod tests {
             }),
             error: None,
             process: std::ptr::null(),
+            panel: std::ptr::null(),
         }
     }
 
@@ -788,12 +1070,14 @@ mod tests {
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
+            panel: std::ptr::null(),
             },
             BacktracePanelRow {
                 type_: BACKTRACE_PANEL_ROW_ERROR,
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
+            panel: std::ptr::null(),
             },
         ];
         let mut h = seeded_helper();
@@ -823,12 +1107,14 @@ mod tests {
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
+            panel: std::ptr::null(),
             },
             BacktracePanelRow {
                 type_: BACKTRACE_PANEL_ROW_ERROR,
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
+            panel: std::ptr::null(),
             },
         ];
         let mut h = seeded_helper();
@@ -920,6 +1206,7 @@ mod tests {
             frame: None,
             error: Some("ptrace failed".to_string()),
             process: std::ptr::null(),
+            panel: std::ptr::null(),
         };
         let mut out = RichString::new();
         BacktracePanelRow_displayError(&row, &mut out);
@@ -940,6 +1227,7 @@ mod tests {
             frame: None,
             error: Some("boom".to_string()),
             process: std::ptr::null(),
+            panel: std::ptr::null(),
         };
         let mut out = RichString::new();
         BacktracePanelRow_display(&row, &mut out);
@@ -947,16 +1235,50 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "displayFrame")]
-    fn display_frame_arm_is_blocked() {
-        let row = BacktracePanelRow {
-            type_: BACKTRACE_PANEL_ROW_DATA_FRAME,
-            frame: Some(BacktraceFrameData::default()),
-            error: None,
-            process: std::ptr::null(),
+    fn display_frame_renders_via_self_referential_panel_back_pointer() {
+        // A DATA_FRAME row reads its `panel` back-pointer for printingHelper /
+        // displayOptions / settings. Build a panel (address-stable on the
+        // stack for the test) and a Settings it can reach, then dispatch
+        // through BacktracePanelRow_display's DATA_FRAME arm.
+        let settings = Settings::default(); // highlightBaseName == false
+        let p = BacktracePanel {
+            super_: Panel_new(1, 1, 0, 1, None),
+            processes: Vec::new(),
+            printingHelper: BacktracePanelPrintingHelper {
+                maxAddrLen: 5,
+                maxFrameNumLen: 2,
+                maxObjPathLen: 18,
+                maxObjNameLen: 9,
+                hasDemangledNames: false,
+            },
+            settings: &settings as *const Settings,
+            displayOptions: 0, // basename column, no demangle
         };
+        let panel_ptr = &p as *const BacktracePanel;
+
+        let mut row = frame(3, 0xff, Some("/usr/lib/libc.so.6"), None);
+        {
+            let f = row.frame.as_mut().unwrap();
+            f.functionName = Some("malloc".to_string());
+            f.offset = 0x10;
+        }
+        row.panel = panel_ptr;
+
         let mut out = RichString::new();
         BacktracePanelRow_display(&row, &mut out);
+
+        // "%*u 0x%0*zx %n%-*s %s": index right in 2, address zero-padded hex in
+        // 5, basename left in 9, then "malloc+0x10".
+        let expected = format!(
+            "{:>2} 0x{:05x} {:<9} {}",
+            3u32, 0xffusize, "libc.so.6", "malloc+0x10"
+        );
+        assert_eq!(rendered(&out), expected);
+
+        // Frame carries a functionName -> DEFAULT_COLOR (masked as the ASCII
+        // write path masks); a functionless frame would use PROCESS_SHADOW.
+        let expect = ColorElements::DEFAULT_COLOR.packed(ColorScheme::active()) & 0xffffff;
+        assert_eq!(out.chptr[0].attr, expect);
     }
 
     // ── displayInformation (reads the sound `process` back-pointer) ───────
@@ -972,6 +1294,7 @@ mod tests {
             frame: None,
             error: None,
             process: p as *const Process,
+            panel: std::ptr::null(),
         }
     }
 

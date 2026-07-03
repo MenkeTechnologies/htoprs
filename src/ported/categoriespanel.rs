@@ -35,14 +35,20 @@
 //!   are acyclic; `scr` here is a genuine ownership cycle (`scr` owns the panel
 //!   that owns `scr`), which an owned field cannot express. The struct is
 //!   therefore still not modeled.
-//! - **The per-category sibling constructors are all `todo!()` stubs**:
-//!   `MetersPanel_new`, `AvailableMetersPanel_new`, `DisplayOptionsPanel_new`,
-//!   `ColorsPanel_new`, `ScreensPanel_new`, `HeaderOptionsPanel_new`,
-//!   `ScreenTabsPanel_new` (verified in their modules). Each `make*Page` builds
-//!   its page by calling one (or several) of these. `ScreenManager_add`
-//!   (`screenmanager.rs`) — a former blocker — is now ported, so it no longer
-//!   blocks anything here; only the sibling constructors and the `scr`
-//!   back-pointer do.
+//! - **The subclass panels cannot be added to the `ScreenManager`.** Each
+//!   `make*Page` builds one or more per-category subclass panels
+//!   (`MetersPanel`, `ColorsPanel`, `HeaderOptionsPanel`, `ScreensPanel`,
+//!   `ScreenTabsPanel` — several of whose constructors are now ported, though
+//!   `AvailableMetersPanel_new` / `ScreensPanel_new` / `DisplayOptionsPanel_new`
+//!   remain stubbed) and hands each to `ScreenManager_add(this->scr, (Panel*)
+//!   subpanel, size)`. In C that works by `Panel*` polymorphism (the `Panel`
+//!   is the subclass's embedded first member, dispatched through the
+//!   `PanelClass.eventHandler` vtable). The ported `ScreenManager` stores
+//!   base `Panel` **values** in `panels: Vec<Panel>` and `ScreenManager_add`
+//!   takes an owned base `Panel`, so a distinct subclass struct cannot be
+//!   stored (and the `Panel` model carries no `eventHandler` slot to dispatch
+//!   its handler). This — not `ScreenManager_add` itself (ported) — is the
+//!   blocker every `make*Page` shares, alongside the `scr` cycle.
 //!
 //! With those in mind:
 //!

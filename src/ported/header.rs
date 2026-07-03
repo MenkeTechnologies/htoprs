@@ -15,7 +15,7 @@
 //!
 //! Everything that constructs meters through the `MeterClass` vtable
 //! (`Meter_new`, `Header_addMeterByName`, `Header_addMeterByClass`,
-//! `Header_populateFromSettings`), reinitializes meters (`Header_reinit`),
+//! `Header_populateFromSettings`),
 //! pulls live values (`Header_updateData`), or needs the `Machine` host
 //! allocation (`Header_new`/`Header_delete`) stays a `todo!()` stub — that
 //! substrate is not ported.
@@ -307,16 +307,25 @@ pub fn Header_addMeterByClass<'a>(
     this.columns[column].last_mut().unwrap()
 }
 
-/// TODO: port of `void Header_reinit(Header* this)` from `Header.c:183`.
-/// Stubbed: for every meter it runs `if (Meter_initFn(meter)) Meter_init(meter)`
-/// — dispatch through the class `init` slot (`As_Meter(meter)->init`). Unlike
-/// the `updateValues`/`draw` slots, the `init` slot is **not** mirrored onto
-/// the [`Meter`] instance in `meter.rs`, and a `Meter` carries no back-pointer
-/// to its [`MeterClass`], so there is no instance-reachable path to the init
-/// fn. Realizing it means adding an `init` field mirror in `meter.rs`, which
-/// is outside this port group.
-pub fn Header_reinit() {
-    todo!("port of Header.c:183 — Meter instance mirrors no `init` slot (needs a meter.rs field)")
+/// Port of `void Header_reinit(Header* this)` from `Header.c:183`.
+///
+/// For every meter in every column runs `if (Meter_initFn(meter))
+/// Meter_init(meter)` — dispatch through the class `init` slot
+/// (`As_Meter(meter)->init`) when it is non-`NULL`. The `init` slot is
+/// mirrored onto the [`Meter`] instance as the `init` field (seeded from the
+/// class in [`Meter_new`], like `updateValues`), so `if let Some(init)` is the
+/// faithful `if (Meter_initFn(meter))` guard and `init(meter)` the
+/// `Meter_init(meter)` call.
+pub fn Header_reinit(this: &mut Header) {
+    let numColumns = HeaderLayout_getColumns(this.headerLayout);
+    for col in 0..numColumns {
+        let items = this.columns[col].len();
+        for i in 0..items {
+            if let Some(init) = this.columns[col][i].init {
+                init(&mut this.columns[col][i]);
+            }
+        }
+    }
 }
 
 /// Port of `void Header_draw(const Header* this)` from `Header.c:194`.
@@ -831,6 +840,38 @@ mod tests {
         Header_calculateHeight(&mut h);
         let mut buf: Vec<u8> = Vec::new();
         Header_draw(&mut h, &mut buf);
+    }
+
+    // ---- Header_reinit ----------------------------------------------
+
+    /// A `MeterInit` slot (`fn`, so it coerces to the fn pointer) that marks
+    /// the meter as having run its init by writing `txtBuffer`.
+    fn mark_init(m: &mut Meter) {
+        m.txtBuffer = "inited".to_string();
+    }
+
+    #[test]
+    fn reinit_runs_init_slot_when_present_and_skips_when_absent() {
+        // col0's meter carries an `init` slot; col1's does not (C `NULL`).
+        let mut h = header(
+            HeaderLayout::HF_TWO_50_50,
+            vec![
+                vec![Meter {
+                    name: "A",
+                    init: Some(mark_init),
+                    ..Meter::empty()
+                }],
+                vec![Meter {
+                    name: "B",
+                    ..Meter::empty()
+                }],
+            ],
+        );
+        Header_reinit(&mut h);
+        // C `if (Meter_initFn(meter)) Meter_init(meter)`: dispatched for A,
+        // skipped for B (its slot is None).
+        assert_eq!(h.columns[0][0].txtBuffer, "inited");
+        assert!(h.columns[1][0].txtBuffer.is_empty());
     }
 
     // ---- Header_addMeterByClass / Header_updateData -----------------

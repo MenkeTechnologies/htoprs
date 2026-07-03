@@ -10,14 +10,12 @@
 //!
 //! htop's `ColumnsPanel` (`ColumnsPanel.h:17`) embeds a `Panel super`,
 //! plus `ScreenSettings* ss`, `bool* changed`, and `bool moving`. The
-//! [`ColumnsPanel`] struct here models only the two fields the ported
-//! function touches — the embedded `super` [`Panel`] and the `moving`
-//! flag — following the same reduced-struct precedent as `listitem.rs`
-//! (which omits `Object super`) and `settings.rs`'s `ScreenSettings`
-//! (which omits every field its ported fns never read). The non-owning
-//! `ss`/`changed` back-pointers are omitted because the only functions
-//! that dereference them (`_fill`/`_new`/`_update`) are blocked on the
-//! `ScreenSettings.fields`/`.flags` substrate (see below) and stay stubs.
+//! [`ColumnsPanel`] struct models all four, as `#[repr(C)]` with `super_`
+//! first: `ss`/`changed` are raw `*mut` back-pointers (non-owning, into a
+//! caller-owned `ScreenSettings`/`bool`), reached by
+//! [`ColumnsPanel_update`]'s container-of downcast of the base `Panel*`. The
+//! fixed C layout is what makes that `(ColumnsPanel*) super` cast sound — see
+//! the [`ColumnsPanel`] struct docs.
 //!
 //! # Ported (self-contained, no unported substrate)
 //!
@@ -40,16 +38,23 @@
 //!   `KEY_UP`/`KEY_DOWN` while-moving fallthrough), Remove drops a row, and
 //!   the default case delegates to `Panel_selectByTyping`. Its C tail
 //!   `if (result == HANDLED) ColumnsPanel_update(super);` is emitted
-//!   faithfully but transitively hits the still-stubbed
-//!   [`ColumnsPanel_update`] (see below): `HANDLED` paths mutate the panel
-//!   then panic in that stub; `IGNORED` paths run to completion.
+//!   faithfully and now reaches the ported [`ColumnsPanel_update`], which
+//!   rewrites the screen's `fields`/`flags` from the new list order.
 //!
 //! - [`ColumnsPanel_add`] (`ColumnsPanel.c:137`) — resolves a field/dynamic
 //!   column display name for `key` and pushes a `ListItem_new(name, key)`.
 //!   The reserved-field branch indexes the now-ported `Process_fields[key].name`
 //!   (bounded by the now-ported `LAST_PROCESSFIELD`); the dynamic branch reads
-//!   `Hashtable_get` → `DynamicColumn.heading`/`.name`. Takes `Panel* super`
+//!   `Hashtable_get` -> `DynamicColumn.heading`/`.name`. Takes `Panel* super`
 //!   (no `ColumnsPanel` field needed), so it is self-contained.
+//! - [`ColumnsPanel_fill`] (`ColumnsPanel.c:156`) / [`ColumnsPanel_new`]
+//!   (`ColumnsPanel.c:164`) — prune + repopulate from `ss->fields` and the
+//!   constructor, now that the `ss`/`changed` raw back-pointers are modeled.
+//! - [`ColumnsPanel_update`] (`ColumnsPanel.c:181`) — rewrites
+//!   `ss->fields`/`ss->flags` from the list, OR-ing `Process_fields[key].flags`.
+//!   The C `ColumnsPanel* this = (ColumnsPanel*) super;` downcast is ported
+//!   faithfully with the raw container-of cast on the `#[repr(C)]` layout
+//!   (`super as *mut Panel as *mut ColumnsPanel`).
 //!
 //! # Stubbed (cannot be ported faithfully yet)
 //!
@@ -57,22 +62,6 @@
 //!   `free`. [`ColumnsPanel`] owns its fields, so `Drop` releases them;
 //!   there is no algorithm to port (same precedent as every sibling
 //!   `_delete`, e.g. `Panel_delete`/`ListItem_delete`).
-//! - [`ColumnsPanel_fill`] (`ColumnsPanel.c:156`) — iterates `ss->fields`
-//!   calling the now-ported [`ColumnsPanel_add`], then stores `this->ss = ss`.
-//!   That store is the blocker: `ss` is a non-owning back-pointer with no
-//!   useful safe-Rust home (its only reader, [`ColumnsPanel_update`], cannot
-//!   reach it — see below), and the reduced [`ColumnsPanel`] models no `ss`
-//!   field.
-//! - [`ColumnsPanel_new`] (`ColumnsPanel.c:164`) — allocates the panel
-//!   and calls [`ColumnsPanel_fill`]; blocked transitively on `_fill` and on
-//!   the unmodeled `ss`/`changed` back-pointers (`changed` is a `bool*` into a
-//!   caller-owned cell, the aliasing `optionitem.rs` declines to model).
-//! - [`ColumnsPanel_update`] (`ColumnsPanel.c:181`) — rewrites
-//!   `ss->fields`/`ss->flags` from the list, OR-ing `Process_fields[key].flags`
-//!   (both tables now exist). Blocked structurally: its C body upcasts
-//!   `(ColumnsPanel*) super` to reach `this->ss`/`this->changed`, but this
-//!   port's `Panel* super` signature cannot upcast an embedded `&mut Panel`
-//!   back to its enclosing [`ColumnsPanel`] in safe Rust.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -81,15 +70,18 @@ use crate::ported::crt::{
     ColorElements, KEY_DC, KEY_DEL_MAC, KEY_DOWN, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK, KEY_UP,
 };
 use crate::ported::dynamiccolumn::DynamicColumn;
+use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::hashtable::{Hashtable, Hashtable_get};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_moveSelectedDown,
-    Panel_moveSelectedUp, Panel_remove, Panel_selectByTyping, Panel_setSelectionColor, Panel_size,
+    HandlerResult, Panel, Panel_add, Panel_done, Panel_get, Panel_getSelectedIndex,
+    Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_new, Panel_prune, Panel_remove,
+    Panel_selectByTyping, Panel_setHeader, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS,
 };
+use crate::ported::settings::{RowField, ScreenSettings};
 
 // `KEY_F(n)`/char case labels from the C `switch` cannot appear as Rust match
 // patterns directly (a `const fn` call and an `as` cast are not patterns), so
@@ -104,17 +96,38 @@ const MINUS: i32 = b'-' as i32;
 const RIGHT_BRACKET: i32 = b']' as i32;
 const PLUS: i32 = b'+' as i32;
 
-/// Reduced model of the C `ColumnsPanel` struct (`ColumnsPanel.h:17`).
-/// Only the embedded `Panel super` and the `moving` flag are modeled —
-/// the two fields [`ColumnsPanel_cancelMoving`] touches. The C
-/// `ScreenSettings* ss` and `bool* changed` back-pointers are omitted
-/// because the only functions that read them (`_fill`/`_new`/`_update`)
-/// are blocked on the missing `ScreenSettings.fields`/`.flags` substrate
-/// and remain stubs. `super_` avoids the Rust `super` keyword, matching
-/// the `process.rs` `super_: Row` convention.
+/// Port of the file-scope `static const char* const ColumnsFunctions[]`
+/// from `ColumnsPanel.c:29`: `F7=MoveUp`, `F8=MoveDn`, `F9=Remove`,
+/// `F10=Done`, the rest blank. The C trailing `NULL` sentinel is dropped
+/// (the ported `FunctionBar_new` is length-bounded, not NUL-terminated).
+static ColumnsFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "      ", "      ", "      ", "MoveUp", "MoveDn", "Remove",
+    "Done  ",
+];
+
+/// Port of the C `ColumnsPanel` struct (`ColumnsPanel.h:17`):
+/// `{ Panel super; ScreenSettings* ss; bool* changed; bool moving; }`.
+///
+/// `#[repr(C)]` with `super_` as the first field is load-bearing: the C
+/// vtable functions take `Panel* super` and recover the enclosing panel with
+/// `ColumnsPanel* this = (ColumnsPanel*) super;` (valid because `super` is the
+/// embedded first member). [`ColumnsPanel_update`] reproduces that downcast
+/// with the raw container-of cast `super as *mut Panel as *mut ColumnsPanel`,
+/// which is only sound when `super_` sits at offset 0 — hence the fixed C
+/// layout. `ss`/`changed` are the C `ScreenSettings*`/`bool*` back-pointers
+/// (raw `*mut`, non-owning), reachable through that downcast. `super_` avoids
+/// the Rust `super` keyword, matching the `process.rs` `super_: Row` convention.
+#[repr(C)]
 pub struct ColumnsPanel {
-    /// C `Panel super` — the embedded panel base.
+    /// C `Panel super` — the embedded panel base. MUST stay first (offset 0)
+    /// for the `(ColumnsPanel*) super` downcast in [`ColumnsPanel_update`].
     pub super_: Panel,
+    /// C `ScreenSettings* ss` — non-owning back-pointer to the screen whose
+    /// `fields`/`flags` [`ColumnsPanel_update`] rewrites from the list.
+    pub ss: *mut ScreenSettings,
+    /// C `bool* changed` — non-owning pointer to a caller-owned "settings
+    /// changed" flag, set by [`ColumnsPanel_update`].
+    pub changed: *mut bool,
     /// C `bool moving` — whether the panel is in row-reorder mode.
     pub moving: bool,
 }
@@ -123,11 +136,19 @@ pub struct ColumnsPanel {
 /// `ColumnsPanel.c:31`: `Panel_done(&this->super); free(this);`. Taking
 /// `this` by value consumes the panel; the embedded `super_` [`Panel`] is
 /// handed to [`Panel_done`] (mirroring the C call graph), and the `moving`
-/// flag drops with the struct free.
+/// flag plus the non-owning `ss`/`changed` back-pointers drop with the struct
+/// free (C frees neither — they alias caller-owned state).
 pub fn ColumnsPanel_delete(this: ColumnsPanel) {
-    let ColumnsPanel { super_, moving } = this;
+    let ColumnsPanel {
+        super_,
+        moving,
+        ss,
+        changed,
+    } = this;
     Panel_done(super_);
     let _ = moving;
+    let _ = ss;
+    let _ = changed;
 }
 
 /// Port of `static void ColumnsPanel_cancelMoving(ColumnsPanel* this)`
@@ -184,16 +205,12 @@ pub fn ColumnsPanel_cancelMoving(this: &mut ColumnsPanel) {
 /// guard fails and `KEY_UP` falls to the shared arm — bit-for-bit the C
 /// fallthrough. Same for `KEY_DOWN`.
 ///
-/// # Transitive block
-///
 /// The C tail `if (result == HANDLED) ColumnsPanel_update(super);` is emitted
-/// faithfully, but [`ColumnsPanel_update`] is still a `todo!()` stub (it
-/// rewrites `ss->fields`/`ss->flags` from `Process_fields[]`, none of which
-/// the reduced `ColumnsPanel` models — no `ss` field exists). So every
-/// `HANDLED`-returning path performs its panel-level mutation and *then*
-/// panics in that stub; only the `IGNORED`/`BREAK_LOOP→IGNORED` paths run to
-/// completion. This is the honest transitive block, not a fake port: the
-/// dispatch + panel mutations are ported; the `ss` write-back is not modeled.
+/// faithfully and now reaches the ported [`ColumnsPanel_update`]: every
+/// `HANDLED`-returning path performs its panel-level mutation and then
+/// rewrites the screen's `fields`/`flags` from the new list order (requiring
+/// the panel's `ss`/`changed` back-pointers to be live). The
+/// `IGNORED`/`BREAK_LOOP`-to-`IGNORED` paths skip the update.
 pub fn ColumnsPanel_eventHandler(this: &mut ColumnsPanel, ch: i32) -> HandlerResult {
     let selected = Panel_getSelectedIndex(&this.super_);
     let mut result = HandlerResult::IGNORED;
@@ -316,45 +333,140 @@ pub fn ColumnsPanel_add(super_: &mut Panel, key: u32, columns: &Hashtable) {
     Panel_add(super_, Box::new(ListItem_new(name, key as i32)));
 }
 
-/// TODO: port of `void ColumnsPanel_fill(ColumnsPanel* this,
-/// ScreenSettings* ss, Hashtable* columns)` from `ColumnsPanel.c:156`.
-/// `Panel_prune`s the panel, iterates `ss->fields` calling
-/// [`ColumnsPanel_add`] (now ported), then assigns `this->ss = ss`. The
-/// residual blocker is that `this->ss = ss` store: `ss` is a non-owning
-/// back-pointer into a `ScreenSettings` the caller owns, and the reduced
-/// [`ColumnsPanel`] models no `ss` field. Its only reader is
-/// [`ColumnsPanel_update`], whose C `Panel* super` signature cannot upcast
-/// back to `ColumnsPanel` in safe Rust (see below), so an `ss` field would be
-/// write-only dead state. Left as a stub until that back-pointer has a home.
-pub fn ColumnsPanel_fill() {
-    todo!("port of ColumnsPanel.c:156 — needs the ss back-pointer store (no useful safe-Rust home; ColumnsPanel_update cannot reach it)")
+/// Port of `void ColumnsPanel_fill(ColumnsPanel* this, ScreenSettings* ss,
+/// Hashtable* columns)` from `ColumnsPanel.c:156`. [`Panel_prune`]s the panel,
+/// walks `ss->fields` (the NUL-terminated `RowField` list) calling
+/// [`ColumnsPanel_add`] for each, then stores `this->ss = ss`.
+///
+/// `ss` is the raw `*mut ScreenSettings` back-pointer (the C `ScreenSettings*`,
+/// non-owning). The C loop `for (const RowField* fields = ss->fields; *fields;
+/// fields++)` stops at the `0` terminator; the `fields` `Vec` is read by index
+/// through the raw pointer each step (a fresh unsafe deref, so it never holds a
+/// borrow across the `&mut this.super_` used by [`ColumnsPanel_add`]), and the
+/// same `f == 0` break reproduces the sentinel stop for a `Vec` that carries
+/// its terminator.
+///
+/// # Safety
+///
+/// `ss` must be a valid, non-aliased `ScreenSettings` pointer for the duration
+/// of the call (it is not the same object as any field of `this`).
+pub fn ColumnsPanel_fill(this: &mut ColumnsPanel, ss: *mut ScreenSettings, columns: &Hashtable) {
+    // C: Panel* super = &this->super; Panel_prune(super);
+    Panel_prune(&mut this.super_);
+    // C: for (const RowField* fields = ss->fields; *fields; fields++)
+    //       ColumnsPanel_add(super, *fields, columns);
+    // SAFETY: `ss` is a valid back-pointer distinct from `this`'s storage;
+    // borrowing it shared is sound (ColumnsPanel_add touches only `this`).
+    let ss_ref = unsafe { &*ss };
+    for i in 0..ss_ref.fields.len() {
+        let f = ss_ref.fields[i];
+        if f == 0 {
+            break; // C: *fields == 0 terminates the loop
+        }
+        ColumnsPanel_add(&mut this.super_, f as u32, columns);
+    }
+    // C: this->ss = ss;
+    this.ss = ss;
 }
 
-/// TODO: port of `ColumnsPanel* ColumnsPanel_new(ScreenSettings* ss,
-/// Hashtable* columns, bool* changed)` from `ColumnsPanel.c:164`.
-/// Allocates the panel, sets `this->ss`/`this->changed`, and calls
-/// [`ColumnsPanel_fill`]. Blocked transitively on `_fill` and on the
-/// unmodeled `ss`/`changed` back-pointers (`changed` is a `bool*` into a
-/// caller-owned cell — the same pointer-into-external-cell aliasing that
-/// `optionitem.rs` declines to model in safe Rust). Left as a stub.
-pub fn ColumnsPanel_new() {
-    todo!("port of ColumnsPanel.c:164 — needs ColumnsPanel_fill + the ss/changed back-pointers (bool*/ScreenSettings* aliasing)")
+/// Port of `ColumnsPanel* ColumnsPanel_new(ScreenSettings* ss,
+/// Hashtable* columns, bool* changed)` from `ColumnsPanel.c:164`. Builds the
+/// `1x1` panel with the `ColumnsFunctions` bar, stores the `ss`/`changed`
+/// back-pointers, sets the "Active Columns" header, and populates the list
+/// via [`ColumnsPanel_fill`].
+///
+/// `ss`/`changed` are the raw `*mut ScreenSettings`/`*mut bool` back-pointers
+/// (the C `ScreenSettings*`/`bool*`, non-owning). The C `Class(ListItem)`/
+/// `owner` args to `Panel_init` only type the underlying `Vector`; the ported
+/// [`Panel_new`] drops them, matching every sibling panel port. Returned by
+/// value like the other `_new` ports (the C `AllocThis` heap object).
+pub fn ColumnsPanel_new(
+    ss: *mut ScreenSettings,
+    columns: &Hashtable,
+    changed: *mut bool,
+) -> ColumnsPanel {
+    // C: FunctionBar* fuBar = FunctionBar_new(ColumnsFunctions, NULL, NULL);
+    let fuBar = FunctionBar_new(Some(&ColumnsFunctions[..]), None, None);
+    // C: Panel_init(super, 1, 1, 1, 1, Class(ListItem), true, fuBar);
+    let super_ = Panel_new(1, 1, 1, 1, Some(fuBar));
+
+    // C: this->ss = ss; this->changed = changed; this->moving = false;
+    let mut this = ColumnsPanel {
+        super_,
+        ss,
+        changed,
+        moving: false,
+    };
+
+    // C: Panel_setHeader(super, "Active Columns");
+    Panel_setHeader(&mut this.super_, "Active Columns");
+
+    // C: ColumnsPanel_fill(this, ss, columns);
+    ColumnsPanel_fill(&mut this, ss, columns);
+
+    this
 }
 
-/// TODO: port of `void ColumnsPanel_update(Panel* super)` from
-/// `ColumnsPanel.c:181`. Rewrites `ss->fields`/`ss->flags` from the list,
-/// OR-ing `Process_fields[key].flags` (both `Process_fields[]` and
-/// `ScreenSettings.fields`/`.flags` now exist). The blocker is structural:
-/// the C body does `ColumnsPanel* this = (ColumnsPanel*) super;` to reach
-/// `this->ss`/`this->changed`, but this port's signature is `Panel* super`
-/// (matching C) and safe Rust cannot upcast an embedded `&mut Panel` back to
-/// its enclosing [`ColumnsPanel`] to read those back-pointers. Left as a stub.
-/// The signature matches the C `Panel* super` so [`ColumnsPanel_eventHandler`]'s
-/// `HANDLED` tail can call it faithfully; every such call reaches this
-/// `todo!()` (the transitive block documented on the event handler).
+/// Port of `void ColumnsPanel_update(Panel* super)` from `ColumnsPanel.c:181`.
+/// Rewrites `ss->fields`/`ss->flags` from the current list order, OR-ing
+/// `Process_fields[key].flags` for every reserved field, and sets `*changed`.
+///
+/// The C body opens with `ColumnsPanel* this = (ColumnsPanel*) super;` — the
+/// classic C OOP downcast of a base pointer to its enclosing subclass. It is
+/// reproduced faithfully with the raw container-of cast
+/// `super as *mut Panel as *mut ColumnsPanel` (sound because `#[repr(C)]` puts
+/// `super_` at offset 0; see [`ColumnsPanel`]). After the cast the original
+/// `super_` borrow is dropped and everything goes through the recovered
+/// `this`. The C NUL-terminated `xRealloc`'d `fields` array becomes a `Vec`
+/// of length `size + 1` with a trailing `0` terminator (`ProcessField`/
+/// `RowField` `0` == `NULL_PROCESSFIELD`). `changed`/`ss` are dereferenced
+/// through their raw back-pointers, as the C dereferences `this->changed`/
+/// `this->ss`.
+///
+/// The signature keeps the C `Panel* super` so both [`ColumnsPanel_eventHandler`]'s
+/// `HANDLED` tail (`&mut this.super_`) and `AvailableColumnsPanel_eventHandler`'s
+/// `*mut Panel` back-pointer can call it with a base-panel pointer.
+///
+/// # Safety
+///
+/// `super_` must be the embedded `Panel` of a live `ColumnsPanel`, and that
+/// panel's `ss`/`changed` valid non-null back-pointers.
 pub fn ColumnsPanel_update(super_: &mut Panel) {
-    let _ = super_;
-    todo!("port of ColumnsPanel.c:181 — Panel* super cannot upcast to ColumnsPanel in safe Rust to reach ss/changed")
+    // C: ColumnsPanel* this = (ColumnsPanel*) super;
+    // SAFETY: `super_` is the offset-0 `Panel` of a real `#[repr(C)]`
+    // `ColumnsPanel`, so the container-of cast recovers the enclosing struct.
+    let this = unsafe { &mut *(super_ as *mut Panel as *mut ColumnsPanel) };
+
+    // C: int size = Panel_size(super);
+    let size = Panel_size(&this.super_);
+    // C: *(this->changed) = true;
+    // SAFETY: `changed` is the caller-owned flag pointer wired at construction.
+    unsafe {
+        *this.changed = true;
+    }
+    // C: this->ss->fields = xRealloc(..., size + 1); this->ss->flags = 0;
+    // SAFETY: `ss` is the non-null back-pointer wired at construction.
+    let ss = unsafe { &mut *this.ss };
+    ss.fields = vec![0; (size + 1) as usize];
+    ss.flags = 0;
+    for i in 0..size {
+        // C: int key = ((ListItem*) Panel_get(super, i))->key;
+        let key = {
+            let obj = Panel_get(&this.super_, i);
+            let any: &dyn core::any::Any = obj;
+            any.downcast_ref::<ListItem>()
+                .expect("ColumnsPanel_update: panel item is not a ListItem")
+                .key
+        };
+        // C: this->ss->fields[i] = key;
+        ss.fields[i as usize] = key as RowField;
+        // C: if (key < LAST_PROCESSFIELD) this->ss->flags |= Process_fields[key].flags;
+        if (key as usize) < LAST_PROCESSFIELD {
+            ss.flags |= Process_fields[key as usize].flags;
+        }
+    }
+    // C: this->ss->fields[size] = 0;  (already 0 from the vec![0; ...] fill)
+    ss.fields[size as usize] = 0;
 }
 
 #[cfg(test)]
@@ -376,7 +488,14 @@ mod tests {
                 }),
             );
         }
-        ColumnsPanel { super_, moving }
+        // ss/changed are null here; only the HANDLED-path tests (which reach
+        // ColumnsPanel_update) wire live pointers, via `drive` below.
+        ColumnsPanel {
+            super_,
+            ss: core::ptr::null_mut(),
+            changed: core::ptr::null_mut(),
+            moving,
+        }
     }
 
     /// Read back the `moving` flag of row `i` via the same `Any` downcast
@@ -439,13 +558,13 @@ mod tests {
 
     // ── eventHandler ──────────────────────────────────────────────────
     //
-    // The C tail `if (result == HANDLED) ColumnsPanel_update(super)` reaches
-    // the still-stubbed `ColumnsPanel_update` (`todo!()`), so every
-    // `HANDLED`-returning path mutates the panel and *then* panics. The
-    // `IGNORED`/`BREAK_LOOP→IGNORED` paths run to completion and are asserted
-    // directly; the `HANDLED` paths are driven through `catch_unwind`, which
-    // both confirms the transitive block (the stub fired) and lets the panel
-    // mutation — performed before the panic — be inspected afterwards.
+    // The C tail `if (result == HANDLED) ColumnsPanel_update(super)` now
+    // reaches the ported `ColumnsPanel_update`, which rewrites the screen's
+    // `fields`/`flags` from the new list order and sets `*changed`. The
+    // `HANDLED`-path tests wire a live `ScreenSettings`/`changed` pair into the
+    // panel via `drive` and assert both the panel-level mutation and the
+    // resulting `fields` list; the `IGNORED`/`BREAK_LOOP`-to-`IGNORED` paths
+    // never call update, so they run against the null back-pointers unchanged.
 
     /// The `ListItem.value` of row `i`, via the same `Any` downcast the port
     /// uses.
@@ -455,17 +574,19 @@ mod tests {
         any.downcast_ref::<ListItem>().unwrap().value.clone()
     }
 
-    /// Drive a `HANDLED`-returning key and assert the tail hit the
-    /// `ColumnsPanel_update` `todo!()` stub (the documented transitive block).
-    /// The panel mutation done before the panic persists in `cp`.
-    fn expect_update_stub_panic(cp: &mut ColumnsPanel, ch: i32) {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ColumnsPanel_eventHandler(cp, ch);
-        }));
-        assert!(
-            r.is_err(),
-            "HANDLED tail should reach the ColumnsPanel_update stub and panic"
-        );
+    /// Wire a fresh `ScreenSettings` + `changed` flag into `cp`, drive `ch`
+    /// through the event handler (whose `HANDLED` tail runs the ported
+    /// [`ColumnsPanel_update`]), then null the back-pointers so they cannot
+    /// dangle past the borrowed locals. Returns `(result, changed, ss.fields)`.
+    fn drive(cp: &mut ColumnsPanel, ch: i32) -> (HandlerResult, bool, Vec<RowField>) {
+        let mut ss = ScreenSettings::default();
+        let mut changed = false;
+        cp.ss = &mut ss;
+        cp.changed = &mut changed;
+        let result = ColumnsPanel_eventHandler(cp, ch);
+        cp.ss = core::ptr::null_mut();
+        cp.changed = core::ptr::null_mut();
+        (result, changed, ss.fields)
     }
 
     #[test]
@@ -549,7 +670,8 @@ mod tests {
                 .moving = false;
         }
         cp.super_.selected = 1;
-        expect_update_stub_panic(&mut cp, KEY_ENTER);
+        let (r, changed, fields) = drive(&mut cp, KEY_ENTER);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert!(cp.moving);
         assert_eq!(
             cp.super_.selectionColorId,
@@ -557,39 +679,52 @@ mod tests {
         );
         assert!(row_moving(&cp, 1), "selected row should be marked moving");
         assert!(!row_moving(&cp, 0));
+        // Update rewrote fields from the (unchanged) list order + terminator.
+        assert!(changed);
+        assert_eq!(fields, vec![0, 1, 2, 0]);
     }
 
     #[test]
-    fn enter_while_moving_cancels_move_then_hits_update_stub() {
+    fn enter_while_moving_cancels_move_then_runs_update() {
         let mut cp = panel_with_moving_rows(3, true);
         Panel_setSelectionColor(&mut cp.super_, ColorElements::PANEL_SELECTION_FOLLOW);
-        expect_update_stub_panic(&mut cp, KEY_ENTER);
+        let (r, changed, fields) = drive(&mut cp, KEY_ENTER);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert!(!cp.moving);
         assert_eq!(
             cp.super_.selectionColorId,
             ColorElements::PANEL_SELECTION_FOCUS
         );
+        assert!(changed);
+        assert_eq!(fields, vec![0, 1, 2, 0]);
     }
 
     #[test]
-    fn f7_moves_selection_up_then_hits_update_stub() {
+    fn f7_moves_selection_up_then_runs_update() {
         let mut cp = panel_with_moving_rows(3, false); // field0,field1,field2
         cp.super_.selected = 2;
-        expect_update_stub_panic(&mut cp, KEY_F7);
+        let (r, changed, fields) = drive(&mut cp, KEY_F7);
+        assert_eq!(r, HandlerResult::HANDLED);
         // field2 swapped with field1; selection followed up to 1.
         assert_eq!(row_value(&cp, 1), "field2");
         assert_eq!(row_value(&cp, 2), "field1");
         assert_eq!(cp.super_.selected, 1);
+        // fields track the new key order [0, 2, 1] + terminator.
+        assert!(changed);
+        assert_eq!(fields, vec![0, 2, 1, 0]);
     }
 
     #[test]
-    fn f8_moves_selection_down_then_hits_update_stub() {
+    fn f8_moves_selection_down_then_runs_update() {
         let mut cp = panel_with_moving_rows(3, false);
         cp.super_.selected = 0;
-        expect_update_stub_panic(&mut cp, KEY_F8);
+        let (r, changed, fields) = drive(&mut cp, KEY_F8);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert_eq!(row_value(&cp, 0), "field1");
         assert_eq!(row_value(&cp, 1), "field0");
         assert_eq!(cp.super_.selected, 1);
+        assert!(changed);
+        assert_eq!(fields, vec![1, 0, 2, 0]);
     }
 
     #[test]
@@ -597,50 +732,64 @@ mod tests {
         // moving=true makes KEY_UP fall through to the MoveUp arm (C:81-84).
         let mut cp = panel_with_moving_rows(3, true);
         cp.super_.selected = 2;
-        expect_update_stub_panic(&mut cp, KEY_UP);
+        let (r, _changed, fields) = drive(&mut cp, KEY_UP);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert_eq!(row_value(&cp, 1), "field2");
         assert_eq!(cp.super_.selected, 1);
+        assert_eq!(fields, vec![0, 2, 1, 0]);
     }
 
     #[test]
     fn down_while_moving_falls_through_to_move_down() {
         let mut cp = panel_with_moving_rows(3, true);
         cp.super_.selected = 0;
-        expect_update_stub_panic(&mut cp, KEY_DOWN);
+        let (r, _changed, fields) = drive(&mut cp, KEY_DOWN);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert_eq!(row_value(&cp, 0), "field1");
         assert_eq!(cp.super_.selected, 1);
+        assert_eq!(fields, vec![1, 0, 2, 0]);
     }
 
     #[test]
-    fn f9_removes_row_then_hits_update_stub() {
+    fn f9_removes_row_then_runs_update() {
         let mut cp = panel_with_moving_rows(3, false);
         cp.super_.selected = 1;
-        expect_update_stub_panic(&mut cp, KEY_F9);
+        let (r, changed, fields) = drive(&mut cp, KEY_F9);
+        assert_eq!(r, HandlerResult::HANDLED);
         // C: size > 1 && selected < size -> Panel_remove(super, 1).
         assert_eq!(Panel_size(&cp.super_), 2);
         assert_eq!(row_value(&cp, 0), "field0");
         assert_eq!(row_value(&cp, 1), "field2");
+        // fields track the surviving key order [0, 2] + terminator.
+        assert!(changed);
+        assert_eq!(fields, vec![0, 2, 0]);
     }
 
     #[test]
-    fn f9_on_single_row_keeps_it_but_still_hits_update_stub() {
+    fn f9_on_single_row_keeps_it_but_still_runs_update() {
         // size == 1: the `size > 1` guard blocks removal, but result is still
-        // HANDLED, so the update stub still fires.
+        // HANDLED, so the update still fires.
         let mut cp = panel_with_moving_rows(1, false);
-        expect_update_stub_panic(&mut cp, KEY_F9);
+        let (r, changed, fields) = drive(&mut cp, KEY_F9);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert_eq!(Panel_size(&cp.super_), 1);
+        assert!(changed);
+        assert_eq!(fields, vec![0, 0]);
     }
 
     #[test]
-    fn lost_focus_while_moving_cancels_then_hits_update_stub() {
+    fn lost_focus_while_moving_cancels_then_runs_update() {
         let mut cp = panel_with_moving_rows(3, true);
         Panel_setSelectionColor(&mut cp.super_, ColorElements::PANEL_SELECTION_FOLLOW);
-        expect_update_stub_panic(&mut cp, EVENT_PANEL_LOST_FOCUS);
+        let (r, changed, fields) = drive(&mut cp, EVENT_PANEL_LOST_FOCUS);
+        assert_eq!(r, HandlerResult::HANDLED);
         assert!(!cp.moving);
         assert_eq!(
             cp.super_.selectionColorId,
             ColorElements::PANEL_SELECTION_FOCUS
         );
+        assert!(changed);
+        assert_eq!(fields, vec![0, 1, 2, 0]);
     }
 
     // ── ColumnsPanel_add ──────────────────────────────────────────────
@@ -725,5 +874,28 @@ mod tests {
                 table: core::ptr::null(),
             }),
         );
+    }
+
+    // ── ColumnsPanel_new / _fill ──────────────────────────────────────
+
+    #[test]
+    fn new_fills_list_from_ss_fields_and_stores_backpointers() {
+        // ss->fields is the NUL-terminated reserved-field list; _new -> _fill
+        // adds one ListItem per non-zero field, in order, and stores the
+        // ss/changed back-pointers.
+        let mut ss = ScreenSettings::default();
+        ss.fields = vec![1, 2, 0]; // two reserved fields + terminator
+        let columns = Hashtable_new(10, false);
+        let mut changed = false;
+
+        let cp = ColumnsPanel_new(&mut ss, &columns, &mut changed);
+
+        assert_eq!(Panel_size(&cp.super_), 2);
+        assert_eq!(added_row(&cp.super_, 0).key, 1);
+        assert_eq!(added_row(&cp.super_, 1).key, 2);
+        // Header rendered and back-pointers wired.
+        assert!(!changed); // _new/_fill never touch `changed` (only _update)
+        assert_eq!(cp.ss, &mut ss as *mut ScreenSettings);
+        assert_eq!(cp.changed, &mut changed as *mut bool);
     }
 }

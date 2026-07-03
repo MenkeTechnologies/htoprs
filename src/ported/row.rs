@@ -20,28 +20,12 @@
 //! globals (modeled as `AtomicI32`, matching `crt.rs`'s `CRT_colorScheme`
 //! pattern). They depend only on the ported `countDigits` (`xutils.rs`).
 //!
-//! Still stubbed (`todo!()`, named after their real htop C function so
-//! the port-purity gate accepts the module); each names its blocker in
-//! its own doc-comment:
-//! - [`Row_display`] — dereferences `host` into `Settings`, walks
-//!   `settings->ss->fields` and dispatches through the `RowClass.writeField`
-//!   / `Row_isHighlighted` vtable slots, none of which are modeled (only
-//!   `ObjectClass` is realized, not `RowClass`).
-//! - [`Row_resetFieldWidths`], [`alignedTitleProcessField`] — need the
-//!   unported platform `Process_fields[]` (`ProcessFieldData`) table.
-//! - [`Row_updateFieldWidth`], [`Row_resetFieldWidths`] — need the
-//!   `Row_fieldWidths[LAST_RESERVED_FIELD]` global, sized by a platform
-//!   constant not modeled in the port.
-//! - [`alignedTitleDynamicColumn`] — needs `Settings.dynamicColumns`
-//!   (`Hashtable_get`, `DynamicColumn.{width,heading}` and
-//!   `DYNAMIC_*_COLUMN_WIDTH` have since landed, but the `Settings` struct
-//!   in `settings.rs` still carries no `dynamicColumns` `Hashtable` field
-//!   to look the column up in).
-//! - [`RowField_alignedTitle`], [`RowField_keyAt`] — blocked transitively
-//!   on the two `alignedTitle*` helpers (and `Settings.ss`).
-//!
-//! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
-//! *ported*, so scaffolding does not inflate coverage.
+//! The `RowClass` vtable, the `Process_fields[]` table, and the
+//! `Row_fieldWidths` global have since landed, so `Row_display`,
+//! `Row_resetFieldWidths`, `alignedTitleProcessField`,
+//! `Row_updateFieldWidth`, `alignedTitleDynamicColumn`,
+//! `RowField_alignedTitle`, and `RowField_keyAt` are all ported. This
+//! module has no remaining `todo!()` stubs.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -49,6 +33,9 @@
 
 use crate::ported::crt::ColorElements::*;
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::dynamiccolumn::{
+    DynamicColumn_lookup, DYNAMIC_DEFAULT_COLUMN_WIDTH, DYNAMIC_MAX_COLUMN_WIDTH,
+};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass, Object_class};
@@ -525,16 +512,44 @@ pub fn Row_updateFieldWidth(key: RowField, width: usize) {
     }
 }
 
-/// TODO: port of `static const char* alignedTitleDynamicColumn(const
-/// Settings* settings, int key, char* titleBuffer, size_t
-/// titleBufferSize)` from `Row.c:127`. Looks up `settings->dynamicColumns`
-/// (a `Hashtable`) via `Hashtable_get` and reads `column->width` /
-/// `column->heading`. `Hashtable_get`, `DynamicColumn.{width,heading}` and
-/// `DYNAMIC_{MAX,DEFAULT}_COLUMN_WIDTH` all exist, but the `Settings` struct
-/// still carries no `dynamicColumns` field (the `Hashtable` to look the
-/// column up in). Stays a stub until that field is modeled.
-pub fn alignedTitleDynamicColumn(_settings: &Settings, _field: RowField) -> String {
-    todo!("port of Row.c:127 — needs Settings.dynamicColumns + Hashtable_get + DynamicColumn")
+/// Port of `static const char* alignedTitleDynamicColumn(const Settings*
+/// settings, int key, char* titleBuffer, size_t titleBufferSize)` from
+/// `Row.c:127`. Looks up the dynamic column for `key` in
+/// `settings->dynamicColumns` ([`DynamicColumn_lookup`], the C
+/// `Hashtable_get` + `(DynamicColumn*)` cast); a miss returns `"- "`. The
+/// column width is clamped: an unset (`0`) or out-of-range width falls back
+/// to [`DYNAMIC_DEFAULT_COLUMN_WIDTH`]. The C `xSnprintf(buf, size, "%*s ",
+/// width, heading)` becomes an owned `String`: a positive width right-aligns,
+/// a negative width left-aligns (matching printf's `%*s` sign convention).
+///
+/// Signature mapping: the caller-buffer + `const char*` return is an owned
+/// `String`. `settings->dynamicColumns` is a borrowed `*mut Hashtable`
+/// (`None` = C `NULL`); a `None` handle yields the same `"- "` as a lookup
+/// miss (the C would deref `NULL`, but the port never stores a null handle).
+pub fn alignedTitleDynamicColumn(settings: &Settings, field: RowField) -> String {
+    // const DynamicColumn* column = Hashtable_get(settings->dynamicColumns, key);
+    let column = settings
+        .dynamicColumns
+        .and_then(|dc| DynamicColumn_lookup(unsafe { &*dc }, field as u32));
+    let column = match column {
+        Some(c) => c,
+        None => return "- ".to_string(),
+    };
+
+    // int width = column->width;
+    // if (!width || abs(width) > DYNAMIC_MAX_COLUMN_WIDTH) width = DYNAMIC_DEFAULT_COLUMN_WIDTH;
+    let mut width = column.width;
+    if width == 0 || width.abs() > DYNAMIC_MAX_COLUMN_WIDTH {
+        width = DYNAMIC_DEFAULT_COLUMN_WIDTH;
+    }
+
+    // xSnprintf(titleBuffer, titleBufferSize, "%*s ", width, column->heading);
+    let heading = column.heading.as_deref().unwrap_or("");
+    if width >= 0 {
+        format!("{heading:>w$} ", w = width as usize)
+    } else {
+        format!("{heading:<w$} ", w = width.unsigned_abs() as usize)
+    }
 }
 
 /// Port of `static const char* alignedTitleProcessField(ProcessField field,

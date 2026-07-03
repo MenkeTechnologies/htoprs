@@ -22,8 +22,10 @@
 //! - [`Panel_delete`] / [`Panel_done`] — the C bodies are `free`/
 //!   `Vector_delete`/`FunctionBar_delete`/`RichString_delete`; in Rust the
 //!   owned fields are released by `Drop`, so there is no algorithm to port.
-//! - [`Panel_splice`] — its body is `Vector_splice`, itself an unportable
-//!   stub (it aliases `Object*` across two `Vector`s; a `Box` can't share).
+//! - [`Panel_splice`] is ported: its `Vector_splice` body appends `from`'s
+//!   element *pointers* without owning them (C `assert(!owner)`), which the
+//!   [`PanelItem::Borrowed`] variant models directly (a raw `*mut dyn Object`
+//!   into storage the source `Vector` still owns).
 //! - The `PanelClass` vtable (`eventHandler`/`drawFunctionBar`/
 //!   `printHeader`) is not modeled: [`Panel`] is a plain struct, not an
 //!   `Object` subclass with a dispatch table. [`Panel_setSelected`] and
@@ -61,6 +63,7 @@ use crate::ported::richstring::{
     RichString, RichString_rewind, RichString_setAttr, RichString_size, RichString_sizeVal,
     RichString_writeWide,
 };
+use crate::ported::vector::{Vector, Vector_get, Vector_size};
 use std::sync::atomic::Ordering;
 
 // Ctrl-key codes htop matches in `Panel_onKey`. `KEY_CTRL` is a `const fn`
@@ -559,15 +562,35 @@ pub fn Panel_setSelected(this: &mut Panel, selected: i32) {
     this.selected = selected;
 }
 
-/// TODO: port of `void Panel_splice(Panel* this, Vector* from)` from
-/// `Panel.c:224`. Its body is `Vector_splice(this->items, from)`, which
-/// asserts `!this->owner` and copies the *pointers* of `from`'s elements
-/// into `this` without owning them (both `Vector`s then alias the same
-/// `Object*`). `Vector_splice` (`Vector.c:367`) is itself a deliberate stub
-/// in `vector.rs` because a `Box<dyn Object>` is a unique owner and cannot
-/// model that shared aliasing; `Panel_splice` inherits the same block.
-pub fn Panel_splice() {
-    todo!("port of Panel.c:224 — Vector_splice needs !owner shared aliasing; Box can't share an Object")
+/// Port of `void Panel_splice(Panel* this, Vector* from)` from `Panel.c:224`:
+/// `Vector_splice(this->items, from); this->prevSelected = -1;
+/// this->needsRedraw = true;`.
+///
+/// `Vector_splice` (`Vector.c:367`) asserts `!this->owner` and appends the
+/// *pointers* of `from`'s elements into `this->items` without owning them —
+/// both `Vector`s then alias the same `Object*`. The [`PanelItem`] model
+/// expresses exactly that non-owning alias with [`PanelItem::Borrowed`]: each
+/// element of `from` (owned by whoever owns the `Vector`, e.g. `AffinityPanel`'s
+/// `cpuids`) is referenced by a raw `*mut dyn Object` the panel never frees.
+/// So the faithful port pushes a `Borrowed` pointer to every element of `from`,
+/// reproducing the appended aliasing while keeping single ownership with the
+/// source. The `assert(this != NULL)`/`assert(from != NULL)` preconditions are
+/// carried by the `&mut Panel`/`&Vector` reference types.
+///
+/// # Safety
+///
+/// The elements of `from` must outlive their display in this panel (the same
+/// contract every [`PanelItem::Borrowed`] carries — the real owner frees them).
+pub fn Panel_splice(this: &mut Panel, from: &Vector) {
+    // C: Vector_splice(this->items, from) — append `from`'s element pointers.
+    let n = Vector_size(from);
+    for i in 0..n {
+        // The element is owned by `from`; the panel only references it.
+        let obj = Vector_get(from, i as usize) as *const dyn Object as *mut dyn Object;
+        this.items.push(PanelItem::Borrowed(obj));
+    }
+    this.prevSelected = -1;
+    this.needsRedraw = true;
 }
 
 /// Port of `void Panel_draw(Panel* this, bool force_redraw, bool focus,

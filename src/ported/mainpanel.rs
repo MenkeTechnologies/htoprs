@@ -20,15 +20,14 @@
 //! convention.
 //!
 //! The C `Htop_Action* keys` action table is **omitted**: the only
-//! functions that read/allocate it — [`MainPanel_new`],
-//! [`MainPanel_eventHandler`], [`MainPanel_delete`] — are all stubbed on
-//! other blockers (see below), so no ported function needs it. The
-//! `state` back-pointer is an owning-elsewhere `*mut State` (the C field
-//! is a `State*` that `htop.c` owns and shares), so [`MainPanel_setState`]
-//! stores it verbatim; the ported functions that read `state`
-//! (`eventHandler`/`drawFunctionBar`/`printHeader`) are stubbed on
-//! `state->host` (`Machine*`) / `state->failedUpdate`, which the minimal
-//! `action::State` model omits.
+//! functions that read/allocate it — [`MainPanel_new`] and
+//! [`MainPanel_eventHandler`] — are both stubbed on other blockers (see
+//! below), so no ported function needs it. The `state` back-pointer is an
+//! owning-elsewhere `*mut State` (the C field is a `State*` that `htop.c`
+//! owns and shares), so [`MainPanel_setState`] stores it verbatim;
+//! [`MainPanel_drawFunctionBar`]/[`MainPanel_printHeader`] now read through it
+//! (`state->pauseUpdate`/`failedUpdate`, `state->host->settings`) since
+//! `action::State` models `host`/`failedUpdate`.
 //!
 //! # Ported (self-contained, no unported substrate)
 //!
@@ -66,33 +65,35 @@
 //!   `Option<FunctionBar>`, so the target bar is cloned into both slots —
 //!   the same clone-reproduces-the-shared-pointer mapping `Panel_init`/
 //!   `Panel_setDefaultBar` already use.
+//! - [`MainPanel_getValue`] (`MainPanel.c:54`, `static`) — returns
+//!   `Row_sortKeyString(row)` (`Row.h:104`) for item `i`, dispatching through
+//!   the now-modeled `RowClass.sortKeyString` vtable slot via the
+//!   [`Object::row_class`] accessor; the slot's `Option<&[u8]>` (`None` = C
+//!   `""`) is decoded to the `&str` the incremental-search callback consumes.
+//! - [`MainPanel_drawFunctionBar`] (`MainPanel.c:198`, `static`) — draws the
+//!   [`IncSet_drawBar`] bar (threading `&mut this.super_` for the panel the C
+//!   `IncSet` reaches by back-pointer), then appends the `PAUSED` /
+//!   `failedUpdate` marker read through the `*mut State` back-pointer (both
+//!   fields now modeled). `CRT_colors[X]` resolves via
+//!   `ColorElements::X.packed(ColorScheme::active())`.
+//! - [`MainPanel_printHeader`] (`MainPanel.c:213`, `static`) — hands
+//!   `state->host->settings` and the panel `header` to the ported
+//!   [`Table_printHeader`]; `host`/`settings` are reached through the raw
+//!   `*mut State` back-pointer (`action::State` now models `host`).
 //!
 //! # Stubbed (cannot be ported faithfully yet)
 //!
-//! - [`MainPanel_getValue`] (`MainPanel.c:54`, `static`) — `Row_sortKeyString`
-//!   (`Row.h:104`) dispatches through the `RowClass.sortKeyString` vtable
-//!   slot, which `row.rs` does NOT model (only the `.compare` slot is
-//!   realized; the `RowClass`-specific slots are the unmodeled NULL/vtable
-//!   entries). No faithful body without that slot.
 //! - [`MainPanel_eventHandler`] (`MainPanel.c:59`, `static`) — the panel's
-//!   key dispatcher. Blocked on nearly everything unported: `state->host`
-//!   (`Machine*`, omitted from `action::State`), `IncSet_handleKey` /
-//!   `IncSet_filter` (both `incset.rs` stubs), `Action_setSortKey` /
-//!   `Action_setScreenTab` (both `action.rs` stubs), `RowField_keyAt`
-//!   (`row.rs` stub), the `ScreenSettings` sort-key helpers, the
-//!   `HandlerResult` enum, and the `keys[]` `Htop_Action` dispatch.
-//! - [`MainPanel_drawFunctionBar`] (`MainPanel.c:198`, `static`) — reads
-//!   `state->pauseUpdate`/`state->failedUpdate`; the latter (a `const char*`
-//!   failure message) is omitted from the minimal `action::State`, so the
-//!   `else if (this->state->failedUpdate)` branch has no faithful body.
-//!   (`IncSet_drawBar` is now ported, so it is no longer a blocker.)
-//! - [`MainPanel_printHeader`] (`MainPanel.c:213`, `static`) —
-//!   `Table_printHeader` (`table.rs` stub) against `state->host->settings`
-//!   (`Machine*`, omitted from `action::State`).
+//!   key dispatcher. Blocked on the omitted `keys[]` `Htop_Action` table
+//!   (`this->keys[ch](this->state)` has no field to dispatch through) and on
+//!   `IncSet_handleKey` still being a zero-argument `incset.rs` stub (calling
+//!   it with the C's five arguments would not compile). Also needs
+//!   `Settings.ss`/`enableMouse` and the `host->activeTable` follow-mode
+//!   mutations that the minimal substrate does not yet wire.
 //! - [`MainPanel_new`] (`MainPanel.c:229`) — allocates the panel and calls
 //!   `Action_setBindings` (`action.rs` stub) + `Platform_setBindings`
-//!   (`Platform.c` unported) to fill the `keys` table. The binding setup
-//!   is essential and cannot run against those stubs.
+//!   (`Platform.c` unported) to fill the omitted `keys` table. The binding
+//!   setup is essential and cannot run against those stubs.
 //!
 //! [`MainPanel_delete`] (`MainPanel.c:253`) is now ported: its `free` chain
 //! maps to the by-value drop idiom (`processBar`/`readonlyBar` handed to
@@ -109,14 +110,17 @@
 use core::any::Any;
 
 use crate::ported::action::State;
-use crate::ported::crt::KEY_F;
-use crate::ported::functionbar::{FunctionBar, FunctionBar_delete, FunctionBar_setLabel};
-use crate::ported::incset::{IncSet, IncSet_delete};
+use crate::ported::crt::{ColorElements, ColorScheme, KEY_F};
+use crate::ported::functionbar::{
+    FunctionBar, FunctionBar_append, FunctionBar_delete, FunctionBar_setLabel,
+};
+use crate::ported::incset::{IncSet, IncSet_delete, IncSet_drawBar};
 use crate::ported::object::{Arg, Object};
 use crate::ported::panel::{
     Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size,
 };
 use crate::ported::row::Row;
+use crate::ported::table::Table_printHeader;
 
 /// Reduced model of the C `MainPanel` struct (`MainPanel.h:21`). See the
 /// module docs for the omitted `Htop_Action* keys` field and the `state`
@@ -192,24 +196,43 @@ fn MainPanel_idSearch(this: &mut MainPanel, ch: i32) {
     }
 }
 
-/// TODO: port of `static const char* MainPanel_getValue(Panel* this, int i)`
-/// from `MainPanel.c:54`. Returns `Row_sortKeyString(row)` — a dispatch
-/// through the `RowClass.sortKeyString` vtable slot (`Row.h:104`), which
-/// `row.rs` does not model (only the `.compare` slot is realized). Left as
-/// a stub until that vtable slot exists.
-pub fn MainPanel_getValue() {
-    todo!("port of MainPanel.c:54 — needs the RowClass.sortKeyString vtable slot (unmodeled)")
+/// Port of `static const char* MainPanel_getValue(Panel* this, int i)` from
+/// `MainPanel.c:54`. Returns `Row_sortKeyString(row)` for the item at index
+/// `i` — the incremental-search key of that row.
+///
+/// `Row_sortKeyString(r_)` is the macro `As_Row(r_)->sortKeyString ?
+/// As_Row(r_)->sortKeyString(r_) : ""` (`Row.h:104`); here that is the
+/// [`RowClass::sortKeyString`](crate::ported::row::RowClass) vtable slot
+/// reached via the [`Object::row_class`] accessor (the safe-Rust analog of the
+/// C `As_Row(r_)` cast). The slot's `Row_SortKeyString` yields `Option<&[u8]>`
+/// (`None`/`NULL` and the empty slot both map to the C `""`); the bytes are
+/// the row's sort key, decoded as UTF-8 to match the `&str` the
+/// incremental-search callback consumes (invalid bytes then `""`, never a
+/// panic). The C `const char*` return type is that same borrowed string.
+pub fn MainPanel_getValue(this: &Panel, i: i32) -> &str {
+    // C: Row* row = (Row*) Panel_get(this, i);
+    let row = Panel_get(this, i);
+    // C: return Row_sortKeyString(row);  (Row.h:104 macro)
+    match row
+        .row_class()
+        .and_then(|klass| klass.sortKeyString)
+        .and_then(|slot| slot(row))
+    {
+        Some(bytes) => core::str::from_utf8(bytes).unwrap_or(""),
+        None => "",
+    }
 }
 
 /// TODO: port of `static HandlerResult MainPanel_eventHandler(Panel* super,
-/// int ch)` from `MainPanel.c:59`. The panel key dispatcher. Blocked on
-/// unported substrate: `state->host` (`Machine*`, omitted from
-/// `action::State`), `IncSet_handleKey`/`IncSet_filter` (incset stubs),
-/// `Action_setSortKey`/`Action_setScreenTab` (action stubs),
-/// `RowField_keyAt` (row stub), the `ScreenSettings` sort helpers, the
-/// `HandlerResult` enum, and the `keys[]` `Htop_Action` dispatch.
+/// int ch)` from `MainPanel.c:59`. The panel key dispatcher. Blocked on the
+/// omitted `keys[]` `Htop_Action` table (the `this->keys[ch](this->state)`
+/// branch has no struct field to dispatch through) and on `IncSet_handleKey`
+/// still being a zero-argument `incset.rs` stub — calling it with the C's five
+/// arguments (`this->inc, ch, super, MainPanel_getValue, NULL`) would not
+/// compile. Also needs `Settings.ss`/`enableMouse` and the `host->activeTable`
+/// follow-mode mutations that the minimal substrate does not wire.
 pub fn MainPanel_eventHandler() {
-    todo!("port of MainPanel.c:59 — needs Machine/IncSet/Action/HandlerResult substrate")
+    todo!("port of MainPanel.c:59 — needs the keys[] Htop_Action table field + a real IncSet_handleKey signature")
 }
 
 /// Port of `int MainPanel_selectedRow(MainPanel* this)` from
@@ -279,22 +302,73 @@ pub fn MainPanel_foreachRow(
     ok
 }
 
-/// TODO: port of `static void MainPanel_drawFunctionBar(Panel* super,
+/// Port of `static void MainPanel_drawFunctionBar(Panel* super,
 /// bool hideFunctionBar)` from `MainPanel.c:198`. Draws the incremental
-/// bar and appends the PAUSED/failed-read markers. `IncSet_drawBar` is now
-/// ported, but the `else if (this->state->failedUpdate)` branch reads
-/// `State.failedUpdate` (a `const char*`), which the minimal `action::State`
-/// omits — so there is no faithful body yet.
-pub fn MainPanel_drawFunctionBar() {
-    todo!("port of MainPanel.c:198 — needs State.failedUpdate (omitted from action::State)")
+/// search/filter bar, then appends the `PAUSED` marker (when the UI is
+/// paused) or the failed-read message (`state->failedUpdate`) to it.
+///
+/// The C `Panel* super` upcast to `MainPanel*` becomes the reduced-struct
+/// receiver `this: &mut MainPanel` (the sibling-panel convention). The C
+/// `IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR])` becomes the ported
+/// [`IncSet_drawBar`], which threads the panel (`&mut this.super_`) that the
+/// C `IncSet` reaches through its own back-pointer, plus the resolved
+/// `FUNCTION_BAR` color. `state` is the raw `*mut State` back-pointer stored by
+/// [`MainPanel_setState`]; `pauseUpdate`/`failedUpdate` are read through it as
+/// C reads `this->state->...`. `CRT_colors[X]` resolves via
+/// `ColorElements::X.packed(ColorScheme::active())`, the same lookup
+/// [`crate::ported::panel::Panel_draw`] uses.
+pub fn MainPanel_drawFunctionBar(this: &mut MainPanel, hideFunctionBar: bool) {
+    // C: if (hideFunctionBar && !this->inc->active) return;  (keep active bar)
+    if hideFunctionBar && this.inc.active.is_none() {
+        return;
+    }
+
+    // C: IncSet_drawBar(this->inc, CRT_colors[FUNCTION_BAR]);
+    IncSet_drawBar(
+        &mut this.inc,
+        &mut this.super_,
+        ColorElements::FUNCTION_BAR.packed(ColorScheme::active()),
+    );
+
+    // C: this->state->pauseUpdate / this->state->failedUpdate
+    // SAFETY: `state` is the non-owning back-pointer stored by MainPanel_setState.
+    let state = unsafe { &*this.state };
+    if state.pauseUpdate {
+        // C: FunctionBar_append("PAUSED", CRT_colors[PAUSED]);
+        FunctionBar_append("PAUSED", ColorElements::PAUSED.packed(ColorScheme::active()));
+    } else if let Some(msg) = &state.failedUpdate {
+        // C: FunctionBar_append(this->state->failedUpdate, CRT_colors[FAILED_READ]);
+        FunctionBar_append(msg, ColorElements::FAILED_READ.packed(ColorScheme::active()));
+    }
 }
 
-/// TODO: port of `static void MainPanel_printHeader(Panel* super)` from
-/// `MainPanel.c:213`. Calls `Table_printHeader(host->settings, &super->header)`.
-/// Blocked on `Table_printHeader` (`table.rs` stub) and `state->host`
-/// (`Machine*`, omitted from `action::State`).
-pub fn MainPanel_printHeader() {
-    todo!("port of MainPanel.c:213 — needs Table_printHeader (table stub) + State.host (Machine)")
+/// Port of `static void MainPanel_printHeader(Panel* super)` from
+/// `MainPanel.c:213`. Calls `Table_printHeader(host->settings, &super->header)`
+/// to render the process-list column header.
+///
+/// The C `Panel* super` upcast to `MainPanel*` becomes `this: &mut MainPanel`.
+/// `this->state->host` (a `Machine*`) is reached through the raw `*mut State`
+/// back-pointer; its owned [`Settings`](crate::ported::settings::Settings)
+/// (`host->settings`, an `Option<Settings>`) is handed with the panel's own
+/// `header` [`RichString`](crate::ported::richstring::RichString) to the ported
+/// [`Table_printHeader`]. The `host`/`settings` borrows derive from the raw
+/// pointer (independent of the `&mut this` borrow of the header), so they
+/// coexist.
+///
+/// # Safety
+///
+/// `this.state` must be the valid non-owning `State` pointer stored by
+/// [`MainPanel_setState`], and its `host` a valid `Machine` with settings.
+pub fn MainPanel_printHeader(this: &mut MainPanel) {
+    // C: Machine* host = this->state->host;
+    // SAFETY: `state`/`host` are the non-owning back-pointers wired at startup.
+    let host = unsafe { &*(*this.state).host };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("MainPanel_printHeader: host->settings is NULL");
+    // C: Table_printHeader(host->settings, &super->header);
+    Table_printHeader(settings, &mut this.super_.header);
 }
 
 /// TODO: port of `MainPanel* MainPanel_new(void)` from `MainPanel.c:229`.

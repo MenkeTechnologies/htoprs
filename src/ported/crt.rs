@@ -58,16 +58,16 @@
 //!     `libc::backtrace_symbols_fd` (present for macOS and Linux-gnu). The
 //!     libunwind branch is omitted (no libunwind crate), matching an
 //!     execinfo-only build.
+//!   * `CRT_handleSIGSEGV` (`CRT.c:1420`) — the fatal fault handler: `CRT_done`,
+//!     the stderr crash report (version / signal name / `Settings_write` /
+//!     `print_backtrace`), then chaining to the saved disposition and
+//!     re-raising. `program` is [`crate::ported::htop::program`] and
+//!     `Settings_write` is ported; `CRT_settings` stays unwired (null-guarded).
 //!
-//! Still stubbed (`todo!()`) — each with its specific blocker:
+//! Still stubbed (`todo!()`) — the one genuine language-level blocker:
 //!   * `CRT_debug_impl` (`CRT.c:1056`) — a C variadic (`...`) `vfprintf`
 //!     shim; Rust has no stable variadic `fn`, so the faithful analog is
 //!     a macro, not the `pub fn` the port gate requires.
-//!   * `CRT_handleSIGSEGV` (`CRT.c:1420`) — the SIGSEGV handler body; needs
-//!     `Settings_write` (still a `todo!()` in `settings.rs`) and the
-//!     `program` global (unmodeled). Given the `extern "C"` signature
-//!     `CRT_installSignalHandlers` needs to register it, so the install is
-//!     faithful even while the body is deferred.
 //!
 //! ncurses macro values are cited from
 //! `/opt/homebrew/opt/ncurses/include/ncurses.h`:
@@ -86,7 +86,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicUsize, Ordering}
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::ported::settings::Settings;
+use crate::ported::settings::{Settings, Settings_write};
 
 use crossterm::cursor;
 use crossterm::event::{
@@ -2104,15 +2104,141 @@ pub fn print_backtrace() {
     }
 }
 
-/// TODO: port of `void CRT_handleSIGSEGV(int signal)` from `CRT.c:1420`.
+/// Port of `void CRT_handleSIGSEGV(int signal)` from `CRT.c:1420`. The fatal
+/// fault handler: tears down the terminal ([`CRT_done`]), writes a crash
+/// report to `STDERR_FILENO` (version, signal name, the persisted settings via
+/// [`Settings_write`]`(CRT_settings, true)`, and a backtrace via
+/// [`print_backtrace`]), then chains to the previously-installed disposition
+/// saved in [`OLD_SIG_HANDLER`] and re-raises the signal, forcing an exit if
+/// the chain does not terminate.
 ///
-/// Stubbed: the C body's crash report calls `Settings_write(CRT_settings, true)`
-/// (`Settings_write` is still a `todo!()` in `settings.rs`) and interpolates the
-/// `program` global (the argv[0] basename, unmodeled here). Registered by
-/// [`CRT_installSignalHandlers`], so it carries the C-ABI `extern "C" fn(c_int)`
-/// signature — the install is faithful even though this handler body is deferred.
-pub extern "C" fn CRT_handleSIGSEGV(_signal: libc::c_int) {
-    todo!("port of CRT.c:1420")
+/// Substrate mapping: the `program` global is [`crate::ported::htop::program`]
+/// and `VERSION` is `env!("CARGO_PKG_VERSION")` (the same mapping
+/// [`Settings_write`] uses for `htop_version`). The C fixed `char err_buf[512]`
+/// + `snprintf` become owned `format!` strings (the crate's owns-its-buffer
+/// mapping). `CRT_settings` is the modeled `AtomicPtr<Settings>` global; the C
+/// passes it straight to `Settings_write` (a `NULL` there would fault inside
+/// the fault handler), so the port guards the null case and skips the write
+/// while still emitting the section header. `PRINT_BACKTRACE` is defined (this
+/// build has execinfo — [`print_backtrace`] is ported), so the backtrace
+/// sections are included; the `HTOP_DARWIN` otool / objdump split maps to
+/// `cfg(target_os = "macos")`. Registered by [`CRT_installSignalHandlers`],
+/// hence the C-ABI `extern "C" fn(c_int)` signature.
+pub extern "C" fn CRT_handleSIGSEGV(signal: libc::c_int) {
+    CRT_done();
+
+    let program = crate::ported::htop::program;
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    let err_buf = format!(
+        "\n\n\
+         FATAL PROGRAM ERROR DETECTED\n\
+         ============================\n\
+         Please check at https://htop.dev/issues whether this issue has already been reported.\n\
+         If no similar issue has been reported before, please create a new issue with the following information:\n\
+         \x20 - Your {program} version: '{VERSION}'\n\
+         \x20 - Your OS and kernel version (uname -a)\n\
+         \x20 - Your distribution and release (lsb_release -a)\n\
+         \x20 - Likely steps to reproduce (How did it happen?)\n"
+    );
+    full_write_str(libc::STDERR_FILENO, &err_buf);
+
+    // #ifdef PRINT_BACKTRACE (execinfo build — print_backtrace is ported).
+    full_write_str(
+        libc::STDERR_FILENO,
+        "  - Backtrace of the issue (see below)\n",
+    );
+
+    full_write_str(libc::STDERR_FILENO, "\n");
+
+    let signal_str_ptr = unsafe { libc::strsignal(signal) };
+    let signal_str = if signal_str_ptr.is_null() {
+        String::from("unknown reason")
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(signal_str_ptr) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let err_buf = format!(
+        "Error information:\n\
+         ------------------\n\
+         A signal {signal} ({signal_str}) was received.\n\
+         \n"
+    );
+    full_write_str(libc::STDERR_FILENO, &err_buf);
+
+    full_write_str(
+        libc::STDERR_FILENO,
+        "Setting information:\n\
+         --------------------\n",
+    );
+    // C: Settings_write(CRT_settings, true). `CRT_settings` is unwired in this
+    // port (stays null), so guard the deref — the C would fault on a NULL here.
+    let settings = CRT_settings.load(Ordering::Relaxed);
+    if !settings.is_null() {
+        // SAFETY: non-null `CRT_settings` points at the live process Settings
+        // (set by `CRT_init`); read-only access in the crash path.
+        Settings_write(unsafe { &*settings }, true);
+    }
+    full_write_str(libc::STDERR_FILENO, "\n\n");
+
+    // #ifdef PRINT_BACKTRACE
+    full_write_str(
+        libc::STDERR_FILENO,
+        "Backtrace information:\n\
+         ----------------------\n",
+    );
+    print_backtrace();
+
+    let err_buf = format!(
+        "\n\
+         To make the above information more practical to work with, \
+         please also provide a disassembly of your {program} binary. \
+         This can usually be done by running the following command:\n\
+         \n"
+    );
+    full_write_str(libc::STDERR_FILENO, &err_buf);
+
+    #[cfg(target_os = "macos")]
+    let err_buf = format!("   otool -tvV `which {program}` > ~/{program}.otool\n");
+    #[cfg(not(target_os = "macos"))]
+    let err_buf = format!("   objdump -d -S -w `which {program}` > ~/{program}.objdump\n");
+    full_write_str(libc::STDERR_FILENO, &err_buf);
+
+    full_write_str(
+        libc::STDERR_FILENO,
+        "\n\
+         Please include the generated file in your report.\n",
+    );
+    // #endif /* PRINT_BACKTRACE */
+
+    let err_buf = format!(
+        "Running this program with debug symbols or inside a debugger may provide further insights.\n\
+         \n\
+         Thank you for helping to improve {program}!\n\
+         \n"
+    );
+    full_write_str(libc::STDERR_FILENO, &err_buf);
+
+    // Call old sigsegv handler; may be default exit or third party one (e.g. ASAN)
+    if unsafe { libc::sigaction(signal, old_sig_slot!(signal), core::ptr::null_mut()) } < 0 {
+        // This avoids an infinite loop in case the handler could not be reset.
+        full_write_str(
+            libc::STDERR_FILENO,
+            "!!! Chained handler could not be restored. Forcing exit.\n",
+        );
+        unsafe { libc::_exit(1) };
+    }
+
+    // Trigger the previous signal handler.
+    unsafe { libc::raise(signal) };
+
+    // Always terminate, even if installed handler returns
+    full_write_str(
+        libc::STDERR_FILENO,
+        "!!! Chained handler did not exit. Forcing exit.\n",
+    );
+    unsafe { libc::_exit(1) };
 }
 
 #[cfg(test)]

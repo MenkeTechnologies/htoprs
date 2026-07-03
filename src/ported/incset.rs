@@ -30,25 +30,15 @@
 //!   analog, so both thread the `Panel` as a parameter instead (see struct
 //!   mapping); `IncSet_drawBar` also takes `&mut IncSet` because
 //!   `LineEditor_updateScroll` mutates the active editor,
-//! - [`IncSet_filter`] (`IncSet.h:40`) — the filter-text accessor.
-//!
-//! # What stays a `todo!()` stub, and why
-//!
-//! Every stub below is blocked on substrate that is not yet ported; per
-//! the port rules the missing piece is escalated, never papered over with
-//! an ad-hoc reimplementation:
-//!
-//! - [`updateWeakPanel`] (`:96`) — `vector.rs` now ports the `Vector`
-//!   container, so the `Vector* lines` type is no longer the gap, but htop's
-//!   "weak panel" shares one `Object*` between `lines` and `panel`
-//!   (`Panel_add(panel, (Object*)line)` aliases a `Vector`-owned pointer, and
-//!   `selected == line` is a raw-pointer identity test) while `Panel_add` takes
-//!   an owned, non-`Clone` `Box<dyn Object>` — the shared-pointer model has no
-//!   analog.
-//! - [`IncSet_handleKey`] (`:177`) now drives only ported code except its
-//!   filter path, which calls the [`updateWeakPanel`] stub; porting a subset
-//!   that skips the filter refresh would gut filter mode, so it stays a whole
-//!   honest stub.
+//! - [`IncSet_filter`] (`IncSet.h:40`) — the filter-text accessor,
+//! - [`updateWeakPanel`] (`:96`) and [`IncSet_handleKey`] (`:177`) — the
+//!   "weak panel" filter/key path. htop shares one `Object*` between the
+//!   `Vector* lines` and the panel (`Panel_add(panel, (Object*)line)` aliases a
+//!   `Vector`-owned pointer, `selected == line` is a raw-pointer identity test).
+//!   This is modeled faithfully with [`PanelItem::Borrowed`] raw pointers into
+//!   the `lines`-owned `Box`es (the same weak-panel idiom `infoscreen.rs` uses)
+//!   and a data-pointer identity compare — see [`updateWeakPanel`]'s SAFETY
+//!   note. `IncSet_handleKey` threads `lines: &mut Vector` through to it.
 //!
 //! [`IncSet_delete`] (`:77`) and [`IncMode_done`] (`:61`) are now ported: the
 //! C `free` chain maps to the by-value drop idiom [`FunctionBar_delete`] uses
@@ -72,21 +62,28 @@
 
 use std::io::{self, Write};
 
-use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F};
+use crate::ported::crt::{
+    ColorElements, ColorScheme, ERR, KEY_DOWN, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK, KEY_RESIZE,
+    KEY_UP,
+};
 use crate::ported::functionbar::{
     FunctionBar, FunctionBar_delete, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_getWidth,
     FunctionBar_new, FunctionBar_synthesizeEvent, Ncurses,
 };
-use crate::ported::history::{History, History_new, History_resetPosition, History_save};
+use crate::ported::history::{
+    History, History_add, History_navigate, History_new, History_resetPosition, History_save,
+};
 use crate::ported::lineeditor::{
-    LineEditor, LineEditor_draw, LineEditor_getText, LineEditor_init, LineEditor_reset,
-    LineEditor_setText, LineEditor_updateScroll,
+    LineEditor, LineEditor_click, LineEditor_draw, LineEditor_getText, LineEditor_handleKey,
+    LineEditor_init, LineEditor_reset, LineEditor_setText, LineEditor_updateScroll,
 };
 use crate::ported::listitem::ListItem;
+use crate::ported::object::Object;
 use crate::ported::panel::{
-    Panel, Panel_get, Panel_getSelectedIndex, Panel_setDefaultBar, Panel_setSelected, Panel_size,
-    KEY_MOUSE_BAR_CLICK,
+    Panel, Panel_get, Panel_getSelected, Panel_getSelectedIndex, Panel_prune, Panel_setDefaultBar,
+    Panel_setSelected, Panel_size, PanelItem, KEY_MOUSE_BAR_CLICK,
 };
+use crate::ported::vector::{Vector, Vector_get, Vector_size};
 use crate::ported::xutils::String_contains_i;
 
 /// Port of `enum` `IncType` from `IncSet.h:19`. The discriminants (0/1)
@@ -266,21 +263,78 @@ pub fn IncSet_saveHistory(this: &IncSet) {
     }
 }
 
-/// TODO: port of `IncSet.c:96`. Rebuilds `panel` from the backing `lines`,
-/// keeping only items whose value matches the filter via `String_contains_i`.
-/// `vector.rs` ports the `Vector` container (`Vector_get`/`Vector_size`) and
-/// `panel.rs` now has a `PanelItem::Borrowed(*mut dyn Object)` variant, so the
-/// *storage* for weak items exists. What is still missing is the *add path*:
-/// htop calls `Panel_add(panel, (Object*)line)` to alias a `Vector`-owned
-/// pointer into a non-owning panel, and tests `selected == line` by raw-pointer
-/// identity. The ported `Panel_add` takes an *owned*, non-`Clone`
-/// `Box<dyn Object>`; there is no `Panel_add`-for-borrowed helper to hand it a
-/// `*mut dyn Object` aliased out of `lines`, and manufacturing such aliases
-/// plus the fat-pointer identity test by hand would be an ad-hoc
-/// reimplementation of that helper. Adding the borrowed-add fn belongs in
-/// `panel.rs`, outside this port group.
-fn updateWeakPanel() {
-    todo!("port of IncSet.c:96 — needs a Panel_add-for-borrowed path (panel.rs); PanelItem::Borrowed storage exists but no aliasing add fn")
+/// Port of `static void updateWeakPanel(IncSet* this, Panel* panel, Vector*
+/// lines)` from `IncSet.c:96`. Rebuilds the weak `panel` from the backing
+/// `lines`: prunes the panel, then (when filtering) re-adds only the items whose
+/// value matches the filter, else every item — preserving the selection by
+/// raw-pointer identity.
+///
+/// **Weak panel (raw-pointer alias).** htop's `Panel_add(panel,
+/// (Object*)line)` aliases a `Vector`-owned pointer into the non-owning panel;
+/// `selected == (Object*)line` is a raw-pointer identity test. Modeled
+/// faithfully: each re-added item is a [`PanelItem::Borrowed`] raw pointer into
+/// the `lines`-owned `Box` (the same weak-panel idiom `infoscreen.rs`'s
+/// `InfoScreen_addLine` uses), and `selected == line` is a data-pointer compare
+/// (`*const dyn Object as *const ()`).
+///
+/// SAFETY: `lines` owns the `ListItem` boxes (heap-stable across `Vector`
+/// growth); the panel only borrows them and is pruned/rebuilt whenever `lines`
+/// changes, so the borrowed pointers are never dereferenced after their owner
+/// is freed. This mirrors htop's non-owning `Panel` exactly.
+fn updateWeakPanel(this: &IncSet, panel: &mut Panel, lines: &mut Vector) {
+    // C: const Object* selected = Panel_getSelected(panel);
+    let selected: *const () = match Panel_getSelected(panel) {
+        Some(o) => o as *const dyn Object as *const (),
+        None => core::ptr::null(),
+    };
+    // C: Panel_prune(panel);
+    Panel_prune(panel);
+
+    if this.filtering {
+        // C: int n = 0;
+        //    const char* incFilter = LineEditor_getText(&this->modes[INC_FILTER].editor);
+        let mut n: i32 = 0;
+        let incFilter =
+            LineEditor_getText(&this.modes[IncType::INC_FILTER as usize].editor).to_string();
+        for i in 0..Vector_size(lines) as usize {
+            // C: ListItem* line = (ListItem*)Vector_get(lines, i);
+            //    if (String_contains_i(line->value, incFilter, true)) { ... }
+            let matches = {
+                let obj: &dyn core::any::Any = Vector_get(lines, i);
+                let value = &obj
+                    .downcast_ref::<ListItem>()
+                    .expect("weak panel lines are ListItem")
+                    .value;
+                String_contains_i(value, &incFilter, true)
+            };
+            if matches {
+                // C: Panel_add(panel, (Object*)line); — weak (borrowed) add.
+                let ptr: *mut dyn Object = &mut **lines.array[i].as_mut().unwrap();
+                let line_id = ptr as *const dyn Object as *const ();
+                panel.items.push(PanelItem::Borrowed(ptr));
+                panel.prevSelected = -1;
+                panel.needsRedraw = true;
+                // C: if (selected == (Object*)line) Panel_setSelected(panel, n);
+                if selected == line_id {
+                    Panel_setSelected(panel, n);
+                }
+                n += 1;
+            }
+        }
+    } else {
+        for i in 0..Vector_size(lines) as usize {
+            // C: Object* line = Vector_get(lines, i); Panel_add(panel, line);
+            let ptr: *mut dyn Object = &mut **lines.array[i].as_mut().unwrap();
+            let line_id = ptr as *const dyn Object as *const ();
+            panel.items.push(PanelItem::Borrowed(ptr));
+            panel.prevSelected = -1;
+            panel.needsRedraw = true;
+            // C: if (selected == line) Panel_setSelected(panel, i);
+            if selected == line_id {
+                Panel_setSelected(panel, i as i32);
+            }
+        }
+    }
 }
 
 /// Port of `IncSet.c:124`. Walks the panel front-to-back and selects the
@@ -382,19 +436,166 @@ fn IncMode_find(
     }
 }
 
-/// TODO: port of `IncSet.c:177`. The key dispatcher (F3/next-prev, history
-/// up/down, Enter/Esc confirm-abort, mouse bar-click, and the line-editor
-/// char/backspace path). Nearly all of the primitives it drives are now
-/// ported — [`IncSet_drawBar`], `IncSet_deactivate`, `search`, `IncMode_find`,
-/// `LineEditor_getText`/`LineEditor_handleKey`/`LineEditor_click`, and the
-/// `History_*` navigation/save fns — but the filter path
-/// (`filterChanged && lines`) calls [`updateWeakPanel`], which is still a
-/// `todo!()` (the "weak panel" shares one `Object*` between the `Vector* lines`
-/// and the panel, and the owned-`Box<dyn Object>` model cannot alias it — see
-/// its note). Porting a subset that skips the filter refresh would silently gut
-/// filter mode, so it stays a whole honest stub.
-pub fn IncSet_handleKey() {
-    todo!("port of IncSet.c:177 — filter path needs updateWeakPanel (weak-panel shared-Object model, still a stub)")
+/// Port of `bool IncSet_handleKey(IncSet* this, int ch, Panel* panel,
+/// IncMode_GetPanelValue getPanelValue, Vector* lines)` from `IncSet.c:177`.
+/// The key dispatcher: F3/Shift-F3 next/prev, history up/down, Enter/Esc
+/// confirm/abort, mouse bar-click cursor placement, and the line-editor
+/// char/backspace path; it then runs the search (when `doSearch`), refreshes the
+/// weak panel (when `filterChanged`) via [`updateWeakPanel`], and redraws the
+/// bar. Returns whether the filter changed (C `bool`).
+///
+/// The C `IncMode* mode = this->active` (a pointer into `modes[]`) resolves
+/// through `active: Option<IncType>` — the caller only dispatches keys with an
+/// active mode, so `active` is non-`None` here; the mode is reached as
+/// `this.modes[active as usize]`. `Vector* lines` is threaded as `&mut Vector`
+/// so [`updateWeakPanel`] can alias its boxes into the panel (see its note).
+pub fn IncSet_handleKey(
+    this: &mut IncSet,
+    ch: i32,
+    panel: &mut Panel,
+    getPanelValue: IncMode_GetPanelValue,
+    lines: &mut Vector,
+) -> bool {
+    // C: if (ch == ERR) return true;
+    if ch == ERR {
+        return true;
+    }
+
+    // C: IncMode* mode = this->active;
+    let mode = this.active.expect("IncSet_handleKey called with no active mode");
+    let midx = mode as usize;
+    // C: int size = Panel_size(panel);
+    let size = Panel_size(panel);
+    let mut filterChanged = false;
+    let mut doSearch = true;
+
+    let functionBar = ColorElements::FUNCTION_BAR.packed(ColorScheme::active());
+
+    // C: if (ch == KEY_MOUSE_BAR_CLICK) { ... IncSet_drawBar; return false; }
+    if ch == KEY_MOUSE_BAR_CLICK {
+        let fieldStartX = FunctionBar_getWidth(&this.modes[midx].bar);
+        LineEditor_click(&mut this.modes[midx].editor, panel.lastMouseBarClickX, fieldStartX);
+        IncSet_drawBar(this, panel, functionBar);
+        return false;
+    }
+
+    if ch == KEY_F(3) || ch == KEY_F(15) {
+        // C: if (size == 0) return true;
+        if size == 0 {
+            return true;
+        }
+        // C: IncMode_find(mode, panel, getPanelValue, ch == KEY_F(3) ? 1 : -1);
+        IncMode_find(
+            &mut this.modes[midx],
+            panel,
+            getPanelValue,
+            if ch == KEY_F(3) { 1 } else { -1 },
+        );
+        doSearch = false;
+    } else if ch == KEY_UP {
+        // C: History navigation: older entry
+        if this.history.is_some() {
+            let entry =
+                History_navigate(this.history.as_mut().unwrap(), &this.modes[midx].editor, true)
+                    .map(str::to_string);
+            if let Some(entry) = entry {
+                LineEditor_setText(&mut this.modes[midx].editor, &entry);
+                if this.modes[midx].isFilter {
+                    filterChanged = true;
+                    this.filtering = !LineEditor_getText(&this.modes[midx].editor).is_empty();
+                }
+            }
+            doSearch = !this.modes[midx].isFilter;
+        } else {
+            doSearch = false;
+        }
+    } else if ch == KEY_DOWN {
+        // C: History navigation: newer entry
+        if this.history.is_some() {
+            let entry =
+                History_navigate(this.history.as_mut().unwrap(), &this.modes[midx].editor, false)
+                    .map(str::to_string);
+            if let Some(entry) = entry {
+                LineEditor_setText(&mut this.modes[midx].editor, &entry);
+                if this.modes[midx].isFilter {
+                    filterChanged = true;
+                    this.filtering = !LineEditor_getText(&this.modes[midx].editor).is_empty();
+                }
+            }
+            doSearch = !this.modes[midx].isFilter;
+        } else {
+            doSearch = false;
+        }
+    } else if ch == KEY_RESIZE {
+        // C: doSearch = (LineEditor_getText(&mode->editor)[0] != '\0');
+        doSearch = !LineEditor_getText(&this.modes[midx].editor).is_empty();
+    } else if ch == 13 || ch == b'\r' as i32 || ch == KEY_ENTER {
+        // C: Enter confirms: add to history and deactivate
+        if this.history.is_some() {
+            let text = LineEditor_getText(&this.modes[midx].editor).to_string();
+            if !text.is_empty() {
+                History_add(this.history.as_mut().unwrap(), &text);
+                History_save(this.history.as_ref().unwrap());
+            }
+            History_resetPosition(this.history.as_mut().unwrap());
+        }
+        if !this.modes[midx].isFilter {
+            // C: For search: reset buffer on Enter
+            IncMode_reset(&mut this.modes[midx]);
+        }
+        IncSet_deactivate(this, panel);
+        doSearch = false;
+        filterChanged = this.modes[midx].isFilter;
+    } else if ch == 27 || ch == KEY_MOUSE || ch == KEY_RECLICK {
+        // C: Esc or panel click aborts
+        if this.history.is_some() {
+            History_resetPosition(this.history.as_mut().unwrap());
+        }
+        if this.modes[midx].isFilter {
+            filterChanged = true;
+            this.filtering = false;
+            IncMode_reset(&mut this.modes[midx]);
+        } else {
+            this.found = false;
+            IncMode_reset(&mut this.modes[midx]);
+        }
+        IncSet_deactivate(this, panel);
+        doSearch = false;
+    } else {
+        // C: Try line editor first
+        let textChanged = LineEditor_handleKey(&mut this.modes[midx].editor, ch);
+        if textChanged {
+            let empty = LineEditor_getText(&this.modes[midx].editor).is_empty();
+            if this.modes[midx].isFilter {
+                filterChanged = true;
+                this.filtering = !empty;
+            } else if empty {
+                // C: Buffer emptied in search mode: clear stale found state
+                this.found = false;
+                doSearch = false;
+            }
+        } else {
+            // C: Key was a movement key (no text change) or unrecognized
+            doSearch = false;
+        }
+    }
+
+    // C: if (doSearch && LineEditor_getText(&mode->editor)[0] != '\0')
+    //        this->found = search(this, panel, getPanelValue);
+    if doSearch && !LineEditor_getText(&this.modes[midx].editor).is_empty() {
+        this.found = search(this, panel, getPanelValue);
+    }
+    // C: if (filterChanged && lines) updateWeakPanel(this, panel, lines);
+    if filterChanged {
+        updateWeakPanel(this, panel, lines);
+    }
+
+    // C: if (this->active) IncSet_drawBar(this, CRT_colors[FUNCTION_BAR]);
+    if this.active.is_some() {
+        IncSet_drawBar(this, panel, functionBar);
+    }
+
+    filterChanged
 }
 
 /// Port of `IncSet.c:297`. The concrete `IncMode_GetPanelValue`: downcast the
@@ -501,12 +702,8 @@ pub fn IncSet_filter(this: &IncSet) -> Option<&str> {
 }
 
 #[cfg(test)]
-use crate::ported::panel::PanelItem;
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ported::object::Object;
     use crate::ported::panel::Panel_new;
 
     fn li(value: &str) -> Box<dyn Object> {
@@ -792,5 +989,82 @@ mod tests {
         // Empty filter clears `filtering` -> None again.
         IncSet_setFilter(&mut set, "");
         assert!(IncSet_filter(&set).is_none());
+    }
+
+    // ── updateWeakPanel (IncSet.c:96) ─────────────────────────────────
+
+    use crate::ported::listitem::ListItem_new;
+    use crate::ported::vector::{Vector_add, Vector_new};
+
+    /// A `lines` Vector of ListItems (owner=true, as InfoScreen builds it).
+    fn lines_of(values: &[&str]) -> Vector {
+        let klass = ListItem_new("", 0).klass();
+        let mut lines = Vector_new(klass, true, 10);
+        for v in values {
+            Vector_add(&mut lines, Box::new(ListItem_new(v, 0)));
+        }
+        lines
+    }
+
+    #[test]
+    fn update_weak_panel_non_filtering_re_adds_all() {
+        let set = IncSet_new(None); // filtering == false
+        let mut lines = lines_of(&["systemd", "bash", "sshd", "htop"]);
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+
+        updateWeakPanel(&set, &mut panel, &mut lines);
+
+        assert_eq!(Panel_size(&panel), 4);
+        assert_eq!(IncSet_getListItemValue(&panel, 0), "systemd");
+        assert_eq!(IncSet_getListItemValue(&panel, 1), "bash");
+        assert_eq!(IncSet_getListItemValue(&panel, 3), "htop");
+    }
+
+    #[test]
+    fn update_weak_panel_filtering_keeps_only_matches() {
+        let mut set = IncSet_new(None);
+        IncSet_setFilter(&mut set, "sh"); // filtering == true
+        let mut lines = lines_of(&["systemd", "bash", "sshd", "htop"]);
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+
+        updateWeakPanel(&set, &mut panel, &mut lines);
+
+        // Only "bash" and "sshd" contain "sh".
+        assert_eq!(Panel_size(&panel), 2);
+        assert_eq!(IncSet_getListItemValue(&panel, 0), "bash");
+        assert_eq!(IncSet_getListItemValue(&panel, 1), "sshd");
+    }
+
+    #[test]
+    fn update_weak_panel_preserves_selection_by_pointer_identity() {
+        // First (non-filtering) build aliases the lines boxes into the panel;
+        // selecting index 2 then rebuilding must keep the selection on the same
+        // *object* (sshd), via the `selected == line` raw-pointer identity test.
+        let set = IncSet_new(None);
+        let mut lines = lines_of(&["systemd", "bash", "sshd", "htop"]);
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+        updateWeakPanel(&set, &mut panel, &mut lines);
+        panel.selected = 2; // "sshd" (aliases lines box 2)
+
+        updateWeakPanel(&set, &mut panel, &mut lines);
+        assert_eq!(panel.selected, 2);
+        assert_eq!(IncSet_getListItemValue(&panel, panel.selected), "sshd");
+    }
+
+    #[test]
+    fn update_weak_panel_selection_follows_object_across_filter() {
+        // Select "bash" in the full view, then filter "sh": bash moves to the
+        // new index 0 and the selection follows the object by identity.
+        let mut set = IncSet_new(None);
+        let mut lines = lines_of(&["systemd", "bash", "sshd", "htop"]);
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+        updateWeakPanel(&set, &mut panel, &mut lines);
+        panel.selected = 1; // "bash"
+
+        IncSet_setFilter(&mut set, "sh");
+        updateWeakPanel(&set, &mut panel, &mut lines);
+        assert_eq!(Panel_size(&panel), 2);
+        assert_eq!(panel.selected, 0); // bash is now first
+        assert_eq!(IncSet_getListItemValue(&panel, panel.selected), "bash");
     }
 }

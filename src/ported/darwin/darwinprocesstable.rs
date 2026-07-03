@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(pt.global_diff, 0);
         // ProcessTable_init stored the filter list and Table_init wired the
         // host back-pointer on the embedded base table.
-        assert_eq!(pt.super_.pidMatchList, filter);
+        assert_eq!(pt.super_.pidMatchList.map(|p| p as usize), filter);
         assert_eq!(pt.super_.super_.host, host);
         // Base table starts empty (no rows registered yet).
         assert!(pt.super_.super_.rows.is_empty());

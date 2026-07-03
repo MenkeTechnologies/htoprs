@@ -12,9 +12,9 @@
 //! Hashtable* pidMatchList; unsigned totalTasks, runningTasks,
 //! userlandThreads, kernelThreads; }`. The "extends Table" relationship
 //! is modeled by embedding [`Table`] as [`ProcessTable::super_`] (the
-//! same pattern `Process` uses to embed `Row`). `pidMatchList` is an
-//! opaque handle (the `Hashtable` filter list is not dereferenced by any
-//! ported fn). C upcasts `ProcessTable*` ↔ `Table*` by pointer; here the
+//! same pattern `Process` uses to embed `Row`). `pidMatchList` is a
+//! borrowed `*mut Hashtable` (the C `Hashtable*` filter list, dereferenced
+//! by `Process_matchesFilter` via `Hashtable_get`). C upcasts `ProcessTable*` ↔ `Table*` by pointer; here the
 //! ported fns take `&mut ProcessTable` and reach the base via `super_`.
 //!
 //! # Ported
@@ -29,38 +29,23 @@
 //! - [`ProcessTable_cleanupEntries`] (`ProcessTable.c:62`) — per-process
 //!   `Process_makeCommandStr` + max-UID/PID tracking, wrapping the base
 //!   `Table_cleanupRow` / `Table_compact` cull.
+//! - [`ProcessTable_getProcess`] (`ProcessTable.c:31`) — find-or-construct a
+//!   process by pid (rows are now stored polymorphically as `Box<dyn Object>`,
+//!   so a row is recovered as a `Process` via [`Object::as_process_mut`]).
 //!
 //! # Still stubbed (`todo!()`, named after the C fn so the port gate
 //! accepts the module)
 //!
-//! All three are blocked by the same root gap plus per-fn specifics: the
-//! ported [`Table`] stores its rows as `Vec<Option<Row>>` — `Row` values,
-//! not the polymorphic `Process*` rows htop's `Table` holds (C stores
-//! `Row*` that are upcast `Process*`). Any `ProcessTable` fn that must
-//! treat a row *as a `Process`* — recover it via `(Process*)Vector_get`,
-//! read a `Process`-only field, or return a `Process*` — has no faithful
-//! expression against a `Row`-typed table, and `table.rs` is out of scope
-//! for this port (edit-only-my-file rule). This is the honest reason the
-//! bodies stay `todo!()` rather than being gutted to a `Row`-only shell.
-//!
-//! - [`ProcessTable_getProcess`] (`ProcessTable.c:31`) — `Hashtable_get`
-//!   returns a `Process*` and the fn returns/constructs a `Process`, but
-//!   the ported table's rows are `Row`, so there is no `Process` to look
-//!   up or hand back. Also needs the platform `Process_New` constructor
-//!   (`typedef Process* (*Process_New)(const struct Machine_*)`,
-//!   `Process.h:241`) — a function-pointer type with no ported analog.
 //! - [`ProcessTable_goThroughEntries`] (`ProcessTable.c` platform) — the
 //!   `/proc` (or per-platform) scan. There is no generic C body: the
 //!   header (`ProcessTable.h:34`) only declares it and each platform
 //!   (`darwin/`, `linux/`, `freebsd/`, …) defines its own. It is therefore
 //!   out of scope for this generic module and filled by the platform scan
 //!   layer; the stub is the seam.
-//!
-//! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
-//! *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use crate::ported::hashtable::Hashtable;
 use crate::ported::machine::Machine;
 use crate::ported::object::Object;
 use crate::ported::process::{Process_getPid, Process_makeCommandStr, Process_setPid};
@@ -81,9 +66,15 @@ use crate::ported::table::{
 pub struct ProcessTable {
     /// C `Table super` — the embedded base table.
     pub super_: Table,
-    /// C `Hashtable* pidMatchList` — opaque handle (the filter list is
-    /// never dereferenced by a ported fn).
-    pub pidMatchList: Option<usize>,
+    /// C `Hashtable* pidMatchList` — the pid filter list (a borrowed
+    /// `Hashtable*` owned by the `Action` layer, `None` = C `NULL`).
+    /// [`Process_matchesFilter`](crate::ported::process::Process_matchesFilter)
+    /// dereferences it via `Hashtable_get`, so it is modeled as a real
+    /// borrowed `*mut Hashtable` (not an opaque handle). The platform
+    /// `ProcessTable_new` constructors still thread the pre-existing opaque
+    /// `Option<usize>` handle through [`ProcessTable_init`], which reinterprets
+    /// it as this borrowed pointer (the C handle *is* the pointer bits).
+    pub pidMatchList: Option<*mut Hashtable>,
     /// C `unsigned int totalTasks`.
     pub totalTasks: u32,
     /// C `unsigned int runningTasks`.
@@ -117,7 +108,12 @@ impl ProcessTable {
 /// pid-match list.
 ///
 /// Signature mapping: the `klass` type tag is dropped (class identity is
-/// the Rust type; see `Table_init`). `pidMatchList` is an opaque handle.
+/// the Rust type; see `Table_init`). The parameter keeps the platform
+/// constructors' pre-existing opaque `Option<usize>` handle (the darwin/linux
+/// `ProcessTable_new` signatures, out of this port's edit scope, still pass
+/// it); it is reinterpreted as the borrowed `*mut Hashtable` the C
+/// `Hashtable*` names, matching the C where the handle carries the pointer
+/// bits. `None` stays `None`.
 pub fn ProcessTable_init(
     this: &mut ProcessTable,
     host: *const Machine,
@@ -125,7 +121,7 @@ pub fn ProcessTable_init(
 ) {
     Table_init(&mut this.super_, host);
 
-    this.pidMatchList = pidMatchList;
+    this.pidMatchList = pidMatchList.map(|h| h as *mut Hashtable);
 }
 
 /// Port of `void ProcessTable_done(ProcessTable* this)` from
@@ -135,16 +131,6 @@ pub fn ProcessTable_done(this: &mut ProcessTable) {
     Table_done(&mut this.super_);
 }
 
-/// TODO: port of `Process* ProcessTable_getProcess(ProcessTable* this,
-/// pid_t pid, bool* preExisting, Process_New constructor)` from
-/// `ProcessTable.c:31`. Blocked: the body looks up (`Hashtable_get`),
-/// constructs (`constructor(table->host)`), and returns a `Process*`, but
-/// the ported [`Table`] stores rows as `Row` values (`Vec<Option<Row>>`),
-/// not the upcast `Process*` htop's table holds — there is no `Process` to
-/// recover or return. It also needs the platform `Process_New` constructor
-/// (`typedef Process* (*Process_New)(...)`, `Process.h:241`), a
-/// function-pointer type with no ported analog. Cannot be gutted to a
-/// `Row`-only shell without lying about what it does.
 /// Port of `Process* ProcessTable_getProcess(ProcessTable* this, pid_t pid,
 /// bool* preExisting, Process_New constructor)` from `ProcessTable.c:31`.
 /// Finds the process with `pid` in the table, or constructs a fresh one via
@@ -358,7 +344,7 @@ mod tests {
         let mut pt = ProcessTable::empty();
         ProcessTable_init(&mut pt, &h as *const Machine, Some(77));
 
-        assert_eq!(pt.pidMatchList, Some(77));
+        assert_eq!(pt.pidMatchList, Some(77 as *mut Hashtable));
         assert!(pt.super_.needsSort);
         assert_eq!(pt.super_.following, -1);
     }

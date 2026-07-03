@@ -26,25 +26,26 @@
 //! faithful ports of the `ref == NULL` construction path — including
 //! `NumberItem_newByVal`'s `assert(min <= max)` and `CLAMP(value, min, max)`.
 //!
-//! Left as `todo!()` stubs (require unported substrate):
-//! - `OptionItem_delete` — frees through the `Object` cast; its safe-Rust
-//!   analog is `Drop`, so there is no free-fn to port.
-//! - `CheckItem_newByRef`, `NumberItem_newByRef` — the `*_newByRef`
-//!   constructors set `this->ref` to a non-NULL pointer into an external
-//!   cell. That pointer-indirection case is not modeled by these structs
-//!   (see the aliasing note below), so there is no faithful body to port.
+//! Also ported: `CheckItem_newByRef` / `NumberItem_newByRef` — the
+//! external-cell constructors. The C `CheckItem`/`NumberItem` is a tagged
+//! union of a direct value and a pointer into an external cell
+//! (`bool* ref` / `int* ref`); the `*_newByRef` constructors set that
+//! pointer. This is modeled faithfully with a raw pointer field
+//! (`ref_: *mut bool` / `*mut c_int`) on each struct: `null` is the C
+//! `ref == NULL` (direct-value) case, non-`null` the external-cell case.
+//! Every accessor ports BOTH C branches — `if (this->ref) *ref … else
+//! value …` — dereferencing `ref_` inside `unsafe` (the external cell is a
+//! Settings field, which outlives the option item; the setup screen that
+//! builds these items borrows the live `Settings`).
 //!
-//! Pointer-indirection limitation: the C `CheckItem`/`NumberItem` can
-//! store either a direct value or a pointer to an external value
-//! (`bool* ref` / `int* ref`, set by the `*_newByRef` constructors).
-//! An aliasing raw pointer to an external cell cannot be modeled in
-//! safe Rust without unsafe, so the structs here model only the
-//! direct-value case (`ref == NULL` in C). Every accessor below ports
-//! the `else` (direct) branch of its C body faithfully; the `if
-//! (this->ref)` branch is intentionally NOT modeled (not faked).
+//! `OptionItem_delete` frees through the `Object` cast; its safe-Rust
+//! analog is `Drop` (the boxed `dyn Object` dropping runs the concrete
+//! subtype's free), so it is a by-value consume, not a `todo!()`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
+
+use core::ffi::c_int;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
 use crate::ported::object::{Object, ObjectClass, Object_class};
@@ -64,24 +65,37 @@ pub struct TextItem {
     pub text: String,
 }
 
-/// Direct-value model of C `CheckItem` (`OptionItem.h:43`). The C struct
-/// also carries `bool* ref` for pointer-indirection; that case is not
-/// modeled in safe Rust (see module docs), so only `value` is kept. `text`
+/// Model of C `CheckItem` (`OptionItem.h:43`). The C struct is a tagged
+/// union of a direct value (`bool value`) and an external cell
+/// (`bool* ref`): when `ref` is non-`NULL` every accessor reads/writes
+/// `*ref`, else it uses `value`. Both are modeled here — `value` is the
+/// direct field and `ref_` is the raw `*mut bool` (`ref` is a Rust keyword)
+/// that [`CheckItem_newByRef`] sets to point into an external `bool` (a
+/// Settings field cell). `ref_` is `null` for a `_newByVal` item. `text`
 /// models the C `OptionItem.super.text` label rendered by
 /// [`CheckItem_display`].
 pub struct CheckItem {
     pub value: bool,
+    /// C `bool* ref` (`OptionItem.h:45`) — a raw pointer to an external
+    /// `bool` cell (a Settings field), or `null` for a direct-value item.
+    pub ref_: *mut bool,
     pub text: String,
 }
 
-/// Direct-value model of C `NumberItem` (`OptionItem.h:50`). The C
-/// struct also carries `int* ref`; that pointer-indirection case is not
-/// modeled (see module docs). The C `char editBuffer[NUMBERITEM_EDIT_MAX
-/// + 1]` + `int editLen` pair is modeled as a single `String` whose
-/// length is the C `editLen` (the two are always kept in lockstep in the
-/// C source). The C `text` field is not modeled (needs object substrate).
+/// Model of C `NumberItem` (`OptionItem.h:50`). Like [`CheckItem`] it is a
+/// tagged union of a direct `int value` and an external cell `int* ref`:
+/// every accessor reads/writes `*ref` when `ref` is non-`NULL`, else
+/// `value`. Both are modeled — `value` is the direct field, `ref_` the raw
+/// `*mut c_int` ([`NumberItem_newByRef`] points it into a Settings field
+/// cell; `null` for a `_newByVal` item). The C `char
+/// editBuffer[NUMBERITEM_EDIT_MAX + 1]` + `int editLen` pair is modeled as a
+/// single `String` whose length is the C `editLen` (the two are always kept
+/// in lockstep in the C source).
 pub struct NumberItem {
     pub value: i32,
+    /// C `int* ref` (`OptionItem.h:52`) — a raw pointer to an external
+    /// `int` cell (a Settings field), or `null` for a direct-value item.
+    pub ref_: *mut c_int,
     pub scale: i32,
     pub min: i32,
     pub max: i32,
@@ -248,49 +262,98 @@ pub fn TextItem_new(text: &str) -> TextItem {
     }
 }
 
-/// TODO: port of `CheckItem* CheckItem_newByRef(const char* text, bool* ref`
-/// from `OptionItem.c:121`. Sets `this->ref = ref` (a non-NULL pointer to an
-/// external `bool`). That pointer-indirection case is intentionally not
-/// modeled by this struct (see module docs), so there is no faithful body to
-/// port. Left as a stub.
-pub fn CheckItem_newByRef() {
-    todo!("port of OptionItem.c:121")
-}
-
-/// Port of `CheckItem_newByVal` from `OptionItem.c:129`. Builds a
-/// direct-value `CheckItem`: C sets `value = value` and `ref = NULL` — the
-/// `ref == NULL` case is the one this struct models. The C
-/// `AllocThis(CheckItem)` + `xStrdup(text)` become the struct literal + an
-/// owned `text` copy.
-pub fn CheckItem_newByVal(text: &str, value: bool) -> CheckItem {
+/// Port of `CheckItem* CheckItem_newByRef(const char* text, bool* ref)` from
+/// `OptionItem.c:121`. Builds an external-cell `CheckItem`: C sets
+/// `value = false` and `ref = ref` (a non-`NULL` pointer to an external
+/// `bool`, a Settings field). The C `AllocThis(CheckItem)` + `xStrdup(text)`
+/// become the struct literal + an owned `text` copy; `ref_` carries the raw
+/// `*mut bool` (see the struct docs). The caller guarantees `ref` outlives
+/// the item.
+pub fn CheckItem_newByRef(text: &str, ref_: *mut bool) -> CheckItem {
     CheckItem {
-        value,
+        value: false,
+        ref_,
         text: text.to_string(),
     }
 }
 
-/// Port of `CheckItem_get` from `OptionItem.c:137`. Ports the direct
-/// (`ref == NULL`) branch; the pointer-indirection branch is not
-/// modeled (see module docs).
+/// Port of `CheckItem_newByVal` from `OptionItem.c:129`. Builds a
+/// direct-value `CheckItem`: C sets `value = value` and `ref = NULL` (here
+/// `ref_` is a null pointer). The C `AllocThis(CheckItem)` + `xStrdup(text)`
+/// become the struct literal + an owned `text` copy.
+pub fn CheckItem_newByVal(text: &str, value: bool) -> CheckItem {
+    CheckItem {
+        value,
+        ref_: core::ptr::null_mut(),
+        text: text.to_string(),
+    }
+}
+
+/// Port of `CheckItem_get` from `OptionItem.c:137`. Returns `*ref` when the
+/// item aliases an external cell, else the direct `value`.
 pub fn CheckItem_get(this: &CheckItem) -> bool {
-    this.value
+    if !this.ref_.is_null() {
+        // SAFETY: `ref_` is a non-null pointer into an external `bool`
+        // (a Settings field) set by `CheckItem_newByRef`; that cell
+        // outlives the item (see module docs).
+        unsafe { *this.ref_ }
+    } else {
+        this.value
+    }
 }
 
-/// Port of `CheckItem_set` from `OptionItem.c:145`. Ports the direct
-/// branch; pointer indirection not modeled (see module docs).
+/// Port of `CheckItem_set` from `OptionItem.c:145`. Writes `*ref` when the
+/// item aliases an external cell, else the direct `value`.
 pub fn CheckItem_set(this: &mut CheckItem, value: bool) {
-    this.value = value;
+    if !this.ref_.is_null() {
+        // SAFETY: see `CheckItem_get`.
+        unsafe { *this.ref_ = value };
+    } else {
+        this.value = value;
+    }
 }
 
-/// Port of `CheckItem_toggle` from `OptionItem.c:153`. Ports the direct
-/// branch; pointer indirection not modeled (see module docs).
+/// Port of `CheckItem_toggle` from `OptionItem.c:153`. Flips `*ref` when the
+/// item aliases an external cell, else the direct `value`.
 pub fn CheckItem_toggle(this: &mut CheckItem) {
-    this.value = !this.value;
+    if !this.ref_.is_null() {
+        // SAFETY: see `CheckItem_get`.
+        unsafe { *this.ref_ = !*this.ref_ };
+    } else {
+        this.value = !this.value;
+    }
 }
 
-/// TODO: port of `NumberItem* NumberItem_newByRef(const char* text, int* ref, int scale, int min, int max` from `OptionItem.c:161`.
-pub fn NumberItem_newByRef() {
-    todo!("port of OptionItem.c:161")
+/// Port of `NumberItem* NumberItem_newByRef(const char* text, int* ref, int
+/// scale, int min, int max)` from `OptionItem.c:161`. Builds an external-cell
+/// `NumberItem`: C sets `value = 0` and `ref = ref` (a non-`NULL` pointer to
+/// an external `int`, a Settings field), preserves the `assert(min <= max)`
+/// precondition, and zero-inits the edit-buffer fields (`editing = false`,
+/// empty buffer, `savedValue = 0`). The C `AllocThis(NumberItem)` +
+/// `xStrdup(text)` become the struct literal + an owned `text` copy; `ref_`
+/// carries the raw `*mut c_int` (see the struct docs). Unlike
+/// [`NumberItem_newByVal`], the initial value is NOT clamped (C leaves the
+/// external cell untouched at construction). The caller guarantees `ref`
+/// outlives the item.
+pub fn NumberItem_newByRef(
+    text: &str,
+    ref_: *mut c_int,
+    scale: i32,
+    min: i32,
+    max: i32,
+) -> NumberItem {
+    assert!(min <= max);
+    NumberItem {
+        value: 0,
+        ref_,
+        scale,
+        min,
+        max,
+        editing: false,
+        editBuffer: String::new(),
+        savedValue: 0,
+        text: text.to_string(),
+    }
 }
 
 /// Port of `NumberItem_newByVal` from `OptionItem.c:178`. Builds a
@@ -313,6 +376,7 @@ pub fn NumberItem_newByVal(text: &str, value: i32, scale: i32, min: i32, max: i3
     };
     NumberItem {
         value,
+        ref_: core::ptr::null_mut(),
         scale,
         min,
         max,
@@ -323,47 +387,91 @@ pub fn NumberItem_newByVal(text: &str, value: i32, scale: i32, min: i32, max: i3
     }
 }
 
-/// Port of `NumberItem_get` from `OptionItem.c:195`. Ports the direct
-/// (`ref == NULL`) branch; pointer indirection not modeled (see module
-/// docs).
+/// Port of `NumberItem_get` from `OptionItem.c:195`. Returns `*ref` when the
+/// item aliases an external cell, else the direct `value`.
 pub fn NumberItem_get(this: &NumberItem) -> i32 {
-    this.value
+    if !this.ref_.is_null() {
+        // SAFETY: `ref_` is a non-null pointer into an external `int`
+        // (a Settings field) set by `NumberItem_newByRef`; that cell
+        // outlives the item (see module docs).
+        unsafe { *this.ref_ }
+    } else {
+        this.value
+    }
 }
 
 /// Port of `NumberItem_decrease` from `OptionItem.c:203`. Decrements and
-/// re-clamps to `[min, max]` (C `CLAMP`). Ports the direct branch;
-/// pointer indirection not modeled (see module docs).
+/// re-clamps to `[min, max]` (C `CLAMP`), on `*ref` when the item aliases an
+/// external cell, else on the direct `value`.
 pub fn NumberItem_decrease(this: &mut NumberItem) {
-    let v = this.value - 1;
-    // CLAMP(x, low, high) == (x > high) ? high : (x < low ? low : x)
-    this.value = if v > this.max {
-        this.max
-    } else if v < this.min {
-        this.min
+    // CLAMP(x, low, high) == (x > high) ? high : (x < low ? low : x).
+    if !this.ref_.is_null() {
+        // SAFETY: see `NumberItem_get`.
+        unsafe {
+            let v = *this.ref_ - 1;
+            *this.ref_ = if v > this.max {
+                this.max
+            } else if v < this.min {
+                this.min
+            } else {
+                v
+            };
+        }
     } else {
-        v
-    };
+        let v = this.value - 1;
+        this.value = if v > this.max {
+            this.max
+        } else if v < this.min {
+            this.min
+        } else {
+            v
+        };
+    }
 }
 
 /// Port of `NumberItem_increase` from `OptionItem.c:211`. Increments and
-/// re-clamps to `[min, max]` (C `CLAMP`). Ports the direct branch;
-/// pointer indirection not modeled (see module docs).
+/// re-clamps to `[min, max]` (C `CLAMP`), on `*ref` when the item aliases an
+/// external cell, else on the direct `value`.
 pub fn NumberItem_increase(this: &mut NumberItem) {
-    let v = this.value + 1;
-    this.value = if v > this.max {
-        this.max
-    } else if v < this.min {
-        this.min
+    // CLAMP(x, low, high) == (x > high) ? high : (x < low ? low : x).
+    if !this.ref_.is_null() {
+        // SAFETY: see `NumberItem_get`.
+        unsafe {
+            let v = *this.ref_ + 1;
+            *this.ref_ = if v > this.max {
+                this.max
+            } else if v < this.min {
+                this.min
+            } else {
+                v
+            };
+        }
     } else {
-        v
-    };
+        let v = this.value + 1;
+        this.value = if v > this.max {
+            this.max
+        } else if v < this.min {
+            this.min
+        } else {
+            v
+        };
+    }
 }
 
 /// Port of `NumberItem_toggle` from `OptionItem.c:219`. Steps by one,
-/// wrapping back to `min` once at or above `max`. Ports the direct
-/// branch; pointer indirection not modeled (see module docs).
+/// wrapping back to `min` once at or above `max`, on `*ref` when the item
+/// aliases an external cell, else on the direct `value`.
 pub fn NumberItem_toggle(this: &mut NumberItem) {
-    if this.value >= this.max {
+    if !this.ref_.is_null() {
+        // SAFETY: see `NumberItem_get`.
+        unsafe {
+            if *this.ref_ >= this.max {
+                *this.ref_ = this.min;
+            } else {
+                *this.ref_ += 1;
+            }
+        }
+    } else if this.value >= this.max {
         this.value = this.min;
     } else {
         this.value += 1;
@@ -421,7 +529,8 @@ pub fn NumberItem_cancelEditing(this: &mut NumberItem) {
 /// hex / inf / nan forms are unreachable — the edit buffer only ever
 /// contains `[0-9.]` from [`NumberItem_addChar`] or a `%d`/`%.*f`
 /// seed from [`NumberItem_startEditingFromValue`] — so they are omitted.
-/// Ports the direct commit branch; pointer indirection not modeled.
+/// Commits to `*ref` when the item aliases an external cell, else to the
+/// direct `value`.
 pub fn NumberItem_applyEditing(this: &mut NumberItem) -> bool {
     this.editing = false;
     if this.editBuffer.is_empty() {
@@ -474,14 +583,20 @@ pub fn NumberItem_applyEditing(this: &mut NumberItem) -> bool {
         new_value = parsed as i32;
     }
 
-    // CLAMP(newValue, min, max)
-    this.value = if new_value > this.max {
+    // CLAMP(newValue, min, max), then commit to *ref or the direct value.
+    let clamped = if new_value > this.max {
         this.max
     } else if new_value < this.min {
         this.min
     } else {
         new_value
     };
+    if !this.ref_.is_null() {
+        // SAFETY: see `NumberItem_get`.
+        unsafe { *this.ref_ = clamped };
+    } else {
+        this.value = clamped;
+    }
     this.editBuffer.clear();
     true
 }
@@ -527,6 +642,7 @@ mod tests {
     fn number_item(value: i32, scale: i32, min: i32, max: i32) -> NumberItem {
         NumberItem {
             value,
+            ref_: core::ptr::null_mut(),
             scale,
             min,
             max,
@@ -546,10 +662,88 @@ mod tests {
             .collect()
     }
 
+    // ── external-cell (`_newByRef`) accessors ────────────────────────
+    //
+    // These exercise the `if (this->ref)` branch of every accessor: the
+    // item aliases an external cell (a `bool`/`int` standing in for a
+    // Settings field), and get/set/toggle/increase/decrease/applyEditing
+    // must read and write *that* cell, never the item's own `value`.
+
+    #[test]
+    fn check_item_by_ref_reads_and_writes_external_cell() {
+        let mut cell: bool = false;
+        let mut it = CheckItem_newByRef("Follow", &mut cell as *mut bool);
+        // value stays the newByRef default; every op goes through the cell.
+        assert!(!it.value);
+        assert!(!CheckItem_get(&it));
+
+        CheckItem_set(&mut it, true);
+        assert!(cell, "set writes the external cell");
+        assert!(CheckItem_get(&it));
+        assert!(!it.value, "the item's own value is never touched");
+
+        CheckItem_toggle(&mut it);
+        assert!(!cell, "toggle flips the external cell");
+        assert!(!CheckItem_get(&it));
+
+        // A direct write to the external cell is observed by the item. The
+        // `&& cell` reads the binding directly (the item's read goes through
+        // the raw pointer, which the unused-assignment lint cannot see).
+        cell = true;
+        assert!(CheckItem_get(&it) && cell);
+    }
+
+    #[test]
+    fn number_item_by_ref_reads_and_writes_external_cell() {
+        let mut cell: c_int = 5;
+        let mut it = NumberItem_newByRef("Delay", &mut cell as *mut c_int, 0, 0, 10);
+        // newByRef sets value = 0 and does NOT clamp the cell.
+        assert_eq!(it.value, 0);
+        assert_eq!(NumberItem_get(&it), 5);
+
+        NumberItem_increase(&mut it);
+        assert_eq!(cell, 6);
+        NumberItem_decrease(&mut it);
+        assert_eq!(cell, 5);
+        assert_eq!(it.value, 0, "the item's own value is never touched");
+
+        // Increase clamps the external cell at max.
+        cell = 10;
+        NumberItem_increase(&mut it);
+        assert_eq!(cell, 10);
+        // Decrease clamps at min.
+        cell = 0;
+        NumberItem_decrease(&mut it);
+        assert_eq!(cell, 0);
+
+        // Toggle wraps the external cell at max.
+        cell = 10;
+        NumberItem_toggle(&mut it);
+        assert_eq!(cell, 0);
+        NumberItem_toggle(&mut it);
+        assert_eq!(cell, 1);
+    }
+
+    #[test]
+    fn number_item_by_ref_apply_editing_commits_to_external_cell() {
+        let mut cell: c_int = 0;
+        let mut it = NumberItem_newByRef("N", &mut cell as *mut c_int, 0, 0, 50);
+        it.editBuffer = "27".to_string();
+        assert!(NumberItem_applyEditing(&mut it));
+        assert_eq!(cell, 27, "committed to the external cell");
+        assert_eq!(it.value, 0, "not the item's own value");
+
+        // Over-max input clamps into the external cell.
+        it.editBuffer = "999".to_string();
+        assert!(NumberItem_applyEditing(&mut it));
+        assert_eq!(cell, 50);
+    }
+
     #[test]
     fn check_item_get_set_toggle() {
         let mut it = CheckItem {
             value: false,
+            ref_: core::ptr::null_mut(),
             text: String::new(),
         };
         assert!(!CheckItem_get(&it));
@@ -589,6 +783,7 @@ mod tests {
     fn check_item_display_checked_and_unchecked_glyphs() {
         let checked = CheckItem {
             value: true,
+            ref_: core::ptr::null_mut(),
             text: "Tree view".to_string(),
         };
         let mut rs = RichString::new();
@@ -597,6 +792,7 @@ mod tests {
 
         let unchecked = CheckItem {
             value: false,
+            ref_: core::ptr::null_mut(),
             text: "Tree view".to_string(),
         };
         let mut rs2 = RichString::new();
@@ -608,6 +804,7 @@ mod tests {
     fn check_item_display_attrs_per_cell() {
         let it = CheckItem {
             value: true,
+            ref_: core::ptr::null_mut(),
             text: "ab".to_string(),
         };
         let mut rs = RichString::new();
@@ -699,6 +896,7 @@ mod tests {
 
         let c = CheckItem {
             value: false,
+            ref_: core::ptr::null_mut(),
             text: "C".to_string(),
         };
         let mut rs2 = RichString::new();

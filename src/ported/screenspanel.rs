@@ -91,21 +91,25 @@
 //!   (cancel any pending edit, null every `item->ss` so the settings array
 //!   keeps them, then `Panel_delete`); the bookkeeping only matters for the
 //!   C manual-free protocol, and destruction is `Drop`.
-//! - [`addNewScreen`] (`ScreensPanel.c:223`) — calls the stubbed
-//!   `Settings_newScreen` (blocked on the platform `Process_fields[]`
-//!   table) and inserts the new row.
 //! - [`ScreensPanel_new`] (`ScreensPanel.c:381`) — builds
 //!   `ColumnsPanel_new` / `AvailableColumnsPanel_new` (both stubbed) and
-//!   seeds the rows from `settings->screens[]`.
+//!   stores them in the omitted `columns` / `availableColumns` fields, so
+//!   the reduced struct cannot express it.
 //!
-//! Two arms *inside* the ported [`ScreensPanel_eventHandlerNormal`] remain
-//! honest inline stubs: the `F5`/`^N` new-screen arm (needs
-//! `settings->dynamicScreens` — an unmodeled `Settings` `Hashtable` field
-//! that cannot be added — plus the stubbed `addNewScreen`), and the
-//! focus-change tail block (needs the omitted `columns` /
-//! `availableColumns` sub-panels, their stubbed `ColumnsPanel_fill` /
-//! `AvailableColumnsPanel_fill`, and `settings->dynamicColumns`, another
-//! unmodeled `Settings` `Hashtable` field).
+//! Now ported (the substrate they needed has landed):
+//!
+//! - [`addNewScreen`] (`ScreensPanel.c:223`) — [`Settings_newScreen`] is
+//!   ported now; it appends a fresh screen and returns its index, which the
+//!   new row carries as its `ssIndex` alias.
+//!
+//! One arm *inside* the ported [`ScreensPanel_eventHandlerNormal`] remains an
+//! honest inline stub: the focus-change tail block (needs the omitted
+//! `columns` / `availableColumns` sub-panels, their stubbed `ColumnsPanel_fill`
+//! / `AvailableColumnsPanel_fill`, and `settings->dynamicColumns`). The
+//! `F5`/`^N` new-screen arm is now ported: `settings->dynamicScreens` is a
+//! modeled `Settings` field (`Option<*mut Hashtable>`) and [`addNewScreen`]
+//! is ported — though the focus-change tail it flows into still hits that one
+//! remaining stub.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -126,13 +130,13 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_delete, Panel_get, Panel_getSelectedIndex, Panel_moveSelectedDown,
-    Panel_moveSelectedUp, Panel_onKey, Panel_remove, Panel_selectByTyping,
-    Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelectionColor, Panel_size,
-    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
+    HandlerResult, Panel, Panel_delete, Panel_get, Panel_getSelectedIndex, Panel_insert,
+    Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_onKey, Panel_remove, Panel_selectByTyping,
+    Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelected, Panel_setSelectionColor,
+    Panel_size, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
-use crate::ported::settings::{ScreenSettings, Settings};
+use crate::ported::settings::{ScreenDefaults, ScreenSettings, Settings, Settings_newScreen};
 
 /// Port of `#define SCREEN_NAME_LEN 20` from `ScreensPanel.h:24`.
 pub const SCREEN_NAME_LEN: usize = 20;
@@ -633,13 +637,45 @@ pub fn rebuildSettingsArray(this: &mut ScreensPanel, selected: i32) {
     // this->settings->ss = screens[selected]; — back-pointer not modeled.
 }
 
-/// TODO: port of `static void addNewScreen(Panel* super)` from
-/// `ScreensPanel.c:223`. Calls `Settings_newScreen(this->settings, ...)`
-/// (stubbed on the platform `Process_fields[]` table), wraps the result in
-/// a [`ScreenListItem`], inserts it after the selection, and selects it.
-/// Blocked on `Settings_newScreen` + the `settings->screens[]` aliasing.
-pub fn addNewScreen() {
-    todo!("port of ScreensPanel.c:223 — needs Settings_newScreen (Process_fields[]) + settings->screens[] aliasing")
+/// Port of `static void addNewScreen(Panel* super)` from
+/// `ScreensPanel.c:223`.
+///
+/// ```c
+/// const char* name = "New";
+/// ScreenSettings* ss = Settings_newScreen(this->settings, &(const ScreenDefaults) {
+///    .name = name, .columns = "PID Command", .sortKey = "PID" });
+/// ScreenListItem* item = ScreenListItem_new(name, ss);
+/// int idx = Panel_getSelectedIndex(super);
+/// Panel_insert(super, idx + 1, (Object*) item);
+/// Panel_setSelected(super, idx + 1);
+/// ```
+///
+/// [`Settings_newScreen`] is now ported: it appends a fresh screen to
+/// [`Settings::screens`] and returns its index, which is exactly the
+/// modeled `item->ss` alias ([`ScreenListItem::ssIndex`]). The `settings`
+/// back-pointer is dereferenced to reach the owned screen `Vec` (the same
+/// deref [`rebuildSettingsArray`] / [`ScreensPanel_update`] use); the two
+/// remaining `ScreenDefaults` members (`treeSortKey`) are `None`, matching
+/// the C designated-initializer leaving them `NULL`.
+pub fn addNewScreen(this: &mut ScreensPanel) {
+    let name = "New";
+    // SAFETY: `settings` is the back-pointer set at construction; it targets a
+    // `Settings` owned elsewhere (by `htop.c`), so the deref is independent of
+    // the `&mut this.super_` borrows below.
+    let settings = unsafe { &mut *this.settings };
+    let ssIndex = Settings_newScreen(
+        settings,
+        &ScreenDefaults {
+            name: Some(name),
+            columns: Some("PID Command"),
+            sortKey: Some("PID"),
+            treeSortKey: None,
+        },
+    );
+    let item = ScreenListItem_new(name, ssIndex);
+    let idx = Panel_getSelectedIndex(&this.super_);
+    Panel_insert(&mut this.super_, idx + 1, Box::new(item));
+    Panel_setSelected(&mut this.super_, idx + 1);
 }
 
 /// Port of `static HandlerResult ScreensPanel_eventHandlerNormal(Panel*
@@ -651,14 +687,11 @@ pub fn addNewScreen() {
 /// reorder happened ([`rebuildSettingsArray`]), and, when the event was
 /// handled, syncs the settings ([`ScreensPanel_update`]).
 ///
-/// Two pieces need substrate the reduced model cannot provide and are
-/// honest inline stubs (the same transitive-block pattern
-/// [`ScreensPanel_eventHandlerRenaming`] uses):
+/// The `F5`/`^N` "new screen" arm is ported now: `this->settings->dynamicScreens`
+/// is a modeled `Settings` field (`Option<*mut Hashtable>`) and [`addNewScreen`]
+/// (via the ported [`Settings_newScreen`]) is ported. One piece still needs
+/// substrate the reduced model cannot provide and is an honest inline stub:
 ///
-/// - the `F5`/`^N` "new screen" arm reads `this->settings->dynamicScreens`
-///   (a `Hashtable` field absent from the modeled `Settings`, which cannot
-///   be edited) and calls the stubbed [`addNewScreen`]
-///   (`Settings_newScreen` -> platform `Process_fields[]`);
 /// - the focus-change tail (`newFocus && oldFocus != newFocus`) calls
 ///   `ColumnsPanel_fill(this->columns, ...)` /
 ///   `AvailableColumnsPanel_fill(this->availableColumns, ...)` against
@@ -730,10 +763,20 @@ pub fn ScreensPanel_eventHandlerNormal(this: &mut ScreensPanel, ch: i32) -> Hand
             result = HandlerResult::HANDLED;
         }
         KEY_F5 | KEY_CTRL_N => {
-            // C: if (this->settings->dynamicScreens) break; addNewScreen(super);
-            //    this->renamingNewItem = true; startRenaming(super);
-            //    shouldRebuildArray = true; result = HANDLED;
-            todo!("port of ScreensPanel.c:292 — needs settings->dynamicScreens (unmodeled Settings Hashtable field) + addNewScreen (Settings_newScreen -> Process_fields[])")
+            // C: if (this->settings->dynamicScreens) break;
+            // SAFETY: `settings` is the back-pointer set at construction (a
+            // `Settings` owned elsewhere); F5/^N is the only arm that reads it
+            // here. `dynamicScreens` is `Some` when the platform supports
+            // dynamic screens, in which case new screens can't be added.
+            if unsafe { &*this.settings }.dynamicScreens.is_some() {
+                // break — leave result IGNORED.
+            } else {
+                addNewScreen(this);
+                this.renamingNewItem = true;
+                startRenaming(this);
+                shouldRebuildArray = true;
+                result = HandlerResult::HANDLED;
+            }
         }
         KEY_UP => {
             if !this.moving {
@@ -1286,9 +1329,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ScreensPanel.c:292")]
+    #[should_panic(expected = "ScreensPanel.c:345")]
     fn normal_f5_new_screen_reaches_stub() {
-        // The new-screen arm needs settings->dynamicScreens + addNewScreen.
+        // The new-screen arm (addNewScreen) is now ported; the flow proceeds
+        // past it into the focus-change tail, which is the remaining stub
+        // (ScreensPanel.c:345 — needs the columns/availableColumns sub-panels).
         let (_settings, mut p) = wired(&["Main"]);
         let _ = ScreensPanel_eventHandlerNormal(&mut p, KEY_F5);
     }

@@ -93,18 +93,30 @@
 #![allow(non_camel_case_types)] // `Htop_Reaction` mirrors the C type name verbatim
 #![allow(dead_code)]
 
+use crate::ported::crt::{ColorElements, KEY_DOWN};
 use crate::ported::header::Header;
+use crate::ported::incset::{IncSet_activate, IncSet_filter, IncSet_reset, IncType};
+use crate::ported::listitem::ListItem_new;
 use crate::ported::machine::{Machine, Machine_scanTables};
-use crate::ported::mainpanel::MainPanel;
+use crate::ported::mainpanel::{MainPanel, MainPanel_selectedRow, MainPanel_setFunctionBar};
 use crate::ported::object::Object;
-use crate::ported::panel::{Panel, Panel_setSelected, Panel_size};
+use crate::ported::panel::{
+    Panel, Panel_add, Panel_onKey, Panel_setSelected, Panel_setSelectionColor, Panel_size,
+};
 use crate::ported::process::ProcessField;
-use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf};
+use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
 use crate::ported::settings::{
     RowField, ScreenSettings_invertSortOrder, ScreenSettings_setSortKey, Settings,
     Settings_isReadonly,
 };
 use crate::ported::table::{Table_collapseAllBranches, Table_expandTree};
+
+/// Port of `#define SCREEN_TAB_MARGIN_LEFT 2` (`CRT.h:17`). Used by
+/// [`Action_setScreenTab`] to skip the left margin before the first tab.
+const SCREEN_TAB_MARGIN_LEFT: i32 = 2;
+/// Port of `#define SCREEN_TAB_COLUMN_GAP 1` (`CRT.h:18`). Inter-tab gap in
+/// [`Action_setScreenTab`]'s hit-test walk.
+const SCREEN_TAB_COLUMN_GAP: i32 = 1;
 
 /// Port of the `Htop_Reaction` enum from `Action.h:21`.
 ///
@@ -165,24 +177,54 @@ pub struct State {
     pub hideMeters: bool,
 }
 
-/// TODO: port of `Object* Action_pickFromVector(State* st, Panel* list, int x, bool follow` from `Action.c:59`.
+/// TODO: port of `Object* Action_pickFromVector(State* st, Panel* list, int x,
+/// bool follow)` from `Action.c:59`. Builds a two-panel [`ScreenManager`],
+/// runs its modal loop, and returns the picked row. Blocked on the
+/// `screenmanager.rs` ownership model: `ScreenManager_new(header, host, state,
+/// owner)` takes the `Machine`/`State` **by value** (owned `Option<T>` fields),
+/// but this handler only holds them as `*mut Machine`/`&State` back-pointers
+/// and cannot move `*st.host`/`*st` into the manager without fabricating
+/// ownership; `ScreenManager_add` likewise takes an owned `Panel`, and
+/// `ScreenManager_run` is itself a `todo!()`. Reconciling the by-value manager
+/// API is outside `action.rs`.
 pub fn Action_pickFromVector() {
-    todo!("port of Action.c:59")
+    todo!("port of Action.c:59 — ScreenManager_new/add take Machine/State/Panel by value; cannot pass *mut back-pointers")
 }
 
-/// TODO: port of `static void Action_runSetup(State* st` from `Action.c:101`.
-pub fn Action_runSetup() {
-    todo!("port of Action.c:101")
+/// TODO: port of `static void Action_runSetup(State* st)` from `Action.c:101`.
+/// Builds a setup [`ScreenManager`] via `ScreenManager_new(st->header, st->host,
+/// st, true)` and `CategoriesPanel_new`, runs it, then writes settings back.
+/// Blocked on the same `ScreenManager_new` by-value ownership mismatch as
+/// [`Action_pickFromVector`] (cannot move `*st.host`/`*st` from the raw
+/// back-pointers into the manager).
+pub fn Action_runSetup(_st: &State) {
+    todo!("port of Action.c:101 — ScreenManager_new takes Machine/State by value; cannot pass *mut back-pointers")
 }
 
-/// TODO: port of `static bool changePriority(MainPanel* panel, int delta` from `Action.c:113`.
-pub fn changePriority() {
-    todo!("port of Action.c:113")
+/// TODO: port of `static bool changePriority(MainPanel* panel, int delta)` from
+/// `Action.c:113`. Applies `Process_rowChangePriorityBy` to every selected/tagged
+/// row via [`MainPanel_foreachRow`], beeps on partial failure, and reports
+/// whether any row was tagged. Blocked on a callback-type mismatch: the ported
+/// [`MainPanel_foreachRowFn`](crate::ported::mainpanel::MainPanel_foreachRowFn)
+/// is `fn(&mut Row, &Arg) -> bool`, but `process.rs` ports
+/// `Process_rowChangePriorityBy` as `fn(&mut dyn Object, Arg) -> bool` — the two
+/// signatures are incompatible, and `beep()` is unported. Reconciling the
+/// `foreachRow` callback shape belongs in `mainpanel.rs`/`process.rs`.
+pub fn changePriority(_panel: &mut MainPanel, _delta: i32) -> bool {
+    todo!("port of Action.c:113 — MainPanel_foreachRowFn (fn(&mut Row,&Arg)) is incompatible with Process_rowChangePriorityBy (fn(&mut dyn Object, Arg)); beep unported")
 }
 
-/// TODO: port of `static void addUserToVector(ht_key_t key, void* userCast, void* panelCast` from `Action.c:121`.
-pub fn addUserToVector() {
-    todo!("port of Action.c:121")
+/// Port of `static void addUserToVector(ht_key_t key, void* userCast,
+/// void* panelCast)` from `Action.c:121`. Appends a [`ListItem`] carrying the
+/// user name (`user`) and its uid (`key`) to `panel`. The C `void*` casts are
+/// the `UsersTable_foreach` callback ABI (`ht_key_t key`, the `char*` value,
+/// the `Panel*` accumulator); the ported analog takes those already-resolved
+/// types directly, since the (unported) `UsersTable_foreach` has no
+/// `void*`-callback consumer here. `ListItem_new` returns an owned [`ListItem`]
+/// (not a pointer), boxed into the `Box<dyn Object>` the ported
+/// [`Panel_add`] expects.
+pub fn addUserToVector(key: i32, user: &str, panel: &mut Panel) {
+    Panel_add(panel, Box::new(ListItem_new(user, key)));
 }
 
 /// Port of `bool Action_setUserOnly(const char* userName, uid_t* userId)`
@@ -365,9 +407,15 @@ pub fn Action_readableProcess(st: &State) -> bool {
     settings.screens[settings.ssIndex as usize].dynamic.is_none()
 }
 
-/// TODO: port of `static Htop_Reaction actionSetSortColumn(State* st` from `Action.c:192`.
-pub fn actionSetSortColumn() {
-    todo!("port of Action.c:192")
+/// TODO: port of `static Htop_Reaction actionSetSortColumn(State* st)` from
+/// `Action.c:192`. Builds a `ListItem` sort-column picker, runs it through
+/// [`Action_pickFromVector`], and applies the chosen key via
+/// [`Action_setSortKey`]. Blocked on [`Action_pickFromVector`] (the
+/// `ScreenManager` by-value ownership mismatch), plus the unported
+/// `Hashtable_get(dynamicColumns)` / `Process_fields[]` / `DynamicColumn`
+/// substrate and the `Class(ListItem)` panel constructor.
+pub fn actionSetSortColumn(_st: &State) -> Htop_Reaction {
+    todo!("port of Action.c:192 — needs Action_pickFromVector (ScreenManager by-value mismatch) + Hashtable/Process_fields/DynamicColumn")
 }
 
 /// Port of `static Htop_Reaction actionSortByPID(State* st)` from
@@ -588,24 +636,85 @@ pub fn actionExpandOrCollapseAllBranches(st: &State) -> Htop_Reaction {
     HTOP_REFRESH | HTOP_SAVE_SETTINGS
 }
 
-/// TODO: port of `static Htop_Reaction actionIncFilter(State* st` from `Action.c:319`.
-pub fn actionIncFilter() {
-    todo!("port of Action.c:319")
+/// Port of `static Htop_Reaction actionIncFilter(State* st)` from
+/// `Action.c:319`. Activates the incremental filter on the main panel and
+/// copies the resulting filter text into `host->activeTable->incFilter`.
+///
+/// C aliases one `IncSet*` as `st->mainPanel->inc` and passes the same panel
+/// as `(Panel*)st->mainPanel`; the split-field borrow `&mut mp.inc` /
+/// `&mut mp.super_` reproduces that (disjoint fields of the one struct).
+/// `host->activeTable->incFilter = IncSet_filter(inc)` stores a pointer into
+/// `inc`'s editor buffer in C; the owned model copies the `&str` into the
+/// `Option<String>` `incFilter` slot (the module's clone-for-shared-pointer
+/// convention). `host->activeTable` non-null is the precondition (as in C).
+pub fn actionIncFilter(st: &State) -> Htop_Reaction {
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* for the lifetime
+    // of the main loop that owns it (C precondition: st->mainPanel->inc is
+    // dereferenced unconditionally).
+    let mp = unsafe { &mut *st.mainPanel };
+    IncSet_activate(&mut mp.inc, IncType::INC_FILTER, &mut mp.super_);
+    let filter = IncSet_filter(&mp.inc).map(|s| s.to_string());
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition:
+    // st->host->activeTable is dereferenced unconditionally).
+    let host = unsafe { &mut *st.host };
+    let at = host
+        .activeTable
+        .expect("actionIncFilter: host->activeTable is NULL");
+    unsafe {
+        (*at).incFilter = filter;
+    }
+    HTOP_REFRESH | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionIncSearch(State* st` from `Action.c:327`.
-pub fn actionIncSearch() {
-    todo!("port of Action.c:327")
+/// Port of `static Htop_Reaction actionIncSearch(State* st)` from
+/// `Action.c:327`. Resets and activates the incremental search on the main
+/// panel. As in [`actionIncFilter`], `st->mainPanel->inc` and the panel
+/// `(Panel*)st->mainPanel` are the same struct's disjoint `inc` / `super_`
+/// fields.
+pub fn actionIncSearch(st: &State) -> Htop_Reaction {
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition:
+    // st->mainPanel->inc is dereferenced unconditionally).
+    let mp = unsafe { &mut *st.mainPanel };
+    IncSet_reset(&mut mp.inc, IncType::INC_SEARCH);
+    IncSet_activate(&mut mp.inc, IncType::INC_SEARCH, &mut mp.super_);
+    HTOP_REFRESH | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionHigherPriority(State* st` from `Action.c:333`.
-pub fn actionHigherPriority() {
-    todo!("port of Action.c:333")
+/// Port of `static Htop_Reaction actionHigherPriority(State* st)` from
+/// `Action.c:333`. A no-op unless the process is writeable
+/// ([`Action_writeableProcess`]); otherwise raises priority by one nice step
+/// via [`changePriority`] and refreshes if anything changed. `changePriority`
+/// remains a `todo!()` (callback-type mismatch); this handler calls it by name
+/// (faithful stub-chain, matching the `Machine_scanTables` precedent).
+pub fn actionHigherPriority(st: &State) -> Htop_Reaction {
+    if !Action_writeableProcess(st) {
+        return HTOP_OK;
+    }
+
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let changed = changePriority(unsafe { &mut *st.mainPanel }, -1);
+    if changed {
+        HTOP_REFRESH
+    } else {
+        HTOP_OK
+    }
 }
 
-/// TODO: port of `static Htop_Reaction actionLowerPriority(State* st` from `Action.c:341`.
-pub fn actionLowerPriority() {
-    todo!("port of Action.c:341")
+/// Port of `static Htop_Reaction actionLowerPriority(State* st)` from
+/// `Action.c:341`. As [`actionHigherPriority`] but lowers priority by one nice
+/// step (`delta = 1`).
+pub fn actionLowerPriority(st: &State) -> Htop_Reaction {
+    if !Action_writeableProcess(st) {
+        return HTOP_OK;
+    }
+
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let changed = changePriority(unsafe { &mut *st.mainPanel }, 1);
+    if changed {
+        HTOP_REFRESH
+    } else {
+        HTOP_OK
+    }
 }
 
 /// Port of `static Htop_Reaction actionInvertSortOrder(State* st)` from
@@ -630,39 +739,224 @@ pub fn actionInvertSortOrder(st: &State) -> Htop_Reaction {
     HTOP_REFRESH | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING | HTOP_UPDATE_PANELHDR
 }
 
-/// TODO: port of `static Htop_Reaction actionExpandOrCollapse(State* st` from `Action.c:356`.
-pub fn actionExpandOrCollapse() {
-    todo!("port of Action.c:356")
+/// Port of `static Htop_Reaction actionExpandOrCollapse(State* st)` from
+/// `Action.c:356`. A no-op outside tree view; otherwise flips the selected
+/// row's `showChildren` via [`expandCollapse`] and recalculates if it changed.
+/// `settings->ss->treeView` is `screens[ssIndex].treeView`; the panel
+/// `(Panel*)st->mainPanel` is the main panel's embedded `super_`.
+pub fn actionExpandOrCollapse(st: &State) -> Htop_Reaction {
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition:
+    // st->host->settings->ss is dereferenced unconditionally).
+    let treeView = unsafe {
+        let s = (*st.host)
+            .settings
+            .as_ref()
+            .expect("actionExpandOrCollapse: host->settings is NULL");
+        s.screens[s.ssIndex as usize].treeView
+    };
+    if !treeView {
+        return HTOP_OK;
+    }
+
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let changed = expandCollapse(unsafe { &mut (*st.mainPanel).super_ });
+    if changed {
+        HTOP_RECALCULATE
+    } else {
+        HTOP_OK
+    }
 }
 
-/// TODO: port of `static Htop_Reaction actionCollapseIntoParent(State* st` from `Action.c:364`.
-pub fn actionCollapseIntoParent() {
-    todo!("port of Action.c:364")
+/// Port of `static Htop_Reaction actionCollapseIntoParent(State* st)` from
+/// `Action.c:364`. A no-op outside tree view; otherwise collapses the selection
+/// into its parent via [`collapseIntoParent`] and recalculates if it changed.
+pub fn actionCollapseIntoParent(st: &State) -> Htop_Reaction {
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let treeView = unsafe {
+        let s = (*st.host)
+            .settings
+            .as_ref()
+            .expect("actionCollapseIntoParent: host->settings is NULL");
+        s.screens[s.ssIndex as usize].treeView
+    };
+    if !treeView {
+        return HTOP_OK;
+    }
+
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let changed = collapseIntoParent(unsafe { &mut (*st.mainPanel).super_ });
+    if changed {
+        HTOP_RECALCULATE
+    } else {
+        HTOP_OK
+    }
 }
 
-/// TODO: port of `static Htop_Reaction actionExpandCollapseOrSortColumn(State* st` from `Action.c:372`.
-pub fn actionExpandCollapseOrSortColumn() {
-    todo!("port of Action.c:372")
+/// Port of `static Htop_Reaction actionExpandCollapseOrSortColumn(State* st)`
+/// from `Action.c:372`. In tree view, dispatches to [`actionExpandOrCollapse`];
+/// otherwise to [`actionSetSortColumn`] (which remains a `todo!()` blocked on
+/// [`Action_pickFromVector`] — a faithful stub-chain call).
+pub fn actionExpandCollapseOrSortColumn(st: &State) -> Htop_Reaction {
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let treeView = unsafe {
+        let s = (*st.host)
+            .settings
+            .as_ref()
+            .expect("actionExpandCollapseOrSortColumn: host->settings is NULL");
+        s.screens[s.ssIndex as usize].treeView
+    };
+    if treeView {
+        actionExpandOrCollapse(st)
+    } else {
+        actionSetSortColumn(st)
+    }
 }
 
-/// TODO: port of `static inline void setActiveScreen(Settings* settings, State* st, unsigned int ssIdx` from `Action.c:376`.
-pub fn setActiveScreen() {
-    todo!("port of Action.c:376")
+/// Port of `static inline void setActiveScreen(Settings* settings, State* st,
+/// unsigned int ssIdx)` from `Action.c:376`. Points the active screen at
+/// `screens[ssIdx]`, defaulting its table to the process table, updates
+/// `host->activeTable`, and retargets the main panel's function bar
+/// (read-only when the active table is not the process table).
+///
+/// The C `settings->ss = settings->screens[ssIdx]` assignment has no analog:
+/// the ported model derives `ss` as `screens[ssIndex]` (the caller has already
+/// set `ssIndex`), so setting the pointer is implicit. `settings` is reached
+/// through `st->host->settings` (C passes it explicitly, but it is always
+/// `st->host->settings`). The process table is read before the mutable
+/// `settings` borrow to avoid aliasing `host`.
+pub fn setActiveScreen(st: &State, ssIdx: u32) {
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let host = unsafe { &mut *st.host };
+    let settings = host
+        .settings
+        .as_mut()
+        .expect("setActiveScreen: host->settings is NULL");
+    debug_assert_eq!(settings.ssIndex, ssIdx);
+    let idx = ssIdx as usize;
+
+    // host->processTable read up front (the mutable `settings` borrow below
+    // aliases `host`, so it cannot also read `host.processTable`).
+    let processTable = host.processTable;
+    let settings = host.settings.as_mut().unwrap();
+    if settings.screens[idx].table.is_none() {
+        settings.screens[idx].table = processTable;
+    }
+    let active = settings.screens[idx].table;
+    host.activeTable = active;
+
+    // set correct functionBar - readonly if requested, and/or non-process screens
+    let readonly = Settings_isReadonly() || (active != processTable);
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let mp = unsafe { &mut *st.mainPanel };
+    MainPanel_setFunctionBar(mp, readonly);
 }
 
-/// TODO: port of `static Htop_Reaction actionNextScreen(State* st` from `Action.c:390`.
-pub fn actionNextScreen() {
-    todo!("port of Action.c:390")
+/// Port of `static Htop_Reaction actionNextScreen(State* st)` from
+/// `Action.c:390`. Advances `settings->ssIndex` (wrapping at the screen count)
+/// and activates it via [`setActiveScreen`]. The C `settings->nScreens` is the
+/// ported model's `screens.len()`.
+pub fn actionNextScreen(st: &State) -> Htop_Reaction {
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let idx = unsafe {
+        let settings = (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionNextScreen: host->settings is NULL");
+        let nScreens = settings.screens.len() as u32;
+        settings.ssIndex += 1;
+        if settings.ssIndex == nScreens {
+            settings.ssIndex = 0;
+        }
+        settings.ssIndex
+    };
+    setActiveScreen(st, idx);
+    HTOP_UPDATE_PANELHDR | HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
-/// TODO: port of `static Htop_Reaction actionPrevScreen(State* st` from `Action.c:400`.
-pub fn actionPrevScreen() {
-    todo!("port of Action.c:400")
+/// Port of `static Htop_Reaction actionPrevScreen(State* st)` from
+/// `Action.c:400`. Steps `settings->ssIndex` back one (wrapping to
+/// `nScreens - 1` at zero) and activates it. `settings->nScreens` maps to
+/// `screens.len()`.
+pub fn actionPrevScreen(st: &State) -> Htop_Reaction {
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let idx = unsafe {
+        let settings = (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionPrevScreen: host->settings is NULL");
+        if settings.ssIndex == 0 {
+            settings.ssIndex = settings.screens.len() as u32 - 1;
+        } else {
+            settings.ssIndex -= 1;
+        }
+        settings.ssIndex
+    };
+    setActiveScreen(st, idx);
+    HTOP_UPDATE_PANELHDR | HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
-/// TODO: port of `Htop_Reaction Action_setScreenTab(State* st, int x` from `Action.c:411`.
-pub fn Action_setScreenTab() {
-    todo!("port of Action.c:411")
+/// Port of `Htop_Reaction Action_setScreenTab(State* st, int x)` from
+/// `Action.c:411`. Hit-tests the click column `x` against the drawn screen-tab
+/// row (`[heading]` cells separated by [`SCREEN_TAB_COLUMN_GAP`], after
+/// [`SCREEN_TAB_MARGIN_LEFT`]); on a hit it selects that screen via
+/// [`setActiveScreen`], else returns `HTOP_OK` (C `0`).
+///
+/// `settings->nScreens` maps to `screens.len()`; `screens[i]->heading` is an
+/// `Option<String>` (a NULL heading — never produced for a real screen — maps
+/// to `""`). The C `strnlen(tab, n)` is `heading.len().min(n)` (a heading has
+/// no interior NUL). `bracketWidth = strlen("[]") = 2`.
+pub fn Action_setScreenTab(st: &State, x: i32) -> Htop_Reaction {
+    let host = st.host;
+    let bracketWidth: i32 = 2;
+
+    if x < SCREEN_TAB_MARGIN_LEFT {
+        return HTOP_OK;
+    }
+
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let nScreens = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .expect("Action_setScreenTab: host->settings is NULL")
+            .screens
+            .len()
+    };
+
+    let mut rem = x - SCREEN_TAB_MARGIN_LEFT;
+    for i in 0..nScreens {
+        // int width = rem >= bracketWidth ? strnlen(tab, rem - bracketWidth + 1) : 0;
+        let width = if rem >= bracketWidth {
+            let n = (rem - bracketWidth + 1) as usize;
+            // SAFETY: st->host valid (C precondition); the &str borrow is
+            // contained in this block.
+            unsafe {
+                let heading = (*host).settings.as_ref().unwrap().screens[i]
+                    .heading
+                    .as_deref()
+                    .unwrap_or("");
+                heading.len().min(n) as i32
+            }
+        } else {
+            0
+        };
+        if width >= rem - bracketWidth + 1 {
+            // SAFETY: st->host valid (C precondition).
+            unsafe {
+                (*host).settings.as_mut().unwrap().ssIndex = i as u32;
+            }
+            setActiveScreen(st, i as u32);
+            return HTOP_UPDATE_PANELHDR | HTOP_REFRESH | HTOP_REDRAW_BAR;
+        }
+
+        rem -= bracketWidth + width;
+        if rem < SCREEN_TAB_COLUMN_GAP {
+            return HTOP_OK;
+        }
+
+        rem -= SCREEN_TAB_COLUMN_GAP;
+    }
+    HTOP_OK
 }
 
 /// Port of `static Htop_Reaction actionQuit(ATTR_UNUSED State* st)` from
@@ -673,64 +967,161 @@ pub fn actionQuit(_st: &State) -> Htop_Reaction {
     HTOP_QUIT
 }
 
-/// TODO: port of `static Htop_Reaction actionSetAffinity(State* st` from `Action.c:443`.
-pub fn actionSetAffinity() {
-    todo!("port of Action.c:443")
+/// Port of `static Htop_Reaction actionSetAffinity(State* st)` from
+/// `Action.c:443`, for the darwin build where neither `HAVE_LIBHWLOC` nor
+/// `HAVE_AFFINITY` is defined. The `#if (HWLOC || AFFINITY)` block (the
+/// `AffinityPanel` picker) is excluded on macOS, leaving the `#else` body: the
+/// writeable-process and single-CPU guards run, then `return HTOP_OK`. htoprs
+/// is darwin-first, so this is the faithful compiled form for the target
+/// platform. `host->activeCPUs` is read but leads to `HTOP_OK` either way.
+pub fn actionSetAffinity(st: &State) -> Htop_Reaction {
+    if !Action_writeableProcess(st) {
+        return HTOP_OK;
+    }
+
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let host = unsafe { &*st.host };
+    if host.activeCPUs == 1 {
+        return HTOP_OK;
+    }
+
+    HTOP_OK
 }
 
-/// TODO: port of `static Htop_Reaction actionSetSchedPolicy(State* st` from `Action.c:480`.
+/// TODO: port of `static Htop_Reaction actionSetSchedPolicy(State* st)` from
+/// `Action.c:480`. The whole function is `#ifdef SCHEDULER_SUPPORT` (Linux
+/// scheduling only — not compiled on the darwin-first target), and its body
+/// drives the `Scheduling_*` policy/priority panels through
+/// [`Action_pickFromVector`]. Blocked on both the `SCHEDULER_SUPPORT` gate and
+/// the `Action_pickFromVector` `ScreenManager` by-value ownership mismatch.
 pub fn actionSetSchedPolicy() {
-    todo!("port of Action.c:480")
+    todo!("port of Action.c:480 — #ifdef SCHEDULER_SUPPORT (Linux) + Action_pickFromVector (ScreenManager by-value mismatch)")
 }
 
-/// TODO: port of `static Htop_Reaction actionKill(State* st` from `Action.c:524`.
+/// TODO: port of `static Htop_Reaction actionKill(State* st)` from
+/// `Action.c:524`. Presents the `SignalsPanel` picker via
+/// [`Action_pickFromVector`], then delivers the chosen signal to every
+/// tagged/selected row through [`MainPanel_foreachRow`]. Blocked on multiple
+/// pieces: [`Action_pickFromVector`] (`ScreenManager` by-value mismatch); the
+/// `Process_rowSendSignal` callback is `fn(&dyn Object, Arg) -> bool`,
+/// incompatible with the ported `MainPanel_foreachRowFn` (`fn(&mut Row, &Arg)`);
+/// and `Panel_draw` / `refresh()` / `beep()` / `napms()` are unported ncurses.
 pub fn actionKill() {
-    todo!("port of Action.c:524")
+    todo!("port of Action.c:524 — Action_pickFromVector (ScreenManager mismatch) + Process_rowSendSignal callback-type mismatch + refresh/beep/napms unported")
 }
 
-/// TODO: port of `static Htop_Reaction actionFilterByUser(State* st` from `Action.c:548`.
+/// TODO: port of `static Htop_Reaction actionFilterByUser(State* st)` from
+/// `Action.c:548`. Builds a users picker (populated by [`addUserToVector`] via
+/// `UsersTable_foreach`), runs it through [`Action_pickFromVector`], and sets
+/// `host->userId` from the pick. Blocked on [`Action_pickFromVector`]
+/// (`ScreenManager` by-value mismatch), the unported `UsersTable_foreach`
+/// (the machine's `usersTable` is an opaque handle) and `Vector_insertionSort`.
 pub fn actionFilterByUser() {
-    todo!("port of Action.c:548")
+    todo!("port of Action.c:548 — Action_pickFromVector (ScreenManager mismatch) + UsersTable_foreach (opaque usersTable) + Vector_insertionSort")
 }
 
-/// TODO: port of `Htop_Reaction Action_follow(State* st` from `Action.c:568`.
-pub fn Action_follow() {
-    todo!("port of Action.c:568")
+/// Port of `Htop_Reaction Action_follow(State* st)` from `Action.c:568`. Pins
+/// the active table's `following` field to the selected row's id
+/// ([`MainPanel_selectedRow`]) and switches the panel's selection color to
+/// `PANEL_SELECTION_FOLLOW`. `host->activeTable` non-null is the precondition
+/// (as in C).
+pub fn Action_follow(st: &State) -> Htop_Reaction {
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let sel = MainPanel_selectedRow(unsafe { &*st.mainPanel });
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition:
+    // st->host->activeTable is dereferenced unconditionally).
+    let host = unsafe { &mut *st.host };
+    let at = host
+        .activeTable
+        .expect("Action_follow: host->activeTable is NULL");
+    unsafe {
+        (*at).following = sel;
+    }
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    Panel_setSelectionColor(
+        unsafe { &mut (*st.mainPanel).super_ },
+        ColorElements::PANEL_SELECTION_FOLLOW,
+    );
+    HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionSetup(State* st` from `Action.c:574`.
-pub fn actionSetup() {
-    todo!("port of Action.c:574")
+/// Port of `static Htop_Reaction actionSetup(State* st)` from `Action.c:574`.
+/// Runs the setup screen via [`Action_runSetup`] and returns the
+/// refresh/redraw/resize reaction. `Action_runSetup` remains a `todo!()`
+/// (blocked on the `ScreenManager_new` by-value ownership mismatch); this
+/// handler calls it by name (faithful stub-chain, per the `Machine_scanTables`
+/// precedent).
+pub fn actionSetup(st: &State) -> Htop_Reaction {
+    Action_runSetup(st);
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR | HTOP_RESIZE
 }
 
-/// TODO: port of `static Htop_Reaction actionLsof(State* st` from `Action.c:579`.
+/// TODO: port of `static Htop_Reaction actionLsof(State* st)` from
+/// `Action.c:579`. Opens the selected process's `OpenFilesScreen` as a modal
+/// [`InfoScreen`]. Blocked on ncurses: the epilogue calls `clear()` (unported
+/// in `crt.rs`), and `InfoScreen_run` takes `&mut dyn InfoScreenClass` while
+/// `OpenFilesScreen` does not implement that trait, so it cannot be driven yet.
 pub fn actionLsof() {
-    todo!("port of Action.c:579")
+    todo!("port of Action.c:579 — clear() unported + OpenFilesScreen has no InfoScreenClass impl")
 }
 
-/// TODO: port of `static Htop_Reaction actionShowLocks(State* st` from `Action.c:597`.
+/// TODO: port of `static Htop_Reaction actionShowLocks(State* st)` from
+/// `Action.c:597`. Opens the selected process's `ProcessLocksScreen` modally.
+/// Blocked on the same ncurses substrate as [`actionLsof`]: `clear()` is
+/// unported and `ProcessLocksScreen` does not implement `InfoScreenClass`.
 pub fn actionShowLocks() {
-    todo!("port of Action.c:597")
+    todo!("port of Action.c:597 — clear() unported + ProcessLocksScreen has no InfoScreenClass impl")
 }
 
-/// TODO: port of `static Htop_Reaction actionBacktrace(State *st` from `Action.c:616`.
+/// TODO: port of `static Htop_Reaction actionBacktrace(State *st)` from
+/// `Action.c:616`. The whole function is `#if defined(HAVE_BACKTRACE_SCREEN)`
+/// (Linux-only, not compiled on the darwin-first target). Its body builds a
+/// `BacktracePanel` inside a [`ScreenManager`], blocked on the same
+/// `ScreenManager_new` by-value ownership mismatch as [`Action_pickFromVector`]
+/// (plus `Vector`/`BacktracePanel_new`).
 pub fn actionBacktrace() {
-    todo!("port of Action.c:616")
+    todo!("port of Action.c:616 — #if HAVE_BACKTRACE_SCREEN (Linux) + ScreenManager_new by-value mismatch")
 }
 
-/// TODO: port of `static Htop_Reaction actionStrace(State* st` from `Action.c:644`.
+/// TODO: port of `static Htop_Reaction actionStrace(State* st)` from
+/// `Action.c:644`. Forks a tracer and shows its `TraceScreen` modally. Blocked
+/// on ncurses (`clear()` unported) and the `InfoScreen_run` trait gap
+/// (`TraceScreen` does not implement `InfoScreenClass`).
 pub fn actionStrace() {
-    todo!("port of Action.c:644")
+    todo!("port of Action.c:644 — clear() unported + TraceScreen has no InfoScreenClass impl")
 }
 
-/// TODO: port of `static Htop_Reaction actionTag(State* st` from `Action.c:665`.
-pub fn actionTag() {
-    todo!("port of Action.c:665")
+/// Port of `static Htop_Reaction actionTag(State* st)` from `Action.c:665`.
+/// Toggles the selected row's tag ([`Row_toggleTag`]) and advances the
+/// selection one row down ([`Panel_onKey`] with [`KEY_DOWN`]); a no-op when the
+/// panel has no selectable row (the C `if (!r) return HTOP_OK`). The C
+/// `(Row*)Panel_getSelected` cast becomes an index into the panel's items with
+/// an `Any` downcast to `&mut Row` (the `expandCollapse` idiom).
+pub fn actionTag(st: &State) -> Htop_Reaction {
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let panel = unsafe { &mut (*st.mainPanel).super_ };
+    let sel = panel.selected;
+    // C: Row* r = (Row*) Panel_getSelected(...); if (!r) return HTOP_OK;
+    if sel < 0 || sel as usize >= panel.items.len() {
+        return HTOP_OK;
+    }
+    {
+        let obj: &mut dyn Object = panel.items[sel as usize].object_mut();
+        let any: &mut dyn core::any::Any = obj;
+        if let Some(r) = any.downcast_mut::<Row>() {
+            Row_toggleTag(r);
+        }
+    }
+    Panel_onKey(panel, KEY_DOWN);
+    HTOP_OK
 }
 
-/// TODO: port of `static Htop_Reaction actionRedraw(ATTR_UNUSED State* st` from `Action.c:675`.
+/// TODO: port of `static Htop_Reaction actionRedraw(ATTR_UNUSED State* st)` from
+/// `Action.c:675`. The body is `clear(); return HTOP_RECALCULATE | HTOP_REFRESH
+/// | HTOP_REDRAW_BAR;`. Blocked on the ncurses `clear()` primitive, which is
+/// not ported in `crt.rs` (no `clear`/`refresh` drawing primitives exist yet).
 pub fn actionRedraw() {
-    todo!("port of Action.c:675")
+    todo!("port of Action.c:675 — clear() ncurses primitive unported in crt.rs")
 }
 
 /// Port of `static Htop_Reaction actionTogglePauseUpdate(State* st)` from
@@ -742,39 +1133,83 @@ pub fn actionTogglePauseUpdate(st: &mut State) -> Htop_Reaction {
     HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static inline void addattrstr( int attr, const char* str` from `Action.c:746`.
+/// TODO: port of `static inline void addattrstr(int attr, const char* str)`
+/// from `Action.c:746`. The body is `attrset(attr); addstr(str);` — both
+/// ncurses drawing primitives that are not ported in `crt.rs`. Used only by
+/// [`actionHelp`], which is itself ncurses-blocked.
 pub fn addattrstr() {
-    todo!("port of Action.c:746")
+    todo!("port of Action.c:746 — attrset/addstr ncurses primitives unported in crt.rs")
 }
 
-/// TODO: port of `static Htop_Reaction actionHelp(State* st` from `Action.c:751`.
+/// TODO: port of `static Htop_Reaction actionHelp(State* st)` from
+/// `Action.c:751`. Draws the full help page. Blocked on the ncurses draw
+/// substrate: `clear()`, `attrset`, `mvaddstr`, `mvhline`, `addstr`,
+/// `refresh()`, [`addattrstr`] and `CRT_readKey`'s companions, plus the
+/// `Platform_memoryClasses` table — none ported in `crt.rs`.
 pub fn actionHelp() {
-    todo!("port of Action.c:751")
+    todo!("port of Action.c:751 — clear/attrset/mvaddstr/mvhline/refresh ncurses substrate unported")
 }
 
-/// TODO: port of `static Htop_Reaction actionUntagAll(State* st` from `Action.c:894`.
-pub fn actionUntagAll() {
-    todo!("port of Action.c:894")
+/// Port of `static Htop_Reaction actionUntagAll(State* st)` from
+/// `Action.c:894`. Clears the `tag` flag on every row of the main panel and
+/// requests a refresh. The C `(Row*)Panel_get(...)` cast becomes a per-index
+/// `Any` downcast of the panel's items (the `MainPanel_foreachRow` idiom).
+pub fn actionUntagAll(st: &State) -> Htop_Reaction {
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let panel = unsafe { &mut (*st.mainPanel).super_ };
+    let size = Panel_size(panel);
+    for i in 0..size {
+        let obj: &mut dyn Object = panel.items[i as usize].object_mut();
+        let any: &mut dyn core::any::Any = obj;
+        if let Some(row) = any.downcast_mut::<Row>() {
+            row.tag = false;
+        }
+    }
+    HTOP_REFRESH
 }
 
-/// TODO: port of `static Htop_Reaction actionTagAllChildren(State* st` from `Action.c:902`.
-pub fn actionTagAllChildren() {
-    todo!("port of Action.c:902")
+/// Port of `static Htop_Reaction actionTagAllChildren(State* st)` from
+/// `Action.c:902`. Tags the selected row and all its descendants via
+/// [`tagAllChildren`]; a no-op when the panel has no selectable row (the C
+/// `if (!row) return HTOP_OK`). The C `Row* row` (the selected element) is
+/// identified by its panel index, matching [`tagAllChildren`]'s ported shape.
+pub fn actionTagAllChildren(st: &State) -> Htop_Reaction {
+    // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
+    let panel = unsafe { &mut (*st.mainPanel).super_ };
+    let sel = panel.selected;
+    if sel < 0 || sel as usize >= panel.items.len() {
+        return HTOP_OK;
+    }
+    tagAllChildren(panel, sel);
+    HTOP_OK
 }
 
-/// TODO: port of `static Htop_Reaction actionShowEnvScreen(State* st` from `Action.c:911`.
+/// TODO: port of `static Htop_Reaction actionShowEnvScreen(State* st)` from
+/// `Action.c:911`. Opens the selected process's `EnvScreen` modally. Blocked on
+/// the same ncurses substrate as [`actionLsof`]: `clear()` is unported and
+/// `EnvScreen` does not implement the `InfoScreenClass` trait `InfoScreen_run`
+/// requires.
 pub fn actionShowEnvScreen() {
-    todo!("port of Action.c:911")
+    todo!("port of Action.c:911 — clear() unported + EnvScreen has no InfoScreenClass impl")
 }
 
-/// TODO: port of `static Htop_Reaction actionShowCommandScreen(State* st` from `Action.c:929`.
+/// TODO: port of `static Htop_Reaction actionShowCommandScreen(State* st)` from
+/// `Action.c:929`. Opens the selected process's `CommandScreen` modally.
+/// Blocked on the same ncurses substrate as [`actionLsof`]: `clear()` is
+/// unported and `CommandScreen` does not implement `InfoScreenClass`.
 pub fn actionShowCommandScreen() {
-    todo!("port of Action.c:929")
+    todo!("port of Action.c:929 — clear() unported + CommandScreen has no InfoScreenClass impl")
 }
 
-/// TODO: port of `void Action_setBindings(Htop_Action* keys` from `Action.c:947`.
+/// TODO: port of `void Action_setBindings(Htop_Action* keys)` from
+/// `Action.c:947`. Fills the keypress → handler dispatch table. Blocked on a
+/// uniform-signature requirement: `Htop_Action` is a single
+/// `fn(&mut State) -> Htop_Reaction` pointer type, but the ported handlers have
+/// heterogeneous signatures (`&State` vs `&mut State`, and several — the
+/// pickFromVector-blocked stubs — still take no args or extra args), so a single
+/// `[fn; N]` table cannot be built until every handler shares that signature.
 pub fn Action_setBindings() {
-    todo!("port of Action.c:947")
+    todo!("port of Action.c:947 — needs every actionXxx to share the fn(&mut State)->Htop_Reaction signature (Htop_Action)")
 }
 
 #[cfg(test)]

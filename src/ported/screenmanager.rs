@@ -51,13 +51,16 @@
 //!   `settings->ssIndex` and prints each `ScreenSettings->heading`; the
 //!   ported `machine::Settings` has no `ssIndex` and `machine::ScreenSettings`
 //!   has no `heading`.
-//! - [`ScreenManager_drawPanels`] — reads `settings->screenTabs`,
-//!   `state->mainPanel` (the ported `State` has no `mainPanel` pointer to
-//!   compare against) and `State_hideFunctionBar` (not ported).
-//! - [`ScreenManager_run`] — the main loop: `checkRecalculation`,
-//!   `drawPanels`, mouse handling (`getmouse`/`MEVENT`), the `Panel`
-//!   event-handler vtable, and `settings->enableMouse`/`screenTabs` — all
-//!   bound to the unported substrate above.
+//! - [`ScreenManager_drawPanels`] — `State_hideFunctionBar` and `mvvline`
+//!   are unported, and the `panel != state->mainPanel` identity test has no
+//!   analog (`panels: Vec<Panel>` holds base `Panel` values with no address
+//!   identity to the separately-owned `MainPanel`, even though
+//!   `State.mainPanel` is now modeled).
+//! - [`ScreenManager_run`] — the main loop: bound to the stubbed
+//!   `checkRecalculation`/`drawPanels`, unported mouse input, and — the core
+//!   blocker — the `Panel` event-handler vtable (the ported `Panel` has no
+//!   `PanelClass.eventHandler` slot and `Vec<Panel>` cannot reach a subclass
+//!   handler).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -384,22 +387,35 @@ pub fn ScreenManager_drawScreenTabs(this: &ScreenManager) {
 }
 
 /// TODO: port of `static void ScreenManager_drawPanels(ScreenManager* this,
-/// size_t focus, bool force_redraw)` from `ScreenManager.c:222`. Reads
-/// `settings->screenTabs`, compares each panel to `state->mainPanel` (the
-/// ported `State` has no `mainPanel` pointer), reads `state->hideSelection`,
-/// and calls `State_hideFunctionBar` (not ported).
+/// size_t focus, bool force_redraw)` from `ScreenManager.c:222`. Blocked on:
+/// (a) `State_hideFunctionBar(this->state)` — unported; (b) the `mvvline`
+/// ncurses primitive drawing the inter-panel separator — no `Ncurses` shim
+/// analog; and (c) the `panel != (Panel*)this->state->mainPanel` identity
+/// test — `State.mainPanel` is now modeled (`*mut MainPanel`), but the
+/// ScreenManager owns base `Panel` *values* in `panels: Vec<Panel>`, which
+/// share no address identity with the separately-owned `MainPanel`, so the
+/// C pointer comparison has no faithful analog. (`settings->screenTabs`,
+/// `state->hideSelection`, `ScreenManager_drawScreenTabs`, `Panel_draw` are
+/// all available.)
 pub fn ScreenManager_drawPanels() {
-    todo!("port of ScreenManager.c:222 — needs State.mainPanel + State_hideFunctionBar")
+    todo!("port of ScreenManager.c:222 — needs State_hideFunctionBar + mvvline + panel/mainPanel identity (Vec<Panel> holds base values, no MainPanel address identity)")
 }
 
 /// TODO: port of `void ScreenManager_run(ScreenManager* this,
 /// Panel** lastFocus, int* lastKey, const char* name)` from
-/// `ScreenManager.c:239`. The main loop: [`checkRecalculation`],
-/// [`ScreenManager_drawPanels`], mouse handling (`getmouse`/`MEVENT`), the
-/// `Panel` event-handler vtable, and `settings->enableMouse`/`screenTabs`
-/// dispatch — all bound to unported substrate and the Panel vtable.
+/// `ScreenManager.c:239`. The main loop. Blocked on: the still-stubbed
+/// [`checkRecalculation`] / [`ScreenManager_drawPanels`]; and — the core
+/// blocker — the `Panel` event-handler vtable dispatch
+/// (`Panel_eventHandlerFn(panelFocus)` / `Panel_eventHandler(panelFocus, ch)`).
+/// The ported `Panel` models no `PanelClass.eventHandler` slot, and
+/// `panels: Vec<Panel>` stores base `Panel` values with no way to reach a
+/// subclass handler (`CategoriesPanel_eventHandler`, etc.), so the loop cannot
+/// route keys to the focused panel. Mouse handling (`getmouse`/`MEVENT`,
+/// `FunctionBar_synthesizeEvent`) is also unported. (`Panel_getCh`,
+/// `Panel_onKey`, `Panel_size`, `ScreenManager_resize`, and
+/// `settings->enableMouse`/`screenTabs` via `host->settings` are available.)
 pub fn ScreenManager_run() {
-    todo!("port of ScreenManager.c:239 — needs checkRecalculation/drawPanels + Panel vtable")
+    todo!("port of ScreenManager.c:239 — needs Panel eventHandler vtable dispatch (Vec<Panel> holds base values, no subclass handler) + checkRecalculation/drawPanels + mouse input")
 }
 
 #[cfg(test)]

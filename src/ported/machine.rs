@@ -53,9 +53,9 @@
 //! - [`Machine_done`] (`Machine.c:53`) — `hwloc_topology_destroy`,
 //!   `Object_delete`, `free`: teardown of unported machinery (`Drop`
 //!   releases the owned Rust fields).
-//! - [`Machine_scanTables`] (`Machine.c:100`) — `Platform_gettime_monotonic`,
-//!   the `Row_*ColumnWidth` helpers, and `Table_scanPrepare`/`_scanIterate`/
-//!   `_scanCleanup` dispatch: syscalls plus unported scan machinery.
+//! - [`Machine_scanTables`] (`Machine.c:100`) — blocked on its signature
+//!   being pinned by argument-less `action.rs` callers and on the missing
+//!   `Table` scan vtable (`TableClass`); see the fn's own doc for details.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -254,11 +254,27 @@ pub fn Machine_setTablesPanel(this: &mut Machine, panel: *mut Panel) {
 }
 
 /// TODO: port of `void Machine_scanTables(Machine* this)` from
-/// `Machine.c:100`. Needs `Platform_gettime_monotonic`, the
-/// `Row_*ColumnWidth` helpers, and the `Table_scanPrepare`/`_scanIterate`/
-/// `_scanCleanup` dispatch (platform scan machinery).
+/// `Machine.c:100`. Its scalar substrate is now available
+/// (`Platform_gettime_monotonic`, `Row_resetFieldWidths`,
+/// `Row_set{Uid,Pid}ColumnWidth`), but two blockers remain that this port's
+/// edit scope cannot resolve:
+///
+/// 1. **Signature is pinned by out-of-scope callers.** A faithful port needs
+///    `this: &mut Machine`, but `action.rs:441` and `action.rs:461` call this
+///    stub argument-less (`Machine_scanTables()`, the repo's stub-chain
+///    convention for an unmodeled `this`). Re-signing it to take a `Machine`
+///    breaks `action.rs` — a non-edit-scope file — and thus `cargo build`.
+/// 2. **No `TableClass` scan vtable is modeled.** The C loop dispatches
+///    `Table_scanPrepare`/`_scanIterate`/`_scanCleanup` through
+///    `As_Table(t)->{prepare,iterate,cleanup}` (`Table.h:46-57`). `table.rs`
+///    models no `TableClass` and `Machine::tables` holds bare `*mut Table`,
+///    so the polymorphic scan dispatch (which bottoms at the platform
+///    `ProcessTable_goThroughEntries` seam) has no faithful expression here.
+///
+/// Left a stub pending the coordinator retyping the `action.rs` call sites
+/// and modeling the `Table` scan vtable.
 pub fn Machine_scanTables() {
-    todo!("port of Machine.c:100 — needs Platform scan + Table scan dispatch")
+    todo!("port of Machine.c:100 — signature pinned by action.rs no-arg callers + no TableClass scan vtable")
 }
 
 #[cfg(test)]

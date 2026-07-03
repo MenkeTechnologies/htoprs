@@ -45,11 +45,10 @@
 //! - [`InfoScreen_run`] (`InfoScreen.c:96`) — the full ncurses event-loop
 //!   control flow: the `As_InfoScreen` vtable dispatch (trait methods), the
 //!   `Panel_draw`/`FunctionBar_setLabel`/`Panel_getCh`/`Panel_onKey`/
-//!   `Panel_resize`/`Vector_prune`/`clear()` calls, and the key switch. Three
-//!   loop leaves (`IncSet_drawBar`/`IncSet_handleKey`/`IncSet_activate`) are
-//!   routed to their still-stubbed `incset.rs` functions and the
-//!   `#ifdef HAVE_GETMOUSE` mouse block is compiled out; both are documented
-//!   on the fn.
+//!   `Panel_resize`/`Vector_prune`/`clear()` calls, and the key switch. Its
+//!   `IncSet` leaves (`IncSet_drawBar`/`IncSet_handleKey`/`IncSet_activate`) are
+//!   all ported and called with their real arguments; the
+//!   `#ifdef HAVE_GETMOUSE` mouse block is compiled out (documented on the fn).
 //!
 //! ## Owned-value divergences (documented, per "port what you can")
 //!
@@ -72,16 +71,16 @@
 //!   `Vec<Box<dyn Object>>`), so the `ListItem` class is recovered from an
 //!   instance's `Object::klass()` — the same class `Vector_type` would
 //!   yield.
-//! - **`Panel_add(display, Vector_get(lines, last))`** (in
-//!   [`InfoScreen_addLine`]). C adds the *same* `Object*` to the panel
-//!   that it just put in `lines` (htop's "weak panel": the panel is a
-//!   filtered view aliasing the `lines` objects). A `Box<dyn Object>` is a
-//!   unique owner and cannot sit in two `Vec`s at once, so the panel
-//!   receives an independent `ListItem` with identical `value`/`key`.
-//!   That is faithful for the panel's role — `Panel_draw` and
-//!   `IncSet_getListItemValue` only read the item's `value` — and the sole
-//!   place C relies on the shared *identity* is [`InfoScreen_appendLine`],
-//!   which is stubbed for exactly that reason.
+//! - **Weak panel (`Panel_add(display, Vector_get(lines, last))`).** C adds the
+//!   *same* `Object*` to the panel that it just put in `lines` — htop's
+//!   non-owning "weak panel" (`Panel_new(…, false, …)`), a filtered view
+//!   aliasing the `lines`-owned objects. This is modeled faithfully with a
+//!   [`PanelItem::Borrowed`] raw pointer into the `lines`-owned `Box` (the same
+//!   idiom the process `Table` uses), so the shared *identity* the
+//!   `displayLast != last` guard in [`InfoScreen_appendLine`] /
+//!   `IncSet_handleKey` needs is preserved. SAFETY: `lines` owns the boxes
+//!   (heap-stable across `Vector` growth) and `display` is declared before
+//!   `lines`, so the panel's borrowed pointers drop before the boxes are freed.
 //!
 //! # Stubbed (cannot be ported faithfully yet), each naming its blocker
 //!
@@ -98,22 +97,13 @@
 //!   `"..."` ellipsis reproduced on the byte buffer; `String_stripControlChars`
 //!   (`XUtils.h:147`, absent from the port-purity snapshot) is inlined as a
 //!   byte loop rather than a module-level `fn`.
-//! - [`InfoScreen_appendLine`] (`InfoScreen.c:81`) — depends on the
-//!   weak-panel shared-`Object*` identity that owned `Box`es cannot model.
-//!   Its `displayLast != last` test is a pointer-identity compare between
-//!   the panel's last item and `lines`' last item ("is `lines`' last line
-//!   currently shown as the panel's last?"), and its in-place
-//!   `ListItem_append` mutation relies on the panel and `lines` aliasing
-//!   the same object. With independent clones (see the `addLine`
-//!   divergence above) the two are never pointer-equal and a mutation of
-//!   `lines` does not reach the panel copy, so the C dedup/in-place path
-//!   cannot be reproduced. C also re-tests the filter against the *newly
-//!   appended fragment* (`String_contains_i(line, incFilter, true)` where
-//!   `line` is only the appended text), which a value-recompute view would
-//!   not match. The `lines`-side growth (`ListItem_append` on the last
-//!   item) is itself portable, but the function as a whole is gated on the
-//!   panel identity dedup — the same blocker `incset.rs` documents for
-//!   `updateWeakPanel` (`IncSet.c:96`).
+//! - [`InfoScreen_appendLine`] (`InfoScreen.c:81`) — the body is portable (the
+//!   weak-panel raw-pointer technique it needs is proven by the ported
+//!   [`InfoScreen_addLine`] and `incset.rs`'s `updateWeakPanel`), but its
+//!   faithful `(this, line)` signature would break the committed 0-arg caller
+//!   `InfoScreen_appendLine()` in `tracescreen.rs:527`, which is outside this
+//!   port group's 3-file scope. Kept a zero-argument stub so the build compiles;
+//!   un-stubbing it also needs a one-line caller fix in `tracescreen.rs`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -127,14 +117,14 @@ use crossterm::terminal::{Clear, ClearType};
 use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F, KEY_RESIZE};
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new, FunctionBar_setLabel, Ncurses};
 use crate::ported::incset::{
-    IncSet, IncSet_activate, IncSet_delete, IncSet_drawBar, IncSet_filter, IncSet_handleKey,
-    IncSet_new, IncType,
+    IncSet, IncSet_activate, IncSet_delete, IncSet_drawBar, IncSet_filter, IncSet_getListItemValue,
+    IncSet_handleKey, IncSet_new, IncType,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    Panel, Panel_add, Panel_delete, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
-    Panel_setHeader,
+    Panel, Panel_delete, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
+    Panel_setHeader, PanelItem,
 };
 use crate::ported::process::Process;
 use crate::ported::vector::{Vector, Vector_add, Vector_delete, Vector_new, Vector_prune};
@@ -447,10 +437,22 @@ pub fn InfoScreen_drawTitled(this: &mut InfoScreen, title: &str) {
 /// from `InfoScreen.c:73`. Appends a fresh `ListItem` for `line` to the
 /// `lines` vector, then — when there is no active filter or `line` matches
 /// the current `IncSet_filter` (`String_contains_i`, case-insensitive) —
-/// also shows it in the panel. Per the module docs, C adds the *same*
-/// `Object*` to the panel that it put in `lines`; the owned-`Box` model
-/// instead gives the panel an identical independent `ListItem` (faithful
-/// for display; identity matters only to the stubbed `InfoScreen_appendLine`).
+/// also shows it in the panel.
+///
+/// **Weak panel (raw-pointer alias).** C's `Panel_add(this->display,
+/// Vector_get(this->lines, …))` adds the *same* `Object*` to the panel that it
+/// just put in `lines` — htop's non-owning "weak panel" (`Panel_new(…, false,
+/// …)`) is a filtered view aliasing the `lines`-owned objects. This is modeled
+/// faithfully with a [`PanelItem::Borrowed`] raw pointer into the
+/// `lines`-owned `Box` (the same idiom the process `Table` uses for its
+/// `Panel`), not an independent clone, so that [`InfoScreen_appendLine`] /
+/// `IncSet_handleKey`'s `displayLast != last` pointer-identity test works.
+///
+/// SAFETY: `lines` owns the `ListItem` boxes (heap-stable — `Box` keeps each
+/// pointee's address fixed across `Vector` growth), and in [`InfoScreen`]
+/// `display` is declared before `lines`, so the panel (and its borrowed
+/// pointers) drops before `lines` frees the boxes — no use-after-free. The
+/// alias is only dereferenced while `lines` is alive.
 pub fn InfoScreen_addLine(this: &mut InfoScreen, line: &str) {
     // C: Vector_add(this->lines, (Object*) ListItem_new(line, 0));
     Vector_add(&mut this.lines, Box::new(ListItem_new(line, 0)));
@@ -463,23 +465,37 @@ pub fn InfoScreen_addLine(this: &mut InfoScreen, line: &str) {
     };
     if show {
         // C: Panel_add(this->display, Vector_get(this->lines, Vector_size(this->lines) - 1));
-        Panel_add(&mut this.display, Box::new(ListItem_new(line, 0)));
+        // Weak (borrowed) add: alias the just-inserted `lines` box, don't clone.
+        let last = this.lines.array.len() - 1;
+        let ptr: *mut dyn Object = &mut **this.lines.array[last]
+            .as_mut()
+            .expect("just-added lines slot is non-NULL");
+        this.display.items.push(PanelItem::Borrowed(ptr));
+        this.display.prevSelected = -1;
+        this.display.needsRedraw = true;
     }
 }
 
 /// TODO: port of `void InfoScreen_appendLine(InfoScreen* this, const char*
-/// line)` from `InfoScreen.c:81`. Blocked on the weak-panel shared-`Object*`
-/// identity that owned `Box`es cannot model: its `displayLast != last`
-/// pointer-identity compare (panel's last item vs `lines`' last item) and
-/// its in-place `ListItem_append` mutation both rely on the panel and
-/// `lines` aliasing one object, and its filter re-test runs against the
-/// newly appended fragment (`String_contains_i(line, incFilter, true)`, with
-/// `line` only the appended text). With the independent clones the port uses
-/// (see `InfoScreen_addLine`) the two are never pointer-equal, so the C
-/// dedup / in-place path cannot be reproduced. Same blocker class as
-/// `updateWeakPanel` (`incset.rs`, `IncSet.c:96`).
+/// line)` from `InfoScreen.c:81`. **Not a soundness blocker** — the weak-panel
+/// raw-pointer technique this port needs (in-place `ListItem_append` on the last
+/// `lines` box, then the `displayLast != last` data-pointer identity guard, then
+/// a [`PanelItem::Borrowed`] weak-add of the matching fragment) is fully proven
+/// by the ported [`InfoScreen_addLine`] and `incset.rs`'s
+/// [`updateWeakPanel`](crate::ported::incset)/`IncSet_handleKey`, which alias
+/// `lines`-owned boxes into the panel exactly the same way.
+///
+/// The blocker is purely the **committed 0-arg caller**
+/// `InfoScreen_appendLine()` in `tracescreen.rs:527` (the contLine branch of
+/// `TraceScreen_scan`), which is pinned to this stub's zero-argument signature.
+/// Giving the fn its faithful `(this, line)` signature would break that call —
+/// and `tracescreen.rs` is outside this port group's 3-file scope, so the caller
+/// cannot be updated here. Un-stubbing this fn therefore also requires a
+/// one-line caller fix in `tracescreen.rs`
+/// (`InfoScreen_appendLine(&mut this.super_, &s)`), out of scope. Kept
+/// zero-argument so the build stays green.
 pub fn InfoScreen_appendLine() {
-    todo!("port of InfoScreen.c:81 — needs weak-panel shared Object* identity (displayLast != last); owned Box can't alias panel + lines")
+    todo!("port of InfoScreen.c:81 — body is portable (weak-panel raw-pointer technique, proven by InfoScreen_addLine/updateWeakPanel); blocked only by the committed 0-arg caller tracescreen.rs:527, outside this 3-file scope")
 }
 
 /// Port of `void InfoScreen_run(InfoScreen* this)` from `InfoScreen.c:96`.
@@ -494,19 +510,13 @@ pub fn InfoScreen_appendLine() {
 /// crossterm full-screen clear (a local closure, kept off module scope so the
 /// port-purity gate — which has no `clear` C entry — does not flag it).
 ///
-/// # Transitively blocked leaf (routed to its `incset.rs` stub)
+/// # IncSet leaves
 ///
-/// The control flow is ported in full. Two of its `IncSet` leaves are now
-/// ported and called with their real arguments —
-/// [`IncSet_drawBar`]`(this->inc, CRT_colors[FUNCTION_BAR])` (`:108`) and
-/// [`IncSet_activate`]`(this->inc, INC_SEARCH|INC_FILTER, panel)` (`:154/158`).
-/// The one remaining honest `todo!()` stub is
-/// `IncSet_handleKey(this->inc, ch, panel, IncSet_getListItemValue,
-/// this->lines)` (`:145`) → [`IncSet_handleKey`] (`IncSet.c:177`, whose filter
-/// path needs the still-unported `updateWeakPanel`), so the loop panics only if
-/// it reaches an active incremental mode. That zero-arg stub signature drops
-/// the C arguments (documented at the call site); it `todo!()`-panics, so no
-/// argument is ever observed.
+/// The control flow is ported in full and every `IncSet` leaf is called with
+/// its real arguments — [`IncSet_drawBar`], [`IncSet_activate`], and
+/// [`IncSet_handleKey`]`(this->inc, ch, panel, IncSet_getListItemValue,
+/// this->lines)` (`:145`) — reaching `this->inc`/`display`/`lines` through
+/// [`InfoScreenClass::super_InfoScreen`] as disjoint field borrows.
 ///
 /// # Omitted: the `HAVE_GETMOUSE` block (`:120`–`:142`)
 ///
@@ -578,7 +588,16 @@ pub fn InfoScreen_run(this: &mut dyn InfoScreenClass) {
         //        continue;
         //    }
         if this.super_InfoScreen().inc.active.is_some() {
-            IncSet_handleKey(); // routed to the incset.rs stub (see fn docs)
+            // C: IncSet_handleKey(this->inc, ch, panel, IncSet_getListItemValue, this->lines);
+            // inc/display/lines are disjoint InfoScreen fields, borrowed at once.
+            let screen = this.super_InfoScreen();
+            IncSet_handleKey(
+                &mut screen.inc,
+                ch,
+                &mut screen.display,
+                IncSet_getListItemValue,
+                &mut screen.lines,
+            );
             continue;
         }
 
@@ -788,12 +807,13 @@ mod tests {
         assert_eq!(Panel_size(&this.display), 1);
     }
 
+
     // ── InfoScreenClass vtable dispatch (InfoScreen.h:35) ─────────────
     //
     // The `InfoScreen_run` loop body itself is not unit-tested: it calls
-    // `Panel_getCh` (blocks on real stdin via `CRT_readKey`), `Panel_draw`
-    // (emits to stdout), and routes to `todo!()` `IncSet` stubs, so it needs
-    // a live TTY and unported substrate. What IS testable headlessly is the
+    // `Panel_getCh` (blocks on real stdin via `CRT_readKey`) and `Panel_draw`
+    // (emits to stdout), so it needs a live TTY. What IS testable headlessly is
+    // the
     // new modelable piece — the vtable-as-trait: slot dispatch, the `NULL`-
     // slot presence predicates, `&mut dyn` dispatch, and the `super` base
     // access the loop drives everything through.
