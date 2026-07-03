@@ -423,9 +423,14 @@ pub fn OpenBSDProcessTable_scanProcs(this: &mut OpenBSDProcessTable) {
             Process_updateCPUFieldWidths(proc.percent_cpu);
 
             proc.nice = kproc.p_nice as i32 - 20;
-            proc.time = 100
-                * (kproc.p_rtime_sec as u64
-                    + ((kproc.p_rtime_usec as u64 + 500000) / 1000000));
+            // C: `100 * (p_rtime_sec + ((p_rtime_usec + 500000) / 1000000))` is
+            // evaluated in 32-bit `unsigned int` (both `p_rtime_*` are u32),
+            // then widened to `time`'s u64 — reproduce that width exactly.
+            proc.time = (100u32.wrapping_mul(
+                kproc
+                    .p_rtime_sec
+                    .wrapping_add((kproc.p_rtime_usec.wrapping_add(500000)) / 1000000),
+            )) as u64;
             proc.priority = kproc.p_priority as i64 - PZERO;
             proc.processor = kproc.p_cpuid as i32;
             proc.minflt = kproc.p_uru_minflt;

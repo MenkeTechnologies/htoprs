@@ -359,8 +359,11 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
         kvm_close(kt);
     }
 
-    // Ensure the double-NUL terminator the C guarantees.
-    env.push(0);
+    // Ensure the double-NUL terminator the C guarantees (even for an empty
+    // environment, C:308-313 writes two trailing NULs).
+    while env.len() < 2 || env[env.len() - 1] != 0 || env[env.len() - 2] != 0 {
+        env.push(0);
+    }
     Some(String::from_utf8_lossy(&env).into_owned())
 }
 
