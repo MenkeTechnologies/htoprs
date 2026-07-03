@@ -36,7 +36,7 @@ use crate::ported::batterymeter::ACPresence;
 use crate::ported::crt::ColorElements;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
 use crate::ported::meter::Meter;
-use crate::ported::xutils::{String_contains_i, String_eq, String_startsWith};
+use crate::ported::xutils::{String_contains_i, String_eq, String_startsWith, sumPositiveValues};
 
 /// Port of `typedef struct MemoryClass_` (`linux/Platform.h`) — one
 /// memory-meter class: its label, whether it counts toward the "used" or
@@ -198,11 +198,6 @@ pub fn Platform_getMaxPid() -> libc::pid_t {
     }
 }
 
-/// TODO: port of `double Platform_setCPUValues(Meter* this, unsigned int cpu` from `Platform.c:343`.
-pub fn Platform_setCPUValues() {
-    todo!("port of Platform.c:343")
-}
-
 /// TODO: port of `void Platform_setGPUValues(Meter* this, double* totalUsage, unsigned long long* totalGPUTimeDiff` from `Platform.c:395`.
 pub fn Platform_setGPUValues() {
     todo!("port of Platform.c:395")
@@ -313,6 +308,86 @@ pub fn Generic_uname() -> &'static str {
 /// — delegates to [`Generic_uname`].
 pub fn Platform_getRelease() -> &'static str {
     Generic_uname()
+}
+
+// CPUMeter.h `CPU_METER_*` indices into `Meter::values`.
+const CPU_METER_NICE: usize = 0;
+const CPU_METER_NORMAL: usize = 1;
+const CPU_METER_KERNEL: usize = 2;
+const CPU_METER_IRQ: usize = 3;
+const CPU_METER_SOFTIRQ: usize = 4;
+const CPU_METER_STEAL: usize = 5;
+const CPU_METER_GUEST: usize = 6;
+const CPU_METER_IOWAIT: usize = 7;
+const CPU_METER_FREQUENCY: usize = 8;
+const CPU_METER_TEMPERATURE: usize = 9;
+
+/// Port of `double Platform_setCPUValues(Meter* this, unsigned int cpu)` from
+/// `linux/Platform.c`. Fills the per-CPU-time-class percentages from
+/// `lhost->cpuData[cpu]` relative to `totalPeriod`, honoring
+/// `detailedCPUTime` (8-class breakdown vs 4-class summary) and
+/// `accountGuestInCPUMeter`, and returns the summed active percentage
+/// (capped at 100). Offline CPUs set `curItems = 0` and return `NAN`.
+/// Temperature is `NAN` (no `BUILD_WITH_CPU_TEMP` in this build).
+pub fn Platform_setCPUValues(this: &mut Meter, cpu: u32) -> f64 {
+    let host = this
+        .host
+        .as_ref()
+        .expect("Platform_setCPUValues: this->host (C dereferences it)")
+        .clone();
+    let h = host.borrow();
+    let cpu_data = &h.cpuData[cpu as usize];
+    let total = if cpu_data.totalPeriod == 0 {
+        1.0
+    } else {
+        cpu_data.totalPeriod as f64
+    };
+
+    if !cpu_data.online {
+        this.curItems = 0;
+        return f64::NAN;
+    }
+
+    let settings = h
+        .super_
+        .settings
+        .as_ref()
+        .expect("Platform_setCPUValues: host->settings");
+    let detailed = settings.detailedCPUTime;
+    let account_guest = settings.accountGuestInCPUMeter;
+
+    this.values[CPU_METER_NICE] = cpu_data.nicePeriod as f64 / total * 100.0;
+    this.values[CPU_METER_NORMAL] = cpu_data.userPeriod as f64 / total * 100.0;
+    if detailed {
+        this.values[CPU_METER_KERNEL] = cpu_data.systemPeriod as f64 / total * 100.0;
+        this.values[CPU_METER_IRQ] = cpu_data.irqPeriod as f64 / total * 100.0;
+        this.values[CPU_METER_SOFTIRQ] = cpu_data.softIrqPeriod as f64 / total * 100.0;
+        this.curItems = 5;
+
+        this.values[CPU_METER_STEAL] = cpu_data.stealPeriod as f64 / total * 100.0;
+        this.values[CPU_METER_GUEST] = cpu_data.guestPeriod as f64 / total * 100.0;
+        if account_guest {
+            this.curItems = 7;
+        }
+
+        this.values[CPU_METER_IOWAIT] = cpu_data.ioWaitPeriod as f64 / total * 100.0;
+    } else {
+        this.values[CPU_METER_KERNEL] = cpu_data.systemAllPeriod as f64 / total * 100.0;
+        this.values[CPU_METER_IRQ] =
+            (cpu_data.stealPeriod + cpu_data.guestPeriod) as f64 / total * 100.0;
+        this.curItems = 4;
+    }
+
+    let percent = sumPositiveValues(&this.values[..this.curItems as usize]).min(100.0);
+
+    if detailed {
+        this.curItems = 8;
+    }
+
+    this.values[CPU_METER_FREQUENCY] = cpu_data.frequency;
+    this.values[CPU_METER_TEMPERATURE] = f64::NAN;
+
+    percent
 }
 
 /// Port of `void Platform_setMemoryValues(Meter* this)` from

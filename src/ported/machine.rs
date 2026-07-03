@@ -92,6 +92,16 @@ pub struct Settings {
     pub showCPUFrequency: bool,
     /// C `bool showCachedMemory` — MemoryMeter shows/masks the cache classes.
     pub showCachedMemory: bool,
+    /// C `bool detailedCPUTime` — CPUMeter breaks out kernel/irq/steal/…
+    pub detailedCPUTime: bool,
+    /// C `bool showCPUUsage` — CPUMeter shows the usage percentage text.
+    pub showCPUUsage: bool,
+    /// C `bool accountGuestInCPUMeter` — count guest time in the CPU bar.
+    pub accountGuestInCPUMeter: bool,
+    /// C `bool showCPUTemperature` (behind `BUILD_WITH_CPU_TEMP`).
+    pub showCPUTemperature: bool,
+    /// C `bool degreeFahrenheit` (behind `BUILD_WITH_CPU_TEMP`).
+    pub degreeFahrenheit: bool,
     /// C `ScreenSettings* ss` — the active screen settings.
     pub ss: ScreenSettings,
     /// C `ScreenSettings** screens` (+ `size_t nScreens`).

@@ -164,9 +164,101 @@ pub fn CPUMeter_getUiName(this: &Meter) -> String {
     }
 }
 
-/// TODO: port of `static void CPUMeter_updateValues(Meter* this` from `CPUMeter.c:87`.
-pub fn CPUMeter_updateValues() {
-    todo!("port of CPUMeter.c:87: needs Platform_setCPUValues (itself stubbed), CPU_METER_* constants, CPUMeter_attributes arrays, and Meter.values/curAttributes/txtBuffer")
+// CPUMeter.h `CPU_METER_*` indices / count.
+const CPU_METER_FREQUENCY: usize = 8;
+const CPU_METER_ITEMCOUNT: usize = 10;
+
+/// Port of `static const int CPUMeter_attributes[]` (`CPUMeter.c`) — the
+/// detailed (8-class) bar palette.
+static CPUMETER_ATTRIBUTES: [i32; 8] = [
+    crate::ported::crt::ColorElements::CPU_NICE as i32,
+    crate::ported::crt::ColorElements::CPU_NORMAL as i32,
+    crate::ported::crt::ColorElements::CPU_SYSTEM as i32,
+    crate::ported::crt::ColorElements::CPU_IRQ as i32,
+    crate::ported::crt::ColorElements::CPU_SOFTIRQ as i32,
+    crate::ported::crt::ColorElements::CPU_STEAL as i32,
+    crate::ported::crt::ColorElements::CPU_GUEST as i32,
+    crate::ported::crt::ColorElements::CPU_IOWAIT as i32,
+];
+/// Port of `static const int CPUMeter_attributes_summary[]` (`CPUMeter.c`) —
+/// the 4-class summary palette.
+static CPUMETER_ATTRIBUTES_SUMMARY: [i32; 4] = [
+    crate::ported::crt::ColorElements::CPU_NICE as i32,
+    crate::ported::crt::ColorElements::CPU_NORMAL as i32,
+    crate::ported::crt::ColorElements::CPU_SYSTEM as i32,
+    crate::ported::crt::ColorElements::CPU_GUEST as i32,
+];
+
+/// Port of `static void CPUMeter_updateValues(Meter* this)` from
+/// `CPUMeter.c:87`. Zeroes the value slots, picks the detailed/summary bar
+/// palette, and — for a present, online CPU — fills the per-class figures
+/// via the ported `Platform_setCPUValues`, then formats `txtBuffer` as
+/// `<usage%> <freqMHz>` (each optional per `showCPUUsage`/`showCPUFrequency`).
+/// Absent CPUs render `"absent"`, offline ones `"offline"`. Temperature is
+/// omitted (no `BUILD_WITH_CPU_TEMP` in this build).
+pub fn CPUMeter_updateValues(this: &mut crate::ported::meter::Meter) {
+    for i in 0..CPU_METER_ITEMCOUNT {
+        this.values[i] = 0.0;
+    }
+
+    let (show_cpu_usage, show_cpu_frequency, detailed, existing_cpus) = {
+        let host = this
+            .host
+            .as_ref()
+            .expect("CPUMeter_updateValues: this->host (C dereferences it)")
+            .borrow();
+        let s = host
+            .super_
+            .settings
+            .as_ref()
+            .expect("CPUMeter_updateValues: host->settings");
+        (
+            s.showCPUUsage,
+            s.showCPUFrequency,
+            s.detailedCPUTime,
+            host.super_.existingCPUs,
+        )
+    };
+
+    this.curAttributes = Some(if detailed {
+        &CPUMETER_ATTRIBUTES[..]
+    } else {
+        &CPUMETER_ATTRIBUTES_SUMMARY[..]
+    });
+
+    let cpu = this.param;
+    if cpu > existing_cpus {
+        this.txtBuffer = "absent".to_string();
+        return;
+    }
+
+    let percent = crate::ported::linux::platform::Platform_setCPUValues(this, cpu);
+    // isNonnegative(percent) — false for NaN.
+    if !(percent >= 0.0) {
+        this.txtBuffer = "offline".to_string();
+        return;
+    }
+
+    let mut cpu_usage = String::new();
+    let mut cpu_frequency = String::new();
+    if show_cpu_usage {
+        cpu_usage = format!("{percent:.1}%");
+    }
+    if show_cpu_frequency {
+        let f = this.values[CPU_METER_FREQUENCY];
+        cpu_frequency = if f >= 0.0 {
+            format!("{:>4}MHz", f as u32)
+        } else {
+            "N/A".to_string()
+        };
+    }
+
+    let sep = if !cpu_usage.is_empty() && !cpu_frequency.is_empty() {
+        " "
+    } else {
+        ""
+    };
+    this.txtBuffer = format!("{cpu_usage}{sep}{cpu_frequency}");
 }
 
 /// TODO: port of `static void CPUMeter_display(const Object* cast, RichString* out` from `CPUMeter.c:147`.
@@ -360,5 +452,77 @@ mod tests {
         assert_eq!(AllCPUsMeter_getRange(&meter("AllCPUs", 1)), (0, 1));
         assert_eq!(AllCPUsMeter_getRange(&meter("LeftCPUs", 1)), (0, 1));
         assert_eq!(AllCPUsMeter_getRange(&meter("RightCPUs", 1)), (1, 0));
+    }
+}
+
+#[cfg(test)]
+mod cpu_data_tests {
+    use crate::ported::linux::linuxmachine::{CPUData, LinuxMachine};
+    use crate::ported::machine::{Machine, Settings};
+    use crate::ported::meter::Meter;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn hosted(cpu: CPUData, settings: Settings, existing: u32) -> Meter {
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            super_: Machine {
+                existingCPUs: existing,
+                settings: Some(settings),
+                ..Default::default()
+            },
+            cpuData: vec![cpu],
+            ..Default::default()
+        }));
+        Meter {
+            values: vec![0.0; 10],
+            param: 0,
+            host: Some(host),
+            ..Meter::empty()
+        }
+    }
+
+    #[test]
+    fn summary_mode_usage_percent() {
+        // total=100: nice 10, user 50, systemAll 20 → summary curItems=4,
+        // percent = 10+50+20+0 = 80 → "80.0%".
+        let cpu = CPUData {
+            online: true,
+            totalPeriod: 100,
+            userPeriod: 50,
+            nicePeriod: 10,
+            systemAllPeriod: 20,
+            ..Default::default()
+        };
+        let settings = Settings {
+            showCPUUsage: true,
+            detailedCPUTime: false,
+            ..Default::default()
+        };
+        let mut m = hosted(cpu, settings, 8);
+        super::CPUMeter_updateValues(&mut m);
+        assert_eq!(m.txtBuffer, "80.0%");
+        assert_eq!(m.curItems, 4);
+        assert_eq!(m.values[0], 10.0); // nice
+        assert_eq!(m.values[1], 50.0); // normal(user)
+    }
+
+    #[test]
+    fn offline_cpu_renders_offline() {
+        let cpu = CPUData { online: false, ..Default::default() };
+        let mut m = hosted(cpu, Settings { showCPUUsage: true, ..Default::default() }, 8);
+        super::CPUMeter_updateValues(&mut m);
+        assert_eq!(m.txtBuffer, "offline");
+        assert_eq!(m.curItems, 0);
+    }
+
+    #[test]
+    fn absent_cpu_renders_absent() {
+        // param (0) > existingCPUs would need existing < 0; instead set the
+        // meter param above existing via a fresh meter.
+        let cpu = CPUData { online: true, totalPeriod: 100, ..Default::default() };
+        let mut m = hosted(cpu, Settings::default(), 0);
+        m.param = 5; // 5 > existingCPUs(0)
+        super::CPUMeter_updateValues(&mut m);
+        assert_eq!(m.txtBuffer, "absent");
     }
 }
