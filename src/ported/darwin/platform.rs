@@ -204,7 +204,9 @@ pub fn Platform_done() {
 }
 
 /// Port of `void Platform_setBindings(Htop_Action* keys)` (`Platform.c:266`).
-pub fn Platform_setBindings() {
+/// Darwin's C body is `(void) keys;` — no platform-specific bindings — so the
+/// `keys` table is accepted and left untouched.
+pub fn Platform_setBindings(_keys: &mut [Option<crate::ported::action::Htop_Action>]) {
     /* no platform-specific key bindings */
 }
 

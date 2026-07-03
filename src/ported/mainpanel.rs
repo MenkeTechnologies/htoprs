@@ -760,7 +760,7 @@ pub fn MainPanel_new() -> MainPanel {
 
     // C: Action_setBindings(this->keys);  Platform_setBindings(this->keys);
     Action_setBindings(&mut keys);
-    Platform_setBindings();
+    Platform_setBindings(&mut keys);
 
     MainPanel {
         super_,

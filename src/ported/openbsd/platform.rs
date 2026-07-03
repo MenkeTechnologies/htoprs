@@ -136,7 +136,7 @@ pub fn Platform_done() {
 }
 
 /// Port of `void Platform_setBindings(Htop_Action* keys)` (`Platform.c:161`).
-pub fn Platform_setBindings() {
+pub fn Platform_setBindings(_keys: &mut [Option<crate::ported::action::Htop_Action>]) {
     /* no platform-specific key bindings */
 }
 
