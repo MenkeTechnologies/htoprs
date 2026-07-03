@@ -1128,13 +1128,13 @@ fn skipEndOfLine<R: std::io::Read>(fp: &mut R) -> bool {
 /// summing the `Pss:`/`Swap:`/`SwapPss:` values via `strtol`. The kernel
 /// returns data in `PAGE_SIZE`-or-less chunks, so a `char buffer[256]` that
 /// fills without a `\n` is a partial line whose tail is discarded by
-/// [`skipEndOfLine`].
+/// `skipEndOfLine`.
 ///
 /// The C `fgets(buffer, sizeof(buffer), fp)` (≤255 chars, stops after `\n`) is
-/// reproduced by a manual 255-byte window over a shared [`BufReader`] — not
-/// [`BufRead::read_line`], which would swallow the partial-line case — so the
+/// reproduced by a manual 255-byte window over a shared `BufReader` — not
+/// `BufRead::read_line`, which would swallow the partial-line case — so the
 /// `skipEndOfLine` branch fires exactly as in the C. `strtol(buffer + N, NULL,
-/// 10)` becomes [`strtol10`] on the byte slice after the key prefix.
+/// 10)` becomes `strtol10` on the byte slice after the key prefix.
 pub fn LinuxProcessTable_readSmapsFile(
     process: &mut LinuxProcess,
     procFd: openat_arg_t,
@@ -1869,8 +1869,8 @@ fn LinuxProcessList_readComm(process: &mut Process, procFd: openat_arg_t) {
 /// and `st_rdev` are always Linux-kernel-encoded `dev_t`s at runtime, the
 /// glibc layout is used unconditionally so the darwin build (whose
 /// `libc::major` uses a different Darwin `dev_t` layout and returns `i32`)
-/// decodes them identically. `stat(path, &sb)` becomes [`fs::metadata`]
-/// (follows symlinks, like `stat`) + [`MetadataExt::rdev`]; `xAsprintf` /
+/// decodes them identically. `stat(path, &sb)` becomes `fs::metadata`
+/// (follows symlinks, like `stat`) + `MetadataExt::rdev`; `xAsprintf` /
 /// `xSnprintf` become `format!`.
 pub fn LinuxProcessTable_updateTtyDevice(ttyDrivers: &[TtyDriver], tty_nr: u64) -> String {
     use std::os::unix::fs::MetadataExt;

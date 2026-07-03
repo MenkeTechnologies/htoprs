@@ -9,7 +9,7 @@
 //! draw loop.
 //!
 //! [`super::theme::Theme`] stores `crossterm::style::Color` values; ratatui
-//! styles want `ratatui::style::Color`, so [`tr`] converts at the boundary —
+//! styles want `ratatui::style::Color`, so `tr` converts at the boundary —
 //! the same adaptation the theme port made for `Color::Indexed` → `AnsiValue`.
 
 use std::cell::RefCell;

@@ -61,7 +61,7 @@
 //!   `InfoScreen`/`ProcessLocksScreen` releases its fields via `Drop`), so
 //!   there is no algorithm to port (same class as `InfoScreen_done` /
 //!   `History_delete`).
-//! - [`FileLocks_Data_clear`] (`ProcessLocksScreen.c:42`) — `static inline`;
+//! - `FileLocks_Data_clear` (`ProcessLocksScreen.c:42`) — `static inline`;
 //!   frees the four `char*` fields (`locktype`/`exclusive`/`readwrite`/
 //!   `filename`) of a `FileLocks_Data`. It is heap-free only: modeled with
 //!   owned `String`s those fields free themselves via `Drop`, so there is no

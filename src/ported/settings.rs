@@ -934,8 +934,13 @@ pub fn Settings_read(
                 //   && (sb.st_mode & S_IWUSR) && sb.st_uid == geteuid();
                 this.writeConfig = match f.metadata() {
                     Ok(sb) => {
+                        // `S_IWUSR` is `mode_t` = u32 on Linux (cast is a no-op)
+                        // but u16 on macOS (cast is required), so the cast can't
+                        // be dropped without breaking darwin.
+                        #[allow(clippy::unnecessary_cast)]
+                        let writable = (sb.permissions().mode() & (libc::S_IWUSR as u32)) != 0;
                         sb.file_type().is_file()
-                            && (sb.permissions().mode() & (libc::S_IWUSR as u32)) != 0
+                            && writable
                             && sb.uid() == unsafe { libc::geteuid() }
                     }
                     Err(_) => false,

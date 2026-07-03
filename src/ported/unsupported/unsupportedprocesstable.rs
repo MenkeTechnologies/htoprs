@@ -2,7 +2,7 @@
 //!
 //! Ported (self-contained: only the base [`ProcessTable`] +
 //! [`crate::ported::table::Table`] plumbing and the fallback
-//! [`UnsupportedProcess`](crate::ported::unsupported::unsupportedprocess::UnsupportedProcess)):
+//! [`UnsupportedProcess`]):
 //! - [`ProcessTable_new`] (`UnsupportedProcessTable.c:19`)
 //! - [`ProcessTable_goThroughEntries`] (`UnsupportedProcessTable.c:35`)
 //!

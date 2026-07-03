@@ -56,7 +56,7 @@
 //! # Ported (Darwin scan seam)
 //!
 //! - [`Machine_scanTables`] (`Machine.c:100`) — the per-scan clock stamp +
-//!   the table scan loop, dispatching through the ported [`TableClass`] scan
+//!   the table scan loop, dispatching through the ported `TableClass` scan
 //!   vtable (`Table.h:55-57`) whose Darwin slots reach the live process scan.
 //!   `macos`-gated (it samples `Platform_gettime_monotonic`).
 #![allow(non_snake_case)]
@@ -209,7 +209,7 @@ pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) 
 /// through the pointer: `main.rs` `Box::into_raw`s the concrete platform
 /// `ProcessTable` and stores the base `*mut Table` (offset 0 via the repr(C)
 /// `super_` chain — the same base↔concrete round-trip
-/// [`DarwinProcessTable::scan_iterate`](crate::ported::darwin::darwinprocesstable::DarwinProcessTable)
+/// `DarwinProcessTable::scan_iterate`
 /// relies on), so the base pointer downcasts back to the concrete `Box` for a
 /// correct free. `Machine` is the sole deleter of that allocation (`main.rs`
 /// hands it over and never frees it), so the reclaim is not a double free.
@@ -317,7 +317,7 @@ pub fn Machine_setTablesPanel(this: &mut Machine, panel: *mut Panel) {
 /// and finally publishes the observed uid/pid column widths.
 ///
 /// The C `static bool firstScanDone` (function-local, persists across calls)
-/// maps to a function-local [`AtomicBool`]: htop is single-threaded here, so
+/// maps to a function-local `AtomicBool`: htop is single-threaded here, so
 /// `Relaxed` matches the C's plain read/write.
 ///
 /// The scan loop dispatches through the ported [`Table`] scan vtable — the

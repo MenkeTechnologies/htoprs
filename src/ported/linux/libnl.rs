@@ -6,7 +6,7 @@
 //! resolves a `sym_nl_*` / `sym_genl*` symbol table at runtime.
 //!
 //! This port speaks the netlink wire protocol directly through the pure-Rust
-//! [`neli`] crate — **no FFI, no `dlopen`**. Because `neli` is statically
+//! `neli` crate — **no FFI, no `dlopen`**. Because `neli` is statically
 //! linked, the C `load_libnl` / `unload_libnl` dynamic-loading dance has no
 //! runtime work left: symbol availability is a compile-time guarantee. Those
 //! two functions are kept (same names, same call sites) as the degenerate

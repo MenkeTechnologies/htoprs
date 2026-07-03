@@ -5,13 +5,13 @@
 //! name-for-name is the point of the port.
 //!
 //! Both functions walk the platform memory-class table
-//! [`Platform_memoryClasses`](crate::ported::linux::platform::Platform_memoryClasses)
-//! / [`Platform_numberOfMemoryClasses`](crate::ported::linux::platform::Platform_numberOfMemoryClasses)
+//! [`Platform_memoryClasses`]
+//! / [`Platform_numberOfMemoryClasses`]
 //! and read `this->host->settings->showCachedMemory`. `this->host` is the
 //! concrete [`LinuxMachine`](crate::ported::linux::linuxmachine::LinuxMachine);
 //! its `super_` is the generic `Machine` carrying `settings`. The per-class
 //! figures are filled by the ported
-//! [`Platform_setMemoryValues`](crate::ported::linux::platform::Platform_setMemoryValues).
+//! [`Platform_setMemoryValues`].
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)] // faithful C global names (MemoryMeter_class)
 #![allow(dead_code)]

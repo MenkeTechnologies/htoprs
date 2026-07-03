@@ -1086,11 +1086,8 @@ pub fn Machine_scan(this: &mut LinuxMachine) {
 /// the kernel boot time (`btime`) from `/proc/stat`, then runs the CPU-count
 /// and CPU-topology init sequence. Returns the owning `Box<LinuxMachine>`
 /// (C returns `&this->super`); the caller derives the `*mut Machine` graph
-/// pointer from `&mut box.super_` (same idiom as [`DarwinMachine_new`] and
-/// [`OpenBSDMachine_new`]).
-///
-/// [`DarwinMachine_new`]: crate::ported::darwin::darwinmachine::Machine_new
-/// [`OpenBSDMachine_new`]: crate::ported::openbsd::openbsdmachine::Machine_new
+/// pointer from `&mut box.super_` (same idiom as darwin's and openbsd's
+/// `Machine_new`).
 ///
 /// The C `sscanf(buffer, "btime %lld\n", ...)` is mirrored by taking the
 /// whitespace-delimited token after the `"btime "` prefix and parsing it as

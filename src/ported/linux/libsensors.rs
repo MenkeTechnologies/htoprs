@@ -181,7 +181,7 @@ pub fn LibSensors_countCCDs() -> i32 {
             // temps() only yields temp sensors, so the C guards
             // `feature->type != SENSORS_FEATURE_TEMP` and
             // `!String_startsWith(feature->name, "temp")` are implicit.
-            for (_tempID, sensor) in hwmon.temps() {
+            for sensor in hwmon.temps().values() {
                 if sensor.name().starts_with("Tccd") {
                     ccds += 1;
                 }

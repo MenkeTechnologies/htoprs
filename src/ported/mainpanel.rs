@@ -352,7 +352,7 @@ pub fn MainPanel_getValue(this: &Panel, i: i32) -> &str {
 /// the weak panel. The ported [`IncSet_handleKey`] takes `lines: &mut Vector`
 /// (non-optional) and dropped that `&& lines` NULL guard, so it would run
 /// `updateWeakPanel` (which `Panel_prune`s the panel) against the main panel.
-/// An empty placeholder [`Vector`] is passed here as the closest analog to
+/// An empty placeholder `Vector` is passed here as the closest analog to
 /// `NULL`; restoring the optional-`lines` guard belongs in `incset.rs`.
 pub fn MainPanel_eventHandler(this: &mut MainPanel, ch: i32) -> HandlerResult {
     // C: MainPanel* this = (MainPanel*) super;

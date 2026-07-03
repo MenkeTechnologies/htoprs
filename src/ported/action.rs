@@ -2431,7 +2431,7 @@ pub fn actionShowCommandScreen(st: &mut State) -> Htop_Reaction {
 /// Port of `void Action_setBindings(Htop_Action* keys)` from `Action.c:947`.
 /// Fills the keypress → handler dispatch table: `keys[code] = actionX`. The C
 /// `Htop_Action* keys` is a `KEY_MAX`-length array, modeled as the borrowed
-/// `&mut [Option<Htop_Action>]` slice ([`MainPanel_new`] allocates it via
+/// `&mut [Option<Htop_Action>]` slice (`MainPanel_new` allocates it via
 /// `vec![None; KEY_MAX]`, the analog of `xCalloc(KEY_MAX, sizeof(Htop_Action))`
 /// whose zeroed entries are `NULL`/`None`).
 ///

@@ -487,7 +487,7 @@ pub fn InfoScreen_addLine(this: &mut InfoScreen, line: &str) {
 /// `lines`. The C `displayLast != last` pointer-identity test compares the last
 /// `display` item's object pointer against `last` (the last `lines` element's
 /// data pointer); it is reproduced by comparing both as `*const ()`
-/// data-pointers — the same identity technique [`updateWeakPanel`] uses. The
+/// data-pointers — the same identity technique `updateWeakPanel` uses. The
 /// `(ListItem*)last` downcast for [`ListItem_append`] goes through the `Any`
 /// supertrait (`&mut dyn Object` -> `&mut dyn Any` -> `&mut ListItem`), as
 /// sibling code (`columnspanel.rs`) does.

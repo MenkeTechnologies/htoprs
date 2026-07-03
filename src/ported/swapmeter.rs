@@ -25,7 +25,7 @@
 //! - [`SwapMeter_display`] (`SwapMeter.c:45`).
 //! - [`SwapMeter_updateValues`] (`SwapMeter.c:28`) — seeds the cache /
 //!   frontswap slots with `NAN`, then drives the ported
-//!   [`Platform_setSwapValues`](crate::ported::linux::platform::Platform_setSwapValues),
+//!   [`Platform_setSwapValues`],
 //!   which reads the host swap counters (and the zswap adjustment) from the
 //!   [`LinuxMachine`](crate::ported::linux::linuxmachine::LinuxMachine) via
 //!   the `Meter::host` back-pointer.

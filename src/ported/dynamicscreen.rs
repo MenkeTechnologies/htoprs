@@ -90,7 +90,7 @@ pub struct DynamicScreen {
     /// C `char* heading` — user-settable more readable name (`NULL` ⇒ `None`).
     pub heading: Option<String>,
     /// C `char* columnKeys` — the space-separated field keys the screen shows
-    /// (`NULL` ⇒ `None`); read by [`Settings_newDynamicScreen`] to seed the
+    /// (`NULL` ⇒ `None`); read by `Settings_newDynamicScreen` to seed the
     /// screen's sort key and field list.
     pub columnKeys: Option<String>,
     /// C `int direction` — the screen's default sort direction (1 asc / -1 desc).

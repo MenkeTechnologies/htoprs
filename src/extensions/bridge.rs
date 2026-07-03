@@ -10,7 +10,7 @@
 //! Field extraction mirrors `Process_writeField` (`process.rs`): pid/ppid come
 //! from the embedded `Row` via the getters, `state` through `processStateChar`,
 //! the rest are direct `Process` fields. Rows that are not processes (a panel
-//! may hold other `Object`s) are skipped by [`Object::as_process`].
+//! may hold other `Object`s) are skipped by `Object::as_process`.
 
 use crate::extensions::model::Proc;
 use crate::ported::panel::Panel;

@@ -6,7 +6,7 @@
 //! refusal on keys), and [`draw_active`] (modal chrome over the panels). It owns
 //! the persistent engines — [`ProcRing`], [`AlertEngine`], [`FilterStore`],
 //! [`Scalar`], and the last [`Snapshot`] — and feeds them the bridged
-//! [`Proc`](super::model::Proc) rows from [`super::bridge`].
+//! [`Proc`] rows from [`super::bridge`].
 //!
 //! Two of the seven capabilities reach into the process rows themselves rather
 //! than a modal: [`alert_attr`] recolors a firing PID's row and [`draw_spark_col`]

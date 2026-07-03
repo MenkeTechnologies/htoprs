@@ -233,7 +233,7 @@ const EMPTY_FIELD: ProcessFieldData = ProcessFieldData {
 
 /// Port of `const ProcessFieldData Process_fields[LAST_PROCESSFIELD]` from
 /// `darwin/DarwinProcess.c:24` — the darwin per-field metadata table, indexed
-/// by [`ProcessField`] id (plus the platform [`TRANSLATED`] id at 100).
+/// by [`ProcessField`] id (plus the platform `TRANSLATED` id at 100).
 /// Trailing spaces in the titles are significant (they set the printed column
 /// width) and preserved verbatim.
 #[allow(non_upper_case_globals)] // C global name `Process_fields`.
