@@ -90,13 +90,17 @@ use std::os::unix::io::FromRawFd;
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_addLine, InfoScreen_init};
+use crate::ported::infoscreen::{
+    InfoScreen, InfoScreen_addLine, InfoScreen_drawTitled, InfoScreen_init,
+};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
     Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setHeader, Panel_setSelected,
 };
-use crate::ported::process::{Process, Process_getPid, Process_getThreadGroup, Process_isThread};
+use crate::ported::process::{
+    Process, Process_getCommand, Process_getPid, Process_getThreadGroup, Process_isThread,
+};
 use crate::ported::vector::{Vector_insertionSort, Vector_new};
 
 /// Port of `#define LSOF_DATACOL_COUNT 8` from `OpenFilesScreen.c:31`.
@@ -406,17 +410,27 @@ pub fn OpenFilesScreen_delete() {
     todo!("port of OpenFilesScreen.c:91 — Drop releases owned fields (InfoScreen_done is itself a Drop stub)")
 }
 
-/// TODO: port of `static void OpenFilesScreen_draw(InfoScreen* this)` from
-/// `OpenFilesScreen.c:95`. A one-line forward to
-/// `InfoScreen_drawTitled(this, "Snapshot of files open in process %d - %s",
-/// pid, Process_getCommand(this->process))`. `InfoScreen_drawTitled` is now
-/// ported, but the title's `%s` argument is `Process_getCommand`
-/// (`Process.c:831`), which is itself a `todo!()` stub in `process.rs`
-/// (blocked on `settings->showThreadNames`). Until that returns a real
-/// command string the title cannot be built, so this stays stubbed. No logic
-/// of its own to split out.
-pub fn OpenFilesScreen_draw() {
-    todo!("port of OpenFilesScreen.c:95 — forwards to InfoScreen_drawTitled; needs Process_getCommand (itself a todo!() stub in process.rs)")
+/// Port of `static void OpenFilesScreen_draw(InfoScreen* this)` from
+/// `OpenFilesScreen.c:95`. Forwards to `InfoScreen_drawTitled` with the
+/// "Snapshot of files open in process %d - %s" title. C reads the cached
+/// `OpenFilesScreen.pid`; since that field is just
+/// `Process_isThread ? getThreadGroup : getPid` of `this->process`
+/// (`OpenFilesScreen_new`), it is recomputed here from `this.process`
+/// (behaviorally identical) rather than modeled as a subclass field. `%s`
+/// is [`Process_getCommand`], rendered lossily (`None` → empty).
+pub fn OpenFilesScreen_draw(this: &mut InfoScreen) {
+    let p = unsafe { &*this.process };
+    let pid = if Process_isThread(p) {
+        Process_getThreadGroup(p)
+    } else {
+        Process_getPid(p)
+    };
+    let cmd = match Process_getCommand(p) {
+        Some(b) => String::from_utf8_lossy(b).into_owned(),
+        None => String::new(),
+    };
+    let title = format!("Snapshot of files open in process {} - {}", pid, cmd);
+    InfoScreen_drawTitled(this, &title);
 }
 
 /// Port of `static OpenFiles_ProcessData* OpenFilesScreen_getProcessData(pid_t
