@@ -62,10 +62,20 @@ use crate::ported::object::{Object, ObjectClass, Object_class};
 /// these callbacks never read and so are omitted (the `caption`-reading
 /// `DynamicMeter_getCaption`/`getUiName` remain stubbed on unported
 /// substrate).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DynamicMeter {
     /// C: `char name[32]` — unique name, cannot contain spaces.
     pub name: String,
+    /// C `char* caption` — short label shown before the meter value
+    /// (`NULL` ⇒ `None`).
+    pub caption: Option<String>,
+    /// C `char* description` — longer explanatory text for the setup list
+    /// (`NULL` ⇒ `None`).
+    pub description: Option<String>,
+    /// C `unsigned int type` — the meter display type id.
+    pub type_: u32,
+    /// C `double maximum` — the meter's value ceiling.
+    pub maximum: f64,
 }
 
 /// Class descriptor for [`DynamicMeter`], present solely so a
@@ -238,6 +248,10 @@ mod tests {
     fn meter(name: &str) -> DynamicMeter {
         DynamicMeter {
             name: name.to_string(),
+            caption: None,
+            description: None,
+            type_: 0,
+            maximum: 0.0,
         }
     }
 

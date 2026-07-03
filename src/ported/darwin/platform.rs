@@ -41,6 +41,7 @@ use std::sync::Mutex;
 
 use crate::ported::crt::{CRT_fatalError, ColorElements};
 use crate::ported::linux::platform::MemoryClass;
+use crate::ported::signalspanel::SignalItem;
 // Used only by the `#[cfg(target_arch = "x86_64")]` Rosetta workaround below.
 use crate::ported::darwin::darwinmachine::DarwinMachine;
 #[cfg(target_arch = "x86_64")]
@@ -247,6 +248,50 @@ pub fn Platform_getLoadAverage(one: &mut f64, five: &mut f64, fifteen: &mut f64)
         *fifteen = 0.0;
     }
 }
+
+/// Port of `const SignalItem Platform_signals[]` (`darwin/Platform.c:77`) —
+/// the signal picker table for `actionKill`. Transcribed verbatim from the C
+/// designated initializer (Darwin has no real-time signals, so no `SIGRTMIN`
+/// rows). `Platform_numberOfSignals` is the slice length.
+pub static Platform_signals: &[SignalItem] = &[
+    SignalItem { name: " 0 Cancel", number: 0 },
+    SignalItem { name: " 1 SIGHUP", number: 1 },
+    SignalItem { name: " 2 SIGINT", number: 2 },
+    SignalItem { name: " 3 SIGQUIT", number: 3 },
+    SignalItem { name: " 4 SIGILL", number: 4 },
+    SignalItem { name: " 5 SIGTRAP", number: 5 },
+    SignalItem { name: " 6 SIGABRT", number: 6 },
+    SignalItem { name: " 6 SIGIOT", number: 6 },
+    SignalItem { name: " 7 SIGEMT", number: 7 },
+    SignalItem { name: " 8 SIGFPE", number: 8 },
+    SignalItem { name: " 9 SIGKILL", number: 9 },
+    SignalItem { name: "10 SIGBUS", number: 10 },
+    SignalItem { name: "11 SIGSEGV", number: 11 },
+    SignalItem { name: "12 SIGSYS", number: 12 },
+    SignalItem { name: "13 SIGPIPE", number: 13 },
+    SignalItem { name: "14 SIGALRM", number: 14 },
+    SignalItem { name: "15 SIGTERM", number: 15 },
+    SignalItem { name: "16 SIGURG", number: 16 },
+    SignalItem { name: "17 SIGSTOP", number: 17 },
+    SignalItem { name: "18 SIGTSTP", number: 18 },
+    SignalItem { name: "19 SIGCONT", number: 19 },
+    SignalItem { name: "20 SIGCHLD", number: 20 },
+    SignalItem { name: "21 SIGTTIN", number: 21 },
+    SignalItem { name: "22 SIGTTOU", number: 22 },
+    SignalItem { name: "23 SIGIO", number: 23 },
+    SignalItem { name: "24 SIGXCPU", number: 24 },
+    SignalItem { name: "25 SIGXFSZ", number: 25 },
+    SignalItem { name: "26 SIGVTALRM", number: 26 },
+    SignalItem { name: "27 SIGPROF", number: 27 },
+    SignalItem { name: "28 SIGWINCH", number: 28 },
+    SignalItem { name: "29 SIGINFO", number: 29 },
+    SignalItem { name: "30 SIGUSR1", number: 30 },
+    SignalItem { name: "31 SIGUSR2", number: 31 },
+];
+
+/// Port of `const unsigned int Platform_numberOfSignals`
+/// (`darwin/Platform.c:113`) — `ARRAYSIZE(Platform_signals)`.
+pub const Platform_numberOfSignals: usize = Platform_signals.len();
 
 /// Port of `pid_t Platform_getMaxPid(void)` (`Platform.c:299`).
 pub fn Platform_getMaxPid() -> libc::pid_t {

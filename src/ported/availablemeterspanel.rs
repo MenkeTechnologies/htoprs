@@ -78,10 +78,13 @@ use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::machine::Machine;
 use crate::ported::meter::{MeterClass, Meter_toListItem};
 use crate::ported::meterspanel::MetersPanel;
+use crate::ported::dynamicmeter::DynamicMeter;
+use crate::ported::hashtable::Hashtable_foreach;
 use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelected, Panel_new,
     Panel_setHeader, Panel_setSelected, Panel_size,
 };
+use crate::ported::settings::Settings;
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
 // Platform dispatch (darwin-first): the available-meter registry comes from
 // this build's platform, mirroring htop linking one platform's `Platform.c`
@@ -322,28 +325,58 @@ pub fn AvailableMetersPanel_addCPUMeters(super_: &mut Panel, type_: &MeterClass,
     }
 }
 
-/// TODO: port of `static void AvailableMetersPanel_addDynamicMeter(
-/// ht_key_t key, void* value, void* data)` from `AvailableMetersPanel.c:122`.
-/// Blocked: a `Hashtable_foreach` callback reading `meter->description` /
-/// `meter->caption` / `meter->name`; the `dynamicmeter.rs` `DynamicMeter`
-/// model carries only `name` (the `description`/`caption` fields are
-/// unmodeled), and `dynamicmeter.rs` is off-limits here. (`Hashtable_foreach`
-/// is now ported.)
-pub fn AvailableMetersPanel_addDynamicMeter() {
-    todo!(
-        "port of AvailableMetersPanel.c:122 — DynamicMeter model lacks description/caption fields"
-    )
+/// Port of `static void AvailableMetersPanel_addDynamicMeter(ht_key_t key,
+/// void* value, void* data)` from `AvailableMetersPanel.c:122`. The C
+/// `Hashtable_foreach` callback: pick the display label
+/// (`description ?: caption ?: name`) and append a `ListItem` carrying the
+/// packed `(offset << 16) | id` identifier. The `void* value` / `void* data`
+/// pointers are de-void'd to the concrete `&DynamicMeter` and the pieces the C
+/// `DynamicIterator` carried (`identifier` + the target `super` panel), which
+/// [`AvailableMetersPanel_addDynamicMeters`]' closure supplies.
+pub fn AvailableMetersPanel_addDynamicMeter(
+    meter: &DynamicMeter,
+    identifier: u32,
+    super_: &mut Panel,
+) {
+    // const char* label = meter->description ? meter->description : meter->caption;
+    // if (!label) label = meter->name; /* last fallback, guaranteed set */
+    let label = meter
+        .description
+        .as_deref()
+        .or(meter.caption.as_deref())
+        .unwrap_or(&meter.name);
+    // Panel_add(iter->super, (Object*) ListItem_new(label, identifier));
+    Panel_add(super_, Box::new(ListItem_new(label, identifier as i32)));
 }
 
-/// TODO: port of `static void AvailableMetersPanel_addDynamicMeters(Panel*
-/// super, const Settings* settings, unsigned int offset)` from
-/// `AvailableMetersPanel.c:134`. Blocked: drives `Hashtable_foreach` over
-/// `settings->dynamicMeters`, but the `Settings` model carries no
-/// `dynamicMeters` field. Also blocked transitively on the callback
-/// [`AvailableMetersPanel_addDynamicMeter`] (missing `DynamicMeter`
-/// description/caption fields). (`Hashtable_foreach` is now ported.)
-pub fn AvailableMetersPanel_addDynamicMeters() {
-    todo!("port of AvailableMetersPanel.c:134 — needs Settings.dynamicMeters field + the blocked addDynamicMeter callback")
+/// Port of `static void AvailableMetersPanel_addDynamicMeters(Panel* super,
+/// const Settings* settings, unsigned int offset)` from
+/// `AvailableMetersPanel.c:134`. Drives `Hashtable_foreach` over
+/// `settings->dynamicMeters`, invoking [`AvailableMetersPanel_addDynamicMeter`]
+/// for each entry with a running `id` (from 1) packed with `offset`. The C
+/// `DynamicIterator { .super, .id, .offset }` state is carried by the closure;
+/// the borrowed `dynamicMeters` `*mut Hashtable` (owned by the Machine) is
+/// dereferenced for the walk.
+pub fn AvailableMetersPanel_addDynamicMeters(super_: &mut Panel, settings: &Settings, offset: u32) {
+    // Hashtable* dynamicMeters = settings->dynamicMeters; assert(dynamicMeters != NULL);
+    let dynamic_meters = settings
+        .dynamicMeters
+        .expect("AvailableMetersPanel_addDynamicMeters: dynamicMeters is NULL");
+    // DynamicIterator iter = { .super = super, .id = 1, .offset = offset };
+    let mut id: u32 = 1;
+    // Hashtable_foreach(dynamicMeters, AvailableMetersPanel_addDynamicMeter, &iter);
+    // SAFETY: `dynamicMeters` is the Settings-borrowed Hashtable (a `*mut`
+    // aliasing the Machine-owned table for the run).
+    Hashtable_foreach(unsafe { &*dynamic_meters }, &mut |_key, value| {
+        let any: &dyn core::any::Any = value;
+        let meter = any
+            .downcast_ref::<DynamicMeter>()
+            .expect("AvailableMetersPanel_addDynamicMeters: hashtable value is not a DynamicMeter");
+        // unsigned int identifier = (iter->offset << 16) | iter->id;
+        let identifier = (offset << 16) | id;
+        AvailableMetersPanel_addDynamicMeter(meter, identifier, super_);
+        id += 1;
+    });
 }
 
 /// Port of `static void AvailableMetersPanel_addPlatformMeter(Panel* super,

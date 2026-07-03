@@ -128,10 +128,14 @@ use crate::ported::mainpanel::{
 };
 use crate::ported::object::{Arg, Object};
 use crate::ported::panel::{
-    Panel, PanelClass, PanelItem, Panel_add, Panel_getSelected, Panel_move, Panel_new, Panel_onKey,
-    Panel_resize, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
+    Panel, PanelClass, PanelItem, Panel_add, Panel_draw, Panel_getSelected, Panel_move, Panel_new,
+    Panel_onKey, Panel_resize, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor,
+    Panel_size,
 };
-use crate::ported::process::{Process, ProcessField, Process_rowChangePriorityBy};
+use crate::ported::process::{
+    Process, ProcessField, Process_rowChangePriorityBy, Process_rowSendSignal,
+};
+use crate::ported::signalspanel::{SignalsPanel_new, SIGNALSPANEL_INITSELECTEDSIGNAL};
 use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
 use crate::ported::screenmanager::{
     ScreenManager_add, ScreenManager_delete, ScreenManager_new, ScreenManager_remove,
@@ -1384,8 +1388,75 @@ pub fn actionSetSchedPolicy(_st: &mut State) -> Htop_Reaction {
 /// `Process_rowSendSignal` callback (`fn(&dyn Object, Arg) -> bool`), incompatible
 /// with the ported `MainPanel_foreachRowFn` (`fn(&mut Row, &Arg)`), and the
 /// unported ncurses `Panel_draw` / `refresh()` / `beep()` / `napms()` epilogue.
-pub fn actionKill(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:524 — Process_rowSendSignal callback-type mismatch with MainPanel_foreachRowFn + refresh/beep/napms unported")
+/// C `static int preSelectedSignal = SIGNALSPANEL_INITSELECTEDSIGNAL;` — the
+/// signal remembered between opens of the kill picker (a function static).
+static PRE_SELECTED_SIGNAL: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(SIGNALSPANEL_INITSELECTEDSIGNAL);
+
+pub fn actionKill(st: &mut State) -> Htop_Reaction {
+    use std::sync::atomic::Ordering;
+
+    // C: if (!Action_writeableProcess(st)) return HTOP_OK;
+    if !Action_writeableProcess(st) {
+        return HTOP_OK;
+    }
+
+    let pre = PRE_SELECTED_SIGNAL.load(Ordering::Relaxed);
+
+    // C: Panel* signalsPanel = SignalsPanel_new(preSelectedSignal);
+    // The signal table is per-OS (htop links each Platform.c). Darwin's is
+    // ported; the TUI only runs on darwin, so other targets compile against an
+    // empty table (linux's Platform_signals is not ported yet).
+    #[cfg(target_os = "macos")]
+    let signals = crate::ported::darwin::platform::Platform_signals;
+    #[cfg(not(target_os = "macos"))]
+    let signals: &[crate::ported::signalspanel::SignalItem] = &[];
+    let signalsPanel = SignalsPanel_new(pre, signals);
+
+    // C: const ListItem* sgn = (ListItem*) Action_pickFromVector(st, signalsPanel, 14, true);
+    let picked = Action_pickFromVector(st, Box::new(signalsPanel), 14, true);
+
+    // C: if (sgn && sgn->key != 0) { ... }
+    if let Some(obj) = picked {
+        let any: &dyn core::any::Any = obj.as_ref();
+        if let Some(sgn) = any.downcast_ref::<ListItem>() {
+            if sgn.key != 0 {
+                PRE_SELECTED_SIGNAL.store(sgn.key, Ordering::Relaxed);
+
+                // C: Panel_setHeader((Panel*)mainPanel, "Sending...");
+                //    Panel_draw(...); refresh();
+                // SAFETY: st->mainPanel is the caller-owned MainPanel* for the run.
+                let mp = unsafe { &mut (*st.mainPanel).super_ };
+                Panel_setHeader(mp, "Sending...");
+                Panel_draw(mp, false, true, true, false);
+                {
+                    let mut out = std::io::stdout().lock();
+                    Ncurses::refresh(&mut out);
+                }
+
+                // C: bool ok = MainPanel_foreachRow(mainPanel, Process_rowSendSignal,
+                //             (Arg){.i = sgn->key}, NULL); if (!ok) beep();
+                let ok = MainPanel_foreachRow(
+                    unsafe { &mut *st.mainPanel },
+                    Process_rowSendSignal,
+                    Arg::I(sgn.key),
+                    None,
+                );
+                if !ok {
+                    let mut out = std::io::stdout().lock();
+                    Ncurses::beep(&mut out);
+                }
+
+                // C: napms(500);
+                Ncurses::napms(500);
+            }
+        }
+    }
+
+    // C: Panel_delete((Object*)signalsPanel); — `Action_pickFromVector` reclaims
+    //    and drops the picker box, so no explicit delete is needed here.
+    // C: return HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
 /// TODO: port of `static Htop_Reaction actionFilterByUser(State* st)` from

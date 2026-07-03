@@ -489,6 +489,14 @@ impl Ncurses {
         let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16));
     }
 
+    /// ncurses `napms(ms)`: sleep for `ms` milliseconds (used by `actionKill`
+    /// for the brief "Sending..." pause). Negative values are a no-op.
+    pub(crate) fn napms(ms: i32) {
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+        }
+    }
+
     /// ncurses `curs_set(0/1)`.
     pub(crate) fn curs_set<W: Write>(out: &mut W, on: bool) {
         let _ = if on {
