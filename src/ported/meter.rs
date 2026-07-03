@@ -77,12 +77,12 @@
 //!   one `mvaddch`.
 //!
 //! Stubbed (honest `todo!()`, specific blocker each):
-//! - `GraphMeterMode_draw` (`Meter.c:221`) — needs the `Machine` host
-//!   (`host->realtime`, `host->settings->delay`), `timespec` arithmetic, and
-//!   the `GraphData` ring-buffer expansion; no `Machine` is ported, so the
-//!   value-recording half cannot be written faithfully. Referenced by the
-//!   `Meter_modes` table as a fn pointer (never called until a `Meter` is
-//!   actually drawn in Graph mode).
+//! - `GraphMeterMode_draw` (`Meter.c:221`) — the value-recording half needs
+//!   `host->realtime` as a `struct timeval` (the ported `Machine` models the
+//!   sample clock only as `realtimeMs` in ms) plus the `GraphData` value ring
+//!   buffer (only two `GraphData` fields are modeled). `host->settings->delay`
+//!   is reachable. Referenced by the `Meter_modes` table as a fn pointer
+//!   (never called until a `Meter` is actually drawn in Graph mode).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -526,6 +526,62 @@ impl Object for Meter {
     }
 }
 
+/// Port of `Meter* Meter_new(const Machine* host, unsigned int param, const
+/// MeterClass* type)` from `Meter.c:451`. Allocates and initializes a meter
+/// of class `type`: copies the class metadata onto the instance (C reads
+/// these through the `Meter_*Fn(this)` class-dispatch macros; this port
+/// mirrors them as instance fields, matching the `..Meter::empty()`
+/// constructor convention the individual meters already use), zero-fills the
+/// `values` buffer to `maxItems`, runs the class `init` slot if present, then
+/// applies the class `defaultMode` via [`Meter_setMode`].
+///
+/// Signature mapping: C's `const Machine* host` (downcast to `LinuxMachine*`
+/// by platform meters) is the shared `Rc<RefCell<LinuxMachine>>` the `Meter`
+/// already stores; the C `Meter*` return becomes an owned `Meter` (Rust
+/// `Drop` reclaims what C's `Meter_delete` frees). `Object_setClass` has no
+/// instance-klass analog here (see [`Meter::klass`]), so the class identity
+/// is carried by the mirrored slots.
+pub fn Meter_new(
+    host: Rc<RefCell<LinuxMachine>>,
+    param: u32,
+    type_: &'static MeterClass,
+) -> Meter {
+    let mut this = Meter {
+        h: 1,
+        param,
+        host: Some(host),
+        curItems: type_.maxItems,
+        curAttributes: None,
+        values: if type_.maxItems > 0 {
+            vec![0.0; type_.maxItems as usize]
+        } else {
+            Vec::new()
+        },
+        total: type_.total,
+        caption: type_.caption.to_string(),
+        // Class metadata mirrored onto the instance (C `Meter_*Fn` macros).
+        supportedModes: type_.supportedModes,
+        attributes: type_.attributes,
+        isPercentChart: type_.isPercentChart,
+        uiName: type_.uiName,
+        getUiName: type_.getUiName,
+        display: type_.display,
+        updateMode: type_.updateMode,
+        classDraw: type_.draw,
+        ..Meter::empty()
+    };
+
+    // C `if (Meter_initFn(this)) Meter_init(this);` — run the class init slot
+    // when the vtable provides one.
+    if let Some(init) = type_.init {
+        init(&mut this);
+    }
+
+    Meter_setMode(&mut this, type_.defaultMode);
+    debug_assert!(this.mode > 0);
+    this
+}
+
 /// Port of `static double Meter_computeSum(const Meter* this)` from
 /// `Meter.c:52`. Sums the strictly-positive live values
 /// (`sumPositiveValues(this->values, this->curItems)`) and clamps the
@@ -788,12 +844,14 @@ pub fn BarMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
 }
 
 /// TODO: port of `static void GraphMeterMode_draw(Meter* this, int x, int y,
-/// int w)` from `Meter.c:221`. Blocked: the value-recording half reads the
-/// `Machine` host (`host->realtime`, `host->settings->delay`), does
-/// `timespec` arithmetic, and expands the `GraphData` ring buffer — no
-/// `Machine` type is ported, so the record path cannot be reproduced
-/// faithfully. Wired into `Meter_modes` as a fn pointer (only reached when a
-/// meter is actually drawn in Graph mode).
+/// int w)` from `Meter.c:221`. Blocked on two substrate gaps: (1) the
+/// value-recording half reads `host->realtime` (a C `struct timeval`), but
+/// the ported `Machine` models the sample clock only as `realtimeMs` (`u64`
+/// ms), not the timeval the `timespec` arithmetic needs; (2) it expands the
+/// `GraphData` ring buffer, but the ported `GraphData` models only two of its
+/// fields, not the value ring. `host->settings->delay` is now reachable
+/// (canonical `Settings.delay`). Wired into `Meter_modes` as a fn pointer
+/// (only reached when a meter is actually drawn in Graph mode).
 pub fn GraphMeterMode_draw(_out: &mut dyn Write, _this: &mut Meter, _x: i32, _y: i32, _w: i32) {
     todo!("port of Meter.c:221 — needs Machine host, timespec, GraphData ring buffer")
 }
@@ -1634,6 +1692,36 @@ mod tests {
             BlankMeter_class.attributes,
             &[ColorElements::DEFAULT_COLOR as i32]
         );
+    }
+
+    /// [`Meter_new`] copies the class metadata onto the instance, attaches
+    /// the host, zero-sizes `values` for a `maxItems == 0` class, and applies
+    /// the class `defaultMode` (so `mode > 0`, matching the C `assert`).
+    #[test]
+    fn meter_new_builds_instance_from_class() {
+        use crate::ported::linux::linuxmachine::LinuxMachine;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let host = Rc::new(RefCell::new(LinuxMachine::default()));
+        let m = Meter_new(Rc::clone(&host), 7, &BlankMeter_class);
+
+        assert_eq!(m.param, 7);
+        assert_eq!(m.h, 1);
+        assert!(m.host.is_some());
+        // maxItems == 0 → no values buffer, curItems 0.
+        assert_eq!(m.curItems, 0);
+        assert!(m.values.is_empty());
+        assert_eq!(m.total, 0.0);
+        assert_eq!(m.caption, "");
+        // Mirrored class slots.
+        assert_eq!(m.uiName, "Blank");
+        assert_eq!(m.supportedModes, 1 << TEXT_METERMODE);
+        assert!(m.updateMode.is_none());
+        assert!(m.display.is_some());
+        // defaultMode applied by Meter_setMode → mode > 0 (C assert).
+        assert_eq!(m.mode, TEXT_METERMODE);
+        assert!(m.mode > 0);
     }
 
     // ── Meter_toListItem ──────────────────────────────────────────────
