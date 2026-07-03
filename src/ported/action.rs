@@ -123,13 +123,15 @@ use crate::ported::incset::{IncSet_activate, IncSet_filter, IncSet_reset, IncTyp
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::machine::{Machine, Machine_scanTables};
-use crate::ported::mainpanel::{MainPanel, MainPanel_selectedRow, MainPanel_setFunctionBar};
-use crate::ported::object::Object;
+use crate::ported::mainpanel::{
+    MainPanel, MainPanel_foreachRow, MainPanel_selectedRow, MainPanel_setFunctionBar,
+};
+use crate::ported::object::{Arg, Object};
 use crate::ported::panel::{
     Panel, PanelClass, PanelItem, Panel_add, Panel_getSelected, Panel_move, Panel_new, Panel_onKey,
     Panel_resize, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
 };
-use crate::ported::process::{Process, ProcessField};
+use crate::ported::process::{Process, ProcessField, Process_rowChangePriorityBy};
 use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
 use crate::ported::screenmanager::{
     ScreenManager_add, ScreenManager_delete, ScreenManager_new, ScreenManager_remove,
@@ -454,8 +456,21 @@ pub fn Action_runSetup(st: &mut State) {
 /// `Process_rowChangePriorityBy` as `fn(&mut dyn Object, Arg) -> bool` — the two
 /// signatures are incompatible, and `beep()` is unported. Reconciling the
 /// `foreachRow` callback shape belongs in `mainpanel.rs`/`process.rs`.
-pub fn changePriority(_panel: &mut MainPanel, _delta: i32) -> bool {
-    todo!("port of Action.c:113 — MainPanel_foreachRowFn (fn(&mut Row,&Arg)) is incompatible with Process_rowChangePriorityBy (fn(&mut dyn Object, Arg)); beep unported")
+pub fn changePriority(panel: &mut MainPanel, delta: i32) -> bool {
+    // C: bool ok = MainPanel_foreachRow(panel, Process_rowChangePriorityBy,
+    //              (Arg){.i = delta}, &anyTagged); if (!ok) beep();
+    let mut anyTagged = false;
+    let ok = MainPanel_foreachRow(
+        panel,
+        Process_rowChangePriorityBy,
+        Arg::I(delta),
+        Some(&mut anyTagged),
+    );
+    if !ok {
+        let mut out = std::io::stdout().lock();
+        Ncurses::beep(&mut out);
+    }
+    anyTagged
 }
 
 /// Port of `static void addUserToVector(ht_key_t key, void* userCast,
@@ -1528,8 +1543,12 @@ pub fn actionTag(st: &mut State) -> Htop_Reaction {
     }
     {
         let obj: &mut dyn Object = panel.items[sel as usize].object_mut();
-        let any: &mut dyn core::any::Any = obj;
-        if let Some(r) = any.downcast_mut::<Row>() {
+        // C: `(Row*) Panel_getSelected(...)` is a superclass upcast, not a
+        // concrete-type cast. Panel items are `Process` objects, so reach the
+        // embedded `Row` via `as_row_mut()`; `downcast_mut::<Row>()` matches
+        // only a *bare* `Row` and silently missed every `Process` — which is
+        // why Space (tag) appeared to do nothing.
+        if let Some(r) = obj.as_row_mut() {
             Row_toggleTag(r);
         }
     }

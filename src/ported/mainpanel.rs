@@ -213,11 +213,13 @@ impl PanelClass for MainPanel {
 }
 
 /// Port of the `MainPanel_foreachRowFn` function-pointer typedef from
-/// `MainPanel.h:31` (`typedef bool(*)(Row*, Arg)`). The C `Arg` union is
-/// `object::Arg`, which is not `Copy`, so the payload is passed by shared
-/// reference (`&Arg`); callbacks only read it, so this matches the C
-/// by-value semantics observationally.
-pub type MainPanel_foreachRowFn = fn(&mut Row, &Arg) -> bool;
+/// `MainPanel.h:31` (`typedef bool(*)(Row*, Arg)`). The C passes a `Row*` that
+/// each callback upcasts to its concrete subclass (`(Process*)super`); the
+/// faithful Rust analog is `&mut dyn Object` (the row object), which the ported
+/// callbacks reach `as_process`/`as_row` through — a `Process` item cannot be
+/// `downcast` to a bare `Row`. `Arg` is `Copy` (like the C union), passed by
+/// value per call.
+pub type MainPanel_foreachRowFn = fn(&mut dyn Object, Arg) -> bool;
 
 /// Port of `static const char* const MainFunctions[]` (`MainPanel.c:28`) — the
 /// process-mode function-bar labels (F1..F10). The C trailing `NULL`
@@ -614,12 +616,13 @@ pub fn MainPanel_foreachRow(
     let size = Panel_size(&this.super_);
     for i in 0..size {
         let obj: &mut dyn Object = this.super_.items[i as usize].object_mut();
-        let any: &mut dyn Any = obj;
-        if let Some(row) = any.downcast_mut::<Row>() {
-            if row.tag {
-                ok &= fn_(row, &arg);
-                anyTagged = true;
-            }
+        // C: `if (row->tag)` on the `Row*`. Panel items are `Process` objects,
+        // so read the tag through the embedded `Row` (`as_row`); the callback
+        // receives the object and upcasts it itself, mirroring the C `Row*`.
+        let tagged = obj.as_row().is_some_and(|r| r.tag);
+        if tagged {
+            ok &= fn_(obj, arg);
+            anyTagged = true;
         }
     }
     if !anyTagged {
@@ -627,10 +630,7 @@ pub fn MainPanel_foreachRow(
         let sel = this.super_.selected;
         if sel >= 0 && (sel as usize) < this.super_.items.len() {
             let obj: &mut dyn Object = this.super_.items[sel as usize].object_mut();
-            let any: &mut dyn Any = obj;
-            if let Some(row) = any.downcast_mut::<Row>() {
-                ok &= fn_(row, &arg);
-            }
+            ok &= fn_(obj, arg);
         }
     }
 
@@ -959,19 +959,22 @@ mod tests {
     // ── foreachRow ────────────────────────────────────────────────────
 
     // Callback: bumps a counter (carried in Arg::V) and stamps the row's
-    // indent so we can see which rows it visited. Exercises the &Arg pass.
-    fn visit_cb(row: &mut Row, arg: &Arg) -> bool {
+    // indent so we can see which rows it visited. Matches the C typedef
+    // `bool(Row*, Arg)` — takes the row object and reaches its Row via as_row_mut.
+    fn visit_cb(obj: &mut dyn Object, arg: Arg) -> bool {
         if let Arg::V(p) = arg {
             unsafe {
-                *(*p as *mut i32) += 1;
+                *(p as *mut i32) += 1;
             }
         }
-        row.indent = 99;
+        if let Some(row) = obj.as_row_mut() {
+            row.indent = 99;
+        }
         true
     }
 
     // Callback returning false, to check the AND-fold of `ok`.
-    fn fail_cb(_row: &mut Row, _arg: &Arg) -> bool {
+    fn fail_cb(_obj: &mut dyn Object, _arg: Arg) -> bool {
         false
     }
 

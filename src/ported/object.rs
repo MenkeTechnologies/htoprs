@@ -239,6 +239,12 @@ pub fn Object_isA(o: Option<&dyn Object>, klass: &ObjectClass) -> bool {
 /// currently-ported code consumes it, so it is defined minimally; the
 /// `void* v` arm keeps the raw pointer (storing one needs no `unsafe`;
 /// only dereferencing would).
+///
+/// `Copy`/`Clone` mirror C's `union` (trivially copyable): the callback
+/// typedef [`MainPanel_foreachRowFn`](crate::ported::mainpanel::MainPanel_foreachRowFn)
+/// takes it by value, and `MainPanel_foreachRow` passes the same `arg` to each
+/// row, exactly as the C passes the union by value per call.
+#[derive(Clone, Copy)]
 pub enum Arg {
     /// C `int i`.
     I(i32),

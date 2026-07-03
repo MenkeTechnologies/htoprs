@@ -1876,10 +1876,13 @@ pub fn Process_sendSignal(this: &Process, sgn: Arg) -> bool {
 /// `Process.c:931`. Casts the `Row*` to `Process*` (the `Object_isA` guard
 /// + `Any` downcast) and delegates to [`Process_sendSignal`]. `sendSignal`
 /// only reads the pid, so a shared `&Process` suffices.
-pub fn Process_rowSendSignal(super_: &dyn Object, sgn: Arg) -> bool {
-    debug_assert!(Object_isA(Some(super_), &Process_class));
-    let this = (super_ as &dyn Any)
-        .downcast_ref::<Process>()
+pub fn Process_rowSendSignal(super_: &mut dyn Object, sgn: Arg) -> bool {
+    debug_assert!(Object_isA(Some(super_ as &dyn Object), &Process_class));
+    // `&mut dyn Object` to match `MainPanel_foreachRowFn` (C's non-const
+    // `Row*`); `sendSignal` only reads the pid, so an immutable `as_process`
+    // view suffices.
+    let this = super_
+        .as_process()
         .expect("Process_rowSendSignal: row is not a Process");
     Process_sendSignal(this, sgn)
 }
@@ -2953,15 +2956,15 @@ mod tests {
     fn row_send_signal_delegates_through_object_isa() {
         let mut p = proc();
         Process_setPid(&mut p, unsafe { libc::getpid() });
-        assert!(Process_rowSendSignal(&p as &dyn Object, Arg::I(0)));
+        assert!(Process_rowSendSignal(&mut p as &mut dyn Object, Arg::I(0)));
     }
 
     #[test]
     #[should_panic]
     fn row_send_signal_rejects_non_process() {
         // A bare Row's class chain is Row -> Object, never Process.
-        let row = crate::ported::row::Row::default();
-        let _ = Process_rowSendSignal(&row as &dyn Object, Arg::I(0));
+        let mut row = crate::ported::row::Row::default();
+        let _ = Process_rowSendSignal(&mut row as &mut dyn Object, Arg::I(0));
     }
 
     #[test]
