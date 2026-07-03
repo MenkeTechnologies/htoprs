@@ -48,16 +48,24 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use crate::ported::crt::{ColorElements as CE, ColorScheme, TreeStr};
+use crate::ported::dynamiccolumn::DynamicColumn_writeField;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::richstring::{
-    RichString, RichString_appendWide, RichString_setAttrn, RichString_size,
+    RichString, RichString_appendAscii, RichString_appendWide, RichString_setAttrn, RichString_size,
 };
-use crate::ported::row::{spaceship_number, Row, Row_class, Row_getGroupOrParent, Row_init};
-use crate::ported::settings::Settings_isReadonly;
-use crate::ported::xutils::compareRealNumbers;
+use crate::ported::row::{
+    spaceship_number, PercentageAttr, Row, Row_class, Row_fieldWidths, Row_getGroupOrParent,
+    Row_init, Row_pidDigits, Row_printCount, Row_printKBytes, Row_printLeftAlignedField,
+    Row_printPercentage, Row_printTime, Row_uidDigits,
+};
+use crate::ported::scheduling::Scheduling_formatPolicy;
+use crate::ported::settings::{RowField, Settings_isReadonly};
+use crate::ported::xutils::{compareRealNumbers, String_startsWith};
 use core::any::Any;
 use core::ffi::c_void;
+use std::sync::atomic::Ordering;
 
 /// Port of `#define SPACESHIP_NULLSTR(a, b)` from `Macros.h:37`:
 /// `strcmp((a) ? (a) : "", (b) ? (b) : "")`. NULL operands (`None`)
@@ -799,14 +807,328 @@ pub fn Process_rowWriteField() {
     todo!("port of Process.c:590 — needs RichString + CRT_colors")
 }
 
-/// TODO: port of `void Process_writeField(const Process* this,
-/// RichString* str, RowField field)` from `Process.c:596`. Blocked on the
-/// unported ncurses draw layer: every arm formats into a `RichString`
-/// (`RichString_appendAscii` / `Row_printLeftAlignedField`) and colors it
-/// via the unported `CRT_colors[...]` palette, and several arms deref
-/// `this->super.host` (an opaque pointer) for `htopUserId` / settings.
-pub fn Process_writeField() {
-    todo!("port of Process.c:596 — needs RichString + CRT_colors + host deref")
+/// Port of `void Process_writeField(const Process* this, RichString* str,
+/// RowField field)` from `Process.c:596` — the base per-field renderer. Each
+/// arm either delegates to a `Row_print*` helper / `Process_writeCommand` /
+/// `Row_printLeftAlignedField` (the C `return` arms) or formats into a text
+/// buffer and picks a color, which the shared tail appends (the C `break`
+/// arms). `CRT_colors[X]` is `ColorElements::X.packed(active_scheme)`;
+/// `Process_pidDigits`/`Process_uidDigits` are the [`Row_pidDigits`]/
+/// [`Row_uidDigits`] globals; `host->settings` is reached via the established
+/// `Row::host as *const Machine` deref.
+pub fn Process_writeField(this: &Process, str: &mut RichString, field: RowField) {
+    use ProcessField as PF;
+    use ProcessState::*;
+
+    let host = unsafe { &*(this.super_.host as *const Machine) };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Process_writeField: host->settings is NULL");
+    let coloring = settings.highlightMegabytes;
+    let scheme = ColorScheme::active();
+    let n = 255usize; // C `sizeof(buffer) - 1`
+    let mut attr = CE::DEFAULT_COLOR.packed(scheme);
+    // The text buffer for the C `break` arms; the `return` arms never reach
+    // the shared tail append. Each fall-through arm assigns it.
+    let buffer: String;
+
+    match field {
+        f if f == PF::COMM as RowField => {
+            let mut baseattr = CE::PROCESS_BASENAME.packed(scheme);
+            if settings.highlightThreads && Process_isThread(this) {
+                attr = CE::PROCESS_THREAD.packed(scheme);
+                baseattr = CE::PROCESS_THREAD_BASENAME.packed(scheme);
+            }
+            let ss = &settings.screens[settings.ssIndex as usize];
+            let indent = this.super_.indent;
+            if !ss.treeView || indent == 0 {
+                Process_writeCommand(this, attr, baseattr, str);
+                return;
+            }
+            // Build the tree-prefix glyphs (C accumulates into `buffer`).
+            let last_item = indent < 0;
+            let mut tree = String::new();
+            let mut ind: u32 = if indent < 0 { (-indent) as u32 } else { indent as u32 };
+            while ind > 1 {
+                if ind & 1 != 0 {
+                    tree.push_str(TreeStr::TREE_STR_VERT.glyph());
+                    tree.push_str("  ");
+                } else {
+                    tree.push_str("   ");
+                }
+                ind >>= 1;
+            }
+            let draw = if last_item {
+                TreeStr::TREE_STR_BEND
+            } else {
+                TreeStr::TREE_STR_RTEE
+            };
+            let openshut = if this.super_.showChildren {
+                TreeStr::TREE_STR_SHUT
+            } else {
+                TreeStr::TREE_STR_OPEN
+            };
+            tree.push_str(draw.glyph());
+            tree.push_str(openshut.glyph());
+            tree.push(' ');
+            RichString_appendWide(str, CE::PROCESS_TREE.packed(scheme), tree.as_bytes());
+            Process_writeCommand(this, attr, baseattr, str);
+            return;
+        }
+        f if f == PF::PROC_COMM as RowField => {
+            let (a, content): (i32, &[u8]) = match &this.procComm {
+                Some(pc) => {
+                    let a = if Process_isUserlandThread(this) {
+                        CE::PROCESS_THREAD_COMM.packed(scheme)
+                    } else {
+                        CE::PROCESS_COMM.packed(scheme)
+                    };
+                    (a, pc.as_bytes())
+                }
+                None => {
+                    let c: &[u8] = if Process_isKernelThread(this) {
+                        kthreadID
+                    } else {
+                        b"N/A"
+                    };
+                    (CE::PROCESS_SHADOW.packed(scheme), c)
+                }
+            };
+            Row_printLeftAlignedField(str, a, content, (TASK_COMM_LEN - 1) as u32);
+            return;
+        }
+        f if f == PF::PROC_EXE as RowField => {
+            let (a, content): (i32, &[u8]) = match &this.procExe {
+                Some(pe) => {
+                    let mut a = if Process_isUserlandThread(this) {
+                        CE::PROCESS_THREAD_BASENAME.packed(scheme)
+                    } else {
+                        CE::PROCESS_BASENAME.packed(scheme)
+                    };
+                    if settings.highlightDeletedExe {
+                        if this.procExeDeleted {
+                            a = CE::FAILED_READ.packed(scheme);
+                        } else if this.usesDeletedLib {
+                            a = CE::PROCESS_TAG.packed(scheme);
+                        }
+                    }
+                    (a, &pe.as_bytes()[this.procExeBasenameOffset..])
+                }
+                None => {
+                    let c: &[u8] = if Process_isKernelThread(this) {
+                        kthreadID
+                    } else {
+                        b"N/A"
+                    };
+                    (CE::PROCESS_SHADOW.packed(scheme), c)
+                }
+            };
+            Row_printLeftAlignedField(str, a, content, (TASK_COMM_LEN - 1) as u32);
+            return;
+        }
+        f if f == PF::CWD as RowField => {
+            let (a, content): (i32, &[u8]) = match &this.procCwd {
+                None => (CE::PROCESS_SHADOW.packed(scheme), b"N/A".as_slice()),
+                Some(c) if String_startsWith(c, "/proc/") && c.contains(" (deleted)") => (
+                    CE::PROCESS_SHADOW.packed(scheme),
+                    b"main thread terminated".as_slice(),
+                ),
+                Some(c) => (attr, c.as_bytes()),
+            };
+            Row_printLeftAlignedField(str, a, content, 25);
+            return;
+        }
+        f if f == PF::ELAPSED as RowField => {
+            let rt = host.realtimeMs;
+            let st = (this.starttime_ctime as u64).wrapping_mul(1000);
+            let dt = if rt < st { 0 } else { rt - st };
+            Row_printTime(str, dt / 10, coloring);
+            return;
+        }
+        f if f == PF::MAJFLT as RowField => {
+            Row_printCount(str, this.majflt, coloring);
+            return;
+        }
+        f if f == PF::MINFLT as RowField => {
+            Row_printCount(str, this.minflt, coloring);
+            return;
+        }
+        f if f == PF::M_RESIDENT as RowField => {
+            Row_printKBytes(str, this.m_resident as u64, coloring);
+            return;
+        }
+        f if f == PF::M_VIRT as RowField => {
+            Row_printKBytes(str, this.m_virt as u64, coloring);
+            return;
+        }
+        f if f == PF::NICE as RowField => {
+            if this.nice == PROCESS_NICE_UNKNOWN {
+                buffer = "N/A ".to_string();
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+            } else {
+                buffer = format!("{:>3} ", this.nice);
+                attr = if this.nice < 0 {
+                    CE::PROCESS_HIGH_PRIORITY.packed(scheme)
+                } else if this.nice > 0 {
+                    CE::PROCESS_LOW_PRIORITY.packed(scheme)
+                } else {
+                    CE::PROCESS_SHADOW.packed(scheme)
+                };
+            }
+        }
+        f if f == PF::NLWP as RowField => {
+            if this.nlwp == 1 {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+            }
+            buffer = format!("{:>4} ", this.nlwp);
+        }
+        f if f == PF::PERCENT_CPU as RowField => {
+            let mut pa = PercentageAttr::Unchanged;
+            let w = Row_fieldWidths[PF::PERCENT_CPU as usize].load(Ordering::Relaxed);
+            buffer = Row_printPercentage(this.percent_cpu, n, w, &mut pa);
+            match pa {
+                PercentageAttr::Shadow => attr = CE::PROCESS_SHADOW.packed(scheme),
+                PercentageAttr::Megabytes => attr = CE::PROCESS_MEGABYTES.packed(scheme),
+                PercentageAttr::Unchanged => {}
+            }
+        }
+        f if f == PF::PERCENT_NORM_CPU as RowField => {
+            let mut pa = PercentageAttr::Unchanged;
+            let w = Row_fieldWidths[PF::PERCENT_CPU as usize].load(Ordering::Relaxed);
+            let cpu_pct = this.percent_cpu / host.activeCPUs as f32;
+            buffer = Row_printPercentage(cpu_pct, n, w, &mut pa);
+            match pa {
+                PercentageAttr::Shadow => attr = CE::PROCESS_SHADOW.packed(scheme),
+                PercentageAttr::Megabytes => attr = CE::PROCESS_MEGABYTES.packed(scheme),
+                PercentageAttr::Unchanged => {}
+            }
+        }
+        f if f == PF::PERCENT_MEM as RowField => {
+            let mut pa = PercentageAttr::Unchanged;
+            buffer = Row_printPercentage(this.percent_mem, n, 4, &mut pa);
+            match pa {
+                PercentageAttr::Shadow => attr = CE::PROCESS_SHADOW.packed(scheme),
+                PercentageAttr::Megabytes => attr = CE::PROCESS_MEGABYTES.packed(scheme),
+                PercentageAttr::Unchanged => {}
+            }
+        }
+        f if f == PF::PGRP as RowField => {
+            let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", this.pgrp);
+        }
+        f if f == PF::PID as RowField => {
+            let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", Process_getPid(this));
+        }
+        f if f == PF::PPID as RowField => {
+            let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", Process_getParent(this));
+        }
+        f if f == PF::PRIORITY as RowField => {
+            buffer = if this.priority <= -100 {
+                " RT ".to_string()
+            } else {
+                format!("{:>3} ", this.priority)
+            };
+        }
+        f if f == PF::PROCESSOR as RowField => {
+            // Settings_cpuId(settings, cpu) = countCPUsFromOne ? cpu+1 : cpu.
+            let cpu_id = if settings.countCPUsFromOne {
+                this.processor + 1
+            } else {
+                this.processor
+            };
+            buffer = format!("{:>3} ", cpu_id);
+        }
+        f if f == PF::SCHEDULERPOLICY as RowField => {
+            let s = if this.scheduling_policy >= 0 {
+                Scheduling_formatPolicy(this.scheduling_policy)
+            } else {
+                "N/A"
+            };
+            buffer = format!("{s:<5} ");
+        }
+        f if f == PF::SESSION as RowField => {
+            let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", this.session);
+        }
+        f if f == PF::STARTTIME as RowField => {
+            // C `"%s"` on the NUL-terminated `starttime_show[8]`.
+            let end = this
+                .starttime_show
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(this.starttime_show.len());
+            buffer = String::from_utf8_lossy(&this.starttime_show[..end]).into_owned();
+        }
+        f if f == PF::STATE as RowField => {
+            buffer = format!("{} ", processStateChar(this.state));
+            attr = match this.state {
+                RUNNABLE | RUNNING | TRACED => CE::PROCESS_RUN_STATE.packed(scheme),
+                BLOCKED | DEFUNCT | STOPPED | UNINTERRUPTIBLE_WAIT | ZOMBIE => {
+                    CE::PROCESS_D_STATE.packed(scheme)
+                }
+                QUEUED | WAITING | IDLE | SLEEPING => CE::PROCESS_SHADOW.packed(scheme),
+                UNKNOWN | PAGING => attr,
+            };
+        }
+        f if f == PF::ST_UID as RowField => {
+            let w = Row_uidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", this.st_uid);
+        }
+        f if f == PF::TIME as RowField => {
+            Row_printTime(str, this.time, coloring);
+            return;
+        }
+        f if f == PF::TGID as RowField => {
+            if Process_getThreadGroup(this) == Process_getPid(this) {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+            }
+            let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", Process_getThreadGroup(this));
+        }
+        f if f == PF::TPGID as RowField => {
+            let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+            buffer = format!("{:>w$} ", this.tpgid);
+        }
+        f if f == PF::TTY as RowField => match &this.tty_name {
+            None => {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+                buffer = "(no tty) ".to_string();
+            }
+            Some(t) => {
+                let name = if String_startsWith(t, "/dev/") {
+                    &t[5..]
+                } else {
+                    t.as_str()
+                };
+                buffer = format!("{name:<8} ");
+            }
+        },
+        f if f == PF::USER as RowField => {
+            if this.elevated_priv == Tristate::TRI_ON {
+                attr = CE::PROCESS_PRIV.packed(scheme);
+            } else if host.htopUserId != this.st_uid {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+            }
+            if let Some(u) = &this.user {
+                Row_printLeftAlignedField(str, attr, u.as_bytes(), 10);
+                return;
+            }
+            buffer = format!("{:<10} ", this.st_uid);
+        }
+        _ => {
+            // Dynamic column, or (in C) an assert-guarded unreachable.
+            if DynamicColumn_writeField(this, str, field as u32) {
+                return;
+            }
+            debug_assert!(false, "Process_writeField: default key reached");
+            buffer = "- ".to_string();
+        }
+    }
+
+    RichString_appendAscii(str, attr, buffer.as_bytes());
 }
 
 /// Deliberate non-port (rule 3): `void Process_done(Process* this)` from
@@ -2051,5 +2373,37 @@ mod tests {
         let mut rs = RichString::default();
         Process_writeCommand(&p, 0, 0, &mut rs);
         assert_eq!(RichString_size(&rs), 2);
+    }
+
+    /// [`Process_writeField`] renders representative `break`-arm fields to the
+    /// expected visible width. Uses fields that don't read the process-wide
+    /// pid/uid digit globals, so the assertions are race-free.
+    #[test]
+    fn write_field_renders_representative_fields() {
+        use crate::ported::settings::Settings;
+
+        let mut machine = Machine::default();
+        machine.settings = Some(Settings::default());
+        let mut p = Process::default();
+        p.super_.host = &machine as *const Machine as *const c_void;
+
+        let render = |p: &Process, field: RowField| -> i32 {
+            let mut rs = RichString::default();
+            Process_writeField(p, &mut rs, field);
+            RichString_size(&rs)
+        };
+
+        // NICE = 0 → "  0 " (4 visible cols).
+        p.nice = 0;
+        assert_eq!(render(&p, ProcessField::NICE as RowField), 4);
+        // NICE unknown → "N/A " (4).
+        p.nice = PROCESS_NICE_UNKNOWN;
+        assert_eq!(render(&p, ProcessField::NICE as RowField), 4);
+        // PRIORITY <= -100 → " RT " (4).
+        p.priority = -100;
+        assert_eq!(render(&p, ProcessField::PRIORITY as RowField), 4);
+        // STATE running → "R " (2).
+        p.state = ProcessState::RUNNING;
+        assert_eq!(render(&p, ProcessField::STATE as RowField), 2);
     }
 }
