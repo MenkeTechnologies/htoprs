@@ -177,20 +177,43 @@ pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) 
     Platform_gettime_realtime(&mut realtime, &mut this.realtimeMs);
 }
 
-/// TODO: port of `void Machine_done(Machine* this)` from `Machine.c:53`.
-/// The C body is `Object_delete(this->processTable); free(this->tables);`
-/// (the `hwloc_topology_destroy` block is `#ifdef HAVE_LIBHWLOC`, not built
-/// here). `free(this->tables)` maps to the `Vec<TableHandle>` drop, but
-/// `Object_delete(this->processTable)` frees the process `Table` *through*
-/// the pointer, and the Rust model holds `processTable` as a non-owning
-/// `Option<*mut Table>` (the module invariant: "Machine borrows tables it
-/// does not own"). No owned field's `Drop` frees the pointee, and calling
-/// `Table_delete` would require reconstructing a `Box` from a raw pointer
-/// whose allocation origin the model does not own — an ownership
-/// fabrication. Blocked on the process-table ownership substrate; left a
-/// stub rather than faked.
-pub fn Machine_done() {
-    todo!("port of Machine.c:53 — Object_delete(processTable) needs owned Table; model holds a non-owning *mut Table")
+/// Port of `void Machine_done(Machine* this)` from `Machine.c:53`. C body:
+/// `Object_delete(this->processTable); free(this->tables);` (the
+/// `hwloc_topology_destroy` block is `#ifdef HAVE_LIBHWLOC`, compiled out on a
+/// no-libhwloc build). `free(this->tables)` maps to clearing the
+/// `Vec<TableHandle>` (the C frees the pointer *array*, not the tables it
+/// aliases). `Object_delete(this->processTable)` frees the process `Table`
+/// through the pointer: `main.rs` `Box::into_raw`s the concrete platform
+/// `ProcessTable` and stores the base `*mut Table` (offset 0 via the repr(C)
+/// `super_` chain — the same base↔concrete round-trip
+/// [`DarwinProcessTable::scan_iterate`](crate::ported::darwin::darwinprocesstable::DarwinProcessTable)
+/// relies on), so the base pointer downcasts back to the concrete `Box` for a
+/// correct free. `Machine` is the sole deleter of that allocation (`main.rs`
+/// hands it over and never frees it), so the reclaim is not a double free.
+///
+/// The reclaim is darwin-only: `DarwinProcessTable` is `#[repr(C)]` (so the
+/// cast is sound), whereas `LinuxProcessTable` is not, and only the darwin TUI
+/// wires a real process table. On other targets the borrowed pointer is left
+/// for the OS to reclaim at exit (the faithful net effect, since C only calls
+/// `Machine_done` at process teardown).
+pub fn Machine_done(this: &mut Machine) {
+    // Object_delete(this->processTable);
+    #[cfg(target_os = "macos")]
+    if let Some(pt) = this.processTable.take() {
+        // SAFETY: `pt` is the darwin process table `Box::into_raw`'d by
+        // `main.rs`; the repr(C) `super_`-at-offset-0 chain makes the base
+        // `*mut Table` round-trip to `*mut DarwinProcessTable`, and `Machine`
+        // is its sole owner (no other code frees it), so reconstructing and
+        // dropping the `Box` is a correct, non-double free.
+        drop(unsafe {
+            Box::from_raw(pt as *mut crate::ported::darwin::darwinprocesstable::DarwinProcessTable)
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = this.processTable.take();
+
+    // free(this->tables);
+    this.tables.clear();
 }
 
 /// Port of `static void Machine_addTable(Machine* this, Table* table)`
