@@ -20,6 +20,14 @@
 //!   ported now (`hashtable.rs`).
 //! - `DynamicMeter_lookup` (`DynamicMeter.c:74`) — thin wrapper over
 //!   `Hashtable_get`, returning the stored meter's `name`; ported now.
+//! - `DynamicMeter_getCaption` (`DynamicMeter.c:92`) — `static` in C; reads
+//!   `this->host->settings->dynamicMeters` via `Hashtable_get` and returns
+//!   the entry's `caption`/`name` (else `this->caption`). Ported now —
+//!   `Settings.dynamicMeters` and `Hashtable_get` are present.
+//! - `DynamicMeter_getUiName` (`DynamicMeter.c:100`) — `static` in C; same
+//!   `Hashtable_get` off `settings->dynamicMeters`, then `String_safeStrncpy`
+//!   copies the caption (minus a trailing `": "`) or name into the
+//!   caller-provided buffer. Ported now.
 //!
 //! Stubbed (cannot be ported faithfully yet — specific blocker named):
 //! - `DynamicMeters_new` (`DynamicMeter.c:39`) — returns
@@ -34,13 +42,6 @@
 //! - `DynamicMeter_display` (`DynamicMeter.c:87`) — `static` in C; thin
 //!   wrapper over `Platform_dynamicMeterDisplay(meter, out)`; also needs
 //!   the `Object`/`RichString` graph.
-//! - `DynamicMeter_getCaption` (`DynamicMeter.c:92`) — `static` in C;
-//!   reads `this->host->settings->dynamicMeters` via `Hashtable_get`.
-//!   The `Settings` model has no `dynamicMeters` field and `Hashtable_get`
-//!   is unported.
-//! - `DynamicMeter_getUiName` (`DynamicMeter.c:100`) — `static` in C; same
-//!   `Hashtable_get` off `settings->dynamicMeters`, plus
-//!   `String_safeStrncpy` into a caller-provided `char*` buffer.
 //!
 //! `DynamicMeter_class` (the `MeterClass` vtable literal,
 //! `DynamicMeter.c:119`) and its `DynamicMeter_attributes[]` colour table
@@ -52,16 +53,16 @@
 #![allow(dead_code)]
 
 use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get};
+use crate::ported::meter::Meter;
 use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::xutils::String_safeStrncpy;
 
 /// Subset of htop's `DynamicMeter` struct (`DynamicMeter.h:17`).
 ///
-/// Only `name` is modelled: it is the single field `DynamicMeter_compare`,
-/// `DynamicMeter_search`, and `DynamicMeter_lookup` touch. The C struct
-/// also carries `caption`, `description`, `type`, and `maximum`, which
-/// these callbacks never read and so are omitted (the `caption`-reading
-/// `DynamicMeter_getCaption`/`getUiName` remain stubbed on unported
-/// substrate).
+/// `name` is the field `DynamicMeter_compare`, `DynamicMeter_search`, and
+/// `DynamicMeter_lookup` touch; `caption` is read by
+/// `DynamicMeter_getCaption`/`getUiName`. The C struct also carries
+/// `description`, `type`, and `maximum`, modelled here for completeness.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DynamicMeter {
     /// C: `char name[32]` — unique name, cannot contain spaces.
@@ -221,24 +222,100 @@ pub fn DynamicMeter_display() {
     todo!("port of DynamicMeter.c:87 — needs Platform_dynamicMeterDisplay + RichString")
 }
 
-/// TODO: port of `static const char* DynamicMeter_getCaption(const Meter* this)`
+/// Port of `static const char* DynamicMeter_getCaption(const Meter* this)`
 /// from `DynamicMeter.c:92`. Looks up
-/// `this->host->settings->dynamicMeters` via `Hashtable_get(.., this->param)`
-/// and returns `meter->caption ? meter->caption : meter->name`, falling
-/// back to `this->caption`. The `Settings` model has no `dynamicMeters`
-/// field and `Hashtable_get` is unported.
-pub fn DynamicMeter_getCaption() {
-    todo!("port of DynamicMeter.c:92 — needs Settings.dynamicMeters + Hashtable_get")
+/// `this->host->settings->dynamicMeters` via [`Hashtable_get`] keyed on
+/// `this->param` and returns `meter->caption ? meter->caption : meter->name`,
+/// falling back to `this->caption` on a miss.
+///
+/// C reaches the registry through raw back-pointers (`this->host` is a
+/// `*const Machine`, `settings->dynamicMeters` a `Hashtable*`); the port
+/// mirrors that with `unsafe` derefs, and — like C — dereferences both
+/// unconditionally (a NULL there is a C segfault, here an `expect` panic,
+/// matching the `host->settings` precedent in `action.rs`). The stored
+/// value comes back as `&dyn Object`; C casts its `void*` to
+/// `const DynamicMeter*`, so the safe-Rust analog downcasts through `Any`.
+/// The returned `&str` borrows `this` (its elided lifetime), the natural
+/// analog of C's returned `const char*`.
+pub fn DynamicMeter_getCaption(this: &Meter) -> &str {
+    // C: const Settings* settings = this->host->settings;
+    let settings = unsafe { (*this.host).settings.as_ref() }
+        .expect("DynamicMeter_getCaption: host->settings is NULL");
+
+    // C: const DynamicMeter* meter = Hashtable_get(settings->dynamicMeters, this->param);
+    let dynamics: &Hashtable = unsafe {
+        &*settings
+            .dynamicMeters
+            .expect("DynamicMeter_getCaption: settings->dynamicMeters is NULL")
+    };
+    let meter = Hashtable_get(dynamics, this.param).and_then(|o| {
+        let any: &dyn core::any::Any = o;
+        any.downcast_ref::<DynamicMeter>()
+    });
+
+    // C: if (meter) return meter->caption ? meter->caption : meter->name;
+    if let Some(meter) = meter {
+        return meter.caption.as_deref().unwrap_or(meter.name.as_str());
+    }
+
+    // C: return this->caption;
+    &this.caption
 }
 
-/// TODO: port of `static void DynamicMeter_getUiName(const Meter* this, char* name, size_t length)`
+/// Port of `static void DynamicMeter_getUiName(const Meter* this, char* name, size_t length)`
 /// from `DynamicMeter.c:100`. Same `Hashtable_get` off
 /// `settings->dynamicMeters` as [`DynamicMeter_getCaption`], then copies
-/// the caption (minus a trailing `": "`) or the name into the
-/// caller-provided buffer via `String_safeStrncpy`. Blocked on the same
-/// unported `Settings.dynamicMeters`/`Hashtable_get` substrate.
-pub fn DynamicMeter_getUiName() {
-    todo!("port of DynamicMeter.c:100 — needs Settings.dynamicMeters + Hashtable_get")
+/// the caption — minus a trailing `": "` (colon+space) — or, when the
+/// entry has no caption, the name, into the caller-provided buffer via
+/// [`String_safeStrncpy`]. On a registry miss (C `meter == NULL`) nothing
+/// is written, leaving `name` as the caller passed it.
+///
+/// The C signature is `(char* name, size_t length)`: `name` is the
+/// destination buffer and `length` its capacity. The port keeps that shape
+/// (`name: &mut [u8]`, `length: usize`) rather than the `MeterGetUiName =
+/// fn(&Meter) -> String` vtable shape, since this fn copies through
+/// `String_safeStrncpy` whose `dest.len()` plays the C `size` arg — so the
+/// sized copies pass `&mut name[..size]` sub-slices. C's `strlen` is a byte
+/// count and its `MINIMUM` macro is `a < b ? a : b`, ported as
+/// `bytes.len()` / `usize::min` (an inlined macro, not a new depth-0 fn).
+pub fn DynamicMeter_getUiName(this: &Meter, name: &mut [u8], length: usize) {
+    // C: assert(length > 0);
+    assert!(length > 0);
+
+    // C: const Settings* settings = this->host->settings;
+    let settings = unsafe { (*this.host).settings.as_ref() }
+        .expect("DynamicMeter_getUiName: host->settings is NULL");
+
+    // C: const DynamicMeter* meter = Hashtable_get(settings->dynamicMeters, this->param);
+    let dynamics: &Hashtable = unsafe {
+        &*settings
+            .dynamicMeters
+            .expect("DynamicMeter_getUiName: settings->dynamicMeters is NULL")
+    };
+    let meter = Hashtable_get(dynamics, this.param).and_then(|o| {
+        let any: &dyn core::any::Any = o;
+        any.downcast_ref::<DynamicMeter>()
+    });
+
+    // C: if (meter) {
+    if let Some(meter) = meter {
+        // C: const char* uiName = meter->caption;
+        if let Some(uiName) = meter.caption.as_deref() {
+            let uiName = uiName.as_bytes();
+            // C: size_t uiNameLen = strlen(uiName);
+            let mut uiNameLen = uiName.len();
+            // C: if (uiNameLen > 2 && uiName[uiNameLen - 2] == ':') uiNameLen -= 2;
+            if uiNameLen > 2 && uiName[uiNameLen - 2] == b':' {
+                uiNameLen -= 2;
+            }
+            // C: String_safeStrncpy(name, uiName, MINIMUM(length, uiNameLen + 1));
+            let size = length.min(uiNameLen + 1);
+            String_safeStrncpy(&mut name[..size], uiName);
+        } else {
+            // C: String_safeStrncpy(name, meter->name, length);
+            String_safeStrncpy(&mut name[..length], meter.name.as_bytes());
+        }
+    }
 }
 
 #[cfg(test)]
