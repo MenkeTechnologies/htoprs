@@ -592,6 +592,9 @@ mod tests {
         let mut mp = blank();
         let mut st = State {
             host: core::ptr::null_mut(),
+            mainPanel: core::ptr::null_mut(),
+            header: core::ptr::null_mut(),
+            failedUpdate: None,
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,

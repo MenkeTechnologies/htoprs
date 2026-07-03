@@ -93,7 +93,9 @@
 #![allow(non_camel_case_types)] // `Htop_Reaction` mirrors the C type name verbatim
 #![allow(dead_code)]
 
+use crate::ported::header::Header;
 use crate::ported::machine::{Machine, Machine_scanTables};
+use crate::ported::mainpanel::MainPanel;
 use crate::ported::object::Object;
 use crate::ported::panel::{Panel, Panel_setSelected, Panel_size};
 use crate::ported::process::ProcessField;
@@ -138,11 +140,11 @@ pub const HTOP_RESIZE: Htop_Reaction = 0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | H
 ///
 /// The three `bool` fields and the `host` back-pointer are modeled — the
 /// latter is the `Machine*` the sort/toggle handlers reach for
-/// `host->settings` / `host->activeTable`. Omitted (still-unreached)
-/// substrate members: `mainPanel: *mut MainPanel`, `header: *mut Header`,
-/// `failedUpdate: *const c_char`. The handlers that need `mainPanel`
-/// (`IncSet`, `changePriority`, `actionKill`, the child screens, …) stay
-/// stubbed.
+/// `host->settings` / `host->activeTable`. The `mainPanel`/`header`
+/// back-pointers are the `struct MainPanel_*` / `Header*` the C handlers
+/// dereference (`IncSet`, `changePriority`, `actionKill`, the child
+/// screens, …); they are raw pointers exactly as in C, valid for the
+/// lifetime of the main loop that owns them.
 pub struct State {
     /// C `Machine* host` — back-pointer to the owning machine. The
     /// host-based handlers read/mutate `host->settings` and
@@ -150,6 +152,14 @@ pub struct State {
     /// precondition (as in C, where `st->host->settings` is dereferenced
     /// unconditionally).
     pub host: *mut Machine,
+    /// C `struct MainPanel_* mainPanel` — the process panel the handlers
+    /// tag/select/read the current row through.
+    pub mainPanel: *mut MainPanel,
+    /// C `Header* header` — the meters header (reinit on layout change).
+    pub header: *mut Header,
+    /// C `const char* failedUpdate` — function-bar diagnostic, or `None`
+    /// (C `NULL`) when the last sample succeeded.
+    pub failedUpdate: Option<String>,
     pub pauseUpdate: bool,
     pub hideSelection: bool,
     pub hideMeters: bool,
@@ -879,6 +889,9 @@ mod tests {
     fn action_quit_returns_htop_quit() {
         let st = State {
             host: core::ptr::null_mut(),
+            mainPanel: core::ptr::null_mut(),
+            header: core::ptr::null_mut(),
+            failedUpdate: None,
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,
@@ -893,6 +906,9 @@ mod tests {
     fn action_toggle_hide_meters_flips_and_returns_resize() {
         let mut st = State {
             host: core::ptr::null_mut(),
+            mainPanel: core::ptr::null_mut(),
+            header: core::ptr::null_mut(),
+            failedUpdate: None,
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,
@@ -916,6 +932,9 @@ mod tests {
     fn action_toggle_pause_update_flips_and_returns_refresh() {
         let mut st = State {
             host: core::ptr::null_mut(),
+            mainPanel: core::ptr::null_mut(),
+            header: core::ptr::null_mut(),
+            failedUpdate: None,
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,

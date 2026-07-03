@@ -256,6 +256,9 @@ mod tests {
             hideSelection: false,
             hideMeters: false,
             host: core::ptr::null_mut(),
+            mainPanel: core::ptr::null_mut(),
+            header: core::ptr::null_mut(),
+            failedUpdate: None,
         }
     }
 
