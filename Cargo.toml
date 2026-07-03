@@ -41,3 +41,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 ratatui = { version = "0.30.0", default-features = false, features = ["std"] }
 # Extensions-only: persist the selected theme to ~/.config/htoprs/prefs.json.
 serde_json = "1.0"
+# Extensions-only: regex matching for the saved-filters extension
+# (extensions::filter). Foundational crate, vendorable and durable.
+regex = "1"

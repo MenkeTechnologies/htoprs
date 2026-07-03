@@ -12,8 +12,27 @@
 //! (`dispatch_key` / `draw_active`) the running TUI drives them through.
 //! [`colors`] makes a selected theme recolor the actual htop UI in 256-color
 //! via a base16-style ANSI palette remap consulted by `Ncurses::to_color`.
+//!
+//! The remaining modules are htoprs-original monitoring capabilities htop
+//! lacks, built against [`model::Proc`] (a stand-in for the ported `Process`
+//! until each is wired to `crate::ported::process`):
+//! [`procring`] per-process CPU/mem history + sparkline column,
+//! [`finder`] fuzzy process finder, [`snapshot`] capture + diff a table,
+//! [`filter`] regex + saved named filters, [`export`] table -> JSON/CSV,
+//! [`alerts`] debounced threshold rules, [`graph`] braille history graph.
+//! [`braille`] is the shared glyph renderer used by [`procring`] and [`graph`].
 
 pub mod colors;
 pub mod overlay;
 pub mod prefs;
 pub mod theme;
+
+pub mod alerts;
+pub mod braille;
+pub mod export;
+pub mod filter;
+pub mod finder;
+pub mod graph;
+pub mod model;
+pub mod procring;
+pub mod snapshot;
