@@ -36,7 +36,9 @@ use crate::ported::batterymeter::ACPresence;
 use crate::ported::crt::ColorElements;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
 use crate::ported::meter::Meter;
-use crate::ported::xutils::{String_contains_i, String_eq, String_startsWith, sumPositiveValues};
+use crate::ported::xutils::{
+    saturatingSub, String_contains_i, String_eq, String_startsWith, sumPositiveValues,
+};
 
 /// Port of `typedef struct MemoryClass_` (`linux/Platform.h`) — one
 /// memory-meter class: its label, whether it counts toward the "used" or
@@ -198,9 +200,71 @@ pub fn Platform_getMaxPid() -> libc::pid_t {
     }
 }
 
-/// TODO: port of `void Platform_setGPUValues(Meter* this, double* totalUsage, unsigned long long* totalGPUTimeDiff` from `Platform.c:395`.
-pub fn Platform_setGPUValues() {
-    todo!("port of Platform.c:395")
+/// Port of `void Platform_setGPUValues(Meter* this, double* totalUsage,
+/// unsigned long long* totalGPUTimeDiff)` from `linux/Platform.c`. On a new
+/// monotonic sample, walks the host's per-engine GPU time list into the
+/// shared [`GPUMeter_engineData`](crate::ported::gpumeter::GPUMeter_engineData)
+/// rows (busy-time delta / percentage), computes the residue percentage, and
+/// writes the aggregate usage/time-diff out-params. The three C
+/// function-`static` caches (`prevMonotonicMs`/`residuePercentage`/
+/// `prevResidueTime`) are held in a module `Mutex`. `saturatingSub` is the
+/// ported `Macros.h` helper. On an unchanged sample the out-params are left
+/// as-is (matching the C statics retaining their prior values), then the
+/// value slots are filled from the cached rows.
+pub fn Platform_setGPUValues(this: &mut Meter, total_usage: &mut f64, total_gpu_time_diff: &mut u64) {
+    use crate::ported::gpumeter::GPUMeter_engineData;
+
+    // C function-static residue caches: (prevMonotonicMs, residuePercentage,
+    // prevResidueTime).
+    static RESIDUE: Mutex<(u64, f64, u64)> = Mutex::new((0, 0.0, 0));
+    const RESIDUE_INDEX: usize = 4; // ARRAYSIZE(GPUMeter_engineData)
+
+    let host = this
+        .host
+        .as_ref()
+        .expect("Platform_setGPUValues: this->host (C dereferences it)")
+        .clone();
+    let h = host.borrow();
+
+    let mut r = RESIDUE.lock().unwrap();
+    if h.super_.monotonicMs > r.0 {
+        let monotonic_delta = (h.super_.monotonicMs - r.0) as f64;
+        let mut cur_residue_time = h.curGpuTime;
+
+        {
+            let mut ed = GPUMeter_engineData.lock().unwrap();
+            let mut node = h.gpuEngineData.as_deref();
+            let mut i = 0;
+            while let Some(g) = node {
+                if i >= RESIDUE_INDEX {
+                    break;
+                }
+                ed[i].key = g.key.clone();
+                ed[i].timeDiff = saturatingSub(g.curTime, g.prevTime);
+                ed[i].percentage =
+                    100.0 * ed[i].timeDiff as f64 / (1000.0 * 1000.0) / monotonic_delta;
+                cur_residue_time = saturatingSub(cur_residue_time, g.curTime);
+                node = g.next.as_deref();
+                i += 1;
+            }
+        }
+
+        r.1 = 100.0 * saturatingSub(cur_residue_time, r.2) as f64 / (1000.0 * 1000.0)
+            / monotonic_delta;
+
+        *total_gpu_time_diff = saturatingSub(h.curGpuTime, h.prevGpuTime);
+        *total_usage = 100.0 * *total_gpu_time_diff as f64 / (1000.0 * 1000.0) / monotonic_delta;
+
+        r.2 = cur_residue_time;
+        r.0 = h.super_.monotonicMs;
+    }
+
+    this.curItems = (RESIDUE_INDEX + 1) as u8;
+    let ed = GPUMeter_engineData.lock().unwrap();
+    for i in 0..RESIDUE_INDEX {
+        this.values[i] = ed[i].percentage;
+    }
+    this.values[RESIDUE_INDEX] = r.1;
 }
 
 /// Port of `void Generic_hostname(char* buffer, size_t size)` from

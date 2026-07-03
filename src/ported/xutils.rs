@@ -205,6 +205,15 @@ pub fn compareRealNumbers(a: f64, b: f64) -> i32 {
 /// `XUtils.c:355`. Sums the strictly-positive values, skipping NaN
 /// (`isPositive(x)` is `x > 0.0`, false for NaN). The result is always
 /// nonnegative.
+pub fn saturatingSub(a: u64, b: u64) -> u64 {
+    // Port of `saturatingSub` (`Macros.h`): `a > b ? a - b : 0`.
+    if a > b {
+        a - b
+    } else {
+        0
+    }
+}
+
 pub fn sumPositiveValues(array: &[f64]) -> f64 {
     let mut sum = 0.0;
     for &v in array {

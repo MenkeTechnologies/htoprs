@@ -155,17 +155,23 @@ pub fn humanTimeUnit(mut value: u64) -> String {
     format!("{:3}d", value)
 }
 
-/// TODO: port of `static void GPUMeter_updateValues(Meter* this)` from
-/// `GPUMeter.c:82`. Blocked on `Platform_setGPUValues(this, &totalUsage,
-/// &totalGPUTimeDiff)`: the Rust port of `Platform_setGPUValues`
-/// (`linux/platform.rs`) is still a no-arg `todo!()` stub with no output
-/// params, so it cannot populate `totalUsage`/`totalGPUTimeDiff`/`this`
-/// as the C signature does — there is no faithful data source to feed. The
-/// rest of the body (the `%.1f%%` / `N/A` `txtBuffer` write) is
-/// straightforward, but reproducing it against a stub that does nothing
-/// would be a fake port, not a faithful one.
-pub fn GPUMeter_updateValues() {
-    todo!("port of GPUMeter.c:82: needs Platform_setGPUValues output-param signature")
+/// Port of `static void GPUMeter_updateValues(Meter* this)` from
+/// `GPUMeter.c:82`. Drives the ported
+/// [`Platform_setGPUValues`](crate::ported::linux::platform::Platform_setGPUValues)
+/// against the file-static `totalUsage`/`totalGPUTimeDiff` (which retain
+/// their prior values across unchanged samples), then writes `txtBuffer` as
+/// the aggregate usage `%.1f%%`, or `N/A` when usage is negative/NaN.
+pub fn GPUMeter_updateValues(this: &mut Meter) {
+    let mut tu = totalUsage.lock().unwrap();
+    let mut td = totalGPUTimeDiff.lock().unwrap();
+    crate::ported::linux::platform::Platform_setGPUValues(this, &mut tu, &mut td);
+
+    // isNonnegative(totalUsage) — false for NaN.
+    if !(*tu >= 0.0) {
+        this.txtBuffer = "N/A".to_string();
+        return;
+    }
+    this.txtBuffer = format!("{:.1}%", *tu);
 }
 
 /// Port of `static void GPUMeter_display(const Object* cast, RichString*
@@ -334,5 +340,33 @@ mod tests {
         assert!(GPUMeter_active());
         GPUMeter_done();
         assert!(!GPUMeter_active());
+    }
+
+    #[test]
+    fn update_values_computes_usage_percentage() {
+        use crate::ported::linux::linuxmachine::LinuxMachine;
+        use crate::ported::machine::Machine;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        // total_gpu_time_diff = curGpuTime - prevGpuTime = 1e9; monotonic
+        // delta = 2000ms → usage = 100 * 1e9 / 1e6 / 2000 = 50.0%.
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            super_: Machine {
+                monotonicMs: 2000,
+                ..Default::default()
+            },
+            curGpuTime: 1_000_000_000,
+            prevGpuTime: 0,
+            gpuEngineData: None,
+            ..Default::default()
+        }));
+        let mut m = Meter {
+            values: vec![0.0; 5],
+            host: Some(host),
+            ..Meter::empty()
+        };
+        GPUMeter_updateValues(&mut m);
+        assert_eq!(m.txtBuffer, "50.0%");
+        assert_eq!(m.curItems, 5);
     }
 }
