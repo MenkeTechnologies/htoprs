@@ -331,7 +331,8 @@ pub fn OpenBSDProcessTable_scanProcs(this: &mut OpenBSDProcessTable) {
         is already tracked either duplicates the main thread (skip) or adds an
         LWP (bump nlwp). ProcessTable_findProcess == the base pid→row map. */
         if kproc.p_tid != -1 {
-            if let Some(&idx) = this.super_.super_.table.get(&kproc.p_pid) {
+            let cont_idx = this.super_.super_.table.get(&kproc.p_pid).copied();
+            if let Some(idx) = cont_idx {
                 let cont: &mut dyn Object =
                     this.super_.super_.rows[idx].as_mut().unwrap().as_mut();
                 let cont_any: &mut dyn Any = cont;
