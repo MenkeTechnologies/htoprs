@@ -455,23 +455,15 @@ pub fn checkRecalculation(
         *redraw = true;
     }
 
-    if *redraw {
-        // Table_rebuildPanel(host->activeTable)
-        // SAFETY: host aliases the caller-owned Machine for the run.
-        if let Some(table) = unsafe { (*this.host).activeTable } {
-            unsafe {
-                Table_rebuildPanel(&mut *table);
-            }
-        }
-        // if (!this->state->hideMeters) Header_draw(this->header)
-        // SAFETY: state aliases the caller-owned State.
-        if !unsafe { (*this.state).hideMeters } && !this.header.is_null() {
-            let header = unsafe { &mut *this.header };
-            let mut out = io::stdout().lock();
-            Header_draw(header, &mut out);
-            let _ = out.flush();
-        }
-    }
+    // NOTE: the C `if (*redraw) { Table_rebuildPanel; Header_draw; }` drawing
+    // that follows here in htop is deliberately NOT done in this function. The
+    // slow work above (Machine_scan / Machine_scanTables) must run OUTSIDE the
+    // terminal's synchronized-update region, or the region stays open through
+    // the whole scan and the terminal's sync timeout elapses mid-frame —
+    // producing the exact flicker synchronized output exists to prevent. The
+    // caller ([`ScreenManager_run`]) therefore performs the rebuild+header
+    // draw itself, inside a tight Begin/EndSynchronizedUpdate that brackets
+    // only the drawing. See [`ScreenManager_drawRedraw`].
 
     *rescan = false;
 }
@@ -717,17 +709,13 @@ pub fn ScreenManager_run(
     this.name = name.map(|s| s.to_string());
 
     'main: while !quit {
-        // htoprs extension: bracket each frame in a synchronized-update region
-        // (DEC private mode 2026) so the terminal applies the full repaint
-        // atomically instead of flickering. htop avoids flicker via ncurses'
-        // doupdate (diff against a virtual screen); htoprs emits directly on
-        // crossterm, so without this every tick's Header_draw + panel rebuild
-        // repaints visibly. Ignored by terminals that don't support 2026.
-        {
-            let mut out = io::stdout().lock();
-            let _ = crossterm::execute!(out, crossterm::terminal::BeginSynchronizedUpdate);
-        }
-
+        // Sample the machine BEFORE opening the synchronized-update region.
+        // checkRecalculation's Machine_scan / Machine_scanTables are slow
+        // (milliseconds per thousand processes); running them inside
+        // Begin/EndSynchronizedUpdate would hold the region open long enough to
+        // trip the terminal's synchronized-update timeout, leaking a partial
+        // repaint mid-frame — the exact flicker the region exists to prevent.
+        // Only the drawing below is bracketed.
         if !this.header.is_null() {
             checkRecalculation(
                 this,
@@ -740,7 +728,36 @@ pub fn ScreenManager_run(
             );
         }
 
+        // htoprs extension: bracket the frame's DRAWING in a synchronized-update
+        // region (DEC private mode 2026) so the terminal applies the full
+        // repaint atomically instead of flickering. htop avoids flicker via
+        // ncurses' doupdate (diff against a virtual screen); htoprs emits
+        // directly on crossterm. Ignored by terminals that don't support 2026.
+        {
+            let mut out = io::stdout().lock();
+            let _ = crossterm::execute!(out, crossterm::terminal::BeginSynchronizedUpdate);
+        }
+
         if redraw || force_redraw {
+            // The Table_rebuildPanel + Header_draw that C runs at the tail of
+            // checkRecalculation, performed here so it lands inside the sync
+            // region (its scan ran before Begin, above).
+            if redraw {
+                // Table_rebuildPanel(host->activeTable)
+                // SAFETY: host aliases the caller-owned Machine for the run.
+                if let Some(table) = unsafe { (*this.host).activeTable } {
+                    unsafe {
+                        Table_rebuildPanel(&mut *table);
+                    }
+                }
+                // if (!this->state->hideMeters) Header_draw(this->header)
+                // SAFETY: state aliases the caller-owned State.
+                if !unsafe { (*this.state).hideMeters } && !this.header.is_null() {
+                    let header = unsafe { &mut *this.header };
+                    let mut out = io::stdout().lock();
+                    Header_draw(header, &mut out);
+                }
+            }
             ScreenManager_drawPanels(this, focus, force_redraw);
             // htoprs extension: paint the themed border chrome (if `b`-toggled)
             // then the help/chooser/editor overlay over the freshly-drawn
