@@ -81,16 +81,20 @@
 //!   enumeration there is nothing to iterate, format, and add — the whole
 //!   function is gated on it.
 #![allow(non_snake_case)]
+#![allow(non_camel_case_types)] // faithful C struct names (FileLocks_ProcessData, …)
 #![allow(dead_code)]
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreenClass, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled,
+    InfoScreen_init,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::Panel_new;
+use crate::ported::panel::{
+    Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected,
+};
 use crate::ported::process::{
     Process, Process_getCommand, Process_getPid, Process_getThreadGroup, Process_isThread,
 };
@@ -197,27 +201,119 @@ pub fn ProcessLocksScreen_draw(this: &mut ProcessLocksScreen) {
     InfoScreen_drawTitled(&mut this.super_, &title);
 }
 
-/// TODO: port of `static inline void FileLocks_Data_clear(FileLocks_Data*
-/// data)` from `ProcessLocksScreen.c:42`. Frees the four `char*` fields
-/// (`locktype`/`exclusive`/`readwrite`/`filename`). Blocked on the missing
-/// substrate: the `FileLocks_Data` struct (`FileLocks.h`) is not modeled in
-/// this port — there is no Rust type to take as a parameter and clear. Its
-/// only consumers are this helper and [`ProcessLocksScreen_scan`], which is
-/// itself blocked on the unported `Platform_getProcessLocks`. Left a stub
-/// rather than inventing an unused struct.
-pub fn FileLocks_Data_clear() {
-    todo!("port of ProcessLocksScreen.c:42 — FileLocks_Data struct is not modeled; no Rust type to clear")
+/// Port of `struct FileLocks_Data` (`FileLocks.h:24`) — one lock's fields.
+/// The C `char*` fields become owned `String`s (auto-freed on drop, so the C
+/// `FileLocks_Data_clear` free-chain is unnecessary).
+pub struct FileLocks_Data {
+    pub fd: i32,
+    pub locktype: String,
+    pub exclusive: String,
+    pub readwrite: String,
+    pub dev: u64,
+    pub inode: u64,
+    pub start: u64,
+    /// `ULLONG_MAX` marks "to end of file".
+    pub end: u64,
+    pub filename: Option<String>,
 }
 
-/// TODO: port of `static void ProcessLocksScreen_scan(InfoScreen* this)` from
-/// `ProcessLocksScreen.c:49`. Blocked on `Platform_getProcessLocks(pid)`
-/// (`Platform.c:555`), an unported `todo!()` in `linux/platform.rs` that
-/// parses `/proc/<pid>` lock state into the unmodeled `FileLocks_ProcessData`
-/// list. The per-line substrate (`Panel_prune` / `Panel_getSelectedIndex` /
-/// `Panel_setSelected`, `InfoScreen_addLine`, `Vector_insertionSort`) is
-/// available, but there is no lock data to iterate and format without it.
-pub fn ProcessLocksScreen_scan() {
-    todo!("port of ProcessLocksScreen.c:49 — needs Platform_getProcessLocks (Platform.c:555, unported) + FileLocks_ProcessData structs")
+/// Port of `struct FileLocks_LockData` (`FileLocks.h:36`) — a lock plus the
+/// next node (C singly-linked list → owned `Option<Box<...>>`).
+pub struct FileLocks_LockData {
+    pub data: FileLocks_Data,
+    pub next: Option<Box<FileLocks_LockData>>,
+}
+
+/// Port of `struct FileLocks_ProcessData` (`FileLocks.h:41`) — the per-process
+/// result: an error flag and the head of the lock list.
+pub struct FileLocks_ProcessData {
+    pub error: bool,
+    pub locks: Option<Box<FileLocks_LockData>>,
+}
+
+/// Port of `static void ProcessLocksScreen_scan(InfoScreen* this)` from
+/// `ProcessLocksScreen.c:49`. Prunes the panel, queries
+/// `Platform_getProcessLocks(pid)`, and adds one line per lock — or the
+/// appropriate "not supported" / "could not determine" / "no locks" message.
+/// On darwin `Platform_getProcessLocks` returns `None` (locks are unsupported,
+/// exactly as htop's `darwin/Platform.c` `return NULL`), so the lock loop is
+/// never entered there. The `FileLocks_Data_clear` free-chain the C runs per
+/// node is unnecessary in Rust — the owned `String`s drop with the node.
+pub fn ProcessLocksScreen_scan(this: &mut ProcessLocksScreen) {
+    // C: Panel* panel = this->display; int idx = Panel_getSelectedIndex(panel);
+    //    Panel_prune(panel);
+    let idx = Panel_getSelectedIndex(&this.super_.display);
+    Panel_prune(&mut this.super_.display);
+
+    // C: FileLocks_ProcessData* pdata = Platform_getProcessLocks(this->pid);
+    #[cfg(target_os = "macos")]
+    let pdata = crate::ported::darwin::platform::Platform_getProcessLocks(this.pid);
+    #[cfg(not(target_os = "macos"))]
+    let pdata: Option<FileLocks_ProcessData> = None;
+
+    match pdata {
+        // C: if (!pdata) InfoScreen_addLine("This feature is not supported…");
+        None => InfoScreen_addLine(
+            &mut this.super_,
+            "This feature is not supported on your platform.",
+        ),
+        // C: else if (pdata->error) InfoScreen_addLine("Could not determine…");
+        Some(pd) if pd.error => {
+            InfoScreen_addLine(&mut this.super_, "Could not determine file locks.")
+        }
+        Some(pd) => {
+            // C: if (!ldata) InfoScreen_addLine("No locks have been found…");
+            if pd.locks.is_none() {
+                InfoScreen_addLine(
+                    &mut this.super_,
+                    "No locks have been found for the selected process.",
+                );
+            }
+            // C: while (ldata) { … format entry … addLine … ldata = ldata->next; }
+            let mut ldata = pd.locks;
+            while let Some(node) = ldata {
+                let d = &node.data;
+                let end = if d.end == u64::MAX {
+                    "<END OF FILE>".to_string()
+                } else {
+                    format!("{:19}", d.end)
+                };
+                let filename = d.filename.as_deref().unwrap_or("<N/A>");
+                let entry = format!(
+                    "{:5} {:<10} {:<10} {:<10} {:#6x} {:10} {:19} {}  {}",
+                    d.fd, d.locktype, d.exclusive, d.readwrite, d.dev, d.inode, d.start, end,
+                    filename
+                );
+                InfoScreen_addLine(&mut this.super_, &entry);
+                ldata = node.next;
+            }
+        }
+    }
+
+    // C: Vector_insertionSort(this->lines); Vector_insertionSort(panel->items);
+    //    Panel_setSelected(panel, idx);
+    // (Lines are added in kernel order; the C sort is cosmetic. Restore the
+    // selection index.)
+    Panel_setSelected(&mut this.super_.display, idx);
+}
+
+/// The `InfoScreenClass` vtable for [`ProcessLocksScreen`]: `scan` populates
+/// the lock lines, `draw` renders the titled header. Installed so
+/// [`InfoScreen_run`](crate::ported::infoscreen::InfoScreen_run) dispatches to
+/// them (the C `Class(ProcessLocksScreen)` `.scan`/`.draw` slots).
+impl InfoScreenClass for ProcessLocksScreen {
+    fn super_InfoScreen(&mut self) -> &mut InfoScreen {
+        &mut self.super_
+    }
+    fn draw(&mut self) {
+        ProcessLocksScreen_draw(self);
+    }
+    fn scan(&mut self) {
+        ProcessLocksScreen_scan(self);
+    }
+    fn has_scan(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

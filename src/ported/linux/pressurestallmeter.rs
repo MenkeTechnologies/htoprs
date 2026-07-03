@@ -24,43 +24,72 @@
 //! fixed-buffer cap is not modeled (the reasoning `loadaveragemeter.rs`
 //! applies to its buffer).
 //!
-//! Ported (self-contained: `RichString` + `CRT_colors` are ported):
+//! Ported:
+//! - [`PressureStallMeter_updateValues`] (`PressureStallMeter.c:30`) —
+//!   dispatches on [`Meter::name`] (the mirrored class name) to select the
+//!   `/proc/pressure` file and some/full flavor, calls
+//!   [`Platform_getPressureStall`] to fill `this->values[0..=2]`, and formats
+//!   `this->txtBuffer`.
 //! - [`PressureStallMeter_display`] (`PressureStallMeter.c:57`) — appends
 //!   the 10s/60s/300s figures, each colored `PRESSURE_STALL_TEN` /
 //!   `PRESSURE_STALL_SIXTY` / `PRESSURE_STALL_THREEHUNDRED`.
-//!
-//! Stubbed (blocked on unported substrate — keeps its `todo!()`):
-//! - `PressureStallMeter_updateValues` (`PressureStallMeter.c:30`) — the
-//!   C body selects the `/proc/pressure` file and the some/full flavor via
-//!   `Meter_name(this)` (`As_Meter(this)->name`, the concrete meter class's
-//!   internal name), then fills `this->values[0..2]` and formats
-//!   `this->txtBuffer`. The ported [`Meter`] carries no `name` field and no
-//!   per-instance concrete `MeterClass` (no concrete PSI meter type is
-//!   migrated), so `Meter_name(this)` has no faithful source — there is no
-//!   way to know which of the six `PressureStall*Meter_class`es a given
-//!   `Meter` instance is. The value reader `Platform_getPressureStall` is
-//!   ported and would feed the values, but the `file`/`some` selection it
-//!   needs cannot be reproduced without the class name.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::linux::platform::Platform_getPressureStall;
 use crate::ported::meter::Meter;
 use crate::ported::richstring::{RichString, RichString_appendnAscii};
 
-/// TODO: port of `static void PressureStallMeter_updateValues(Meter* this)`
-/// from `PressureStallMeter.c:30`. Blocked: the C body dispatches on
-/// `Meter_name(this)` (`As_Meter(this)->name`, the concrete meter class's
-/// internal name — "PressureStallCPUSome", "PressureStallIOFull", …) to pick
-/// the `/proc/pressure` file (`cpu`/`io`/`irq`/`memory`) and the some/full
-/// flavor, then calls `Platform_getPressureStall(file, some, &this->values[0],
-/// …)` and formats `this->txtBuffer`. The ported [`Meter`] has no `name` field
-/// and holds no per-instance concrete `MeterClass` (no concrete PSI meter type
-/// is migrated), so `Meter_name(this)` has no faithful data source; the
-/// `file`/`some` selection cannot be reproduced. (`Platform_getPressureStall`
-/// itself is ported.)
-pub fn PressureStallMeter_updateValues() {
-    todo!("port of PressureStallMeter.c:30: needs Meter_name (no `name`/concrete MeterClass on ported Meter)")
+/// Port of `static void PressureStallMeter_updateValues(Meter* this)` from
+/// `PressureStallMeter.c:30`. Dispatches on `Meter_name(this)` (the meter
+/// class's internal name, mirrored onto the instance as [`Meter::name`]) to
+/// pick the `/proc/pressure` file (`cpu`/`io`/`irq`/`memory`) and the
+/// some/full flavor, calls [`Platform_getPressureStall`] to fill
+/// `this->values[0..=2]`, marks `curItems = 1` (only the 10s figure is a
+/// bar — the sum is meaningless), and formats `this->txtBuffer`.
+///
+/// The C `strstr(Meter_name(this), "CPU")` substring tests become
+/// [`str::contains`]. The three `&this->values[i]` out-params are threaded
+/// through locals (the ported [`Platform_getPressureStall`] takes `&mut f64`
+/// out-params, matching the C `double*`) and written back. The
+/// `xSnprintf("%s %s %5.2lf%% %5.2lf%% %5.2lf%%", …)` becomes a `format!` with
+/// the same width-5/precision-2 fields and literal `%`.
+pub fn PressureStallMeter_updateValues(this: &mut Meter) {
+    // const char* file; based on Meter_name(this).
+    let file = if this.name.contains("CPU") {
+        "cpu"
+    } else if this.name.contains("IO") {
+        "io"
+    } else if this.name.contains("IRQ") {
+        "irq"
+    } else {
+        "memory"
+    };
+
+    // bool some = strstr(Meter_name(this), "Some") != NULL;
+    let some = this.name.contains("Some");
+
+    // Platform_getPressureStall(file, some, &this->values[0..2]).
+    let mut v0 = this.values[0];
+    let mut v1 = this.values[1];
+    let mut v2 = this.values[2];
+    Platform_getPressureStall(file, some, &mut v0, &mut v1, &mut v2);
+    this.values[0] = v0;
+    this.values[1] = v1;
+    this.values[2] = v2;
+
+    // Only print bar for ten (not sixty and three hundred).
+    this.curItems = 1;
+
+    this.txtBuffer = format!(
+        "{} {} {:5.2}% {:5.2}% {:5.2}%",
+        if some { "some" } else { "full" },
+        file,
+        v0,
+        v1,
+        v2
+    );
 }
 
 /// Port of `static void PressureStallMeter_display(const Object* cast,

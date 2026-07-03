@@ -7,22 +7,21 @@
 //! `ProcessTable_new`, `readFileDynamic`, `isOlderThan`, and the per-process
 //! `/proc` file readers that only need already-ported substrate:
 //! `readStatFile`, `readStatusFile`, `readStatmFile`, `readOomData`,
-//! `readAutogroup`, `readCwd`, `LinuxProcessList_readExe`,
+//! `readAutogroup`, `readCwd`, `readIoFile`, `readCGroupFile`,
+//! `readSecattrData`, `LinuxProcessList_readExe`,
 //! `LinuxProcessTable_readCmdlineFile`, `LinuxProcessList_readComm`.
 //!
 //! Still stubbed (each fn's doc gives the precise blocker): the scan drivers
 //! `LinuxProcessTable_recurseProcTree` / `ProcessTable_goThroughEntries`
 //! (need the process-typed `ProcessTable_getProcess`/`_add`, still stubbed in
-//! `processtable.rs`); `updateUser` (opaque `usersTable`); `readIoFile`
-//! (`saturatingSub` unported); `readMaps` + `calcLibSize_helper` (`Hashtable`
-//! is ported, but `Hashtable_get` is immutable so the in-place `libdata->size`
-//! aggregate can't be updated, and `LibraryData` isn't modeled as an
-//! `Object`); `readSmapsFile` (`skipEndOfLine` unported); `readCGroupFile` /
-//! `readSecattrData` (`Row_updateFieldWidth` stub + Linux `RowField` ids);
-//! `updateTtyDevice` (`major`/`minor` macros unported); `ProcessTable_delete`
-//! (pure `free()` teardown → `Drop`); and `readOpenVZData` (`#ifdef
-//! HAVE_OPENVZ` reader needing `skipEndOfLine` + unmodeled `ctid`/`vpid`
-//! fields).
+//! `processtable.rs`); `updateUser` (opaque `usersTable`); `readMaps` +
+//! `calcLibSize_helper` (`Hashtable` is ported, but `Hashtable_get` is
+//! immutable so the in-place `libdata->size` aggregate can't be updated, and
+//! `LibraryData` isn't modeled as an `Object`); `readSmapsFile`
+//! (`skipEndOfLine` unported); `updateTtyDevice` (`major`/`minor` macros
+//! unported); `ProcessTable_delete` (pure `free()` teardown → `Drop`); and
+//! `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader needing `skipEndOfLine` +
+//! unmodeled `ctid`/`vpid` fields).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -32,6 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use libc::ssize_t;
 
+use crate::ported::linux::cgrouputils::{CGroup_filterContainer, CGroup_filterName};
 use crate::ported::linux::compat::{
     openat_arg_t, Compat_faccessat, Compat_openat, Compat_readfile, Compat_readfileat,
 };
@@ -39,12 +39,15 @@ use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::linux::linuxprocess::LinuxProcess;
 use crate::ported::machine::Machine;
 use crate::ported::process::{
-    Process, ProcessState, Process_getPid, Process_setParent, Process_updateCmdline,
+    Process, ProcessField, ProcessState, Process_getPid, Process_setParent, Process_updateCmdline,
     Process_updateComm, Process_updateExe, Tristate,
 };
 use crate::ported::processtable::{ProcessTable, ProcessTable_init};
-use crate::ported::row::spaceship_number;
-use crate::ported::xutils::{String_safeStrncpy, String_startsWith};
+use crate::ported::row::{spaceship_number, Row_updateFieldWidth};
+use crate::ported::settings::RowField;
+use crate::ported::xutils::{
+    saturatingSub, String_eq, String_safeStrncpy, String_startsWith, String_strchrnul,
+};
 
 /// Port of `#define PROCDIR "/proc"` (`LinuxMachine.h:105`).
 const PROCDIR: &str = "/proc";
@@ -863,14 +866,110 @@ pub fn LinuxProcessTable_updateUser() {
     todo!("port of LinuxProcessTable.c:628 — needs Machine::usersTable as a real UsersTable")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readIoFile(LinuxProcess* lp,
+/// Port of `static void LinuxProcessTable_readIoFile(LinuxProcess* lp,
 /// openat_arg_t procFd, bool scanMainThread)` from `LinuxProcessTable.c:655`.
-/// Blocked: the rate calculations use `saturatingSub(...)` (`Macros.h`),
-/// which is not ported anywhere in the tree (no free fn to call and it is not
-/// a helper local to this module), so the faithful body cannot be written.
-/// Stays stubbed until `saturatingSub` lands.
-pub fn LinuxProcessTable_readIoFile() {
-    todo!("port of LinuxProcessTable.c:655 — needs saturatingSub (Macros.h) ported")
+/// Reads `/proc/<pid>/io` (or `task/<tid>/io` when `scanMainThread`) and
+/// updates the per-process IO counters and derived read/write byte rates.
+/// A read failure resets every counter to its "unknown" sentinel
+/// (`ULLONG_MAX` / `NAN`) and records the scan time. Otherwise the
+/// `strsep(&buf, "\n")` line loop is reproduced with [`str::split`], and the
+/// per-field prefixes (`rchar: `/`wchar: `/`read_bytes: `/`write_bytes: `/
+/// `syscr: `/`syscw: `/`cancelled_write_bytes: `) are matched with
+/// [`str::strip_prefix`], mirroring the C `line[i]` guards + `String_startsWith`.
+/// The rates use [`saturatingSub`] on the byte and time deltas (`ms → s`),
+/// yielding `NAN` when `time_delta == 0`, exactly as the C.
+///
+/// The C derives `host` from `process->super.super.host`; the ported reader
+/// takes it as an explicit `&LinuxMachine` param (the [`LinuxProcessTable_readStatmFile`]
+/// convention), reading `realtimeMs` from `host.super_`.
+///
+/// `strtoull(ptr, NULL, 10)` is the local `strtoull` closure: it skips leading
+/// whitespace and an optional sign, then accumulates decimal digits saturating
+/// at [`u64::MAX`] (C's `ULLONG_MAX`), matching `strtoull`'s overflow clamp.
+fn LinuxProcessTable_readIoFile(
+    lp: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    host: &LinuxMachine,
+    scanMainThread: bool,
+) {
+    let realtimeMs = host.super_.realtimeMs;
+
+    // char path[20] = "io"; if (scanMainThread) snprintf "task/<pid>/io".
+    let path = if scanMainThread {
+        std::ffi::CString::new(format!("task/{}/io", Process_getPid(&lp.super_))).unwrap()
+    } else {
+        std::ffi::CString::new("io").unwrap()
+    };
+
+    let mut buffer = [0u8; 1024];
+    let r = Compat_readfileat(procFd, &path, &mut buffer);
+    if r < 0 {
+        lp.io_rate_read_bps = f64::NAN;
+        lp.io_rate_write_bps = f64::NAN;
+        lp.io_rchar = u64::MAX;
+        lp.io_wchar = u64::MAX;
+        lp.io_syscr = u64::MAX;
+        lp.io_syscw = u64::MAX;
+        lp.io_read_bytes = u64::MAX;
+        lp.io_write_bytes = u64::MAX;
+        lp.io_cancelled_write_bytes = u64::MAX;
+        lp.io_last_scan_time_ms = realtimeMs;
+        return;
+    }
+
+    let last_read = lp.io_read_bytes;
+    let last_write = lp.io_write_bytes;
+    let time_delta = saturatingSub(realtimeMs, lp.io_last_scan_time_ms);
+
+    // strtoull(s, NULL, 10): skip whitespace + optional sign, saturate at u64::MAX.
+    let strtoull = |s: &str| -> u64 {
+        let b = s.as_bytes();
+        let mut i = 0;
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        let mut v: u64 = 0;
+        while i < b.len() && b[i].is_ascii_digit() {
+            v = v.saturating_mul(10).saturating_add((b[i] - b'0') as u64);
+            i += 1;
+        }
+        v
+    };
+
+    let text = std::str::from_utf8(&buffer[..r as usize]).unwrap_or("");
+    for line in text.split('\n') {
+        // C switches on line[0], then String_startsWith on the remainder.
+        if let Some(rest) = line.strip_prefix("rchar: ") {
+            lp.io_rchar = strtoull(rest);
+        } else if let Some(rest) = line.strip_prefix("read_bytes: ") {
+            lp.io_read_bytes = strtoull(rest);
+            lp.io_rate_read_bps = if time_delta != 0 {
+                saturatingSub(lp.io_read_bytes, last_read) as f64 * 1000. / time_delta as f64
+            } else {
+                f64::NAN
+            };
+        } else if let Some(rest) = line.strip_prefix("wchar: ") {
+            lp.io_wchar = strtoull(rest);
+        } else if let Some(rest) = line.strip_prefix("write_bytes: ") {
+            lp.io_write_bytes = strtoull(rest);
+            lp.io_rate_write_bps = if time_delta != 0 {
+                saturatingSub(lp.io_write_bytes, last_write) as f64 * 1000. / time_delta as f64
+            } else {
+                f64::NAN
+            };
+        } else if let Some(rest) = line.strip_prefix("syscr: ") {
+            lp.io_syscr = strtoull(rest);
+        } else if let Some(rest) = line.strip_prefix("syscw: ") {
+            lp.io_syscw = strtoull(rest);
+        } else if let Some(rest) = line.strip_prefix("cancelled_write_bytes: ") {
+            lp.io_cancelled_write_bytes = strtoull(rest);
+        }
+    }
+
+    lp.io_last_scan_time_ms = realtimeMs;
 }
 
 /// TODO: port of `static void LinuxProcessTable_calcLibSize_helper(
@@ -1006,19 +1105,149 @@ pub fn LinuxProcessTable_readOpenVZData() {
     todo!("port of LinuxProcessTable.c:934 — needs skipEndOfLine + ctid/vpid fields + HAVE_OPENVZ")
 }
 
-/// TODO: port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess*
-/// process, openat_arg_t procFd)` from `LinuxProcessTable.c:1024`. Blocked on
-/// two unported pieces: (1) it reports column widths through
-/// `Row_updateFieldWidth(CGROUP/CCGROUP/CONTAINER, ...)`, but
-/// [`Row_updateFieldWidth`](crate::ported::row::Row_updateFieldWidth) is a
-/// stub (its `Row_fieldWidths` global is unmodeled); and (2) the `CGROUP`,
-/// `CCGROUP`, `CONTAINER` field ids are Linux-platform `RowField` variants
-/// (`linux/ProcessField.h`) that the shared `ProcessField` enum does not
-/// model. The `CGroup_filterName`/`CGroup_filterContainer` shorteners it
-/// calls *are* ported. Stays stubbed until the field-width table + platform
-/// field ids land.
-pub fn LinuxProcessTable_readCGroupFile() {
-    todo!("port of LinuxProcessTable.c:1024 — needs Row_updateFieldWidth + Linux RowField ids")
+/// Port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess*
+/// process, openat_arg_t procFd)` from `LinuxProcessTable.c:1024`. Reads
+/// `/proc/<pid>/cgroup`, keeping the third `:`-delimited field of each line
+/// (the cgroup path), joining them with `;` into a `PROC_LINE_LENGTH`-capped
+/// `output` string, then updates the raw [`ProcessField::CGROUP`] width and
+/// stores it. When the path changed it recomputes the shortened
+/// [`CGroup_filterName`] ("CCGROUP") and [`CGroup_filterContainer`]
+/// ("CONTAINER") forms (falling back to the raw cgroup / `"N/A"` widths); an
+/// unchanged path only refreshes the widths from the cached short forms. A
+/// missing file clears all three cached strings.
+///
+/// The C `output[PROC_LINE_LENGTH + 1]` buffer with the `at`/`left` cursor and
+/// `snprintf` truncation is reproduced on a byte `Vec` with a `left` budget:
+/// each group segment is truncated at `\n` (the C `*eol_w = '\0'`), a `;`
+/// separator is charged one byte, and a segment that would overflow `left`
+/// copies `left - 1` bytes and stops (the C truncation `break`). `fopenat` +
+/// `fgets` become the ported [`fopenat`] + a [`BufRead::read_line`] loop.
+/// `String_strchrnul`/`String_eq`/`free_and_xStrdup` map to the ported
+/// helpers / `Option<String>` assignment.
+fn LinuxProcessTable_readCGroupFile(process: &mut LinuxProcess, procFd: openat_arg_t) {
+    use std::io::BufRead;
+
+    let file = match fopenat(procFd, c"cgroup", "r") {
+        Some(f) => f,
+        None => {
+            // free() + NULL all three cached strings.
+            process.cgroup = None;
+            process.cgroup_short = None;
+            process.container_short = None;
+            return;
+        }
+    };
+
+    let mut output: Vec<u8> = Vec::new();
+    let mut left = PROC_LINE_LENGTH;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    // while (!feof(file) && left > 0)
+    while left > 0 {
+        line.clear();
+        // const char* ok = fgets(...); if (!ok) break;
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+
+        let bytes = line.as_bytes();
+        // Skip the first two ':'-delimited fields.
+        let mut group = 0usize;
+        for _ in 0..2 {
+            group += String_strchrnul(&line[group..], b':');
+            if group >= bytes.len() {
+                // !*group — no further ':'
+                break;
+            }
+            group += 1; // group++ past the ':'
+        }
+
+        // eol = strchrnul(group, '\n'); *eol_w = '\0';
+        let group_end = group + String_strchrnul(&line[group..], b'\n');
+        let group_bytes = &bytes[group..group_end];
+
+        // if (at != output) { *at = ';'; at++; left--; }
+        if !output.is_empty() {
+            if left == 0 {
+                break;
+            }
+            output.push(b';');
+            left -= 1;
+        }
+
+        // int wrote = snprintf(at, left, "%s", group);
+        let wrote = group_bytes.len();
+        if wrote >= left {
+            // Truncated: snprintf copies left - 1 bytes then we are done.
+            let n = left.saturating_sub(1);
+            output.extend_from_slice(&group_bytes[..n]);
+            break;
+        }
+        output.extend_from_slice(group_bytes);
+        left -= wrote;
+    }
+    // fclose(file) — reader dropped here.
+    drop(reader);
+
+    let output = String::from_utf8_lossy(&output).into_owned();
+
+    // bool changed = !process->cgroup || !String_eq(process->cgroup, output);
+    let changed = match &process.cgroup {
+        Some(c) => !String_eq(c, &output),
+        None => true,
+    };
+
+    Row_updateFieldWidth(ProcessField::CGROUP as RowField, output.len());
+    // free_and_xStrdup(&process->cgroup, output);
+    process.cgroup = Some(output);
+
+    if !changed {
+        // CCGROUP: from cached short form, else the raw cgroup width.
+        match &process.cgroup_short {
+            Some(cs) => Row_updateFieldWidth(ProcessField::CCGROUP as RowField, cs.len()),
+            None => Row_updateFieldWidth(
+                ProcessField::CCGROUP as RowField,
+                process.cgroup.as_deref().unwrap().len(),
+            ),
+        }
+        match &process.container_short {
+            Some(cs) => Row_updateFieldWidth(ProcessField::CONTAINER as RowField, cs.len()),
+            None => Row_updateFieldWidth(ProcessField::CONTAINER as RowField, "N/A".len()),
+        }
+        return;
+    }
+
+    // char* cgroup_short = CGroup_filterName(process->cgroup);
+    let cgroup_short = CGroup_filterName(process.cgroup.as_deref().unwrap());
+    match cgroup_short {
+        Some(cs) => {
+            Row_updateFieldWidth(ProcessField::CCGROUP as RowField, cs.len());
+            process.cgroup_short = Some(cs);
+        }
+        None => {
+            // CCGROUP aliases the normal CGROUP if shortening fails.
+            Row_updateFieldWidth(
+                ProcessField::CCGROUP as RowField,
+                process.cgroup.as_deref().unwrap().len(),
+            );
+            process.cgroup_short = None;
+        }
+    }
+
+    // char* container_short = CGroup_filterContainer(process->cgroup);
+    let container_short = CGroup_filterContainer(process.cgroup.as_deref().unwrap());
+    match container_short {
+        Some(cs) => {
+            Row_updateFieldWidth(ProcessField::CONTAINER as RowField, cs.len());
+            process.container_short = Some(cs);
+        }
+        None => {
+            // CONTAINER is just "N/A" if shortening fails.
+            Row_updateFieldWidth(ProcessField::CONTAINER as RowField, "N/A".len());
+            process.container_short = None;
+        }
+    }
 }
 
 /// Port of `LinuxProcessTable.c:1022`. Reads `/proc/<pid>/oom_score` into the
@@ -1106,17 +1335,41 @@ fn LinuxProcessTable_readAutogroup(
     }
 }
 
-/// TODO: port of `static void LinuxProcessTable_readSecattrData(LinuxProcess*
+/// Port of `static void LinuxProcessTable_readSecattrData(LinuxProcess*
 /// process, openat_arg_t procFd, const LinuxProcess* mainTask)` from
-/// `LinuxProcessTable.c:1182`. Blocked: the non-`mainTask` path reports the
-/// column width via `Row_updateFieldWidth(SECATTR, strlen(buffer))`, but
-/// [`Row_updateFieldWidth`](crate::ported::row::Row_updateFieldWidth) is a
-/// stub and `SECATTR` is a Linux-platform `RowField` id the shared
-/// `ProcessField` enum does not model. Stays stubbed until those land. (The
-/// `attr/current` read + newline trimming + `secattr` assignment are
-/// otherwise trivial.)
-pub fn LinuxProcessTable_readSecattrData() {
-    todo!("port of LinuxProcessTable.c:1182 — needs Row_updateFieldWidth + SECATTR field id")
+/// `LinuxProcessTable.c:1182`. Thread tasks copy the main task's `secattr`
+/// (or clear it when absent). For a main task it reads `/proc/<pid>/attr/current`
+/// (the SELinux/AppArmor security context), clears `secattr` on a short read
+/// (`< 1`), otherwise trims at the first `\n`, updates the
+/// [`ProcessField::SECATTR`] column width, and stores the value.
+fn LinuxProcessTable_readSecattrData(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) {
+    if let Some(mt) = mainTask {
+        // free_and_xStrdup(&process->secattr, mainSecAttr) or free + NULL.
+        process.secattr = mt.secattr.clone();
+        return;
+    }
+
+    let mut buffer = [0u8; PROC_LINE_LENGTH + 1];
+    let attrdata = Compat_readfileat(procFd, c"attr/current", &mut buffer);
+    if attrdata < 1 {
+        process.secattr = None;
+        return;
+    }
+
+    // char* newline = strchr(buffer, '\n'); if (newline) *newline = '\0';
+    // strlen stops at the newline (or the NUL terminator otherwise).
+    let end = buffer
+        .iter()
+        .position(|&b| b == b'\n' || b == 0)
+        .unwrap_or(buffer.len());
+    let text = String::from_utf8_lossy(&buffer[..end]).into_owned();
+
+    Row_updateFieldWidth(ProcessField::SECATTR as RowField, text.len());
+    process.secattr = Some(text);
 }
 
 /// Port of `LinuxProcessTable.c:1111`. Resolves `/proc/<pid>/cwd` (the

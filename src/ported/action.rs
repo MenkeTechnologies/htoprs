@@ -111,6 +111,7 @@ use crate::ported::crt::{
     CRT_enableDelay, CRT_setMouse, ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB,
 };
 use crate::ported::commandscreen::{CommandScreen_delete, CommandScreen_new};
+use crate::ported::processlocksscreen::{ProcessLocksScreen_delete, ProcessLocksScreen_new};
 use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
 use crate::ported::infoscreen::InfoScreen_run;
 use crate::ported::openfilesscreen::{OpenFilesScreen_delete, OpenFilesScreen_new};
@@ -1608,10 +1609,35 @@ pub fn actionLsof(st: &mut State) -> Htop_Reaction {
 /// `Action.c:597`. Opens the selected process's `ProcessLocksScreen` modally.
 /// Blocked on the same ncurses substrate as [`actionLsof`]: `clear()` is
 /// unported and `ProcessLocksScreen` does not implement `InfoScreenClass`.
-pub fn actionShowLocks(_st: &mut State) -> Htop_Reaction {
-    todo!(
-        "port of Action.c:597 — clear() unported + ProcessLocksScreen has no InfoScreenClass impl"
-    )
+pub fn actionShowLocks(st: &mut State) -> Htop_Reaction {
+    // C: const Process* p = (Process*) Panel_getSelected((Panel*)st->mainPanel);
+    //    if (!p) return HTOP_OK;
+    // SAFETY: mainPanel is the caller-owned MainPanel* for the run.
+    let panel = unsafe { &(*st.mainPanel).super_ };
+    let p: *const Process = match Panel_getSelected(panel).and_then(|o| o.as_process()) {
+        Some(pr) => pr as *const Process,
+        None => return HTOP_OK,
+    };
+
+    // C: ProcessLocksScreen* pls = ProcessLocksScreen_new(p);
+    //    InfoScreen_run((InfoScreen*)pls);
+    // SAFETY: `p` points at the selected Process in the main panel, which is not
+    // mutated while the modal locks screen runs (InfoScreen_run drives its own
+    // display panel).
+    let mut pls = ProcessLocksScreen_new(unsafe { &*p });
+    InfoScreen_run(&mut pls);
+
+    // C: ProcessLocksScreen_delete((Object*)pls);
+    ProcessLocksScreen_delete(pls);
+
+    // C: clear(); CRT_enableDelay();
+    {
+        let mut out = std::io::stdout().lock();
+        Ncurses::clear(&mut out);
+    }
+    CRT_enableDelay();
+
+    HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
 /// TODO: port of `static Htop_Reaction actionBacktrace(State *st)` from

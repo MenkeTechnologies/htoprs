@@ -27,17 +27,13 @@
 //! `free_and_xStrdup(&ctx->runlevel, buf)` is `ctx.runlevel = Some(buf)`.
 //!
 //! Ported (dependencies present):
+//! - [`OpenRCMeter_updateValues`] / [`OpenRCMeter_done`] — resolve the
+//!   `ctx_user`/`ctx_system` split via `String_eq(Meter_name(this),
+//!   "OpenRCUser")` ([`Meter::name`] mirrors the class name).
 //! - [`updateViaExec`] (`OpenRCMeter.c:96`, C `OpenRCMeter_updateViaExec`)
 //! - [`OpenRCMeter_display`] (`OpenRCMeter.c:188`)
 //! - [`OpenRCMeter_display_system`] (`OpenRCMeter.c:219`)
 //! - [`OpenRCMeter_display_user`] (`OpenRCMeter.c:223`)
-//!
-//! Stubbed (blocked — see each fn's doc): [`OpenRCMeter_done`] and
-//! [`OpenRCMeter_updateValues`] both need `Meter_name(this)` (`Meter.h:101`,
-//! `As_Meter(this)->name`) to choose `ctx_user` vs `ctx_system`, but the
-//! ported `Meter` instance carries no class-`name` field and `Meter_name`
-//! is not ported anywhere in the crate, so there is no faithful way to
-//! read the class name off a `&Meter`.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -49,8 +45,10 @@ use std::os::unix::io::FromRawFd;
 use std::sync::Mutex;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::meter::Meter;
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};
 use crate::ported::settings::Settings_isReadonly;
+use crate::ported::xutils::String_eq;
 
 /// Port of `#define INVALID_VALUE ((size_t)-1)` from `OpenRCMeter.c:26`.
 const INVALID_VALUE: usize = usize::MAX;
@@ -80,15 +78,19 @@ static CTX_USER: Mutex<OpenRCMeterContext> = Mutex::new(OpenRCMeterContext {
     services_started: 0,
 });
 
-/// TODO: port of `static void OpenRCMeter_done(ATTR_UNUSED Meter* this)`
-/// from `OpenRCMeter.c:38`. Blocked: the body selects `ctx_user` vs
-/// `ctx_system` with `String_eq(Meter_name(this), "OpenRCUser")`, but
-/// `Meter_name` (`Meter.h:101`, `As_Meter(this)->name`) is not ported and
-/// the ported `Meter` instance carries no class-`name` field, so a `&Meter`
-/// cannot resolve which context to clear. (It is also not a plain
-/// `Drop`-covered teardown: it frees a module-global cache, not the meter.)
-pub fn OpenRCMeter_done() {
-    todo!("port of OpenRCMeter.c:38: needs Meter_name (Meter.h:101) — Meter instance has no class name field")
+/// Port of `static void OpenRCMeter_done(ATTR_UNUSED Meter* this)` from
+/// `OpenRCMeter.c:38`. Selects `ctx_user` vs `ctx_system` from
+/// `String_eq(Meter_name(this), "OpenRCUser")` ([`Meter::name`] mirrors the
+/// class name) and frees its cached runlevel (`free(ctx->runlevel);
+/// ctx->runlevel = NULL;`). This is not a `Drop`-covered teardown — it clears
+/// a module-global cache, not the meter — so it is a real ported fn.
+pub fn OpenRCMeter_done(this: &Meter) {
+    let ctx_mutex = if String_eq(this.name, "OpenRCUser") {
+        &CTX_USER
+    } else {
+        &CTX_SYSTEM
+    };
+    ctx_mutex.lock().unwrap().runlevel = None;
 }
 
 /// Port of `static void OpenRCMeter_updateViaExec(bool user)` from
@@ -283,17 +285,33 @@ pub fn updateViaExec(user: bool) {
     }
 }
 
-/// TODO: port of `static void OpenRCMeter_updateValues(Meter* this)` from
-/// `OpenRCMeter.c:115`. Blocked: the first line is `bool user =
-/// String_eq(Meter_name(this), "OpenRCUser")` to pick the context and the
-/// meter's variant, but `Meter_name` (`Meter.h:101`, `As_Meter(this)->name`)
-/// is not ported and the ported `Meter` instance stores no class-`name`
-/// field, so `user` cannot be resolved faithfully. Once `Meter_name` lands,
-/// the rest is mechanical: clear the chosen context, call
-/// [`updateViaExec`]`(user)`, and copy `ctx.runlevel` (or `"???"`) into
-/// `this.txtBuffer`.
-pub fn OpenRCMeter_updateValues() {
-    todo!("port of OpenRCMeter.c:115: needs Meter_name (Meter.h:101) — Meter instance has no class name field")
+/// Port of `static void OpenRCMeter_updateValues(Meter* this)` from
+/// `OpenRCMeter.c:115`. Resolves the variant from
+/// `String_eq(Meter_name(this), "OpenRCUser")` ([`Meter::name`] mirrors the
+/// class name), clears the chosen context (`free(ctx->runlevel);
+/// ctx->runlevel = NULL;` and both counts to `INVALID_VALUE`), refreshes it
+/// via [`updateViaExec`]`(user)`, then copies `ctx->runlevel` (or `"???"`)
+/// into `this->txtBuffer`.
+///
+/// The context [`Mutex`] is released before calling [`updateViaExec`] (which
+/// re-locks the same context) — `std::sync::Mutex` is not reentrant, so the
+/// clear and the read are two separate critical sections, exactly the two
+/// points where the C touches `ctx` around the `updateViaExec` call.
+pub fn OpenRCMeter_updateValues(this: &mut Meter) {
+    let user = String_eq(this.name, "OpenRCUser");
+    let ctx_mutex = if user { &CTX_USER } else { &CTX_SYSTEM };
+
+    {
+        let mut ctx = ctx_mutex.lock().unwrap();
+        ctx.runlevel = None;
+        ctx.services_stopped = INVALID_VALUE;
+        ctx.services_started = INVALID_VALUE;
+    }
+
+    updateViaExec(user);
+
+    let ctx = ctx_mutex.lock().unwrap();
+    this.txtBuffer = ctx.runlevel.clone().unwrap_or_else(|| "???".to_string());
 }
 
 /// Port of `static void OpenRCMeter_display(ATTR_UNUSED const Object* cast,

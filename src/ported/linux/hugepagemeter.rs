@@ -29,26 +29,21 @@
 //! `updateValues` selects from (retained for the eventual `updateValues`
 //! port).
 //!
-//! Ported (self-contained: `RichString`, `CRT_colors`, and `Meter_humanUnit`
-//! are ported):
+//! Ported:
+//! - [`HugePageMeter_updateValues`] (`HugePageMeter.c:39`) — downcasts
+//!   `this->host` to [`LinuxMachine`] and drives `this->total` /
+//!   `this->values[]` / the active-labels table from `totalHugePageMem` and
+//!   `usedHugePageMem[]`.
 //! - [`HugePageMeter_display`] (`HugePageMeter.c:76`) — writes `:<total>`
 //!   then, for each active label, `<label><value>`, coloring the total
 //!   `METER_VALUE`, each label `METER_TEXT`, and each value `HUGEPAGE_1 + i`.
-//!
-//! Stubbed (blocked on unported substrate — keeps its `todo!()`):
-//! - `HugePageMeter_updateValues` (`HugePageMeter.c:39`) — reads the host via
-//!   `const LinuxMachine* host = (const LinuxMachine*) this->host;` and pulls
-//!   `host->totalHugePageMem` / `host->usedHugePageMem[i]`. The ported `Meter`
-//!   struct does not model the `host` field (documented as unmodeled
-//!   substrate in [`crate::ported::meter::Meter`]), so there is no faithful
-//!   `LinuxMachine` source to drive the totals — porting the arithmetic
-//!   without it would fabricate a data source, not translate the C.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use std::sync::Mutex;
 
 use crate::ported::crt::{CRT_colorSchemes, ColorElements, ColorScheme};
+use crate::ported::linux::linuxmachine::{memory_t, LinuxMachine, HTOP_HUGEPAGE_COUNT, MEMORY_MAX};
 use crate::ported::meter::{Meter, Meter_humanUnit};
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};
 
@@ -71,15 +66,58 @@ static HugePageMeter_labels: [&str; 24] = [
     " 64G:", " 128G:", " 256G:", " 512G:",
 ];
 
-/// TODO: port of `static void HugePageMeter_updateValues(Meter* this)` from
-/// `HugePageMeter.c:39`. Blocked: the totals are sourced from the host via
-/// `const LinuxMachine* host = (const LinuxMachine*) this->host;` and read
-/// `host->totalHugePageMem` / `host->usedHugePageMem[i]`. The ported `Meter`
-/// struct does not model the `host` field (unmodeled C substrate per
-/// [`crate::ported::meter::Meter`]), so there is no faithful `LinuxMachine`
-/// source to feed `this->total` / `this->values[]`.
-pub fn HugePageMeter_updateValues() {
-    todo!("port of HugePageMeter.c:39: needs Meter.host (LinuxMachine) field")
+/// Port of `static void HugePageMeter_updateValues(Meter* this)` from
+/// `HugePageMeter.c:39`. Downcasts `this->host` to the [`LinuxMachine`]
+/// (the C `(const LinuxMachine*) this->host`, the same downcast
+/// `Platform_setZramValues` uses), sets `this->total` from
+/// `host->totalHugePageMem`, resets the four value slots (index 0 to `0`, the
+/// rest to `NAN`) and the four active labels (` used:` then `NULL`), then
+/// walks all [`HTOP_HUGEPAGE_COUNT`] page sizes: every set entry
+/// (`!= MEMORY_MAX`) fills the next value slot, accumulates `usedTotal`, and
+/// records its label, stopping once all four slots are used.
+///
+/// The C's `Meter_humanUnit(buffer, usedTotal, size)` +
+/// `METER_BUFFER_APPEND_CHR('/')` + `Meter_humanUnit(buffer, total, size)`
+/// sequence writes `"<usedTotal>/<total>"` into `this->txtBuffer`; the
+/// truncation guards (`METER_BUFFER_CHECK`) only cap an over-long write that
+/// two human-unit strings never produce, so the net result is the `format!`
+/// concatenation. The mutable file-scope `HugePageMeter_active_labels` static
+/// is the [`Mutex`]-guarded table.
+pub fn HugePageMeter_updateValues(this: &mut Meter) {
+    let host = unsafe { &*(this.host as *const LinuxMachine) };
+
+    let mut usedTotal: memory_t = 0;
+    let mut nextUsed: usize = 0;
+
+    this.total = host.totalHugePageMem as f64;
+    this.values[0] = 0.0;
+
+    let mut labels = HugePageMeter_active_labels.lock().unwrap();
+    labels[0] = Some(" used:");
+    for i in 1..labels.len() {
+        this.values[i] = f64::NAN;
+        labels[i] = None;
+    }
+
+    for i in 0..HTOP_HUGEPAGE_COUNT {
+        let value = host.usedHugePageMem[i];
+        if value != MEMORY_MAX {
+            this.values[nextUsed] = value as f64;
+            usedTotal += value;
+            labels[nextUsed] = Some(HugePageMeter_labels[i]);
+            nextUsed += 1;
+            if nextUsed == labels.len() {
+                break;
+            }
+        }
+    }
+    drop(labels);
+
+    this.txtBuffer = format!(
+        "{}/{}",
+        Meter_humanUnit(usedTotal as f64),
+        Meter_humanUnit(this.total)
+    );
 }
 
 /// Port of `static void HugePageMeter_display(const Object* cast, RichString*

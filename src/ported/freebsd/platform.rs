@@ -12,15 +12,21 @@
 //! - `Platform_getNetworkIO` (`Platform.c:367`)
 //! - `Platform_getBattery` (`Platform.c:399`)
 //!
+//! Also ported: `Platform_setCPUValues` / `_setMemoryValues` /
+//! `_setSwapValues` (read the `FreeBSDMachine` via the `#[repr(C)]`
+//! `*Machine`→`*FreeBSDMachine` downcast) and `Platform_getProcessLocks`
+//! (FreeBSD's body returns `NULL` unconditionally → `None`).
+//!
 //! Still `todo!()` and blocked on unported substrate:
-//! - the `Platform_set*Values` meter setters — `Meter::host` (`meter.rs`) is
-//!   typed as the concrete `LinuxMachine`, so a `FreeBSDMachine`-backed meter
-//!   is unmodeled.
+//! - `Platform_setZfsArcValues` / `_setZfsCompressedArcValues` — need
+//!   `ZfsArcMeter_readStats` / `ZfsCompressedArcMeter_readStats`
+//!   (`zfs/Zfs*Meter.c`, unported; the darwin port is likewise deferred).
 //! - `Platform_getFileDescriptors` — needs `Generic_getFileDescriptors_sysctl`
 //!   (`generic/fdstat_sysctl.c`, unported).
-//! - `Platform_getProcessLocks` — `FileLocks_ProcessData` is unmodeled
-//!   (FreeBSD's body returns `NULL` unconditionally).
-//! - `Platform_getDiskIO` — needs `libdevstat` (`devstat_*`) FFI bindings.
+//! - `Platform_getDiskIO` — needs `libdevstat`: the `struct statinfo` /
+//!   `struct devinfo` / `struct devstat` types (absent from `libc`) plus the
+//!   variadic `devstat_compute_statistics(..., DSM_* selectors, ...)` call,
+//!   which cannot be transcribed faithfully without those headers.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -30,7 +36,10 @@ use std::os::raw::{c_int, c_void};
 use std::ptr;
 
 use crate::ported::batterymeter::ACPresence;
+use crate::ported::freebsd::freebsdmachine::FreeBSDMachine;
+use crate::ported::meter::Meter;
 use crate::ported::networkiometer::NetworkIOData;
+use crate::ported::processlocksscreen::FileLocks_ProcessData;
 
 // `VM_LOADAVG` (`sys/vm/vm_param.h`) — the `CTL_VM` sysctl for load average.
 // Absent from `libc`.
@@ -132,33 +141,141 @@ pub fn Platform_getMaxPid() -> libc::pid_t {
     maxPid
 }
 
-/// TODO: port of `double Platform_setCPUValues(Meter* this, unsigned int cpu)`
-/// from `Platform.c:215`. Blocked: `Meter::host` typed as `LinuxMachine`; a
-/// `FreeBSDMachine`-backed meter is unmodeled.
-pub fn Platform_setCPUValues() {
-    todo!("port of Platform.c:215")
+// FreeBSD's `CPU_METER_*` indices (`CPUMeter.h`) into `Meter::values`.
+const CPU_METER_NICE: usize = 0;
+const CPU_METER_NORMAL: usize = 1;
+const CPU_METER_KERNEL: usize = 2;
+const CPU_METER_IRQ: usize = 3;
+const CPU_METER_FREQUENCY: usize = 8;
+const CPU_METER_TEMPERATURE: usize = 9;
+
+/// Port of `double Platform_setCPUValues(Meter* this, unsigned int cpu)` from
+/// `Platform.c:215`. Reads the per-core [`CPUData`](crate::ported::freebsd::freebsdmachine::CPUData)
+/// off the `FreeBSDMachine` (`(FreeBSDMachine*)this->host`) — slot 0 on a
+/// single-CPU box, else `cpu` — and fills the meter's nice/normal/kernel
+/// (+irq when `detailedCPUTime`) percentages, frequency and temperature,
+/// returning the clamped total usage.
+pub fn Platform_setCPUValues(mtr: &mut Meter, cpu: u32) -> f64 {
+    let host = mtr.host;
+    let fhost = host as *const FreeBSDMachine;
+    let cpus = unsafe { (*host).activeCPUs };
+
+    // single CPU box has everything in fhost->cpus[0]
+    let cpuData = unsafe {
+        if cpus == 1 {
+            (*fhost).cpus[0]
+        } else {
+            (*fhost).cpus[cpu as usize]
+        }
+    };
+
+    let detailed = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.detailedCPUTime)
+    };
+
+    mtr.values[CPU_METER_NICE] = cpuData.nicePercent;
+    mtr.values[CPU_METER_NORMAL] = cpuData.userPercent;
+
+    let percent = if detailed {
+        mtr.values[CPU_METER_KERNEL] = cpuData.systemPercent;
+        mtr.values[CPU_METER_IRQ] = cpuData.irqPercent;
+        mtr.curItems = 4;
+        mtr.values[CPU_METER_NICE]
+            + mtr.values[CPU_METER_NORMAL]
+            + mtr.values[CPU_METER_KERNEL]
+            + mtr.values[CPU_METER_IRQ]
+    } else {
+        mtr.values[CPU_METER_KERNEL] = cpuData.systemAllPercent;
+        mtr.curItems = 3;
+        mtr.values[CPU_METER_NICE] + mtr.values[CPU_METER_NORMAL] + mtr.values[CPU_METER_KERNEL]
+    };
+
+    let percent = percent.clamp(0.0, 100.0);
+
+    mtr.values[CPU_METER_FREQUENCY] = cpuData.frequency;
+    mtr.values[CPU_METER_TEMPERATURE] = cpuData.temperature;
+
+    percent
 }
 
-/// TODO: port of `void Platform_setMemoryValues(Meter* this)` from
-/// `Platform.c:247`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setMemoryValues() {
-    todo!("port of Platform.c:247")
+// FreeBSD's `MEMORY_CLASS_*` enum (`freebsd/Platform.c:101`) — indices into
+// `Meter::values`, in this exact order.
+const MEMORY_CLASS_WIRED: usize = 0;
+const MEMORY_CLASS_BUFFERS: usize = 1;
+const MEMORY_CLASS_ACTIVE: usize = 2;
+const MEMORY_CLASS_LAUNDRY: usize = 3;
+const MEMORY_CLASS_INACTIVE: usize = 4;
+const MEMORY_CLASS_ARC: usize = 5;
+
+/// Port of `void Platform_setMemoryValues(Meter* this)` from `Platform.c:247`.
+/// Fills the memory meter's class values (kB) from the `FreeBSDMachine`:
+/// wired/buffers (merged when `showCachedMemory` is off), active, laundry,
+/// inactive, and the shrinkable ZFS ARC (`size - min`, when enabled).
+pub fn Platform_setMemoryValues(mtr: &mut Meter) {
+    let host = mtr.host;
+    let fhost = host as *const FreeBSDMachine;
+
+    mtr.total = unsafe { (*host).totalMem } as f64;
+
+    let show_cached = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.showCachedMemory)
+    };
+
+    unsafe {
+        if show_cached {
+            mtr.values[MEMORY_CLASS_WIRED] = (*fhost).wiredMem as f64;
+            mtr.values[MEMORY_CLASS_BUFFERS] = (*fhost).buffersMem as f64;
+        } else {
+            // merge buffers into the wired pages
+            mtr.values[MEMORY_CLASS_WIRED] = ((*fhost).wiredMem + (*fhost).buffersMem) as f64;
+            mtr.values[MEMORY_CLASS_BUFFERS] = 0.0;
+        }
+        mtr.values[MEMORY_CLASS_ACTIVE] = (*fhost).activeMem as f64;
+        mtr.values[MEMORY_CLASS_LAUNDRY] = (*fhost).laundryMem as f64;
+        mtr.values[MEMORY_CLASS_INACTIVE] = (*fhost).inactiveMem as f64;
+
+        if (*fhost).zfs.enabled != 0 {
+            // ZFS does not shrink below the value of zfs_arc_min.
+            let mut shrinkableSize: u64 = 0;
+            if (*fhost).zfs.size > (*fhost).zfs.min {
+                shrinkableSize = (*fhost).zfs.size - (*fhost).zfs.min;
+            }
+            mtr.values[MEMORY_CLASS_ARC] = shrinkableSize as f64;
+        } else {
+            mtr.values[MEMORY_CLASS_ARC] = 0.0;
+        }
+    }
 }
 
-/// TODO: port of `void Platform_setSwapValues(Meter* this)` from
-/// `Platform.c:274`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setSwapValues() {
-    todo!("port of Platform.c:274")
+/// Port of `void Platform_setSwapValues(Meter* this)` from `Platform.c:274`.
+/// Copies the host's swap totals (kB) into the swap meter.
+pub fn Platform_setSwapValues(mtr: &mut Meter) {
+    /// `SWAP_METER_USED = 0` (`SwapMeter.h`).
+    const SWAP_METER_USED: usize = 0;
+
+    let host = mtr.host;
+    mtr.total = unsafe { (*host).totalSwap } as f64;
+    mtr.values[SWAP_METER_USED] = unsafe { (*host).usedSwap } as f64;
 }
 
 /// TODO: port of `void Platform_setZfsArcValues(Meter* this)` from
-/// `Platform.c:281`. Blocked: `Meter::host` typed as `LinuxMachine`.
+/// `Platform.c:281`. Blocked: `ZfsArcMeter_readStats` (`zfs/ZfsArcMeter.c`)
+/// is unported, so the ARC stats on `(FreeBSDMachine*)this->host->zfs`
+/// cannot be rendered into the meter (the darwin port is likewise deferred).
 pub fn Platform_setZfsArcValues() {
     todo!("port of Platform.c:281")
 }
 
 /// TODO: port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
-/// `Platform.c:287`. Blocked: `Meter::host` typed as `LinuxMachine`.
+/// `Platform.c:287`. Blocked: `ZfsCompressedArcMeter_readStats`
+/// (`zfs/ZfsCompressedArcMeter.c`) is unported (the darwin port is likewise
+/// deferred).
 pub fn Platform_setZfsCompressedArcValues() {
     todo!("port of Platform.c:287")
 }
@@ -196,11 +313,13 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
     Some(String::from_utf8_lossy(&env).into_owned())
 }
 
-/// TODO: port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
-/// from `Platform.c:314`. Blocked: `FileLocks_ProcessData` is unmodeled
-/// (FreeBSD's body returns `NULL` unconditionally).
-pub fn Platform_getProcessLocks() {
-    todo!("port of Platform.c:314")
+/// Port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)` from
+/// `Platform.c:314`. FreeBSD does not expose per-process file locks, so the C
+/// body is `(void)pid; return NULL;` — the faithful analog returns `None`,
+/// and `ProcessLocksScreen_scan` renders "not supported".
+pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessData> {
+    let _ = pid;
+    None
 }
 
 /// TODO: port of `void Platform_getFileDescriptors(double* used, double* max)`

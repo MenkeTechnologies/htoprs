@@ -667,8 +667,15 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
 /// TODO: port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
 /// from `Platform.c:528`. Blocked: `FileLocks_ProcessData` is unmodeled
 /// (Darwin's body returns `NULL` unconditionally).
-pub fn Platform_getProcessLocks() {
-    todo!("port of Platform.c:528")
+/// Port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)` from
+/// `darwin/Platform.c:528`. Darwin does not expose per-process file locks, so
+/// the C body is `(void)pid; return NULL;` — the faithful analog returns
+/// `None`, and `ProcessLocksScreen_scan` renders "not supported".
+pub fn Platform_getProcessLocks(
+    pid: libc::pid_t,
+) -> Option<crate::ported::processlocksscreen::FileLocks_ProcessData> {
+    let _ = pid;
+    None
 }
 
 /// TODO: port of `void Platform_getFileDescriptors(double* used, double* max)`
