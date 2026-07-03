@@ -112,6 +112,7 @@ mod tests {
     /// (`..Meter::empty()`, the Rust-only bootstrap helper).
     fn meter(values: Vec<f64>) -> Meter {
         Meter {
+            host: None,
             values,
             mode: BAR_METERMODE,
             ..Meter::empty()

@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-02T23:57:34Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T00:05:31Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/RustroverProjects/MenkeTechnologiesMeta/htoprs/vendor/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">504</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">316</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">506</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">314</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">46.11%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">46.29%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">115</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -114,7 +114,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>InfoScreen.c</code></td><td>4</td><td>2</td><td>6</td><td>67%</td></tr>
           <tr><td><code>LineEditor.c</code></td><td>15</td><td>0</td><td>15</td><td>100%</td></tr>
           <tr><td><code>ListItem.c</code></td><td>5</td><td>1</td><td>6</td><td>83%</td></tr>
-          <tr><td><code>LoadAverageMeter.c</code></td><td>2</td><td>2</td><td>4</td><td>50%</td></tr>
+          <tr><td><code>LoadAverageMeter.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
           <tr><td><code>Machine.c</code></td><td>2</td><td>4</td><td>6</td><td>33%</td></tr>
           <tr><td><code>MainPanel.c</code></td><td>6</td><td>6</td><td>12</td><td>50%</td></tr>
           <tr><td><code>MemoryMeter.c</code></td><td>0</td><td>2</td><td>2</td><td>0%</td></tr>
@@ -202,12 +202,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-02T23:57:34Z",
+  "generated": "2026-07-03T00:05:31Z",
   "htop_source": "/Users/wizard/RustroverProjects/MenkeTechnologiesMeta/htoprs/vendor/htop",
   "c_functions_defined": 1093,
-  "ported": 504,
-  "stubbed": 316,
-  "coverage_pct": 46.11,
+  "ported": 506,
+  "stubbed": 314,
+  "coverage_pct": 46.29,
   "files_started": 115,
   "per_file": [
     {
@@ -410,8 +410,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "LoadAverageMeter.c",
-      "ported": 2,
-      "stubbed": 2,
+      "ported": 4,
+      "stubbed": 0,
       "defined": 4
     },
     {

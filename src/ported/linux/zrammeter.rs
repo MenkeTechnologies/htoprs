@@ -105,6 +105,7 @@ mod tests {
     #[test]
     fn display_writes_total_used_and_uncompressed() {
         let m = Meter {
+            host: None,
             total: 1024.0,                      // KiB → "1.00M"
             values: vec![1024.0 * 2.0, 1024.0], // compressed "2.00M", +1M uncompressed
             ..Meter::empty()

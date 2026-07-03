@@ -474,6 +474,7 @@ mod tests {
     // reserved mode 0 (so `Meter_toListItem`'s label is exactly `name`).
     fn meter(name: &'static str) -> Box<dyn Object> {
         Box::new(Meter {
+            host: None,
             uiName: name,
             mode: 0,
             ..Meter::empty()

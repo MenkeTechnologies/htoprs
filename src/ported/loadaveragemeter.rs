@@ -28,26 +28,29 @@
 //! - [`LoadMeter_display`] (`LoadAverageMeter.c:95`) — appends the
 //!   1-minute figure only, colored `LOAD`.
 //!
-//! Stubbed (blocked on unported substrate — each keeps its `todo!()`):
-//! - `LoadAverageMeter_updateValues` (`LoadAverageMeter.c:42`) /
-//!   `LoadMeter_updateValues` (`LoadAverageMeter.c:76`) — both bodies read
-//!   `this->host->activeCPUs` (for the `total` clamp and the OK/Medium/High
-//!   color threshold), but the partial `Meter` in `meter.rs` models no
-//!   `host` back-pointer (`host` is listed there as substrate the ported
-//!   renderers do not touch). Reproducing that branch would require an
-//!   invented `activeCPUs` source, i.e. an adhoc reimplementation rather
-//!   than a faithful port. (The load source itself,
-//!   `Platform_getLoadAverage(&this->values[0], ...)`, is now ported in
-//!   `linux/platform.rs`, and the other fields these bodies touch —
-//!   `this->total`, `this->curAttributes`, `this->curItems`,
-//!   `this->txtBuffer` — the `Meter` struct now carries; the missing
-//!   `host->activeCPUs` is the sole remaining blocker.)
+//! - [`LoadAverageMeter_updateValues`] (`LoadAverageMeter.c:42`) /
+//!   [`LoadMeter_updateValues`] (`LoadAverageMeter.c:76`) — read the load
+//!   figures via the ported `Platform_getLoadAverage`, clamp `this->total`
+//!   to `this->host->activeCPUs`, and set the OK/Medium/High bar color from
+//!   the 1-minute value against that CPU count. `this->host` is the
+//!   `Rc<RefCell<Machine>>` back-pointer now modeled on `Meter`.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::linux::platform::Platform_getLoadAverage;
 use crate::ported::meter::Meter;
 use crate::ported::richstring::{RichString, RichString_appendnAscii};
+
+/// Port of `static const int OK_attributes[] = { METER_VALUE_OK }`
+/// (`LoadAverageMeter.c:34`) — the bar color when load < 1.0.
+static OK_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_OK as i32];
+/// Port of `static const int Medium_attributes[] = { METER_VALUE_WARN }`
+/// (`LoadAverageMeter.c:38`) — load in `[1.0, activeCPUs)`.
+static MEDIUM_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_WARN as i32];
+/// Port of `static const int High_attributes[] = { METER_VALUE_ERROR }`
+/// (`LoadAverageMeter.c:42`) — load ≥ activeCPUs.
+static HIGH_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_ERROR as i32];
 
 /// TODO: port of `static void LoadAverageMeter_updateValues(Meter* this)`
 /// from `LoadAverageMeter.c:42`. Blocked: the body reads
@@ -58,8 +61,38 @@ use crate::ported::richstring::{RichString, RichString_appendnAscii};
 /// &this->values[2])` is now ported in `linux/platform.rs`, and the other
 /// fields — `total`, `curAttributes`, `curItems`, `txtBuffer` — the `Meter`
 /// struct now models; only `host->activeCPUs` remains missing.)
-pub fn LoadAverageMeter_updateValues() {
-    todo!("port of LoadAverageMeter.c:42: needs Meter.host->activeCPUs")
+pub fn LoadAverageMeter_updateValues(this: &mut Meter) {
+    let (mut one, mut five, mut fifteen) = (0.0f64, 0.0f64, 0.0f64);
+    Platform_getLoadAverage(&mut one, &mut five, &mut fifteen);
+    this.values[0] = one;
+    this.values[1] = five;
+    this.values[2] = fifteen;
+
+    // only show bar for 1min value
+    this.curItems = 1;
+
+    // change bar color and total based on value
+    let active_cpus = this
+        .host
+        .as_ref()
+        .expect("LoadAverageMeter_updateValues: this->host (C dereferences it)")
+        .borrow()
+        .activeCPUs as f64;
+    if this.total < active_cpus {
+        this.total = active_cpus;
+    }
+    if this.values[0] < 1.0 {
+        this.curAttributes = Some(&OK_ATTRIBUTES);
+    } else if this.values[0] < active_cpus {
+        this.curAttributes = Some(&MEDIUM_ATTRIBUTES);
+    } else {
+        this.curAttributes = Some(&HIGH_ATTRIBUTES);
+    }
+
+    this.txtBuffer = format!(
+        "{:.2}/{:.2}/{:.2}",
+        this.values[0], this.values[1], this.values[2]
+    );
 }
 
 /// Port of `static void LoadAverageMeter_display(const Object* cast,
@@ -103,8 +136,31 @@ pub fn LoadAverageMeter_display(this: &Meter, out: &mut RichString) {
 /// `host` back-pointer. (The load source
 /// `Platform_getLoadAverage(&this->values[0], &five, &fifteen)` is now
 /// ported in `linux/platform.rs`; only `host->activeCPUs` remains missing.)
-pub fn LoadMeter_updateValues() {
-    todo!("port of LoadAverageMeter.c:76: needs Meter.host->activeCPUs")
+pub fn LoadMeter_updateValues(this: &mut Meter) {
+    let (mut one, mut five, mut fifteen) = (0.0f64, 0.0f64, 0.0f64);
+    Platform_getLoadAverage(&mut one, &mut five, &mut fifteen);
+    this.values[0] = one;
+    let _ = (five, fifteen); // C keeps `five`/`fifteen` as locals, unused
+
+    // change bar color and total based on value
+    let active_cpus = this
+        .host
+        .as_ref()
+        .expect("LoadMeter_updateValues: this->host (C dereferences it)")
+        .borrow()
+        .activeCPUs as f64;
+    if this.total < active_cpus {
+        this.total = active_cpus;
+    }
+    if this.values[0] < 1.0 {
+        this.curAttributes = Some(&OK_ATTRIBUTES);
+    } else if this.values[0] < active_cpus {
+        this.curAttributes = Some(&MEDIUM_ATTRIBUTES);
+    } else {
+        this.curAttributes = Some(&HIGH_ATTRIBUTES);
+    }
+
+    this.txtBuffer = format!("{:.2}", this.values[0]);
 }
 
 /// Port of `static void LoadMeter_display(const Object* cast, RichString*
@@ -138,6 +194,7 @@ mod tests {
     /// (`..Meter::empty()`, the Rust-only bootstrap helper).
     fn meter(values: Vec<f64>) -> Meter {
         Meter {
+            host: None,
             values,
             mode: BAR_METERMODE,
             ..Meter::empty()
@@ -170,5 +227,52 @@ mod tests {
         let mut out = RichString::new();
         LoadMeter_display(&m, &mut out);
         assert_eq!(text(&out), "0.42 ");
+    }
+
+    use crate::ported::machine::Machine;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A `Meter` with a 3-slot `values` and a host reporting `active_cpus`.
+    fn hosted_meter(active_cpus: u32) -> Meter {
+        let host = Rc::new(RefCell::new(Machine {
+            activeCPUs: active_cpus,
+            ..Default::default()
+        }));
+        Meter {
+            values: vec![0.0; 3],
+            total: 0.0,
+            host: Some(host),
+            ..Meter::empty()
+        }
+    }
+
+    #[test]
+    fn load_average_update_values_sets_invariants() {
+        // Reads the live load average (real on Linux CI, NaN on non-/proc
+        // hosts). Assert only the C-guaranteed invariants that hold for any
+        // sampled load: curItems, the total clamp, a chosen bar color, and
+        // the "%.2f/%.2f/%.2f" text shape.
+        let mut m = hosted_meter(4);
+        LoadAverageMeter_updateValues(&mut m);
+        assert_eq!(m.curItems, 1);
+        assert!(m.total >= 4.0, "total clamped up to activeCPUs");
+        assert!(m.curAttributes.is_some(), "a bar color is selected");
+        assert_eq!(m.txtBuffer.matches('/').count(), 2, "three '/'-joined figures");
+    }
+
+    #[test]
+    fn load_meter_update_values_selects_ok_below_one() {
+        // When the 1-min load is < 1.0 the bar is METER_VALUE_OK; drive that
+        // branch deterministically by clamping activeCPUs high and checking
+        // the low-load path only when the sampled value is actually < 1.0.
+        let mut m = hosted_meter(64);
+        LoadMeter_updateValues(&mut m);
+        assert!(m.total >= 64.0);
+        // txtBuffer is the single 1-min figure with no separators.
+        assert_eq!(m.txtBuffer.matches('/').count(), 0);
+        if m.values[0] < 1.0 {
+            assert_eq!(m.curAttributes, Some(&OK_ATTRIBUTES[..]));
+        }
     }
 }

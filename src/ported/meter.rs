@@ -87,11 +87,14 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use std::cell::RefCell;
 use std::io::Write;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 use crate::ported::crt::{CRT_colorSchemes, CRT_utf8, ColorElements, ColorScheme};
 use crate::ported::functionbar::Ncurses;
+use crate::ported::machine::Machine;
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
@@ -434,6 +437,12 @@ pub struct Meter {
     pub classDraw: Option<MeterDraw>,
     /// C `this->draw` — the instance draw pointer set by [`Meter_setMode`].
     pub draw: Option<MeterDraw>,
+    /// C `Meter.host` (`Meter.h:114`) — the back-pointer to the owning
+    /// [`Machine`]. `Rc<RefCell<…>>` reproduces htop's shared `Machine*`:
+    /// htop is single-threaded, and the meters, header, and tables all alias
+    /// the one `Machine`. `None` on a meter not yet attached to a host
+    /// (e.g. the setup-menu preview meters).
+    pub host: Option<Rc<RefCell<Machine>>>,
 }
 
 impl Meter {
@@ -446,6 +455,7 @@ impl Meter {
     /// `Meter_new`'s `this->h = 1` (`Meter.c:455`).
     pub(crate) fn empty() -> Meter {
         Meter {
+            host: None,
             values: Vec::new(),
             curItems: 0,
             mode: 0,
@@ -1097,6 +1107,7 @@ mod tests {
     fn compute_sum_ignores_negatives_and_nan() {
         // sumPositiveValues skips values <= 0 and NaN: 5 + 2 = 7.
         let m = Meter {
+            host: None,
             values: vec![5.0, -3.0, f64::NAN, 2.0],
             curItems: 4,
             ..Meter::empty()
@@ -1108,6 +1119,7 @@ mod tests {
     fn compute_sum_honors_cur_items() {
         // Only the first curItems entries are summed; trailing 100.0 unused.
         let m = Meter {
+            host: None,
             values: vec![1.0, 2.0, 100.0],
             curItems: 2,
             ..Meter::empty()
@@ -1120,6 +1132,7 @@ mod tests {
         // Two DBL_MAX positives overflow to +inf; MINIMUM(DBL_MAX, inf)
         // picks DBL_MAX since DBL_MAX < inf.
         let m = Meter {
+            host: None,
             values: vec![f64::MAX, f64::MAX],
             curItems: 2,
             ..Meter::empty()
@@ -1138,6 +1151,7 @@ mod tests {
 
     fn mode_meter(mode: MeterModeId, supportedModes: u32) -> Meter {
         Meter {
+            host: None,
             mode,
             supportedModes,
             ..Meter::empty()
@@ -1247,6 +1261,7 @@ mod tests {
         // No display slot: writes txtBuffer in CRT_colors[attributes[0]].
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let m = Meter {
+            host: None,
             txtBuffer: "hi".to_string(),
             attributes: &ATTRS,
             ..Meter::empty()
@@ -1268,6 +1283,7 @@ mod tests {
         }
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let m = Meter {
+            host: None,
             txtBuffer: "ignored".to_string(),
             attributes: &ATTRS,
             display: Some(disp),
@@ -1284,6 +1300,7 @@ mod tests {
     fn text_meter_draw_caption_then_value() {
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             attributes: &ATTRS,
@@ -1298,6 +1315,7 @@ mod tests {
     #[test]
     fn text_meter_draw_zero_width_prints_nothing() {
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             ..Meter::empty()
@@ -1312,6 +1330,7 @@ mod tests {
     fn text_meter_draw_caption_only_when_width_equals_caption() {
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             attributes: &ATTRS,
@@ -1329,6 +1348,7 @@ mod tests {
     fn bar_meter_draw_borders_fill_and_text() {
         static ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             values: vec![50.0],
@@ -1354,6 +1374,7 @@ mod tests {
         // isPercentChart: total is NOT auto-grown from the sum.
         static ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "".to_string(),
             values: vec![50.0],
@@ -1376,6 +1397,7 @@ mod tests {
             ColorElements::CPU_SYSTEM as i32,
         ];
         let mut m = Meter {
+            host: None,
             caption: "IO ".to_string(),
             txtBuffer: "".to_string(),
             values: vec![120.0, 30.0],
@@ -1397,6 +1419,7 @@ mod tests {
         static CLASS_ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
         static CUR_ATTRS: [i32; 1] = [ColorElements::CPU_SYSTEM as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "".to_string(),
             values: vec![100.0],
@@ -1422,6 +1445,7 @@ mod tests {
         // '5' is blitted as a 3-row seven-segment cell, '%' as a single char.
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
+            host: None,
             caption: "".to_string(),
             txtBuffer: "5%".to_string(),
             attributes: &ATTRS,
@@ -1441,6 +1465,7 @@ mod tests {
     fn led_meter_draw_prints_caption() {
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "".to_string(),
             attributes: &ATTRS,
@@ -1456,6 +1481,7 @@ mod tests {
         // w <= captionWidth → early return after caption, no digit cells.
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             txtBuffer: "5".to_string(),
             attributes: &ATTRS,
@@ -1471,6 +1497,7 @@ mod tests {
     #[test]
     fn set_mode_assigns_height_from_table() {
         let mut m = Meter {
+            host: None,
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             ..Meter::empty()
@@ -1492,6 +1519,7 @@ mod tests {
     #[test]
     fn set_mode_resets_draw_data() {
         let mut m = Meter {
+            host: None,
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             ..Meter::empty()
@@ -1506,6 +1534,7 @@ mod tests {
     #[test]
     fn set_mode_same_mode_is_noop() {
         let mut m = Meter {
+            host: None,
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             h: 42, // sentinel: unchanged when mode doesn't switch
@@ -1520,6 +1549,7 @@ mod tests {
     fn set_mode_unsupported_mode_is_rejected() {
         // Only TEXT supported: a switch to GRAPH is ignored.
         let mut m = Meter {
+            host: None,
             mode: TEXT_METERMODE,
             supportedModes: 1 << TEXT_METERMODE,
             h: 7,
@@ -1533,6 +1563,7 @@ mod tests {
     #[test]
     fn set_mode_out_of_range_is_rejected() {
         let mut m = Meter {
+            host: None,
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             h: 9,
@@ -1552,6 +1583,7 @@ mod tests {
             this.h = 100 + mode as i32;
         }
         let mut m = Meter {
+            host: None,
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             updateMode: Some(upd),
@@ -1572,6 +1604,7 @@ mod tests {
     #[test]
     fn blank_meter_update_values_clears_text() {
         let mut m = Meter {
+            host: None,
             txtBuffer: "stale".to_string(),
             ..Meter::empty()
         };
@@ -1606,6 +1639,7 @@ mod tests {
     fn to_list_item_reserved_mode_has_no_suffix() {
         // mode == 0 (reserved): label is just the uiName, no " [..]" suffix.
         let m = Meter {
+            host: None,
             uiName: "CPU",
             mode: 0,
             ..Meter::empty()
@@ -1620,6 +1654,7 @@ mod tests {
     fn to_list_item_real_mode_appends_mode_uiname() {
         // mode > 0: suffix " [<Meter_modes[mode].uiName>]" is appended.
         let bar = Meter {
+            host: None,
             uiName: "CPU",
             mode: BAR_METERMODE,
             ..Meter::empty()
@@ -1627,6 +1662,7 @@ mod tests {
         assert_eq!(Meter_toListItem(&bar, false).value, "CPU [Bar]");
 
         let text = Meter {
+            host: None,
             uiName: "Memory",
             mode: TEXT_METERMODE,
             ..Meter::empty()
@@ -1634,6 +1670,7 @@ mod tests {
         assert_eq!(Meter_toListItem(&text, false).value, "Memory [Text]");
 
         let graph = Meter {
+            host: None,
             uiName: "Swap",
             mode: GRAPH_METERMODE,
             ..Meter::empty()
@@ -1645,6 +1682,7 @@ mod tests {
     fn to_list_item_propagates_moving_flag() {
         // The caller's `moving` bool is copied onto the returned item.
         let m = Meter {
+            host: None,
             uiName: "CPU",
             mode: 0,
             ..Meter::empty()
@@ -1661,6 +1699,7 @@ mod tests {
             "CPU average".to_string()
         }
         let m = Meter {
+            host: None,
             uiName: "STATIC-IGNORED",
             getUiName: Some(dyn_name),
             mode: BAR_METERMODE,
@@ -1678,6 +1717,7 @@ mod tests {
             "a".repeat(40)
         }
         let m = Meter {
+            host: None,
             getUiName: Some(long_name),
             mode: 0,
             ..Meter::empty()
@@ -1710,6 +1750,7 @@ mod tests {
         // Object::display routes to the instance display slot (BlankMeter_display
         // here — a no-op), not a panic.
         let m = Meter {
+            host: None,
             display: Some(BlankMeter_display),
             ..Meter::empty()
         };
@@ -1728,6 +1769,7 @@ mod tests {
         let mut v = Vector_new(&Meter_class.super_, true, 10);
 
         let m = Meter {
+            host: None,
             caption: "CPU".to_string(),
             param: 7,
             ..Meter::empty()

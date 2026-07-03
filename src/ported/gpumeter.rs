@@ -313,6 +313,7 @@ mod tests {
         // test only reads the statics (GPUMeter_updateValues, the only
         // writer, is stubbed and never runs), so it is order-independent.
         let m = Meter {
+            host: None,
             values: vec![0.0; 5],
             ..Meter::empty()
         };

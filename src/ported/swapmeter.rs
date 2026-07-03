@@ -122,6 +122,7 @@ mod tests {
     #[test]
     fn display_with_cache_and_frontswap() {
         let m = Meter {
+            host: None,
             total: 1024.0, // KiB → "1.00M"
             values: vec![512.0, 256.0, 128.0],
             ..Meter::empty()
@@ -135,6 +136,7 @@ mod tests {
     #[test]
     fn display_omits_nan_optionals() {
         let m = Meter {
+            host: None,
             total: 1024.0,
             values: vec![512.0, f64::NAN, f64::NAN],
             ..Meter::empty()
