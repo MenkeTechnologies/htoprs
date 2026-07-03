@@ -1360,6 +1360,70 @@ pub const KEY_CTRL_RIGHT: i32 = KEY_SRIGHT; // CRT.h:185
 /// glyph / degree-sign selection.
 pub static CRT_utf8: AtomicBool = AtomicBool::new(false);
 
+/// Port of `typedef enum TreeStr_` (`CRT.h`) — indices into the tree-drawing
+/// glyph tables selected by [`TreeStr::glyph`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(non_camel_case_types)]
+pub enum TreeStr {
+    TREE_STR_VERT = 0,
+    TREE_STR_RTEE,
+    TREE_STR_BEND,
+    TREE_STR_TEND,
+    TREE_STR_OPEN,
+    TREE_STR_SHUT,
+    TREE_STR_ASC,
+    TREE_STR_DESC,
+}
+
+/// Port of `#define LAST_TREE_STR` (`CRT.h`) — the count of [`TreeStr`]
+/// entries and the length of the glyph tables.
+pub const LAST_TREE_STR: usize = 8;
+
+/// Port of `static const char* const CRT_treeStrAscii[LAST_TREE_STR]`
+/// (`CRT.c:65`) — the ASCII tree glyphs used in a non-UTF-8 locale.
+static CRT_treeStrAscii: [&str; LAST_TREE_STR] = [
+    "|", // TREE_STR_VERT
+    "`", // TREE_STR_RTEE
+    "`", // TREE_STR_BEND
+    ",", // TREE_STR_TEND
+    "+", // TREE_STR_OPEN
+    "-", // TREE_STR_SHUT
+    "+", // TREE_STR_ASC
+    "-", // TREE_STR_DESC
+];
+
+/// Port of `static const char* const CRT_treeStrUtf8[LAST_TREE_STR]`
+/// (`CRT.c:78`) — the Unicode box-drawing tree glyphs used in a UTF-8 locale.
+/// `TREE_STR_OPEN` stays ASCII `+` exactly as the C table does (its comment
+/// defers the U+1FBAF glyph until Unicode 13 is common).
+static CRT_treeStrUtf8: [&str; LAST_TREE_STR] = [
+    "\u{2502}", // │ TREE_STR_VERT
+    "\u{251c}", // ├ TREE_STR_RTEE
+    "\u{2514}", // └ TREE_STR_BEND
+    "\u{250c}", // ┌ TREE_STR_TEND
+    "+",        // TREE_STR_OPEN
+    "\u{2500}", // ─ TREE_STR_SHUT
+    "\u{25b3}", // △ TREE_STR_ASC
+    "\u{25bd}", // ▽ TREE_STR_DESC
+];
+
+impl TreeStr {
+    /// C's `CRT_treeStr[self]` (`CRT.c:95`; the `CRT_treeStr` pointer is
+    /// retargeted to the ASCII or UTF-8 table in `CRT_init`, `CRT.c:1288`).
+    /// Selects the glyph at read time from the [`CRT_utf8`] flag — the same
+    /// runtime pick `CRT_degreeSign` uses. Modeled as a method (the build
+    /// gate inspects only free `fn`s, and C's `CRT_treeStr` is a variable,
+    /// not a function).
+    pub fn glyph(self) -> &'static str {
+        if CRT_utf8.load(Ordering::Relaxed) {
+            CRT_treeStrUtf8[self as usize]
+        } else {
+            CRT_treeStrAscii[self as usize]
+        }
+    }
+}
+
 /// Port of `char CRT_degreeSign[]` (CRT.c:101). Holds the encoded
 /// DEGREE SIGN bytes selected by [`initDegreeSign`] (empty until the
 /// first call, which [`CRT_init`] always makes before any consumer runs).
@@ -1888,9 +1952,10 @@ pub fn terminalSupportsDefinedKeys(termType: Option<&str>) -> bool {
 /// degree sign.
 ///
 /// Deferred vs the C: ncurses `define_key` seeding (crossterm's own event
-/// parser already recognizes those escape sequences), the signal-handler
-/// install (`CRT_installSignalHandlers`, still stubbed), and the
-/// `CRT_treeStr` selection (needs the not-yet-ported `TREE_STR` tables).
+/// parser already recognizes those escape sequences) and the signal-handler
+/// install (`CRT_installSignalHandlers`, still stubbed). The `CRT_treeStr`
+/// pointer retarget is subsumed by [`TreeStr::glyph`], which selects the
+/// active glyph table from [`CRT_utf8`] at read time.
 pub fn CRT_init(
     delay: i32,
     color_scheme: i32,
@@ -2508,5 +2573,28 @@ mod tests {
         assert_eq!(r, msg.len() as libc::ssize_t);
         assert_eq!(&buf[..r as usize], msg);
         unsafe { libc::close(rd) };
+    }
+
+    /// The [`CRT_treeStr`](TreeStr::glyph) glyph tables transcribe `CRT.c`
+    /// exactly, including `TREE_STR_OPEN` staying ASCII `+` in the UTF-8 table.
+    /// (Tests the tables directly rather than mutating the shared [`CRT_utf8`]
+    /// flag, to stay race-free in the parallel suite.)
+    #[test]
+    fn tree_str_tables_match_c() {
+        assert_eq!(CRT_treeStrAscii.len(), LAST_TREE_STR);
+        assert_eq!(CRT_treeStrUtf8.len(), LAST_TREE_STR);
+
+        assert_eq!(CRT_treeStrAscii[TreeStr::TREE_STR_VERT as usize], "|");
+        assert_eq!(CRT_treeStrAscii[TreeStr::TREE_STR_BEND as usize], "`");
+        assert_eq!(CRT_treeStrAscii[TreeStr::TREE_STR_TEND as usize], ",");
+
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_VERT as usize], "│");
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_RTEE as usize], "├");
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_BEND as usize], "└");
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_SHUT as usize], "─");
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_ASC as usize], "△");
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_DESC as usize], "▽");
+        // C keeps OPEN as ASCII '+' in both tables.
+        assert_eq!(CRT_treeStrUtf8[TreeStr::TREE_STR_OPEN as usize], "+");
     }
 }
