@@ -1848,8 +1848,12 @@ pub fn Process_setPriority(this: &mut Process, priority: i32) -> bool {
 /// union read).
 pub fn Process_rowChangePriorityBy(super_: &mut dyn Object, delta: Arg) -> bool {
     debug_assert!(Object_isA(Some(super_ as &dyn Object), &Process_class));
-    let this = (super_ as &mut dyn Any)
-        .downcast_mut::<Process>()
+    // Panel items are platform subclasses (DarwinProcess/LinuxProcess), not a
+    // bare Process, so `downcast_mut::<Process>()` — which needs the exact
+    // concrete type — fails ("row is not a Process"). `as_process_mut()` is the
+    // faithful `(Process*)super` upcast the subclasses override.
+    let this = super_
+        .as_process_mut()
         .expect("Process_rowChangePriorityBy: row is not a Process");
     let delta_i = match delta {
         Arg::I(i) => i,

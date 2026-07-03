@@ -717,6 +717,17 @@ pub fn ScreenManager_run(
     this.name = name.map(|s| s.to_string());
 
     'main: while !quit {
+        // htoprs extension: bracket each frame in a synchronized-update region
+        // (DEC private mode 2026) so the terminal applies the full repaint
+        // atomically instead of flickering. htop avoids flicker via ncurses'
+        // doupdate (diff against a virtual screen); htoprs emits directly on
+        // crossterm, so without this every tick's Header_draw + panel rebuild
+        // repaints visibly. Ignored by terminals that don't support 2026.
+        {
+            let mut out = io::stdout().lock();
+            let _ = crossterm::execute!(out, crossterm::terminal::BeginSynchronizedUpdate);
+        }
+
         if !this.header.is_null() {
             checkRecalculation(
                 this,
@@ -750,6 +761,13 @@ pub fn ScreenManager_run(
                     continue;
                 }
             }
+        }
+
+        // End the synchronized-update frame before blocking on input, so the
+        // terminal renders everything drawn since Begin in one atomic update.
+        {
+            let mut out = io::stdout().lock();
+            let _ = crossterm::execute!(out, crossterm::terminal::EndSynchronizedUpdate);
         }
 
         let prevCh = ch;
