@@ -71,6 +71,7 @@ macro_rules! spaceship_nullstr {
         }
     }};
 }
+pub(crate) use spaceship_nullstr;
 
 /// Port of `#define SPACESHIP_DEFAULTSTR(a, b, s)` from `Macros.h:41`:
 /// `strcmp((a) ? (a) : (s), (b) ? (b) : (s))`. NULL operands (`None`)
@@ -239,6 +240,86 @@ pub enum ProcessField {
     PROC_COMM = 124,
     PROC_EXE = 125,
     CWD = 126,
+
+    // ── Linux platform fields, spliced in by the C `PLATFORM_PROCESS_FIELDS`
+    // macro from `linux/ProcessField.h`. In the C build these share the one
+    // `ReservedFields` enum with the generic fields above; htoprs targets the
+    // Linux platform, so they belong on this shared enum too. The explicit
+    // discriminants are verbatim from `linux/ProcessField.h`.
+    CMINFLT = 11,
+    CMAJFLT = 13,
+    UTIME = 14,
+    STIME = 15,
+    CUTIME = 16,
+    CSTIME = 17,
+    M_SHARE = 41,
+    M_TRS = 42,
+    M_DRS = 43,
+    M_LRS = 44,
+    CTID = 100,
+    VPID = 101,
+    VXID = 102,
+    RCHAR = 103,
+    WCHAR = 104,
+    SYSCR = 105,
+    SYSCW = 106,
+    RBYTES = 107,
+    WBYTES = 108,
+    CNCLWB = 109,
+    IO_READ_RATE = 110,
+    IO_WRITE_RATE = 111,
+    IO_RATE = 112,
+    CGROUP = 113,
+    OOM = 114,
+    IO_PRIORITY = 115,
+    PERCENT_CPU_DELAY = 116,
+    PERCENT_IO_DELAY = 117,
+    PERCENT_SWAP_DELAY = 118,
+    M_PSS = 119,
+    M_SWAP = 120,
+    M_PSSWP = 121,
+    CTXT = 122,
+    SECATTR = 123,
+    AUTOGROUP_ID = 127,
+    AUTOGROUP_NICE = 128,
+    CCGROUP = 129,
+    CONTAINER = 130,
+    M_PRIV = 131,
+    GPU_TIME = 132,
+    GPU_PERCENT = 133,
+    ISCONTAINER = 134,
+}
+
+/// Port of `struct ProcessFieldData_` (`Process.h:203`) — the per-field
+/// metadata table entry describing how a [`ProcessField`] is named,
+/// titled, scanned, and sorted. The C `const char*` slots that can be
+/// `NULL` (`title`, `description`) become `Option<&'static str>`; `name`
+/// is `&'static str` (the C table always gives it a value, `""` for the
+/// unused index 0).
+#[derive(Debug, Clone, Copy)]
+#[allow(non_snake_case)]
+pub struct ProcessFieldData {
+    /// C `const char* name` — displayed in the setup menu.
+    pub name: &'static str,
+    /// C `const char* title` — column header on the main screen; must be
+    /// the same visible width as the printed values.
+    pub title: Option<&'static str>,
+    /// C `const char* description` — help text in the setup menu.
+    pub description: Option<&'static str>,
+    /// C `uint32_t flags` — scan flag enabling an otherwise-skipped
+    /// scan method (`PROCESS_FLAG_*`).
+    pub flags: u32,
+    /// C `bool pidColumn` — values are process identifiers (widens the
+    /// column to the max-pid width).
+    pub pidColumn: bool,
+    /// C `bool defaultSortDesc` — sort descending by default.
+    pub defaultSortDesc: bool,
+    /// C `bool autoWidth` — column width auto-adjusts (min width = title
+    /// length).
+    pub autoWidth: bool,
+    /// C `bool autoTitleRightAlign` — right-align an auto-width title
+    /// (default is left).
+    pub autoTitleRightAlign: bool,
 }
 
 /// Port of `struct Process_` from `Process.h:81`. "Extends" [`Row`] via

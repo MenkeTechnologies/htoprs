@@ -41,8 +41,12 @@ use crate::ported::linux::compat::Compat_readfile;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::process::{
-    Process, Process_class, Process_compare, Process_getPid, Process_init,
+    spaceship_nullstr, Process, ProcessField, ProcessFieldData, Process_class, Process_compare,
+    Process_compareByKey_Base, Process_getPid, Process_init, PROCESS_FLAG_CWD, PROCESS_FLAG_IO,
+    PROCESS_FLAG_SCHEDPOL,
 };
+use crate::ported::row::spaceship_number;
+use crate::ported::xutils::compareRealNumbers;
 use core::any::Any;
 use core::ffi::c_void;
 use std::ffi::CString;
@@ -77,6 +81,170 @@ const IOPRIO_CLASS_SHIFT: i32 = 13;
 /// Port of `#define IOPRIO_PRIO_MASK ((1UL << IOPRIO_CLASS_SHIFT) - 1)`
 /// from `IOPriority.h:24`.
 const IOPRIO_PRIO_MASK: i32 = (1 << IOPRIO_CLASS_SHIFT) - 1;
+
+// ── linux/LinuxProcess.h scan-method flags (`PROCESS_FLAG_LINUX_*`).
+// Verbatim from `LinuxProcess.h:21`; they extend the generic
+// `PROCESS_FLAG_IO`/`_CWD`/`_SCHEDPOL` from `Process.h`.
+
+/// Port of `#define PROCESS_FLAG_LINUX_IOPRIO 0x00000100` (`LinuxProcess.h:21`).
+pub const PROCESS_FLAG_LINUX_IOPRIO: u32 = 0x00000100;
+/// Port of `#define PROCESS_FLAG_LINUX_OPENVZ 0x00000200` (`LinuxProcess.h:22`).
+pub const PROCESS_FLAG_LINUX_OPENVZ: u32 = 0x00000200;
+/// Port of `#define PROCESS_FLAG_LINUX_VSERVER 0x00000400` (`LinuxProcess.h:23`).
+pub const PROCESS_FLAG_LINUX_VSERVER: u32 = 0x00000400;
+/// Port of `#define PROCESS_FLAG_LINUX_CGROUP 0x00000800` (`LinuxProcess.h:24`).
+pub const PROCESS_FLAG_LINUX_CGROUP: u32 = 0x00000800;
+/// Port of `#define PROCESS_FLAG_LINUX_OOM 0x00001000` (`LinuxProcess.h:25`).
+pub const PROCESS_FLAG_LINUX_OOM: u32 = 0x00001000;
+/// Port of `#define PROCESS_FLAG_LINUX_SMAPS 0x00002000` (`LinuxProcess.h:26`).
+pub const PROCESS_FLAG_LINUX_SMAPS: u32 = 0x00002000;
+/// Port of `#define PROCESS_FLAG_LINUX_CTXT 0x00004000` (`LinuxProcess.h:27`).
+pub const PROCESS_FLAG_LINUX_CTXT: u32 = 0x00004000;
+/// Port of `#define PROCESS_FLAG_LINUX_SECATTR 0x00008000` (`LinuxProcess.h:28`).
+pub const PROCESS_FLAG_LINUX_SECATTR: u32 = 0x00008000;
+/// Port of `#define PROCESS_FLAG_LINUX_LRS_FIX 0x00010000` (`LinuxProcess.h:29`).
+pub const PROCESS_FLAG_LINUX_LRS_FIX: u32 = 0x00010000;
+/// Port of `#define PROCESS_FLAG_LINUX_DELAYACCT 0x00040000` (`LinuxProcess.h:30`).
+pub const PROCESS_FLAG_LINUX_DELAYACCT: u32 = 0x00040000;
+/// Port of `#define PROCESS_FLAG_LINUX_AUTOGROUP 0x00080000` (`LinuxProcess.h:31`).
+pub const PROCESS_FLAG_LINUX_AUTOGROUP: u32 = 0x00080000;
+/// Port of `#define PROCESS_FLAG_LINUX_GPU 0x00100000` (`LinuxProcess.h:32`).
+pub const PROCESS_FLAG_LINUX_GPU: u32 = 0x00100000;
+/// Port of `#define PROCESS_FLAG_LINUX_CONTAINER 0x00200000` (`LinuxProcess.h:33`).
+pub const PROCESS_FLAG_LINUX_CONTAINER: u32 = 0x00200000;
+
+/// Port of `#define LAST_PROCESSFIELD LAST_RESERVED_FIELD` (`Process.h:229`).
+/// `LAST_RESERVED_FIELD` is the enum entry immediately after the last field
+/// (`ISCONTAINER = 134`), so it is `135` — also the length of
+/// [`Process_fields`].
+pub const LAST_PROCESSFIELD: usize = 135;
+
+/// `const fn` helper building one [`ProcessFieldData`] entry. Keeps the
+/// table below terse while spelling out every field at each call site, so
+/// it stays a faithful transcription of the C designated initializers.
+const fn pfd(
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    flags: u32,
+    pidColumn: bool,
+    defaultSortDesc: bool,
+    autoWidth: bool,
+    autoTitleRightAlign: bool,
+) -> ProcessFieldData {
+    ProcessFieldData {
+        name,
+        title: Some(title),
+        description: Some(description),
+        flags,
+        pidColumn,
+        defaultSortDesc,
+        autoWidth,
+        autoTitleRightAlign,
+    }
+}
+
+/// The unused/zero index-0 entry (`[0] = { .name = "", .title = NULL, … }`)
+/// and every gap between the sparse designated indices. Matches C's
+/// implicit zero-initialization of un-designated array slots.
+const EMPTY_FIELD: ProcessFieldData = ProcessFieldData {
+    name: "",
+    title: None,
+    description: None,
+    flags: 0,
+    pidColumn: false,
+    defaultSortDesc: false,
+    autoWidth: false,
+    autoTitleRightAlign: false,
+};
+
+/// Port of `const ProcessFieldData Process_fields[LAST_PROCESSFIELD]` from
+/// `linux/LinuxProcess.c` — the per-field metadata table, indexed by
+/// [`ProcessField`] id. Built for the modern default Linux configure:
+/// `HAVE_OPENVZ`/`HAVE_VSERVER` off (so the `CTID`/`VPID`/`VXID` slots stay
+/// empty, exactly as the C `#ifdef`s leave them), `HAVE_DELAYACCT` on (the
+/// `--enable-delayacct` build the `LinuxProcess` delay fields already assume),
+/// and `SCHEDULER_SUPPORT` on. Trailing spaces in the titles are significant
+/// (they set the printed column width) and are preserved verbatim.
+pub static Process_fields: [ProcessFieldData; LAST_PROCESSFIELD] = build_process_fields();
+
+const fn build_process_fields() -> [ProcessFieldData; LAST_PROCESSFIELD] {
+    use ProcessField as PF;
+    let mut t = [EMPTY_FIELD; LAST_PROCESSFIELD];
+    t[PF::PID as usize] = pfd("PID", "PID", "Process/thread ID", 0, true, false, false, false);
+    t[PF::COMM as usize] = pfd("Command", "Command ", "Command line (insert as last column only)", 0, false, false, false, false);
+    t[PF::STATE as usize] = pfd("STATE", "S ", "Process state (S sleeping, R running, D disk, Z zombie, T traced, W paging, I idle)", 0, false, false, false, false);
+    t[PF::PPID as usize] = pfd("PPID", "PPID", "Parent process ID", 0, true, false, false, false);
+    t[PF::PGRP as usize] = pfd("PGRP", "PGRP", "Process group ID", 0, true, false, false, false);
+    t[PF::SESSION as usize] = pfd("SESSION", "SID", "Process's session ID", 0, true, false, false, false);
+    t[PF::TTY as usize] = pfd("TTY", "TTY      ", "Controlling terminal", 0, false, false, false, false);
+    t[PF::TPGID as usize] = pfd("TPGID", "TPGID", "Process ID of the fg process group of the controlling terminal", 0, true, false, false, false);
+    t[PF::MINFLT as usize] = pfd("MINFLT", "     MINFLT ", "Number of minor faults which have not required loading a memory page from disk", 0, false, true, false, false);
+    t[PF::CMINFLT as usize] = pfd("CMINFLT", "    CMINFLT ", "Children processes' minor faults", 0, false, true, false, false);
+    t[PF::MAJFLT as usize] = pfd("MAJFLT", "     MAJFLT ", "Number of major faults which have required loading a memory page from disk", 0, false, true, false, false);
+    t[PF::CMAJFLT as usize] = pfd("CMAJFLT", "    CMAJFLT ", "Children processes' major faults", 0, false, true, false, false);
+    t[PF::UTIME as usize] = pfd("UTIME", " UTIME+  ", "User CPU time - time the process spent executing in user mode", 0, false, true, false, false);
+    t[PF::STIME as usize] = pfd("STIME", " STIME+  ", "System CPU time - time the kernel spent running system calls for this process", 0, false, true, false, false);
+    t[PF::CUTIME as usize] = pfd("CUTIME", " CUTIME+ ", "Children processes' user CPU time", 0, false, true, false, false);
+    t[PF::CSTIME as usize] = pfd("CSTIME", " CSTIME+ ", "Children processes' system CPU time", 0, false, true, false, false);
+    t[PF::PRIORITY as usize] = pfd("PRIORITY", "PRI ", "Kernel's internal priority for the process", 0, false, false, false, false);
+    t[PF::NICE as usize] = pfd("NICE", " NI ", "Nice value (the higher the value, the more it lets other processes take priority)", 0, false, false, false, false);
+    t[PF::STARTTIME as usize] = pfd("STARTTIME", "START ", "Time the process was started", 0, false, false, false, false);
+    t[PF::ELAPSED as usize] = pfd("ELAPSED", "ELAPSED  ", "Time since the process was started", 0, false, false, false, false);
+    t[PF::PROCESSOR as usize] = pfd("PROCESSOR", "CPU ", "Id of the CPU the process last executed on", 0, false, false, false, false);
+    t[PF::M_VIRT as usize] = pfd("M_VIRT", " VIRT ", "Total program size in virtual memory", 0, false, true, false, false);
+    t[PF::M_RESIDENT as usize] = pfd("M_RESIDENT", "  RES ", "Resident set size, size of the text and data sections, plus stack usage", 0, false, true, false, false);
+    t[PF::M_SHARE as usize] = pfd("M_SHARE", "  SHR ", "Size of the process's shared pages", 0, false, true, false, false);
+    t[PF::M_PRIV as usize] = pfd("M_PRIV", " PRIV ", "The private memory size of the process - resident set size minus shared memory", 0, false, true, false, false);
+    t[PF::M_TRS as usize] = pfd("M_TRS", " CODE ", "Size of the .text segment of the process (CODE)", 0, false, true, false, false);
+    t[PF::M_DRS as usize] = pfd("M_DRS", " DATA ", "Size of the .data segment plus stack usage of the process (DATA)", 0, false, true, false, false);
+    t[PF::M_LRS as usize] = pfd("M_LRS", "  LIB ", "The library size of the process (calculated from memory maps)", PROCESS_FLAG_LINUX_LRS_FIX, false, true, false, false);
+    t[PF::ST_UID as usize] = pfd("ST_UID", "UID", "User ID of the process owner", 0, false, false, false, false);
+    t[PF::PERCENT_CPU as usize] = pfd("PERCENT_CPU", " CPU%", "Percentage of the CPU time the process used in the last sampling", 0, false, true, true, true);
+    t[PF::PERCENT_NORM_CPU as usize] = pfd("PERCENT_NORM_CPU", "NCPU%", "Normalized percentage of the CPU time the process used in the last sampling (normalized by cpu count)", 0, false, true, true, false);
+    t[PF::PERCENT_MEM as usize] = pfd("PERCENT_MEM", "MEM% ", "Percentage of the memory the process is using, based on resident memory size", 0, false, true, false, false);
+    t[PF::USER as usize] = pfd("USER", "USER       ", "Username of the process owner (or user ID if name cannot be determined)", 0, false, false, false, false);
+    t[PF::TIME as usize] = pfd("TIME", "  TIME+  ", "Total time the process has spent in user and system time", 0, false, true, false, false);
+    t[PF::NLWP as usize] = pfd("NLWP", "NLWP ", "Number of threads in the process", 0, false, true, false, false);
+    t[PF::TGID as usize] = pfd("TGID", "TGID", "Thread group ID (i.e. process ID)", 0, true, false, false, false);
+    // HAVE_OPENVZ off: CTID/VPID slots stay EMPTY_FIELD.
+    // HAVE_VSERVER off: VXID slot stays EMPTY_FIELD.
+    t[PF::RCHAR as usize] = pfd("RCHAR", "RCHAR ", "Number of bytes the process has read", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::WCHAR as usize] = pfd("WCHAR", "WCHAR ", "Number of bytes the process has written", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::SYSCR as usize] = pfd("SYSCR", "  READ_SYSC ", "Number of read(2) syscalls for the process", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::SYSCW as usize] = pfd("SYSCW", " WRITE_SYSC ", "Number of write(2) syscalls for the process", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::RBYTES as usize] = pfd("RBYTES", " IO_R ", "Bytes of read(2) I/O for the process", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::WBYTES as usize] = pfd("WBYTES", " IO_W ", "Bytes of write(2) I/O for the process", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::CNCLWB as usize] = pfd("CNCLWB", " IO_C ", "Bytes of cancelled write(2) I/O", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::IO_READ_RATE as usize] = pfd("IO_READ_RATE", "  DISK READ ", "The I/O rate of read(2) in bytes per second for the process", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::IO_WRITE_RATE as usize] = pfd("IO_WRITE_RATE", " DISK WRITE ", "The I/O rate of write(2) in bytes per second for the process", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::IO_RATE as usize] = pfd("IO_RATE", "   DISK R/W ", "Total I/O rate in bytes per second", PROCESS_FLAG_IO, false, true, false, false);
+    t[PF::CGROUP as usize] = pfd("CGROUP", "CGROUP (raw)", "Which cgroup the process is in", PROCESS_FLAG_LINUX_CGROUP, false, false, true, false);
+    t[PF::CCGROUP as usize] = pfd("CCGROUP", "CGROUP (compressed)", "Which cgroup the process is in (condensed to essentials)", PROCESS_FLAG_LINUX_CGROUP, false, false, true, false);
+    t[PF::CONTAINER as usize] = pfd("CONTAINER", "CONTAINER", "Name of the container the process is in (guessed by heuristics)", PROCESS_FLAG_LINUX_CGROUP, false, false, true, false);
+    t[PF::OOM as usize] = pfd("OOM", " OOM ", "OOM (Out-of-Memory) killer score", PROCESS_FLAG_LINUX_OOM, false, true, false, false);
+    t[PF::IO_PRIORITY as usize] = pfd("IO_PRIORITY", "IO ", "I/O priority", PROCESS_FLAG_LINUX_IOPRIO, false, false, false, false);
+    // HAVE_DELAYACCT on:
+    t[PF::PERCENT_CPU_DELAY as usize] = pfd("PERCENT_CPU_DELAY", "CPUD% ", "CPU delay %", PROCESS_FLAG_LINUX_DELAYACCT, false, true, false, false);
+    t[PF::PERCENT_IO_DELAY as usize] = pfd("PERCENT_IO_DELAY", " IOD% ", "Block I/O delay %", PROCESS_FLAG_LINUX_DELAYACCT, false, true, false, false);
+    t[PF::PERCENT_SWAP_DELAY as usize] = pfd("PERCENT_SWAP_DELAY", "SWPD% ", "Swapin delay %", PROCESS_FLAG_LINUX_DELAYACCT, false, true, false, false);
+    t[PF::M_PSS as usize] = pfd("M_PSS", "  PSS ", "proportional set size, same as M_RESIDENT but each page is divided by the number of processes sharing it", PROCESS_FLAG_LINUX_SMAPS, false, true, false, false);
+    t[PF::M_SWAP as usize] = pfd("M_SWAP", " SWAP ", "Size of the process's swapped pages", PROCESS_FLAG_LINUX_SMAPS, false, true, false, false);
+    t[PF::M_PSSWP as usize] = pfd("M_PSSWP", " PSSWP ", "shows proportional swap share of this mapping, unlike \"Swap\", this does not take into account swapped out page of underlying shmem objects", PROCESS_FLAG_LINUX_SMAPS, false, true, false, false);
+    t[PF::CTXT as usize] = pfd("CTXT", " CTXT ", "Context switches (incremental sum of voluntary_ctxt_switches and nonvoluntary_ctxt_switches)", PROCESS_FLAG_LINUX_CTXT, false, true, false, false);
+    t[PF::SECATTR as usize] = pfd("SECATTR", "Security Attribute", "Security attribute of the process (e.g. SELinux or AppArmor)", PROCESS_FLAG_LINUX_SECATTR, false, false, true, false);
+    t[PF::PROC_COMM as usize] = pfd("COMM", "COMM            ", "comm string of the process from /proc/[pid]/comm", 0, false, false, false, false);
+    t[PF::PROC_EXE as usize] = pfd("EXE", "EXE             ", "Basename of exe of the process from /proc/[pid]/exe", 0, false, false, false, false);
+    t[PF::CWD as usize] = pfd("CWD", "CWD                       ", "The current working directory of the process", PROCESS_FLAG_CWD, false, false, false, false);
+    t[PF::AUTOGROUP_ID as usize] = pfd("AUTOGROUP_ID", "AGRP", "The autogroup identifier of the process", PROCESS_FLAG_LINUX_AUTOGROUP, false, false, false, false);
+    t[PF::AUTOGROUP_NICE as usize] = pfd("AUTOGROUP_NICE", " ANI", "Nice value (the higher the value, the more other processes take priority) associated with the process autogroup", PROCESS_FLAG_LINUX_AUTOGROUP, false, false, false, false);
+    t[PF::ISCONTAINER as usize] = pfd("ISCONTAINER", "CONT ", "Whether the process is running inside a child container", PROCESS_FLAG_LINUX_CONTAINER, false, false, false, false);
+    // SCHEDULER_SUPPORT on:
+    t[PF::SCHEDULERPOLICY as usize] = pfd("SCHEDULERPOLICY", "SCHED ", "Current scheduling policy of the process", PROCESS_FLAG_SCHEDPOL, false, false, false, false);
+    t[PF::GPU_TIME as usize] = pfd("GPU_TIME", "GPU_TIME ", "Total GPU time", PROCESS_FLAG_LINUX_GPU, false, true, false, false);
+    t[PF::GPU_PERCENT as usize] = pfd("GPU_PERCENT", " GPU% ", "Percentage of the GPU time the process used in the last sampling", PROCESS_FLAG_LINUX_GPU, false, true, false, false);
+    t
+}
 
 /// Port of `struct LinuxProcess_` from `LinuxProcess.h:33`. "Extends"
 /// [`Process`] via the embedded `super_` field (htop's emulated
@@ -480,15 +648,98 @@ pub fn LinuxProcess_rowWriteField() {
     todo!("port of LinuxProcess.c:226 — needs Linux ProcessField variants in the shared enum")
 }
 
-/// TODO: port of `static int LinuxProcess_compareByKey(const Process* v1,
-/// const Process* v2, ProcessField key)` from `LinuxProcess.c:366`. Blocked
-/// for the same reason as [`LinuxProcess_rowWriteField`]: the `switch (key)`
-/// compares the Linux platform [`ProcessField`] ids, which the shared
-/// [`ProcessField`](crate::ported::process::ProcessField) enum does not
-/// model. The per-field comparison helper [`LinuxProcess_effectiveIOPriority`]
-/// and [`LinuxProcess_totalIORate`] it uses are already ported.
-pub fn LinuxProcess_compareByKey() {
-    todo!("port of LinuxProcess.c:366 — needs Linux ProcessField variants in the shared enum")
+/// Port of `static int LinuxProcess_compareByKey(const Process* v1, const
+/// Process* v2, ProcessField key)` from `LinuxProcess.c:366`. Compares two
+/// processes on a Linux platform field, delegating unhandled keys to
+/// [`Process_compareByKey_Base`]. The C body immediately downcasts both
+/// `const Process*` to `const LinuxProcess*`, so the faithful Rust receiver
+/// is `&LinuxProcess` (Rust embedding cannot recover the outer struct from
+/// `&Process`); the base fields (`isRunningInContainer`) and the base
+/// comparison are reached through `super_`. `HAVE_OPENVZ`/`HAVE_VSERVER` are
+/// off (matching [`Process_fields`]), so the `CTID`/`VPID`/`VXID` arms are
+/// absent exactly as the C `#ifdef`s omit them; `HAVE_DELAYACCT` is on.
+pub fn LinuxProcess_compareByKey(v1: &LinuxProcess, v2: &LinuxProcess, key: ProcessField) -> i32 {
+    let p1 = v1;
+    let p2 = v2;
+    match key {
+        ProcessField::M_DRS => spaceship_number!(p1.m_drs, p2.m_drs),
+        ProcessField::M_LRS => spaceship_number!(p1.m_lrs, p2.m_lrs),
+        ProcessField::M_TRS => spaceship_number!(p1.m_trs, p2.m_trs),
+        ProcessField::M_SHARE => spaceship_number!(p1.m_share, p2.m_share),
+        ProcessField::M_PRIV => spaceship_number!(p1.m_priv, p2.m_priv),
+        ProcessField::M_PSS => spaceship_number!(p1.m_pss, p2.m_pss),
+        ProcessField::M_SWAP => spaceship_number!(p1.m_swap, p2.m_swap),
+        ProcessField::M_PSSWP => spaceship_number!(p1.m_psswp, p2.m_psswp),
+        ProcessField::UTIME => spaceship_number!(p1.utime, p2.utime),
+        ProcessField::CUTIME => spaceship_number!(p1.cutime, p2.cutime),
+        ProcessField::STIME => spaceship_number!(p1.stime, p2.stime),
+        ProcessField::CSTIME => spaceship_number!(p1.cstime, p2.cstime),
+        ProcessField::RCHAR => spaceship_number!(p1.io_rchar, p2.io_rchar),
+        ProcessField::WCHAR => spaceship_number!(p1.io_wchar, p2.io_wchar),
+        ProcessField::SYSCR => spaceship_number!(p1.io_syscr, p2.io_syscr),
+        ProcessField::SYSCW => spaceship_number!(p1.io_syscw, p2.io_syscw),
+        ProcessField::RBYTES => spaceship_number!(p1.io_read_bytes, p2.io_read_bytes),
+        ProcessField::WBYTES => spaceship_number!(p1.io_write_bytes, p2.io_write_bytes),
+        ProcessField::CNCLWB => {
+            spaceship_number!(p1.io_cancelled_write_bytes, p2.io_cancelled_write_bytes)
+        }
+        ProcessField::IO_READ_RATE => {
+            compareRealNumbers(p1.io_rate_read_bps, p2.io_rate_read_bps)
+        }
+        ProcessField::IO_WRITE_RATE => {
+            compareRealNumbers(p1.io_rate_write_bps, p2.io_rate_write_bps)
+        }
+        ProcessField::IO_RATE => {
+            compareRealNumbers(LinuxProcess_totalIORate(p1), LinuxProcess_totalIORate(p2))
+        }
+        ProcessField::CGROUP => spaceship_nullstr!(
+            p1.cgroup.as_deref().map(str::as_bytes),
+            p2.cgroup.as_deref().map(str::as_bytes)
+        ),
+        ProcessField::CCGROUP => spaceship_nullstr!(
+            p1.cgroup_short.as_deref().map(str::as_bytes),
+            p2.cgroup_short.as_deref().map(str::as_bytes)
+        ),
+        ProcessField::CONTAINER => spaceship_nullstr!(
+            p1.container_short.as_deref().map(str::as_bytes),
+            p2.container_short.as_deref().map(str::as_bytes)
+        ),
+        ProcessField::OOM => spaceship_number!(p1.oom, p2.oom),
+        ProcessField::PERCENT_CPU_DELAY => {
+            compareRealNumbers(p1.cpu_delay_percent as f64, p2.cpu_delay_percent as f64)
+        }
+        ProcessField::PERCENT_IO_DELAY => {
+            compareRealNumbers(p1.blkio_delay_percent as f64, p2.blkio_delay_percent as f64)
+        }
+        ProcessField::PERCENT_SWAP_DELAY => {
+            compareRealNumbers(p1.swapin_delay_percent as f64, p2.swapin_delay_percent as f64)
+        }
+        ProcessField::IO_PRIORITY => spaceship_number!(
+            LinuxProcess_effectiveIOPriority(p1),
+            LinuxProcess_effectiveIOPriority(p2)
+        ),
+        ProcessField::CTXT => spaceship_number!(p1.ctxt_diff, p2.ctxt_diff),
+        ProcessField::SECATTR => spaceship_nullstr!(
+            p1.secattr.as_deref().map(str::as_bytes),
+            p2.secattr.as_deref().map(str::as_bytes)
+        ),
+        ProcessField::AUTOGROUP_ID => spaceship_number!(p1.autogroup_id, p2.autogroup_id),
+        ProcessField::AUTOGROUP_NICE => spaceship_number!(p1.autogroup_nice, p2.autogroup_nice),
+        ProcessField::GPU_PERCENT => {
+            let r = compareRealNumbers(p1.gpu_percent as f64, p2.gpu_percent as f64);
+            if r != 0 {
+                r
+            } else {
+                spaceship_number!(p1.gpu_time, p2.gpu_time)
+            }
+        }
+        ProcessField::GPU_TIME => spaceship_number!(p1.gpu_time, p2.gpu_time),
+        ProcessField::ISCONTAINER => spaceship_number!(
+            v1.super_.isRunningInContainer as i32,
+            v2.super_.isRunningInContainer as i32
+        ),
+        _ => Process_compareByKey_Base(&v1.super_, &v2.super_, key),
+    }
 }
 
 #[cfg(test)]
@@ -559,5 +810,81 @@ mod tests {
         lp.io_rate_read_bps = f64::NAN;
         lp.io_rate_write_bps = f64::NAN;
         assert!(LinuxProcess_totalIORate(&lp).is_nan());
+    }
+
+    /// Spot-checks the [`Process_fields`] transcription against
+    /// `linux/LinuxProcess.c`: the table length is `LAST_PROCESSFIELD`, the
+    /// unused index 0 is empty, representative entries carry the exact
+    /// name/title/flags/bool set, and the `HAVE_OPENVZ`/`HAVE_VSERVER`-gated
+    /// slots stay empty in this build.
+    #[test]
+    fn process_fields_table_matches_c() {
+        assert_eq!(Process_fields.len(), LAST_PROCESSFIELD);
+        assert_eq!(LAST_PROCESSFIELD, 135);
+
+        let empty = &Process_fields[0];
+        assert_eq!(empty.name, "");
+        assert!(empty.title.is_none());
+
+        let pid = &Process_fields[ProcessField::PID as usize];
+        assert_eq!(pid.name, "PID");
+        assert_eq!(pid.title, Some("PID"));
+        assert!(pid.pidColumn);
+        assert!(!pid.defaultSortDesc);
+
+        // Trailing-space titles are significant (column width).
+        assert_eq!(
+            Process_fields[ProcessField::COMM as usize].title,
+            Some("Command ")
+        );
+
+        // PERCENT_CPU: desc + autoWidth + autoTitleRightAlign.
+        let cpu = &Process_fields[ProcessField::PERCENT_CPU as usize];
+        assert!(cpu.defaultSortDesc && cpu.autoWidth && cpu.autoTitleRightAlign);
+
+        // Flag transcription.
+        assert_eq!(
+            Process_fields[ProcessField::M_LRS as usize].flags,
+            PROCESS_FLAG_LINUX_LRS_FIX
+        );
+        assert_eq!(
+            Process_fields[ProcessField::RCHAR as usize].flags,
+            PROCESS_FLAG_IO
+        );
+        assert_eq!(
+            Process_fields[ProcessField::SCHEDULERPOLICY as usize].flags,
+            PROCESS_FLAG_SCHEDPOL
+        );
+
+        // OPENVZ/VSERVER off → these slots are the empty default.
+        assert_eq!(Process_fields[ProcessField::CTID as usize].name, "");
+        assert_eq!(Process_fields[ProcessField::VXID as usize].name, "");
+    }
+
+    /// [`LinuxProcess_compareByKey`]: platform fields compare on the
+    /// concrete `LinuxProcess` data, GPU_PERCENT breaks ties by `gpu_time`,
+    /// and an unhandled reserved key delegates to
+    /// [`Process_compareByKey_Base`] (which orders by PID).
+    #[test]
+    fn compare_by_key_orders_platform_and_delegates_base() {
+        let mut a = LinuxProcess_new(core::ptr::null());
+        let mut b = LinuxProcess_new(core::ptr::null());
+
+        a.utime = 10;
+        b.utime = 20;
+        assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::UTIME) < 0);
+        assert!(LinuxProcess_compareByKey(&b, &a, ProcessField::UTIME) > 0);
+
+        // GPU_PERCENT ties break on gpu_time.
+        a.gpu_percent = 5.0;
+        b.gpu_percent = 5.0;
+        a.gpu_time = 100;
+        b.gpu_time = 200;
+        assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::GPU_PERCENT) < 0);
+
+        // Reserved key (PID) → base comparison, ordered by Row id.
+        a.super_.super_.id = 7;
+        b.super_.super_.id = 3;
+        assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::PID) > 0);
     }
 }
