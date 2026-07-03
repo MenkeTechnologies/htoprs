@@ -22,6 +22,11 @@ pub mod crt;
 pub mod datetimemeter;
 pub mod diskiometer;
 pub mod displayoptionspanel;
+// DragonFly BSD uses BSD-only libc symbols (sysctlbyname/AF_LINK/if_data/...),
+// so it must be gated to its target — otherwise it breaks the linux/darwin
+// builds. It is a leaf module (nothing imports from it), so gating is safe. The
+// port-purity gate/report scan source as text, so coverage is unaffected.
+#[cfg(target_os = "dragonfly")]
 pub mod dragonflybsd;
 pub mod dynamiccolumn;
 pub mod dynamicmeter;

@@ -62,21 +62,43 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use crate::ported::generic::gettime::{Generic_gettime_monotonic, Generic_gettime_realtime};
 use crate::ported::panel::Panel;
-#[cfg(target_os = "macos")]
 use crate::ported::row::{Row_resetFieldWidths, Row_setPidColumnWidth, Row_setUidColumnWidth};
 use crate::ported::table::{
     Table, Table_scanCleanup, Table_scanIterate, Table_scanPrepare, Table_setPanel,
 };
 
-// `Machine_init` calls the platform's `Platform_getMaxPid` /
-// `Platform_gettime_realtime`, resolved at link time in the C. htoprs is
-// darwin-first, so the `#[cfg]` selects the Darwin implementations (one
-// platform per build, mirroring htop).
+// `Machine_init` calls `Platform_getMaxPid`, resolved per active platform
+// module (htop link-resolves the compiled platform's definition; here the
+// `#[cfg]` selects it — one platform per build). The clock samplers are the
+// generic `Generic_gettime_*` the per-platform `Platform_gettime_*` macros
+// alias, so `Machine_init`/`Machine_scanTables` compile on every target.
 #[cfg(target_os = "macos")]
-use crate::ported::darwin::platform::{
-    Platform_getMaxPid, Platform_gettime_monotonic, Platform_gettime_realtime,
-};
+use crate::ported::darwin::platform::Platform_getMaxPid;
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::Platform_getMaxPid;
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::Platform_getMaxPid;
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::Platform_getMaxPid;
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::Platform_getMaxPid;
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::Platform_getMaxPid;
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::platform::Platform_getMaxPid;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_os = "dragonfly"
+)))]
+use crate::ported::unsupported::platform::Platform_getMaxPid;
 
 /// htop's `Table*` — a raw pointer to a [`Table`]. The crate mirrors
 /// htop's C pointer graph 1:1 (raw-pointer ownership model): `Machine`
@@ -162,7 +184,6 @@ pub struct Machine {
 /// writes both a `timeval` and `realtimeMs`; `Machine` models only
 /// `realtimeMs` (the `timeval` reader, `checkRecalculation`, is unported),
 /// so the `timeval` is sampled into a throwaway local.
-#[cfg(target_os = "macos")]
 pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) {
     this.usersTable = usersTable;
     this.userId = userId;
@@ -172,9 +193,11 @@ pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) 
     // discover fixed column width limits
     Row_setPidColumnWidth(Platform_getMaxPid());
 
-    // always maintain valid realtime timestamps
+    // always maintain valid realtime timestamps. C calls
+    // `Platform_gettime_realtime` (a per-platform macro aliasing
+    // `Generic_gettime_realtime`).
     let mut realtime: libc::timeval = unsafe { core::mem::zeroed() };
-    Platform_gettime_realtime(&mut realtime, &mut this.realtimeMs);
+    Generic_gettime_realtime(&mut realtime, &mut this.realtimeMs);
 }
 
 /// Port of `void Machine_done(Machine* this)` from `Machine.c:53`. C body:
@@ -300,7 +323,6 @@ pub fn Machine_setTablesPanel(this: &mut Machine, panel: *mut Panel) {
 /// The scan loop dispatches through the ported [`Table`] scan vtable — the
 /// concrete Darwin table wires its slots in `ProcessTable_new`, so `iterate`
 /// reaches `ProcessTable_goThroughEntries` (the live process scan).
-#[cfg(target_os = "macos")]
 pub fn Machine_scanTables(this: &mut Machine) {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -309,7 +331,9 @@ pub fn Machine_scanTables(this: &mut Machine) {
 
     if FIRST_SCAN_DONE.load(Ordering::Relaxed) {
         this.prevMonotonicMs = this.monotonicMs;
-        Platform_gettime_monotonic(&mut this.monotonicMs);
+        // C `Platform_gettime_monotonic` (a per-platform macro aliasing
+        // `Generic_gettime_monotonic`).
+        Generic_gettime_monotonic(&mut this.monotonicMs);
     } else {
         this.prevMonotonicMs = 0;
         this.monotonicMs = 1;
