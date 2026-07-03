@@ -353,14 +353,27 @@ impl FunctionBar {
 pub(crate) struct Ncurses;
 
 impl Ncurses {
-    /// ncurses `LINES` — terminal row count (falls back to 24 with no TTY).
-    pub(crate) fn lines() -> i32 {
-        terminal::size().map(|(_c, r)| r as i32).unwrap_or(24)
+    /// htoprs extension: the border inset in cells (0 or 1). When the themed
+    /// border is on, the usable area shrinks by `2*margin` and every positioned
+    /// draw shifts in by `margin`, so htop lays its whole UI out *inside* the
+    /// border instead of underneath it (a real inset, matching iftoprs's
+    /// `margin`, not an overdraw). 0 by default → zero effect when off.
+    fn margin() -> i32 {
+        crate::extensions::overlay::border_margin() as i32
     }
 
-    /// ncurses `COLS` — terminal column count (falls back to 80 with no TTY).
+    /// ncurses `LINES` — terminal row count (falls back to 24 with no TTY),
+    /// less the border inset so panels lay out inside the frame.
+    pub(crate) fn lines() -> i32 {
+        let raw = terminal::size().map(|(_c, r)| r as i32).unwrap_or(24);
+        (raw - 2 * Self::margin()).max(1)
+    }
+
+    /// ncurses `COLS` — terminal column count (falls back to 80 with no TTY),
+    /// less the border inset.
     pub(crate) fn cols() -> i32 {
-        terminal::size().map(|(c, _r)| c as i32).unwrap_or(80)
+        let raw = terminal::size().map(|(c, _r)| c as i32).unwrap_or(80);
+        (raw - 2 * Self::margin()).max(1)
     }
 
     /// Map an ncurses color number to a crossterm [`Color`]: `0..=7` are
@@ -423,7 +436,8 @@ impl Ncurses {
         if y < 0 || x < 0 {
             return;
         }
-        let _ = queue!(out, MoveTo(x as u16, y as u16), Print(s));
+        let m = Self::margin();
+        let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16), Print(s));
     }
 
     /// ncurses `mvaddnstr(y, x, s, n)`: at most `n` bytes of `s`.
@@ -432,7 +446,8 @@ impl Ncurses {
             return;
         }
         let end = (n as usize).min(s.len());
-        let _ = queue!(out, MoveTo(x as u16, y as u16), Print(&s[..end]));
+        let m = Self::margin();
+        let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16), Print(&s[..end]));
     }
 
     /// ncurses `mvaddch(y, x, ch)`.
@@ -440,7 +455,8 @@ impl Ncurses {
         if y < 0 || x < 0 {
             return;
         }
-        let _ = queue!(out, MoveTo(x as u16, y as u16), Print(ch));
+        let m = Self::margin();
+        let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16), Print(ch));
     }
 
     /// ncurses `mvhline(y, x, ch, n)`: `n` copies of `ch` from `(y, x)`.
@@ -449,7 +465,8 @@ impl Ncurses {
             return;
         }
         let run: String = std::iter::repeat_n(ch, n as usize).collect();
-        let _ = queue!(out, MoveTo(x as u16, y as u16), Print(run));
+        let m = Self::margin();
+        let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16), Print(run));
     }
 
     /// ncurses `mvvline(y, x, ch, n)`: `n` copies of `ch` down from `(y, x)`.
@@ -457,8 +474,9 @@ impl Ncurses {
         if y < 0 || x < 0 || n <= 0 {
             return;
         }
+        let m = Self::margin();
         for k in 0..n {
-            let _ = queue!(out, MoveTo(x as u16, (y + k) as u16), Print(ch));
+            let _ = queue!(out, MoveTo((x + m) as u16, (y + k + m) as u16), Print(ch));
         }
     }
 
@@ -467,7 +485,8 @@ impl Ncurses {
         if y < 0 || x < 0 {
             return;
         }
-        let _ = queue!(out, MoveTo(x as u16, y as u16));
+        let m = Self::margin();
+        let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16));
     }
 
     /// ncurses `curs_set(0/1)`.

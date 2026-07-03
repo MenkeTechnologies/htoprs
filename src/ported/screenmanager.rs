@@ -781,6 +781,11 @@ pub fn ScreenManager_run(
         // key. It consumes its hotkeys (h/? c C x g) and, while open, every
         // key — repainting panels + overlay in the (possibly new) theme.
         if crate::extensions::overlay::dispatch_key(ch) {
+            // A border toggle changed the usable area → re-lay-out the panels
+            // (same path as a terminal resize) so content insets/expands.
+            if crate::extensions::overlay::take_layout_dirty() {
+                ScreenManager_resize(this);
+            }
             redraw = true;
             force_redraw = true;
             continue;

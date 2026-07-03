@@ -171,6 +171,9 @@ pub struct OverlayState {
     /// I/O happens in [`dispatch_key`] (kept out of `handle_key` so that stays
     /// pure and testable).
     pub dirty: bool,
+    /// Set when the usable area changed (border toggled) and the panels must be
+    /// re-laid-out; consumed by the run loop via [`take_layout_dirty`].
+    pub layout_dirty: bool,
 }
 
 impl Default for OverlayState {
@@ -197,6 +200,7 @@ impl OverlayState {
             status: None,
             themed: false,
             dirty: false,
+            layout_dirty: false,
         }
     }
 
@@ -391,6 +395,7 @@ impl OverlayState {
             // that feature. `b` (border) is free in htop's key map.
             KeyCode::Char('b') => {
                 self.show_border = !self.show_border;
+                self.layout_dirty = true; // the usable area changed → re-layout
                 self.set_status(if self.show_border {
                     "Border: on"
                 } else {
@@ -473,6 +478,25 @@ pub fn overlay_active() -> bool {
     OVERLAY.with(|o| o.borrow().any_active())
 }
 
+/// The current border inset in cells (1 when the border is on, else 0). The
+/// `Ncurses` draw shim shrinks the usable `cols`/`lines` by twice this and
+/// offsets every positioned draw by this, so htop lays its whole UI out inside
+/// the border instead of underneath it.
+pub fn border_margin() -> u16 {
+    OVERLAY.with(|o| if o.borrow().show_border { 1 } else { 0 })
+}
+
+/// Read and clear the layout-dirty flag; the run loop resizes the panels when
+/// this returns true (after a `b` border toggle).
+pub fn take_layout_dirty() -> bool {
+    OVERLAY.with(|o| {
+        let mut s = o.borrow_mut();
+        let d = s.layout_dirty;
+        s.layout_dirty = false;
+        d
+    })
+}
+
 /// Route an ncurses key int into the live overlay. Returns `true` if the
 /// overlay consumed it (an overlay hotkey, or any key while an overlay is
 /// open). On a theme change, pushes the live palette to [`super::colors`] so
@@ -544,9 +568,10 @@ pub fn draw_active<W: Write>(out: &mut W) {
 /// color, when `show_border` is set. Drawn after the panels and before the
 /// modal overlays. A no-op when the border is off.
 ///
-/// Unlike iftoprs (which insets its content by a 1-cell margin), htoprs's htop
-/// panels fill the screen, so the border overdraws the outermost row/column of
-/// panel content — insetting htop's layout is separate, deeper work.
+/// This is a real inset (matching iftoprs's `margin`), not an overdraw: when
+/// the border is on, [`border_margin`] makes the `Ncurses` shim shrink the
+/// usable `cols`/`lines` by 2 and offset every draw by 1, so htop's whole UI
+/// lays out *inside* this frame. The box here occupies the freed outer ring.
 pub fn draw_chrome<W: Write>(out: &mut W) {
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
     if cols < 2 || rows < 2 {
