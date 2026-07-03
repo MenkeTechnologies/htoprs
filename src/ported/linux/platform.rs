@@ -32,8 +32,28 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use std::ffi::{CStr, CString};
 use std::sync::Mutex;
 
+use core::any::Any;
+
+use crate::ported::action::{
+    Action_pickFromVector, Htop_Action, Htop_Reaction, State, HTOP_OK, HTOP_REDRAW_BAR,
+    HTOP_REFRESH, HTOP_UPDATE_PANELHDR,
+};
 use crate::ported::batterymeter::ACPresence;
 use crate::ported::batterymeter::BatteryMeter_class;
+use crate::ported::commandline::CommandLineStatus;
+use crate::ported::crt::KEY_F;
+use crate::ported::functionbar::Ncurses;
+use crate::ported::linux::ioprioritypanel::IOPriorityPanel_new;
+use crate::ported::linux::linuxprocess::{
+    IOPriority, LinuxProcess, LinuxProcess_isAutogroupEnabled,
+    LinuxProcess_rowChangeAutogroupPriorityBy, LinuxProcess_rowSetIOPriority,
+};
+use crate::ported::listitem::ListItem;
+use crate::ported::mainpanel::{MainPanel, MainPanel_foreachRow};
+use crate::ported::object::{Arg, Object};
+use crate::ported::panel::Panel_getSelected;
+use crate::ported::processlocksscreen::{FileLocks_Data, FileLocks_LockData, FileLocks_ProcessData};
+use crate::ported::settings::Settings_isReadonly;
 use crate::ported::cpumeter::{
     AllCPUs2Meter_class, AllCPUs4Meter_class, AllCPUs8Meter_class, AllCPUsMeter_class,
     CPUMeter_class, LeftCPUs2Meter_class, LeftCPUs4Meter_class, LeftCPUs8Meter_class,
@@ -186,29 +206,169 @@ const O_PATH: libc::c_int = 0o10000000;
 #[allow(non_upper_case_globals)] // faithful port of C global `Running_containerized`
 pub static Running_containerized: AtomicBool = AtomicBool::new(false);
 
-/// TODO: port of `static Htop_Reaction Platform_actionSetIOPriority(State* st` from `Platform.c:172`.
-pub fn Platform_actionSetIOPriority() {
-    todo!("port of Platform.c:172")
+/// Port of `static Htop_Reaction Platform_actionSetIOPriority(State* st)` from
+/// `Platform.c:172`. Reads the selected process's current `ioPriority`, opens
+/// the [`IOPriorityPanel_new`] picker via [`Action_pickFromVector`], and — if a
+/// row was picked — applies the chosen priority to every tagged/selected row
+/// through [`MainPanel_foreachRow`] + [`LinuxProcess_rowSetIOPriority`],
+/// `beep`ing on failure.
+///
+/// Ownership adaptations (the sibling `actionKill`/`actionSetSortColumn`
+/// precedent): [`Action_pickFromVector`] consumes the boxed picker and returns
+/// the picked object, so the C `IOPriorityPanel_getIOPriority(ioprioPanel)`
+/// after the pick has no live panel to read. The returned object **is** the
+/// picker's selected `ListItem` (exactly what `IOPriorityPanel_getIOPriority`
+/// downcasts and reads `->key` from), so `ioprio2` is that `ListItem`'s `key`
+/// — the identical value. The C `Panel_delete(ioprioPanel)` is likewise
+/// unneeded (the picker box drops inside [`Action_pickFromVector`]).
+pub fn Platform_actionSetIOPriority(st: &mut State) -> Htop_Reaction {
+    // C: if (Settings_isReadonly()) return HTOP_OK;
+    if Settings_isReadonly() {
+        return HTOP_OK;
+    }
+
+    // C: const LinuxProcess* p = (const LinuxProcess*) Panel_getSelected((Panel*)st->mainPanel);
+    //    if (!p) return HTOP_OK;
+    //    IOPriority ioprio1 = p->ioPriority;
+    // SAFETY: st->mainPanel is the caller-owned MainPanel* for the modal run.
+    let ioprio1: IOPriority = match Panel_getSelected(unsafe { &(*st.mainPanel).super_ }) {
+        Some(obj) => {
+            let any: &dyn Any = obj;
+            any.downcast_ref::<LinuxProcess>()
+                .expect("Platform_actionSetIOPriority: selected row is not a LinuxProcess")
+                .ioPriority
+        }
+        None => return HTOP_OK,
+    };
+
+    // C: Panel* ioprioPanel = IOPriorityPanel_new(ioprio1);
+    //    const void* set = Action_pickFromVector(st, ioprioPanel, 20, true);
+    let ioprio_panel = IOPriorityPanel_new(ioprio1);
+    let set = Action_pickFromVector(st, Box::new(ioprio_panel), 20, true);
+
+    // C: if (set) { IOPriority ioprio2 = IOPriorityPanel_getIOPriority(ioprioPanel);
+    //       bool ok = MainPanel_foreachRow(st->mainPanel, LinuxProcess_rowSetIOPriority,
+    //          (Arg){.i = ioprio2}, NULL); if (!ok) beep(); }
+    if let Some(obj) = set {
+        let any: &dyn Any = obj.as_ref();
+        let ioprio2: IOPriority = any
+            .downcast_ref::<ListItem>()
+            .expect("Platform_actionSetIOPriority: picked item is not a ListItem")
+            .key;
+        // SAFETY: st->mainPanel valid; the modal has returned, no live &mut aliases.
+        let ok = MainPanel_foreachRow(
+            unsafe { &mut *st.mainPanel },
+            LinuxProcess_rowSetIOPriority,
+            Arg::I(ioprio2),
+            None,
+        );
+        if !ok {
+            let mut out = std::io::stdout().lock();
+            Ncurses::beep(&mut out);
+        }
+    }
+
+    // C: Panel_delete((Object*)ioprioPanel);  — consumed by Action_pickFromVector.
+    // C: return HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
-/// TODO: port of `static bool Platform_changeAutogroupPriority(MainPanel* panel, int delta` from `Platform.c:194`.
-pub fn Platform_changeAutogroupPriority() {
-    todo!("port of Platform.c:194")
+/// Port of `static bool Platform_changeAutogroupPriority(MainPanel* panel,
+/// int delta)` from `Platform.c:194`. `beep`s and returns `false` when the
+/// kernel's autogroup feature is disabled; otherwise applies `delta` to every
+/// tagged/selected row via [`MainPanel_foreachRow`] +
+/// [`LinuxProcess_rowChangeAutogroupPriorityBy`], `beep`ing on failure, and
+/// returns whether any row was tagged.
+///
+/// [`LinuxProcess_rowChangeAutogroupPriorityBy`] takes `&dyn Object` (it only
+/// reads the pid) while [`MainPanel_foreachRow`]'s callback type is
+/// `fn(&mut dyn Object, Arg) -> bool`; the nested `apply` fn bridges the two by
+/// reborrowing the `&mut` to `&` — the faithful analog of C passing the
+/// function pointer directly (both C signatures are `bool(*)(Row*, Arg)`).
+fn Platform_changeAutogroupPriority(panel: &mut MainPanel, delta: i32) -> bool {
+    // C: if (LinuxProcess_isAutogroupEnabled() == false) { beep(); return false; }
+    if !LinuxProcess_isAutogroupEnabled() {
+        let mut out = std::io::stdout().lock();
+        Ncurses::beep(&mut out);
+        return false;
+    }
+
+    // Callback bridge: `&mut dyn Object` (foreachRow) → `&dyn Object` (callee).
+    fn apply(row: &mut dyn Object, delta: Arg) -> bool {
+        LinuxProcess_rowChangeAutogroupPriorityBy(row, delta)
+    }
+
+    // C: bool anyTagged;
+    //    bool ok = MainPanel_foreachRow(panel, LinuxProcess_rowChangeAutogroupPriorityBy,
+    //       (Arg){.i = delta}, &anyTagged);
+    let mut anyTagged = false;
+    let ok = MainPanel_foreachRow(panel, apply, Arg::I(delta), Some(&mut anyTagged));
+    // C: if (!ok) beep();
+    if !ok {
+        let mut out = std::io::stdout().lock();
+        Ncurses::beep(&mut out);
+    }
+    // C: return anyTagged;
+    anyTagged
 }
 
-/// TODO: port of `static Htop_Reaction Platform_actionHigherAutogroupPriority(State* st` from `Platform.c:206`.
-pub fn Platform_actionHigherAutogroupPriority() {
-    todo!("port of Platform.c:206")
+/// Port of `static Htop_Reaction Platform_actionHigherAutogroupPriority(State*
+/// st)` from `Platform.c:206`. Bumps the autogroup priority by `-1` (higher);
+/// returns `HTOP_REFRESH` when a row changed, else `HTOP_OK`.
+pub fn Platform_actionHigherAutogroupPriority(st: &mut State) -> Htop_Reaction {
+    // C: if (Settings_isReadonly()) return HTOP_OK;
+    if Settings_isReadonly() {
+        return HTOP_OK;
+    }
+    // C: bool changed = Platform_changeAutogroupPriority(st->mainPanel, -1);
+    // SAFETY: st->mainPanel is the caller-owned MainPanel* for the run.
+    let changed = Platform_changeAutogroupPriority(unsafe { &mut *st.mainPanel }, -1);
+    // C: return changed ? HTOP_REFRESH : HTOP_OK;
+    if changed {
+        HTOP_REFRESH
+    } else {
+        HTOP_OK
+    }
 }
 
-/// TODO: port of `static Htop_Reaction Platform_actionLowerAutogroupPriority(State* st` from `Platform.c:214`.
-pub fn Platform_actionLowerAutogroupPriority() {
-    todo!("port of Platform.c:214")
+/// Port of `static Htop_Reaction Platform_actionLowerAutogroupPriority(State*
+/// st)` from `Platform.c:214`. Bumps the autogroup priority by `+1` (lower);
+/// returns `HTOP_REFRESH` when a row changed, else `HTOP_OK`.
+pub fn Platform_actionLowerAutogroupPriority(st: &mut State) -> Htop_Reaction {
+    // C: if (Settings_isReadonly()) return HTOP_OK;
+    if Settings_isReadonly() {
+        return HTOP_OK;
+    }
+    // C: bool changed = Platform_changeAutogroupPriority(st->mainPanel, 1);
+    // SAFETY: st->mainPanel is the caller-owned MainPanel* for the run.
+    let changed = Platform_changeAutogroupPriority(unsafe { &mut *st.mainPanel }, 1);
+    // C: return changed ? HTOP_REFRESH : HTOP_OK;
+    if changed {
+        HTOP_REFRESH
+    } else {
+        HTOP_OK
+    }
 }
 
-/// TODO: port of `void Platform_setBindings(Htop_Action* keys` from `Platform.c:222`.
-pub fn Platform_setBindings() {
-    todo!("port of Platform.c:222")
+/// Port of `void Platform_setBindings(Htop_Action* keys)` from `Platform.c:222`.
+/// Binds the Linux-specific process keys onto the shared action table:
+/// `i` = set IO priority, `{`/`}` = lower/higher autogroup priority, and the
+/// `Shift-F7`/`Shift-F8` aliases (`KEY_F(19)`/`KEY_F(20)`).
+///
+/// The `Htop_Action*` array maps to `&mut [Option<Htop_Action>]` (the
+/// `Action_setBindings` model); each C `keys[c] = fn` becomes
+/// `keys[c] = Some(fn)`.
+pub fn Platform_setBindings(keys: &mut [Option<Htop_Action>]) {
+    // C: keys['i'] = Platform_actionSetIOPriority;
+    keys[b'i' as usize] = Some(Platform_actionSetIOPriority);
+    // C: keys['{'] = Platform_actionLowerAutogroupPriority;
+    keys[b'{' as usize] = Some(Platform_actionLowerAutogroupPriority);
+    // C: keys['}'] = Platform_actionHigherAutogroupPriority;
+    keys[b'}' as usize] = Some(Platform_actionHigherAutogroupPriority);
+    // C: keys[KEY_F(19)] = Platform_actionLowerAutogroupPriority;  // Shift-F7
+    keys[KEY_F(19) as usize] = Some(Platform_actionLowerAutogroupPriority);
+    // C: keys[KEY_F(20)] = Platform_actionHigherAutogroupPriority; // Shift-F8
+    keys[KEY_F(20) as usize] = Some(Platform_actionHigherAutogroupPriority);
 }
 
 /// Port of `int Platform_getUptime(void)` from `Platform.c:283`. Reads
@@ -741,9 +901,223 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
     Some(String::from_utf8_lossy(&env).into_owned())
 }
 
-/// TODO: port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid` from `Platform.c:555`.
-pub fn Platform_getProcessLocks() {
-    todo!("port of Platform.c:555")
+/// Port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)` from
+/// `Platform.c:555`. Walks `PROCDIR/<pid>/fdinfo/`; for every numeric entry it
+/// opens the fdinfo file (`openat` relative to the dir fd, as in the C) and
+/// parses each `"lock:\t"` line — `sscanf(..., "%d: %31s %31s %31s %d
+/// %x:%x:%<u64> %<u64> %24s")` — into a [`FileLocks_Data`], resolving the
+/// `dev` from `makedev(maj, min)`, the end offset (`"EOF"` → `ULLONG_MAX`), and
+/// the backing path via `readlink(PROCDIR/<pid>/fd/<name>)`.
+///
+/// Signature mapping: C `pid_t pid` → [`libc::pid_t`]; the C returns a heap
+/// `FileLocks_ProcessData*` that is never `NULL` on Linux (only `pdata->error`
+/// signals failure) — the faithful analog is `Option<FileLocks_ProcessData>`
+/// (matching darwin's `None`/`NULL`), always `Some` here with `error = true`
+/// on any `opendir`/`dirfd` failure (the C `goto err`). The C singly-linked
+/// append list (`*data_ref = xCalloc(...); data_ref = &(*data_ref)->next`) is
+/// built in order in a `Vec` and folded into the owned `Option<Box<...>>`
+/// chain. `openat`/`readlink`/`makedev`/`opendir`/`readdir`/`dirfd` are called
+/// via `libc` (the dirent precedent already in this file); the fdinfo fd is
+/// wrapped in a `File` (`from_raw_fd`) and read whole, then iterated line by
+/// line — the C `fgets` loop that skips lines lacking a `'\n'` maps to
+/// `split_inclusive('\n')` keeping only newline-terminated lines.
+pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessData> {
+    use std::io::Read;
+    use std::os::unix::io::FromRawFd;
+
+    // C: FileLocks_ProcessData* pdata = xCalloc(1, ...);
+    let mut pdata = FileLocks_ProcessData {
+        error: false,
+        locks: None,
+    };
+    // C: goto err — sets pdata->error and returns pdata.
+    macro_rules! err_out {
+        () => {{
+            pdata.error = true;
+            return Some(pdata);
+        }};
+    }
+
+    // C: xSnprintf(path, sizeof(path), PROCDIR "/%d/fdinfo/", pid);
+    //    if (strlen(path) >= (sizeof(path) - 2)) goto err;
+    let path = format!("{}/{}/fdinfo/", PROCDIR, pid);
+    if path.len() >= (libc::PATH_MAX as usize).saturating_sub(2) {
+        err_out!();
+    }
+    let cpath = match CString::new(path) {
+        Ok(c) => c,
+        Err(_) => err_out!(),
+    };
+
+    // C: if (!(dirp = opendir(path))) goto err;
+    let dirp = unsafe { libc::opendir(cpath.as_ptr()) };
+    if dirp.is_null() {
+        err_out!();
+    }
+    // C: if ((dfd = dirfd(dirp)) == -1) { closedir(dirp); goto err; }
+    let dfd = unsafe { libc::dirfd(dirp) };
+    if dfd == -1 {
+        unsafe { libc::closedir(dirp) };
+        err_out!();
+    }
+
+    // sscanf(buffer + strlen("lock:\t"), "%d: %31s %31s %31s %d %x:%x:%llu %llu %24s",
+    //    &_, locktype, exclusive, readwrite, &_, &maj, &min, &inode, &start, lock_end)
+    // Returns (locktype, exclusive, readwrite, maj, min, inode, start, lock_end)
+    // only when all 10 conversions succeed (C `10 != sscanf` → continue).
+    let scan_lock = |rest: &str| -> Option<(String, String, String, u32, u32, u64, u64, String)> {
+        let mut it = rest.split_whitespace();
+        // %d: — the lock index, then a literal ':' with no space ("1:").
+        let idx = it.next()?;
+        idx.strip_suffix(':')?.parse::<i32>().ok()?;
+        // %31s %31s %31s — truncated to width 31 as sscanf would.
+        let take31 = |s: &str| -> String { s.chars().take(31).collect() };
+        let locktype = take31(it.next()?);
+        let exclusive = take31(it.next()?);
+        let readwrite = take31(it.next()?);
+        // %d — the owning pid (ignored).
+        it.next()?.parse::<i32>().ok()?;
+        // %x:%x:%llu — major (hex), minor (hex), inode (dec), one token.
+        let devinode = it.next()?;
+        let mut dp = devinode.split(':');
+        let maj = u32::from_str_radix(dp.next()?, 16).ok()?;
+        let min = u32::from_str_radix(dp.next()?, 16).ok()?;
+        let inode = dp.next()?.parse::<u64>().ok()?;
+        if dp.next().is_some() {
+            return None;
+        }
+        // %llu — the start offset.
+        let start = it.next()?.parse::<u64>().ok()?;
+        // %24s — the end offset marker ("EOF" or a decimal), truncated to 24.
+        let lock_end: String = it.next()?.chars().take(24).collect();
+        Some((locktype, exclusive, readwrite, maj, min, inode, start, lock_end))
+    };
+
+    // C builds an in-order singly-linked list; collect in order here.
+    let mut collected: Vec<FileLocks_Data> = Vec::new();
+
+    // C: for (struct dirent* de; (de = readdir(dirp)); )
+    loop {
+        let de = unsafe { libc::readdir(dirp) };
+        if de.is_null() {
+            break;
+        }
+        let dname_c = unsafe { CStr::from_ptr((*de).d_name.as_ptr()) };
+        let dname = dname_c.to_string_lossy();
+
+        // C: if (String_eq(de->d_name, ".") || String_eq(de->d_name, "..")) continue;
+        if dname == "." || dname == ".." {
+            continue;
+        }
+
+        // C: errno = 0; char* end = de->d_name;
+        //    unsigned long int fdstr = strtoul(de->d_name, &end, 10);
+        //    if (errno || *end || fdstr >= INT_MAX) continue; int file = (int)fdstr;
+        // Require a pure decimal string strictly below INT_MAX.
+        let file: i32 = match dname.parse::<u64>() {
+            Ok(v) if v < i32::MAX as u64 => v as i32,
+            _ => continue,
+        };
+
+        // C: int fd = openat(dfd, de->d_name, O_RDONLY | O_CLOEXEC); if (fd == -1) continue;
+        let fd = unsafe {
+            libc::openat(dfd, (*de).d_name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
+        };
+        if fd == -1 {
+            continue;
+        }
+        // C: FILE* fp = fdopen(fd, "r"); if (!fp) { close(fd); continue; }
+        // The File owns the fd and closes it on drop (C `fclose(fp)`).
+        let mut fp = unsafe { std::fs::File::from_raw_fd(fd) };
+        let mut content = String::new();
+        if fp.read_to_string(&mut content).is_err() {
+            continue;
+        }
+
+        // C: for (char buffer[1024]; fgets(buffer, sizeof(buffer), fp); )
+        //       if (!strchr(buffer, '\n')) continue;  — only newline-terminated lines.
+        for raw in content.split_inclusive('\n') {
+            if !raw.ends_with('\n') {
+                continue;
+            }
+            // C: if (!String_startsWith(buffer, "lock:\t")) continue;
+            let rest = match raw.strip_prefix("lock:\t") {
+                Some(r) => r,
+                None => continue,
+            };
+
+            // C: if (10 != sscanf(...)) continue;
+            let (locktype, exclusive, readwrite, maj, min, inode, start, lock_end) =
+                match scan_lock(rest) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+            // C: FileLocks_Data data = {.fd = file};
+            let mut data = FileLocks_Data {
+                fd: file,
+                locktype,
+                exclusive,
+                readwrite,
+                // C: data.dev = makedev(maj, min);
+                // `makedev` is a safe `const fn` in libc; its arg type differs by
+                // platform (`i32` on darwin, `c_uint` on linux), so `as _` lets
+                // inference pick, and `dev_t` (`i32`/`u64`) widens to `u64`.
+                dev: libc::makedev(maj as _, min as _) as u64,
+                inode,
+                start,
+                // C: if (String_eq(lock_end, "EOF")) data.end = ULLONG_MAX;
+                //    else data.end = strtoull(lock_end, NULL, 10);
+                end: if lock_end == "EOF" {
+                    u64::MAX
+                } else {
+                    lock_end.parse::<u64>().unwrap_or(0)
+                },
+                filename: None,
+            };
+
+            // C: xSnprintf(path, ..., PROCDIR "/%d/fd/%s", pid, de->d_name);
+            //    if (strlen(path) < (sizeof(path) - 2) && (link_len = readlink(...)) != -1)
+            //       data.filename = xStrndup(link, link_len);
+            let fdpath = format!("{}/{}/fd/{}", PROCDIR, pid, dname);
+            if fdpath.len() < (libc::PATH_MAX as usize).saturating_sub(2) {
+                if let Ok(cfd) = CString::new(fdpath) {
+                    let mut link = [0u8; libc::PATH_MAX as usize];
+                    let link_len = unsafe {
+                        libc::readlink(
+                            cfd.as_ptr(),
+                            link.as_mut_ptr() as *mut libc::c_char,
+                            link.len(),
+                        )
+                    };
+                    if link_len != -1 {
+                        data.filename = Some(
+                            String::from_utf8_lossy(&link[..link_len as usize]).into_owned(),
+                        );
+                    }
+                }
+            }
+
+            // C: *data_ref = xCalloc(1, ...); (*data_ref)->data = data;
+            //    data_ref = &(*data_ref)->next;
+            collected.push(data);
+        }
+
+        // C: fclose(fp);  — File dropped here, closing the fd.
+    }
+
+    // C: closedir(dirp);
+    unsafe { libc::closedir(dirp) };
+
+    // Fold the in-order Vec into the owned linked list (head-first order).
+    let mut head: Option<Box<FileLocks_LockData>> = None;
+    for data in collected.into_iter().rev() {
+        head = Some(Box::new(FileLocks_LockData { data, next: head }));
+    }
+    pdata.locks = head;
+
+    // C: return pdata;
+    Some(pdata)
 }
 
 /// Port of `void Platform_getPressureStall(const char* file, bool some, double* ten, double* sixty, double* threehundred)` from `Platform.c:643`.
@@ -1253,9 +1627,24 @@ pub fn Platform_getBattery(percent: &mut f64, isOnAC: &mut ACPresence) {
 /// alternative build and is not ported (rule 3).
 pub fn Platform_longOptionsUsage(_name: &str) {}
 
-/// TODO: port of `CommandLineStatus Platform_getLongOption(int opt, int argc, char** argv` from `Platform.c:1008`.
-pub fn Platform_getLongOption() {
-    todo!("port of Platform.c:1008")
+/// Port of `CommandLineStatus Platform_getLongOption(int opt, int argc,
+/// char** argv)` from `Platform.c:1008`. On this build `HAVE_LIBCAP` is
+/// undefined, so the C `#ifndef HAVE_LIBCAP` prelude casts `argc`/`argv` to
+/// `(void)` and the only `switch` case (`160`, `--drop-capabilities`) is
+/// `#ifdef HAVE_LIBCAP`-gated out — leaving `default: break;` and the trailing
+/// `return STATUS_ERROR_EXIT`. So every option reaches the error-exit return.
+/// The `HAVE_LIBCAP` capability branch is the mutually-exclusive alternative
+/// build and is not ported (rule 3).
+///
+/// Signature mapping: C `int opt` → `i32`; the unused `int argc, char** argv`
+/// → `_argc: i32, _argv: &[String]` (the `parseArguments` argv model), both
+/// ignored exactly as the C `(void)` casts them.
+pub fn Platform_getLongOption(opt: i32, _argc: i32, _argv: &[String]) -> CommandLineStatus {
+    // C: switch (opt) { default: break; }  — the sole case (160) is
+    // HAVE_LIBCAP-only, so on this build the switch does nothing.
+    let _ = opt;
+    // C: return STATUS_ERROR_EXIT;
+    CommandLineStatus::ErrorExit
 }
 
 /// TODO: port of `static int dropCapabilities(enum CapMode mode` from `Platform.c:1044`.

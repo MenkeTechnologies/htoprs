@@ -616,7 +616,11 @@ mod tests {
         assert_eq!(panel.items.len(), expected_rows);
         // First row's value is the numeric min; selection landed on it.
         assert_eq!(row_value(&panel, 0), format!("{}", min));
-        assert_eq!(panel.selected, min);
+        // `Panel.selected` is a row index, not a priority value: the C
+        // (`Scheduling.c:96`) calls `Panel_setSelected(this, i)` mid-loop, so
+        // the value `pre` is clamped to the partial size and resolves to the
+        // preselected priority's row index (`pre - min`) — here 0.
+        assert_eq!(panel.selected, pre - min);
     }
 
     #[cfg(target_os = "linux")]
