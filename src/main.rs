@@ -151,6 +151,10 @@ fn run_tui() {
     Machine_scan(unsafe { &mut *host_raw });
     Machine_scanTables(unsafe { &mut (*host_raw).super_ });
 
+    // htoprs extension: load the saved theme (if any) and apply its colors
+    // before the first frame, so a previously-chosen theme is active on launch.
+    htoprs::extensions::overlay::init_from_prefs();
+
     // The main loop.
     ScreenManager_run(&mut scr, None, None, None);
 

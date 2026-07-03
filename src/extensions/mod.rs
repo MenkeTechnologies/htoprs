@@ -15,4 +15,5 @@
 
 pub mod colors;
 pub mod overlay;
+pub mod prefs;
 pub mod theme;

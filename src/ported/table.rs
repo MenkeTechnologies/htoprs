@@ -68,7 +68,7 @@ use crate::ported::richstring::{
     RichString_rewind, RichString_size,
 };
 use crate::ported::row::{
-    Row, RowField_alignedTitle, Row_compare, Row_compareByParent_Base, Row_getGroupOrParent,
+    Row, RowField_alignedTitle, Row_compareByParent_Base, Row_getGroupOrParent,
     Row_isChildOf,
 };
 use crate::ported::settings::{
@@ -582,10 +582,16 @@ pub fn Table_updateDisplayList(this: &mut Table) {
         if this.needsSort {
             let n = this.rows.len() as isize;
             insertionSort(&mut this.rows, 0, n - 1, &|a, b| {
-                Row_compare(
-                    a.as_ref().unwrap().as_row().unwrap(),
-                    b.as_ref().unwrap().as_row().unwrap(),
-                )
+                // C `Vector_insertionSort(this->rows)` orders through the
+                // object class `compare` vtable slot — for process rows that
+                // is `Process_compare`, which reads the active sort key /
+                // direction from `settings->ss`. Dispatch via the `Object`
+                // trait method, NOT the base free `Row_compare` (which only
+                // orders by `id` and would ignore the sort key and direction).
+                a.as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .compare(b.as_ref().unwrap().as_ref())
             });
             this.rebuild_index();
         }

@@ -39,6 +39,5 @@ serde = { version = "1.0.228", features = ["derive"] }
 # (and therefore no second crossterm) — htoprs drives the terminal via its own
 # crossterm 0.29 directly.
 ratatui = { version = "0.30.0", default-features = false, features = ["std"] }
-
-[dev-dependencies]
+# Extensions-only: persist the selected theme to ~/.config/htoprs/prefs.json.
 serde_json = "1.0"

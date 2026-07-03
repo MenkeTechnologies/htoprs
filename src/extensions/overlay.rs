@@ -166,6 +166,10 @@ pub struct OverlayState {
     /// True once the user has engaged the theme UI (`c`/`C`). While set, the
     /// live palette is pushed to [`super::colors`] so the htoprs UI recolors.
     pub themed: bool,
+    /// Set when a selection/save should be persisted to the prefs file; the
+    /// I/O happens in [`dispatch_key`] (kept out of `handle_key` so that stays
+    /// pure and testable).
+    pub dirty: bool,
 }
 
 impl Default for OverlayState {
@@ -190,6 +194,7 @@ impl OverlayState {
             active_custom_theme: None,
             status: None,
             themed: false,
+            dirty: false,
         }
     }
 
@@ -247,6 +252,7 @@ impl OverlayState {
                 }
                 KeyCode::Enter => {
                     self.theme_chooser.active = false;
+                    self.dirty = true; // persist the chosen theme
                 }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') => {
                     self.theme_chooser.active = false;
@@ -277,6 +283,7 @@ impl OverlayState {
                             );
                             self.active_custom_theme = Some(name.clone());
                             self.set_status(format!("Saved theme: {}", name));
+                            self.dirty = true; // persist the new custom theme
                         }
                         self.theme_edit.active = false;
                         self.theme_edit.naming = false;
@@ -376,7 +383,11 @@ impl OverlayState {
                     .unwrap_or_else(|| Theme::palette_values(self.theme_name));
                 self.theme_edit.open(palette);
             }
-            KeyCode::Char('x') => {
+            // Border toggle is on `b` (not `x`): htop binds `x` to the
+            // file-locks screen (`action.rs` actionShowLocks), and the overlay
+            // intercepts keys before htop's handler, so using `x` here shadowed
+            // that feature. `b` (border) is free in htop's key map.
+            KeyCode::Char('b') => {
                 self.show_border = !self.show_border;
                 self.set_status(if self.show_border {
                     "Border: on"
@@ -466,8 +477,38 @@ pub fn dispatch_key(ch: i32) -> bool {
         if consumed && s.themed {
             super::colors::apply_palette(s.current_palette());
         }
+        if s.dirty {
+            s.dirty = false;
+            super::prefs::save(&super::prefs::Prefs {
+                theme: s.theme_name,
+                active_custom_theme: s.active_custom_theme.clone(),
+                custom_themes: s.custom_themes.clone(),
+            });
+        }
         consumed
     })
+}
+
+/// Load the saved theme prefs (if any) into the live overlay state and apply
+/// the colors, so a previously-chosen theme is active from the first frame.
+/// A no-op when no prefs file exists. Called once at TUI startup, before the
+/// first panel draw.
+pub fn init_from_prefs() {
+    let Some(p) = super::prefs::load() else {
+        return;
+    };
+    OVERLAY.with(|o| {
+        let mut s = o.borrow_mut();
+        s.theme_name = p.theme;
+        s.custom_themes = p.custom_themes;
+        s.active_custom_theme = p.active_custom_theme;
+        s.themed = true;
+        let palette = s.current_palette();
+        s.theme = Theme::from_palette_raw(
+            palette[0], palette[1], palette[2], palette[3], palette[4], palette[5],
+        );
+        super::colors::apply_palette(palette);
+    });
 }
 
 /// Draw the active overlay (if any) over the current screen, then flush.
@@ -708,7 +749,7 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
             &[
                 ("c", "Theme chooser"),
                 ("C", "Theme editor"),
-                ("x", "Toggle border"),
+                ("b", "Toggle border"),
                 ("g", "Toggle header"),
                 ("h ?", "Toggle help"),
                 ("q", "Quit"),
@@ -1061,14 +1102,21 @@ mod tests {
     }
 
     #[test]
-    fn x_toggles_border_with_status() {
+    fn b_toggles_border_with_status() {
         let mut s = OverlayState::new();
-        assert!(s.handle_key(key(KeyCode::Char('x'))));
+        assert!(s.handle_key(key(KeyCode::Char('b'))));
         assert!(!s.show_border);
         assert_eq!(s.status.as_deref(), Some("Border: off"));
-        s.handle_key(key(KeyCode::Char('x')));
+        s.handle_key(key(KeyCode::Char('b')));
         assert!(s.show_border);
         assert_eq!(s.status.as_deref(), Some("Border: on"));
+    }
+
+    #[test]
+    fn x_is_not_consumed_by_overlay_when_idle() {
+        // htop binds `x` (file locks); the overlay must let it pass through.
+        let mut s = OverlayState::new();
+        assert!(!s.handle_key(key(KeyCode::Char('x'))));
     }
 
     #[test]
@@ -1368,5 +1416,28 @@ mod tests {
     fn thread_local_non_hotkey_not_consumed_when_idle() {
         assert!(!dispatch_key(b'z' as i32));
         assert!(!overlay_active());
+    }
+
+    #[test]
+    fn dispatch_then_draw_active_emits_overlay_bytes() {
+        // End-to-end through the thread-local state: open help, render+blit.
+        // (blit interleaves per-cell escape sequences, so the emitted title is
+        // not contiguous in the byte stream — the buffer-level content is
+        // asserted by `draw_help_writes_title_and_does_not_panic`. Here we just
+        // confirm the thread-local pipeline emits the modal when open.)
+        assert!(dispatch_key(b'h' as i32));
+        let mut out: Vec<u8> = Vec::new();
+        draw_active(&mut out);
+        assert!(!out.is_empty());
+        // The 'H' of the HTOPRS title is Print'd as a bare byte.
+        assert!(out.contains(&b'H'));
+    }
+
+    #[test]
+    fn draw_active_noop_when_no_overlay() {
+        // Fresh thread → no overlay open → nothing emitted.
+        let mut out: Vec<u8> = Vec::new();
+        draw_active(&mut out);
+        assert!(out.is_empty());
     }
 }
