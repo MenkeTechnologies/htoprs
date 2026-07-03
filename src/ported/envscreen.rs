@@ -56,12 +56,14 @@ use core::ffi::c_int;
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_addLine, InfoScreen_init};
+use crate::ported::infoscreen::{
+    InfoScreen, InfoScreen_addLine, InfoScreen_drawTitled, InfoScreen_init,
+};
 use crate::ported::linux::platform::Platform_getProcessEnv;
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected};
-use crate::ported::process::{Process, Process_getPid};
+use crate::ported::process::{Process, Process_getCommand, Process_getPid};
 use crate::ported::vector::{Vector_insertionSort, Vector_new};
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -134,13 +136,20 @@ pub fn EnvScreen_delete() {
 /// TODO: port of `static void EnvScreen_draw(InfoScreen* this)` from
 /// `EnvScreen.c:35`. Single call to `InfoScreen_drawTitled(this,
 /// "Environment of process %d - %s", Process_getPid(this->process),
-/// Process_getCommand(this->process))`. `InfoScreen_drawTitled`
-/// (`infoscreen.rs`) and `Process_getPid` (`process.rs`) are ported; blocked
-/// only on the title's `%s` argument `Process_getCommand` (`process.rs` stub —
-/// needs `settings->showThreadNames`, absent from the ported `Settings`
-/// subset, reached via the opaque `Row::host` pointer).
-pub fn EnvScreen_draw() {
-    todo!("port of EnvScreen.c:35 — needs Process_getCommand (process.rs stub: settings->showThreadNames)")
+/// Process_getCommand(this->process))` with the C `printf` format
+/// pre-built into a `&str` (the ported `InfoScreen_drawTitled` convention).
+/// `%s` is [`Process_getCommand`], rendered lossily from its bytes
+/// (`None` → empty).
+pub fn EnvScreen_draw(this: &mut InfoScreen) {
+    // C: InfoScreen_drawTitled(this, "Environment of process %d - %s",
+    //        Process_getPid(this->process), Process_getCommand(this->process));
+    let pid = Process_getPid(unsafe { &*this.process });
+    let cmd = match Process_getCommand(unsafe { &*this.process }) {
+        Some(b) => String::from_utf8_lossy(b).into_owned(),
+        None => String::new(),
+    };
+    let title = format!("Environment of process {} - {}", pid, cmd);
+    InfoScreen_drawTitled(this, &title);
 }
 
 /// Port of `static void EnvScreen_scan(InfoScreen* this)` from
