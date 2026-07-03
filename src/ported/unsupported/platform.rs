@@ -15,24 +15,35 @@
 //! - `Platform_getDiskIO` (`Platform.c:159`)
 //! - `Platform_getNetworkIO` (`Platform.c:164`)
 //! - `Platform_getBattery` (`Platform.c:169`)
+//! - `Platform_setCPUValues` (`Platform.c:120`)
+//! - `Platform_setMemoryValues` (`Platform.c:132`)
+//! - `Platform_setSwapValues` (`Platform.c:140`)
 //! - `Platform_getHostname` (`Platform.c:174`)
 //! - `Platform_getRelease` (`Platform.c:178`)
 //!
 //! Still `todo!()` and blocked on unported substrate:
-//! - `Platform_setCPUValues` / `Platform_setMemoryValues` /
-//!   `Platform_setSwapValues` — write through `Meter::values` / `Meter::curItems`
-//!   on a meter whose `host` field (`meter.rs`) is typed as the concrete
-//!   `LinuxMachine`; the generic meter-setter surface is not yet modeled.
 //! - `Platform_getProcessLocks` — `FileLocks_ProcessData` is unmodeled
-//!   (returns `NULL` unconditionally here).
+//!   (returns `NULL` unconditionally here), the same blocker the native
+//!   darwin/linux ports carry.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use crate::ported::batterymeter::ACPresence;
 use crate::ported::diskiometer::DiskIOData;
+use crate::ported::meter::Meter;
 use crate::ported::networkiometer::NetworkIOData;
 use crate::ported::xutils::String_safeStrncpy;
+
+/// `CPUMeter.h` `CPU_METER_FREQUENCY = 8` — index into `Meter::values`.
+const CPU_METER_FREQUENCY: usize = 8;
+/// `CPUMeter.h` `CPU_METER_TEMPERATURE = 9` — index into `Meter::values`.
+const CPU_METER_TEMPERATURE: usize = 9;
+
+/// File-local `enum { MEMORY_CLASS_USED = 0, ... }` (`Platform.c:45`).
+const MEMORY_CLASS_USED: usize = 0;
+/// File-local `enum { ..., MEMORY_CLASS_CACHED }` (`Platform.c:47`).
+const MEMORY_CLASS_CACHED: usize = 1;
 
 /// The C file-`static const char Platform_unsupported[] = "unsupported"`
 /// (`unsupported/Platform.c:90`).
@@ -72,23 +83,36 @@ pub fn Platform_getMaxPid() -> libc::pid_t {
     i32::MAX
 }
 
-/// TODO: port of `double Platform_setCPUValues(Meter* this, unsigned int cpu)`
-/// from `Platform.c:120`. Blocked: `Meter::host` typed as `LinuxMachine`; the
-/// generic meter-setter surface is unmodeled.
-pub fn Platform_setCPUValues() {
-    todo!("port of Platform.c:120")
+/// Port of `double Platform_setCPUValues(Meter* this, unsigned int cpu)`
+/// (`Platform.c:120`). The fallback platform reports no CPU load: it only
+/// marks frequency/temperature unavailable (`NAN`), sets one item, and
+/// returns a 0% total.
+pub fn Platform_setCPUValues(this: &mut Meter, cpu: u32) -> f64 {
+    let _ = cpu; // (void) cpu;
+
+    let v = &mut this.values;
+    v[CPU_METER_FREQUENCY] = f64::NAN;
+    v[CPU_METER_TEMPERATURE] = f64::NAN;
+
+    this.curItems = 1;
+
+    0.0
 }
 
-/// TODO: port of `void Platform_setMemoryValues(Meter* this)` from
-/// `Platform.c:132`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setMemoryValues() {
-    todo!("port of Platform.c:132")
+/// Port of `void Platform_setMemoryValues(Meter* this)` (`Platform.c:132`).
+/// The fallback platform has no memory figures, so both classes are `NAN`.
+pub fn Platform_setMemoryValues(this: &mut Meter) {
+    let v = &mut this.values;
+    v[MEMORY_CLASS_USED] = f64::NAN;
+    v[MEMORY_CLASS_CACHED] = f64::NAN;
+
+    this.curItems = 2;
 }
 
-/// TODO: port of `void Platform_setSwapValues(Meter* this)` from
-/// `Platform.c:140`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setSwapValues() {
-    todo!("port of Platform.c:140")
+/// Port of `void Platform_setSwapValues(Meter* this)` (`Platform.c:140`).
+/// The C body is `(void) this;` — a no-op on the fallback platform.
+pub fn Platform_setSwapValues(this: &mut Meter) {
+    let _ = this;
 }
 
 /// Port of `char* Platform_getProcessEnv(pid_t pid)` (`Platform.c:144`).

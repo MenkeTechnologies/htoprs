@@ -1,33 +1,55 @@
 //! Partial port of `UnsupportedMachine.c` — the fallback per-host `Machine`.
 //!
-//! Ported here (operate on the base [`Machine`], so no unported substrate
-//! is needed):
+//! Ported here:
+//! - [`Machine_delete`] (`UnsupportedMachine.c:30`)
 //! - `Machine_isCPUonline` (`UnsupportedMachine.c:36`)
+//! - [`Machine_scan`] (`UnsupportedMachine.c:44`)
 //! - `Machine_getCPUPhysicalCoreID` (`UnsupportedMachine.c:56`)
 //! - `Machine_getCPUThreadIndex` (`UnsupportedMachine.c:62`)
 //!
 //! Still `todo!()` and blocked on unported substrate:
-//! - `Machine_new` / `Machine_delete` need `Machine_init` / `Machine_done`
-//!   (still stubs in `machine.rs`) and the `UnsupportedMachine` struct.
-//! - `Machine_scan` writes `UnsupportedMachine.usedMem` / `.cachedMem`, so it
-//!   needs that struct modeled.
+//! - `Machine_new` calls `Machine_init`, which `machine.rs` defines only under
+//!   `#[cfg(target_os = "macos")]`. This module is compiled on *all* targets
+//!   (the fallback platform is not cfg-gated), so calling the macos-only
+//!   `Machine_init` here would break every non-macos build. The native darwin
+//!   `Machine_new` port works because the darwin module is itself macos-gated.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use crate::ported::machine::Machine;
+use crate::ported::machine::{Machine, Machine_done};
 
-/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
-/// from `UnsupportedMachine.c:18`. Blocked: needs `Machine_init` (stub in
-/// `machine.rs`) and the `UnsupportedMachine` struct.
-pub fn Machine_new() {
-    todo!("port of UnsupportedMachine.c:18")
+/// Port of `typedef struct UnsupportedMachine_` (`UnsupportedMachine.h`). The
+/// fallback host embeds the base [`Machine`] and adds the two scalar memory
+/// fields the fallback `Machine_scan` zeroes (`memory_t` == `u64`).
+/// `#[repr(C)]` keeps `super_` at offset 0 so the C `(UnsupportedMachine*)super`
+/// downcast is sound.
+#[repr(C)]
+pub struct UnsupportedMachine {
+    /// C `Machine super` — the embedded base machine.
+    pub super_: Machine,
+    /// C `memory_t usedMem`.
+    pub usedMem: u64,
+    /// C `memory_t cachedMem`.
+    pub cachedMem: u64,
 }
 
-/// TODO: port of `void Machine_delete(Machine* super)` from
-/// `UnsupportedMachine.c:30`. Blocked: needs `Machine_done` (stub in
-/// `machine.rs`) and the `UnsupportedMachine` struct.
-pub fn Machine_delete() {
-    todo!("port of UnsupportedMachine.c:30")
+/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
+/// from `UnsupportedMachine.c:18`. Blocked: the C body calls `Machine_init`,
+/// which `machine.rs` defines only under `#[cfg(target_os = "macos")]`; this
+/// fallback module is compiled on all targets, so the call cannot be issued
+/// portably without breaking non-macos builds.
+pub fn Machine_new() {
+    todo!("port of UnsupportedMachine.c:18 — Machine_init is macos-gated; module is all-targets")
+}
+
+/// Port of `void Machine_delete(Machine* super)` (`UnsupportedMachine.c:30`).
+/// C casts back to `UnsupportedMachine*`, runs [`Machine_done`] on the base,
+/// then `free(this)`. The owning `Box<UnsupportedMachine>` is consumed:
+/// `Machine_done` tears the base down and the `Box` drop reclaims the
+/// allocation (the C `free`).
+pub fn Machine_delete(mut this: Box<UnsupportedMachine>) {
+    Machine_done(&mut this.super_);
+    // free(this) — the Box drop reclaims the allocation.
 }
 
 /// Port of `bool Machine_isCPUonline(const Machine* host, unsigned int id)`
@@ -37,11 +59,18 @@ pub fn Machine_isCPUonline(host: &Machine, id: u32) -> bool {
     true
 }
 
-/// TODO: port of `void Machine_scan(Machine* super)` from
-/// `UnsupportedMachine.c:44`. Blocked: writes `UnsupportedMachine.usedMem` /
-/// `.cachedMem`, so it needs that struct modeled.
-pub fn Machine_scan() {
-    todo!("port of UnsupportedMachine.c:44")
+/// Port of `void Machine_scan(Machine* super)` (`UnsupportedMachine.c:44`). The
+/// fallback platform reports one CPU and no memory/swap — every figure is
+/// hard-zeroed each scan.
+pub fn Machine_scan(this: &mut UnsupportedMachine) {
+    this.super_.existingCPUs = 1;
+    this.super_.activeCPUs = 1;
+    this.super_.totalSwap = 0;
+    this.super_.usedSwap = 0;
+    this.super_.cachedSwap = 0;
+    this.super_.totalMem = 0;
+    this.usedMem = 0;
+    this.cachedMem = 0;
 }
 
 /// Port of `int Machine_getCPUPhysicalCoreID(const Machine* host, unsigned int
