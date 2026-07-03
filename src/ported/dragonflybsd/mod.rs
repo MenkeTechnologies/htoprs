@@ -9,3 +9,4 @@
 
 pub mod dragonflybsdmachine;
 pub mod dragonflybsdprocess;
+pub mod dragonflybsdprocesstable;
