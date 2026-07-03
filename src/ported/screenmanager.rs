@@ -731,10 +731,12 @@ pub fn ScreenManager_run(
 
         if redraw || force_redraw {
             ScreenManager_drawPanels(this, focus, force_redraw);
-            // htoprs extension: paint the themed help/chooser/editor overlay
-            // over the freshly-drawn panels (no-op when no overlay is open).
+            // htoprs extension: paint the themed border chrome (if `b`-toggled)
+            // then the help/chooser/editor overlay over the freshly-drawn
+            // panels (each a no-op when off/closed).
             {
                 let mut out = io::stdout().lock();
+                crate::extensions::overlay::draw_chrome(&mut out);
                 crate::extensions::overlay::draw_active(&mut out);
             }
             force_redraw = false;

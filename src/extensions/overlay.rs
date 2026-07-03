@@ -37,6 +37,7 @@ const KEY_LEFT: i32 = 0o404;
 const KEY_RIGHT: i32 = 0o405;
 const KEY_BACKSPACE: i32 = 0o407;
 const KEY_ENTER: i32 = 0o527;
+const KEY_F1: i32 = 0o411; // KEY_F(1) == 265; htop's F1 = Help
 
 /// Convert a [`Theme`] color (`crossterm::style::Color`) into the
 /// `ratatui::style::Color` the buffer styling API expects. `Theme` only ever
@@ -426,6 +427,11 @@ impl OverlayState {
     /// Route a raw ncurses key int (as read by `Panel_getCh`) into
     /// [`OverlayState::handle_key`]. Returns `true` if consumed.
     pub fn handle_ncurses_key(&mut self, ch: i32) -> bool {
+        // htop's F1 = Help, but the ported `actionHelp` is an unfinished
+        // `todo!()` that panics; route F1 to the themed help overlay instead.
+        if ch == KEY_F1 {
+            return self.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        }
         match ncurses_to_keycode(ch) {
             Some(code) => self.handle_key(KeyEvent::new(code, KeyModifiers::NONE)),
             None => false,
@@ -1099,8 +1105,8 @@ mod tests {
     fn new_state_defaults() {
         let s = OverlayState::new();
         assert!(!s.show_help);
-        assert!(s.show_border);
-        assert!(s.show_header);
+        assert!(!s.show_border);
+        assert!(!s.show_header);
         assert_eq!(s.theme_name, ThemeName::default());
         assert!(!s.theme_chooser.active);
         assert!(!s.theme_edit.active);
@@ -1153,12 +1159,28 @@ mod tests {
     #[test]
     fn b_toggles_border_with_status() {
         let mut s = OverlayState::new();
+        assert!(!s.show_border); // off by default (htop-like)
         assert!(s.handle_key(key(KeyCode::Char('b'))));
-        assert!(!s.show_border);
-        assert_eq!(s.status.as_deref(), Some("Border: off"));
-        s.handle_key(key(KeyCode::Char('b')));
         assert!(s.show_border);
         assert_eq!(s.status.as_deref(), Some("Border: on"));
+        s.handle_key(key(KeyCode::Char('b')));
+        assert!(!s.show_border);
+        assert_eq!(s.status.as_deref(), Some("Border: off"));
+    }
+
+    #[test]
+    fn draw_chrome_emits_border_when_on() {
+        // Fresh thread → fresh OVERLAY (border off): nothing emitted.
+        let mut out: Vec<u8> = Vec::new();
+        draw_chrome(&mut out);
+        assert!(out.is_empty());
+        // Turn the border on, then it must emit box-drawing bytes + title.
+        dispatch_key(b'b' as i32);
+        let mut out2: Vec<u8> = Vec::new();
+        draw_chrome(&mut out2);
+        let s = String::from_utf8_lossy(&out2);
+        assert!(s.contains('┌') && s.contains('┘'));
+        assert!(out2.contains(&b'H')); // HTOPRS title
     }
 
     #[test]
@@ -1171,9 +1193,10 @@ mod tests {
     #[test]
     fn g_toggles_header_with_status() {
         let mut s = OverlayState::new();
+        assert!(!s.show_header); // off by default
         assert!(s.handle_key(key(KeyCode::Char('g'))));
-        assert!(!s.show_header);
-        assert_eq!(s.status.as_deref(), Some("Header: off"));
+        assert!(s.show_header);
+        assert_eq!(s.status.as_deref(), Some("Header: on"));
     }
 
     #[test]

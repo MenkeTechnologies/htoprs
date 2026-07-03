@@ -107,7 +107,11 @@
 #![allow(dead_code)]
 
 use crate::ported::categoriespanel::CategoriesPanel_new;
-use crate::ported::crt::{CRT_setMouse, ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB};
+use crate::ported::crt::{
+    CRT_enableDelay, CRT_setMouse, ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB,
+};
+use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
+use crate::ported::infoscreen::InfoScreen_run;
 use crate::ported::dynamiccolumn::DynamicColumn;
 use crate::ported::functionbar::{FunctionBar_newEnterEsc, Ncurses};
 use crate::ported::hashtable::Hashtable_get;
@@ -1546,13 +1550,45 @@ pub fn actionTagAllChildren(st: &mut State) -> Htop_Reaction {
     HTOP_OK
 }
 
-/// TODO: port of `static Htop_Reaction actionShowEnvScreen(State* st)` from
-/// `Action.c:911`. Opens the selected process's `EnvScreen` modally. Blocked on
-/// the same ncurses substrate as [`actionLsof`]: `clear()` is unported and
-/// `EnvScreen` does not implement the `InfoScreenClass` trait `InfoScreen_run`
-/// requires.
-pub fn actionShowEnvScreen(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:911 — clear() unported + EnvScreen has no InfoScreenClass impl")
+/// Port of `static Htop_Reaction actionShowEnvScreen(State* st)` from
+/// `Action.c:911`. Opens the selected process's `EnvScreen` modally: build it
+/// from the selected `Process`, run the [`InfoScreen_run`] loop, tear it down,
+/// wipe the screen, and re-enable the input delay. Returns
+/// `HTOP_REFRESH | HTOP_REDRAW_BAR`.
+pub fn actionShowEnvScreen(st: &mut State) -> Htop_Reaction {
+    // C: if (!Action_readableProcess(st)) return HTOP_OK;
+    if !Action_readableProcess(st) {
+        return HTOP_OK;
+    }
+    // C: Process* p = (Process*)Panel_getSelected((Panel*)st->mainPanel);
+    //    if (!p) return HTOP_OK;
+    let mainpanel = st.mainPanel;
+    if mainpanel.is_null() {
+        return HTOP_OK;
+    }
+    // C: EnvScreen* es = EnvScreen_new(p);
+    // The `&Process` borrow of the panel ends with this block; `es` keeps only
+    // the raw back-pointer into the table-owned process (valid for the modal
+    // run, which does not rescan the table — the same lifetime C relies on).
+    let mut es = {
+        // SAFETY: `mainPanel` is the process panel wired at startup.
+        let panel = unsafe { &(*mainpanel).super_ };
+        let p = match Panel_getSelected(panel).and_then(|o| o.as_process()) {
+            Some(p) => p,
+            None => return HTOP_OK,
+        };
+        EnvScreen_new(p)
+    };
+    // C: InfoScreen_run((InfoScreen*)es);
+    InfoScreen_run(&mut es);
+    // C: EnvScreen_delete((Object*)es);
+    EnvScreen_delete(es);
+    // C: clear(); CRT_enableDelay();
+    let mut out = std::io::stdout().lock();
+    Ncurses::clear(&mut out);
+    Ncurses::refresh(&mut out);
+    CRT_enableDelay();
+    HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
 /// TODO: port of `static Htop_Reaction actionShowCommandScreen(State* st)` from

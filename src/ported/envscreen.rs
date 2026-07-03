@@ -57,7 +57,8 @@ use core::ffi::c_int;
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreenClass, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled,
+    InfoScreen_init,
 };
 use crate::ported::linux::platform::Platform_getProcessEnv;
 use crate::ported::listitem::ListItem_new;
@@ -78,6 +79,25 @@ const VECTOR_DEFAULT_SIZE: c_int = 10;
 pub struct EnvScreen {
     /// C `InfoScreen super` — the scrollable info-panel base class.
     pub super_: InfoScreen,
+}
+
+/// Port of `const InfoScreenClass EnvScreen_class` (`EnvScreen.c:60`):
+/// `{ .scan = EnvScreen_scan, .draw = EnvScreen_draw }`. Wires the two
+/// installed vtable slots so [`InfoScreen_run`](crate::ported::infoscreen::InfoScreen_run)
+/// dispatches this screen; `onErr`/`onKey` are `NULL` in C (trait defaults).
+impl InfoScreenClass for EnvScreen {
+    fn super_InfoScreen(&mut self) -> &mut InfoScreen {
+        &mut self.super_
+    }
+    fn draw(&mut self) {
+        EnvScreen_draw(&mut self.super_);
+    }
+    fn scan(&mut self) {
+        EnvScreen_scan(&mut self.super_);
+    }
+    fn has_scan(&self) -> bool {
+        true
+    }
 }
 
 /// Port of `EnvScreen* EnvScreen_new(Process* process)` from

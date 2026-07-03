@@ -21,6 +21,7 @@
 //! *ported*, so the scaffold does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(non_upper_case_globals)] // faithful C global name (DarwinProcessTable_class)
 #![allow(dead_code)]
 
 use std::io;
