@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T01:30:10Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T03:22:17Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,11 +70,11 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">533</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">291</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">567</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">284</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1101</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">48.41%</div><div class="stat-label">Coverage</div></div>
-        <div class="stat-card"><div class="stat-val cyan">117</div><div class="stat-label">Files started</div></div>
+        <div class="stat-card"><div class="stat-val cyan">51.50%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">118</div><div class="stat-label">Files started</div></div>
       </div>
 
       <h2 class="tutorial-title"><span class="step-hash">~</span>PER-FILE</h2>
@@ -101,7 +101,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>DynamicColumn.c</code></td><td>8</td><td>0</td><td>8</td><td>100%</td></tr>
           <tr><td><code>DynamicMeter.c</code></td><td>3</td><td>7</td><td>10</td><td>30%</td></tr>
           <tr><td><code>DynamicScreen.c</code></td><td>3</td><td>3</td><td>6</td><td>50%</td></tr>
-          <tr><td><code>EnvScreen.c</code></td><td>2</td><td>2</td><td>4</td><td>50%</td></tr>
+          <tr><td><code>EnvScreen.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
           <tr><td><code>FileDescriptorMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>FunctionBar.c</code></td><td>9</td><td>0</td><td>9</td><td>100%</td></tr>
           <tr><td><code>GPUMeter.c</code></td><td>6</td><td>0</td><td>6</td><td>100%</td></tr>
@@ -119,45 +119,46 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>MainPanel.c</code></td><td>6</td><td>6</td><td>12</td><td>50%</td></tr>
           <tr><td><code>MemoryMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>MemorySwapMeter.c</code></td><td>0</td><td>5</td><td>5</td><td>0%</td></tr>
-          <tr><td><code>Meter.c</code></td><td>13</td><td>1</td><td>16</td><td>81%</td></tr>
+          <tr><td><code>Meter.c</code></td><td>14</td><td>1</td><td>16</td><td>88%</td></tr>
           <tr><td><code>MetersPanel.c</code></td><td>4</td><td>2</td><td>6</td><td>67%</td></tr>
           <tr><td><code>NetworkIOMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>Object.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
-          <tr><td><code>OpenFilesScreen.c</code></td><td>5</td><td>3</td><td>8</td><td>62%</td></tr>
+          <tr><td><code>OpenFilesScreen.c</code></td><td>6</td><td>2</td><td>8</td><td>75%</td></tr>
           <tr><td><code>OptionItem.c</code></td><td>19</td><td>3</td><td>22</td><td>86%</td></tr>
           <tr><td><code>Panel.c</code></td><td>24</td><td>3</td><td>27</td><td>89%</td></tr>
-          <tr><td><code>Process.c</code></td><td>18</td><td>14</td><td>32</td><td>56%</td></tr>
+          <tr><td><code>Process.c</code></td><td>27</td><td>5</td><td>32</td><td>84%</td></tr>
           <tr><td><code>ProcessLocksScreen.c</code></td><td>2</td><td>3</td><td>5</td><td>40%</td></tr>
           <tr><td><code>ProcessTable.c</code></td><td>4</td><td>2</td><td>6</td><td>67%</td></tr>
           <tr><td><code>RichString.c</code></td><td>18</td><td>0</td><td>18</td><td>100%</td></tr>
-          <tr><td><code>Row.c</code></td><td>17</td><td>7</td><td>24</td><td>71%</td></tr>
+          <tr><td><code>Row.c</code></td><td>23</td><td>1</td><td>24</td><td>96%</td></tr>
           <tr><td><code>Scheduling.c</code></td><td>7</td><td>0</td><td>7</td><td>100%</td></tr>
           <tr><td><code>ScreenManager.c</code></td><td>8</td><td>5</td><td>13</td><td>62%</td></tr>
           <tr><td><code>ScreenTabsPanel.c</code></td><td>11</td><td>5</td><td>16</td><td>69%</td></tr>
           <tr><td><code>ScreensPanel.c</code></td><td>7</td><td>6</td><td>13</td><td>54%</td></tr>
-          <tr><td><code>Settings.c</code></td><td>12</td><td>17</td><td>29</td><td>41%</td></tr>
+          <tr><td><code>Settings.c</code></td><td>16</td><td>13</td><td>29</td><td>55%</td></tr>
           <tr><td><code>SignalsPanel.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>SwapMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>SysArchMeter.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
-          <tr><td><code>Table.c</code></td><td>14</td><td>3</td><td>17</td><td>82%</td></tr>
+          <tr><td><code>Table.c</code></td><td>15</td><td>2</td><td>17</td><td>88%</td></tr>
           <tr><td><code>TasksMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>TraceScreen.c</code></td><td>6</td><td>0</td><td>6</td><td>100%</td></tr>
           <tr><td><code>UptimeMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>UsersTable.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
           <tr><td><code>Vector.c</code></td><td>22</td><td>3</td><td>27</td><td>81%</td></tr>
           <tr><td><code>XUtils.c</code></td><td>13</td><td>0</td><td>27</td><td>48%</td></tr>
-          <tr><td><code>darwin/DarwinMachine.c</code></td><td>4</td><td>2</td><td>10</td><td>40%</td></tr>
-          <tr><td><code>darwin/DarwinProcess.c</code></td><td>0</td><td>1</td><td>11</td><td>0%</td></tr>
-          <tr><td><code>darwin/DarwinProcessTable.c</code></td><td>1</td><td>2</td><td>4</td><td>25%</td></tr>
-          <tr><td><code>darwin/Platform.c</code></td><td>15</td><td>4</td><td>25</td><td>60%</td></tr>
+          <tr><td><code>darwin/DarwinMachine.c</code></td><td>4</td><td>6</td><td>10</td><td>40%</td></tr>
+          <tr><td><code>darwin/DarwinProcess.c</code></td><td>0</td><td>11</td><td>11</td><td>0%</td></tr>
+          <tr><td><code>darwin/DarwinProcessTable.c</code></td><td>1</td><td>3</td><td>4</td><td>25%</td></tr>
+          <tr><td><code>darwin/Platform.c</code></td><td>20</td><td>5</td><td>25</td><td>80%</td></tr>
+          <tr><td><code>darwin/PlatformHelpers.c</code></td><td>5</td><td>0</td><td>5</td><td>100%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDMachine.c</code></td><td>4</td><td>2</td><td>10</td><td>40%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDProcess.c</code></td><td>0</td><td>1</td><td>4</td><td>0%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDProcessTable.c</code></td><td>1</td><td>2</td><td>6</td><td>17%</td></tr>
-          <tr><td><code>dragonflybsd/Platform.c</code></td><td>13</td><td>2</td><td>15</td><td>87%</td></tr>
+          <tr><td><code>dragonflybsd/Platform.c</code></td><td>14</td><td>1</td><td>15</td><td>93%</td></tr>
           <tr><td><code>freebsd/FreeBSDMachine.c</code></td><td>4</td><td>2</td><td>8</td><td>50%</td></tr>
           <tr><td><code>freebsd/FreeBSDProcess.c</code></td><td>0</td><td>1</td><td>4</td><td>0%</td></tr>
           <tr><td><code>freebsd/FreeBSDProcessTable.c</code></td><td>1</td><td>2</td><td>7</td><td>14%</td></tr>
-          <tr><td><code>freebsd/Platform.c</code></td><td>13</td><td>4</td><td>17</td><td>76%</td></tr>
+          <tr><td><code>freebsd/Platform.c</code></td><td>14</td><td>3</td><td>17</td><td>82%</td></tr>
           <tr><td><code>generic/hostname.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>generic/uname.c</code></td><td>2</td><td>0</td><td>3</td><td>67%</td></tr>
           <tr><td><code>htop.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
@@ -169,10 +170,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>linux/LibNl.c</code></td><td>0</td><td>6</td><td>6</td><td>0%</td></tr>
           <tr><td><code>linux/LibSensors.c</code></td><td>1</td><td>6</td><td>7</td><td>14%</td></tr>
           <tr><td><code>linux/LinuxMachine.c</code></td><td>16</td><td>2</td><td>20</td><td>80%</td></tr>
-          <tr><td><code>linux/LinuxProcess.c</code></td><td>10</td><td>2</td><td>12</td><td>83%</td></tr>
+          <tr><td><code>linux/LinuxProcess.c</code></td><td>11</td><td>1</td><td>12</td><td>92%</td></tr>
           <tr><td><code>linux/LinuxProcessTable.c</code></td><td>24</td><td>12</td><td>36</td><td>67%</td></tr>
           <tr><td><code>linux/OpenRCMeter.c</code></td><td>3</td><td>2</td><td>7</td><td>43%</td></tr>
-          <tr><td><code>linux/Platform.c</code></td><td>21</td><td>10</td><td>31</td><td>68%</td></tr>
+          <tr><td><code>linux/Platform.c</code></td><td>22</td><td>9</td><td>31</td><td>71%</td></tr>
           <tr><td><code>linux/PressureStallMeter.c</code></td><td>1</td><td>1</td><td>2</td><td>50%</td></tr>
           <tr><td><code>linux/SELinuxMeter.c</code></td><td>3</td><td>0</td><td>4</td><td>75%</td></tr>
           <tr><td><code>linux/SystemdMeter.c</code></td><td>6</td><td>3</td><td>9</td><td>67%</td></tr>
@@ -180,21 +181,21 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>netbsd/NetBSDMachine.c</code></td><td>4</td><td>2</td><td>12</td><td>33%</td></tr>
           <tr><td><code>netbsd/NetBSDProcess.c</code></td><td>0</td><td>1</td><td>4</td><td>0%</td></tr>
           <tr><td><code>netbsd/NetBSDProcessTable.c</code></td><td>1</td><td>2</td><td>8</td><td>12%</td></tr>
-          <tr><td><code>netbsd/Platform.c</code></td><td>13</td><td>2</td><td>15</td><td>87%</td></tr>
+          <tr><td><code>netbsd/Platform.c</code></td><td>14</td><td>1</td><td>15</td><td>93%</td></tr>
           <tr><td><code>openbsd/OpenBSDMachine.c</code></td><td>4</td><td>2</td><td>11</td><td>36%</td></tr>
           <tr><td><code>openbsd/OpenBSDProcess.c</code></td><td>0</td><td>1</td><td>4</td><td>0%</td></tr>
           <tr><td><code>openbsd/OpenBSDProcessTable.c</code></td><td>1</td><td>2</td><td>7</td><td>14%</td></tr>
-          <tr><td><code>openbsd/Platform.c</code></td><td>13</td><td>2</td><td>16</td><td>81%</td></tr>
+          <tr><td><code>openbsd/Platform.c</code></td><td>14</td><td>1</td><td>16</td><td>88%</td></tr>
           <tr><td><code>pcp-htop.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
           <tr><td><code>pcp/PCPMachine.c</code></td><td>4</td><td>2</td><td>20</td><td>20%</td></tr>
           <tr><td><code>pcp/PCPProcess.c</code></td><td>0</td><td>1</td><td>6</td><td>0%</td></tr>
           <tr><td><code>pcp/PCPProcessTable.c</code></td><td>1</td><td>2</td><td>28</td><td>4%</td></tr>
-          <tr><td><code>pcp/Platform.c</code></td><td>22</td><td>5</td><td>51</td><td>43%</td></tr>
-          <tr><td><code>solaris/Platform.c</code></td><td>13</td><td>4</td><td>18</td><td>72%</td></tr>
+          <tr><td><code>pcp/Platform.c</code></td><td>24</td><td>4</td><td>51</td><td>47%</td></tr>
+          <tr><td><code>solaris/Platform.c</code></td><td>14</td><td>3</td><td>18</td><td>78%</td></tr>
           <tr><td><code>solaris/SolarisMachine.c</code></td><td>4</td><td>2</td><td>10</td><td>40%</td></tr>
           <tr><td><code>solaris/SolarisProcess.c</code></td><td>0</td><td>1</td><td>4</td><td>0%</td></tr>
           <tr><td><code>solaris/SolarisProcessTable.c</code></td><td>1</td><td>2</td><td>8</td><td>12%</td></tr>
-          <tr><td><code>unsupported/Platform.c</code></td><td>15</td><td>2</td><td>17</td><td>88%</td></tr>
+          <tr><td><code>unsupported/Platform.c</code></td><td>16</td><td>1</td><td>17</td><td>94%</td></tr>
           <tr><td><code>unsupported/UnsupportedMachine.c</code></td><td>4</td><td>2</td><td>6</td><td>67%</td></tr>
           <tr><td><code>unsupported/UnsupportedProcess.c</code></td><td>0</td><td>1</td><td>4</td><td>0%</td></tr>
           <tr><td><code>unsupported/UnsupportedProcessTable.c</code></td><td>1</td><td>2</td><td>3</td><td>33%</td></tr>
@@ -204,13 +205,13 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-03T01:30:10Z",
+  "generated": "2026-07-03T03:22:17Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1101,
-  "ported": 533,
-  "stubbed": 291,
-  "coverage_pct": 48.41,
-  "files_started": 117,
+  "ported": 567,
+  "stubbed": 284,
+  "coverage_pct": 51.5,
+  "files_started": 118,
   "per_file": [
     {
       "cfile": "Action.c",
@@ -334,8 +335,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "EnvScreen.c",
-      "ported": 2,
-      "stubbed": 2,
+      "ported": 3,
+      "stubbed": 1,
       "defined": 4
     },
     {
@@ -442,7 +443,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Meter.c",
-      "ported": 13,
+      "ported": 14,
       "stubbed": 1,
       "defined": 16
     },
@@ -466,8 +467,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "OpenFilesScreen.c",
-      "ported": 5,
-      "stubbed": 3,
+      "ported": 6,
+      "stubbed": 2,
       "defined": 8
     },
     {
@@ -484,8 +485,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Process.c",
-      "ported": 18,
-      "stubbed": 14,
+      "ported": 27,
+      "stubbed": 5,
       "defined": 32
     },
     {
@@ -508,8 +509,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Row.c",
-      "ported": 17,
-      "stubbed": 7,
+      "ported": 23,
+      "stubbed": 1,
       "defined": 24
     },
     {
@@ -538,8 +539,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Settings.c",
-      "ported": 12,
-      "stubbed": 17,
+      "ported": 16,
+      "stubbed": 13,
       "defined": 29
     },
     {
@@ -562,8 +563,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "Table.c",
-      "ported": 14,
-      "stubbed": 3,
+      "ported": 15,
+      "stubbed": 2,
       "defined": 17
     },
     {
@@ -605,26 +606,32 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     {
       "cfile": "darwin/DarwinMachine.c",
       "ported": 4,
-      "stubbed": 2,
+      "stubbed": 6,
       "defined": 10
     },
     {
       "cfile": "darwin/DarwinProcess.c",
       "ported": 0,
-      "stubbed": 1,
+      "stubbed": 11,
       "defined": 11
     },
     {
       "cfile": "darwin/DarwinProcessTable.c",
       "ported": 1,
-      "stubbed": 2,
+      "stubbed": 3,
       "defined": 4
     },
     {
       "cfile": "darwin/Platform.c",
-      "ported": 15,
-      "stubbed": 4,
+      "ported": 20,
+      "stubbed": 5,
       "defined": 25
+    },
+    {
+      "cfile": "darwin/PlatformHelpers.c",
+      "ported": 5,
+      "stubbed": 0,
+      "defined": 5
     },
     {
       "cfile": "dragonflybsd/DragonFlyBSDMachine.c",
@@ -646,8 +653,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "dragonflybsd/Platform.c",
-      "ported": 13,
-      "stubbed": 2,
+      "ported": 14,
+      "stubbed": 1,
       "defined": 15
     },
     {
@@ -670,8 +677,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "freebsd/Platform.c",
-      "ported": 13,
-      "stubbed": 4,
+      "ported": 14,
+      "stubbed": 3,
       "defined": 17
     },
     {
@@ -742,8 +749,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "linux/LinuxProcess.c",
-      "ported": 10,
-      "stubbed": 2,
+      "ported": 11,
+      "stubbed": 1,
       "defined": 12
     },
     {
@@ -760,8 +767,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "linux/Platform.c",
-      "ported": 21,
-      "stubbed": 10,
+      "ported": 22,
+      "stubbed": 9,
       "defined": 31
     },
     {
@@ -808,8 +815,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "netbsd/Platform.c",
-      "ported": 13,
-      "stubbed": 2,
+      "ported": 14,
+      "stubbed": 1,
       "defined": 15
     },
     {
@@ -832,8 +839,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "openbsd/Platform.c",
-      "ported": 13,
-      "stubbed": 2,
+      "ported": 14,
+      "stubbed": 1,
       "defined": 16
     },
     {
@@ -862,14 +869,14 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "pcp/Platform.c",
-      "ported": 22,
-      "stubbed": 5,
+      "ported": 24,
+      "stubbed": 4,
       "defined": 51
     },
     {
       "cfile": "solaris/Platform.c",
-      "ported": 13,
-      "stubbed": 4,
+      "ported": 14,
+      "stubbed": 3,
       "defined": 18
     },
     {
@@ -892,8 +899,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "unsupported/Platform.c",
-      "ported": 15,
-      "stubbed": 2,
+      "ported": 16,
+      "stubbed": 1,
       "defined": 17
     },
     {

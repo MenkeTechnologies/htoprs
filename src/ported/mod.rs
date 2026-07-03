@@ -21,6 +21,7 @@ pub mod cpumeter;
 pub mod crt;
 pub mod datetimemeter;
 pub mod diskiometer;
+pub mod dragonflybsd;
 pub mod displayoptionspanel;
 pub mod dynamiccolumn;
 pub mod dynamicmeter;
@@ -72,3 +73,10 @@ pub mod uptimemeter;
 pub mod userstable;
 pub mod vector;
 pub mod xutils;
+
+// The Darwin platform layer binds mach / IOKit / darwin-only `sysctl`
+// symbols, so it is compiled only on macOS — mirroring htop's per-platform
+// build. The port-purity gate and port report scan the source as text, so
+// coverage tracking is unaffected by the cfg.
+#[cfg(target_os = "macos")]
+pub mod darwin;
