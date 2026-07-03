@@ -151,12 +151,14 @@ pub fn History_new(filename: Option<&str>) -> History {
     this
 }
 
-/// TODO: port of `void History_delete(History* this` from
-/// `History.c:60`. Heap-free only (frees the array, the filename, and
-/// the struct); `History` owns its fields and frees them via `Drop`, so
-/// there is no faithful body to port. Left as a stub.
-pub fn History_delete() {
-    todo!("port of History.c:60")
+/// Port of `void History_delete(History* this)` from `History.c:60`. The C
+/// frees each entry, the `entries` array, the `filename`, and the struct.
+/// Taking `this` by value is the faithful analog of that `free` chain: the
+/// moved-in [`History`] — and its owned `Vec<String>` `entries` and
+/// `Option<String>` `filename` — drops at end of scope, which *is* the C
+/// free sequence (the same by-value-consume idiom as `FunctionBar_delete`).
+pub fn History_delete(this: History) {
+    let _ = this;
 }
 
 /// Port of `void History_save(const History* this)` from

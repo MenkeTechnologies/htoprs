@@ -127,7 +127,9 @@ use crate::ported::panel::{
 use crate::ported::richstring::RichString;
 use crate::ported::screenmanager::ScreenManager;
 use crate::ported::screenspanel::SCREEN_NAME_LEN;
-use crate::ported::settings::{ScreenDefaults, Settings, Settings_newScreen};
+use crate::ported::settings::{
+    ScreenDefaults, Settings, Settings_newDynamicScreen, Settings_newScreen,
+};
 use crate::ported::xutils::String_eq;
 
 // Char / `KEY_F(n)` / `KEY_CTRL(c)` case labels cannot appear as Rust match
@@ -934,7 +936,11 @@ pub fn addNewScreen(this: &mut ScreenNamesPanel, ds: *mut DynamicScreen) {
     let name = "New";
     let ss: usize = if !ds.is_null() {
         // Settings_newDynamicScreen(this->settings, name, ds, NULL)
-        todo!("port of ScreenTabsPanel.c:299 — needs Settings_newDynamicScreen (DynamicScreen.columnKeys/.direction unmodeled, stubbed in settings.rs)")
+        // SAFETY: `settings` is the back-pointer set at construction (owned
+        // elsewhere, independent of `this.super_`); `ds` is the caller's live
+        // DynamicScreen pointer.
+        let settings = unsafe { &mut *this.settings };
+        Settings_newDynamicScreen(settings, name, unsafe { &*ds }, None)
     } else {
         // SAFETY: `settings` is the back-pointer set at construction; it targets
         // a `Settings` owned elsewhere, independent of `this.super_`.
