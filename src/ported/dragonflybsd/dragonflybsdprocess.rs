@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering;
 
 use crate::ported::crt::{ColorElements as CE, ColorScheme};
 use crate::ported::machine::Machine;
-use crate::ported::object::{Object, ObjectClass, Object_isA};
+use crate::ported::object::{Object, ObjectClass};
 use crate::ported::process::{
     spaceship_nullstr, Process, ProcessClass, ProcessField, ProcessFieldData, Process_class,
     Process_compare, Process_compareByKey_Base, Process_compareByParent, Process_getPid,
@@ -286,6 +286,7 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ported::object::Object_isA;
 
     /// The class chain: `DragonFlyBSDProcess` is a `DragonFlyBSDProcess`, a
     /// `Process`, and a `Row` (via the embedded `ObjectClass` extends chain).

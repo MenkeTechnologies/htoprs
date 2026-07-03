@@ -1822,16 +1822,21 @@ pub fn Process_compareByParent(r1: &dyn Object, r2: &dyn Object) -> i32 {
 /// exercisable; every other arm is pure. The C `default:` (an
 /// `assert(0)` "should never be reached" path that still returns a PID
 /// compare) maps to the `_` arm.
-pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) -> i32 {
+pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: RowField) -> i32 {
+    // `key` is a RowField (int) so it can carry platform field ids from any
+    // platform; the reserved fields this handles are matched against their
+    // shared `ProcessField` discriminants, and anything else (a dynamic or
+    // other-platform id) falls to the `_` default — a PID compare, matching C.
+    use ProcessField as PF;
     match key {
-        ProcessField::PERCENT_CPU | ProcessField::PERCENT_NORM_CPU => {
+        k if k == PF::PERCENT_CPU as RowField || k == PF::PERCENT_NORM_CPU as RowField => {
             compareRealNumbers(p1.percent_cpu as f64, p2.percent_cpu as f64)
         }
-        ProcessField::PERCENT_MEM => spaceship_number!(p1.m_resident, p2.m_resident),
-        ProcessField::COMM => {
+        k if k == PF::PERCENT_MEM as RowField => spaceship_number!(p1.m_resident, p2.m_resident),
+        k if k == PF::COMM as RowField => {
             spaceship_nullstr!(Process_getCommand(p1), Process_getCommand(p2))
         }
-        ProcessField::PROC_COMM => {
+        k if k == PF::PROC_COMM as RowField => {
             let comm1: &[u8] = match &p1.procComm {
                 Some(c) => c.as_bytes(),
                 None => {
@@ -1854,7 +1859,7 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) 
             };
             spaceship_nullstr!(Some(comm1), Some(comm2))
         }
-        ProcessField::PROC_EXE => {
+        k if k == PF::PROC_EXE as RowField => {
             let exe1: &[u8] = match &p1.procExe {
                 Some(e) => &e.as_bytes()[p1.procExeBasenameOffset..],
                 None => {
@@ -1877,11 +1882,11 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) 
             };
             spaceship_nullstr!(Some(exe1), Some(exe2))
         }
-        ProcessField::CWD => spaceship_nullstr!(
+        k if k == PF::CWD as RowField => spaceship_nullstr!(
             p1.procCwd.as_deref().map(str::as_bytes),
             p2.procCwd.as_deref().map(str::as_bytes)
         ),
-        ProcessField::ELAPSED => {
+        k if k == PF::ELAPSED as RowField => {
             let r = -spaceship_number!(p1.starttime_ctime, p2.starttime_ctime);
             if r != 0 {
                 r
@@ -1889,22 +1894,22 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) 
                 spaceship_number!(Process_getPid(p1), Process_getPid(p2))
             }
         }
-        ProcessField::MAJFLT => spaceship_number!(p1.majflt, p2.majflt),
-        ProcessField::MINFLT => spaceship_number!(p1.minflt, p2.minflt),
-        ProcessField::M_RESIDENT => spaceship_number!(p1.m_resident, p2.m_resident),
-        ProcessField::M_VIRT => spaceship_number!(p1.m_virt, p2.m_virt),
-        ProcessField::NICE => spaceship_number!(p1.nice, p2.nice),
-        ProcessField::NLWP => spaceship_number!(p1.nlwp, p2.nlwp),
-        ProcessField::PGRP => spaceship_number!(p1.pgrp, p2.pgrp),
-        ProcessField::PID => spaceship_number!(Process_getPid(p1), Process_getPid(p2)),
-        ProcessField::PPID => spaceship_number!(Process_getParent(p1), Process_getParent(p2)),
-        ProcessField::PRIORITY => spaceship_number!(p1.priority, p2.priority),
-        ProcessField::PROCESSOR => spaceship_number!(p1.processor, p2.processor),
-        ProcessField::SCHEDULERPOLICY => {
+        k if k == PF::MAJFLT as RowField => spaceship_number!(p1.majflt, p2.majflt),
+        k if k == PF::MINFLT as RowField => spaceship_number!(p1.minflt, p2.minflt),
+        k if k == PF::M_RESIDENT as RowField => spaceship_number!(p1.m_resident, p2.m_resident),
+        k if k == PF::M_VIRT as RowField => spaceship_number!(p1.m_virt, p2.m_virt),
+        k if k == PF::NICE as RowField => spaceship_number!(p1.nice, p2.nice),
+        k if k == PF::NLWP as RowField => spaceship_number!(p1.nlwp, p2.nlwp),
+        k if k == PF::PGRP as RowField => spaceship_number!(p1.pgrp, p2.pgrp),
+        k if k == PF::PID as RowField => spaceship_number!(Process_getPid(p1), Process_getPid(p2)),
+        k if k == PF::PPID as RowField => spaceship_number!(Process_getParent(p1), Process_getParent(p2)),
+        k if k == PF::PRIORITY as RowField => spaceship_number!(p1.priority, p2.priority),
+        k if k == PF::PROCESSOR as RowField => spaceship_number!(p1.processor, p2.processor),
+        k if k == PF::SCHEDULERPOLICY as RowField => {
             spaceship_number!(p1.scheduling_policy, p2.scheduling_policy)
         }
-        ProcessField::SESSION => spaceship_number!(p1.session, p2.session),
-        ProcessField::STARTTIME => {
+        k if k == PF::SESSION as RowField => spaceship_number!(p1.session, p2.session),
+        k if k == PF::STARTTIME as RowField => {
             let r = spaceship_number!(p1.starttime_ctime, p2.starttime_ctime);
             if r != 0 {
                 r
@@ -1912,14 +1917,14 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) 
                 spaceship_number!(Process_getPid(p1), Process_getPid(p2))
             }
         }
-        ProcessField::STATE => spaceship_number!(p1.state as i32, p2.state as i32),
-        ProcessField::ST_UID => spaceship_number!(p1.st_uid, p2.st_uid),
-        ProcessField::TIME => spaceship_number!(p1.time, p2.time),
-        ProcessField::TGID => {
+        k if k == PF::STATE as RowField => spaceship_number!(p1.state as i32, p2.state as i32),
+        k if k == PF::ST_UID as RowField => spaceship_number!(p1.st_uid, p2.st_uid),
+        k if k == PF::TIME as RowField => spaceship_number!(p1.time, p2.time),
+        k if k == PF::TGID as RowField => {
             spaceship_number!(Process_getThreadGroup(p1), Process_getThreadGroup(p2))
         }
-        ProcessField::TPGID => spaceship_number!(p1.tpgid, p2.tpgid),
-        ProcessField::TTY => {
+        k if k == PF::TPGID as RowField => spaceship_number!(p1.tpgid, p2.tpgid),
+        k if k == PF::TTY as RowField => {
             /* Order no tty last */
             spaceship_defaultstr!(
                 p1.tty_name.as_deref().map(str::as_bytes),
@@ -1927,7 +1932,7 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: ProcessField) 
                 b"\x7f"
             )
         }
-        ProcessField::USER => spaceship_nullstr!(
+        k if k == PF::USER as RowField => spaceship_nullstr!(
             p1.user.as_deref().map(str::as_bytes),
             p2.user.as_deref().map(str::as_bytes)
         ),
@@ -2431,9 +2436,9 @@ mod tests {
         let mut b = proc();
         Process_setPid(&mut a, 100);
         Process_setPid(&mut b, 200);
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::PID), -1);
-        assert_eq!(Process_compareByKey_Base(&b, &a, ProcessField::PID), 1);
-        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::PID), 0);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::PID as RowField), -1);
+        assert_eq!(Process_compareByKey_Base(&b, &a, ProcessField::PID as RowField), 1);
+        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::PID as RowField), 0);
     }
 
     #[test]
@@ -2443,19 +2448,19 @@ mod tests {
         a.percent_cpu = 1.0;
         b.percent_cpu = 2.0;
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_CPU),
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_CPU as RowField),
             -1
         );
         // PERCENT_NORM_CPU compares the same field.
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_NORM_CPU),
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_NORM_CPU as RowField),
             -1
         );
         // NaN is ordered less than any value (compareRealNumbers).
         a.percent_cpu = f32::NAN;
         b.percent_cpu = 1.0;
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_CPU),
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_CPU as RowField),
             -1
         );
     }
@@ -2470,7 +2475,7 @@ mod tests {
         a.percent_mem = 99.0; // must be ignored
         b.percent_mem = 1.0;
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_MEM),
+            Process_compareByKey_Base(&a, &b, ProcessField::PERCENT_MEM as RowField),
             -1
         );
     }
@@ -2481,8 +2486,8 @@ mod tests {
         let mut b = proc();
         a.state = ProcessState::RUNNING; // 3
         b.state = ProcessState::SLEEPING; // 14
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::STATE), -1);
-        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::STATE), 0);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::STATE as RowField), -1);
+        assert_eq!(Process_compareByKey_Base(&a, &a, ProcessField::STATE as RowField), 0);
     }
 
     #[test]
@@ -2492,7 +2497,7 @@ mod tests {
         a.procComm = Some("alpha".to_string());
         b.procComm = Some("beta".to_string());
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::PROC_COMM),
+            Process_compareByKey_Base(&a, &b, ProcessField::PROC_COMM as RowField),
             -1
         );
     }
@@ -2506,13 +2511,13 @@ mod tests {
         b.procComm = Some("aaa".to_string());
         // "KTHREAD" (K=0x4B) < "aaa" (a=0x61) => -1.
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::PROC_COMM),
+            Process_compareByKey_Base(&a, &b, ProcessField::PROC_COMM as RowField),
             -1
         );
         // Non-kernel with no procComm => "" which sorts before "aaa".
         let c = proc(); // not kernel, procComm None => ""
         assert_eq!(
-            Process_compareByKey_Base(&c, &b, ProcessField::PROC_COMM),
+            Process_compareByKey_Base(&c, &b, ProcessField::PROC_COMM as RowField),
             -1
         );
     }
@@ -2527,13 +2532,13 @@ mod tests {
         Process_setPid(&mut b, 9);
         // Equal starttime => tie-break by pid: 5 < 9 => -1.
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::STARTTIME),
+            Process_compareByKey_Base(&a, &b, ProcessField::STARTTIME as RowField),
             -1
         );
         // Distinct starttime dominates.
         b.starttime_ctime = 200;
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::STARTTIME),
+            Process_compareByKey_Base(&a, &b, ProcessField::STARTTIME as RowField),
             -1
         );
     }
@@ -2546,12 +2551,12 @@ mod tests {
         a.starttime_ctime = 200; // started later => smaller elapsed
         b.starttime_ctime = 100;
         // SPACESHIP(200,100)=1 => r=-1.
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED), -1);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED as RowField), -1);
         // Equal starttime => tie-break by pid.
         b.starttime_ctime = 200;
         Process_setPid(&mut a, 3);
         Process_setPid(&mut b, 8);
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED), -1);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::ELAPSED as RowField), -1);
     }
 
     #[test]
@@ -2562,10 +2567,10 @@ mod tests {
         a.tty_name = Some("tty1".to_string());
         let b = proc(); // no tty_name => "\x7f"
                         // "tty1" (t=0x74) < "\x7f" => real tty sorts first.
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::TTY), -1);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::TTY as RowField), -1);
         // Two missing ttys compare equal (both "\x7f").
         let c = proc();
-        assert_eq!(Process_compareByKey_Base(&b, &c, ProcessField::TTY), 0);
+        assert_eq!(Process_compareByKey_Base(&b, &c, ProcessField::TTY as RowField), 0);
     }
 
     #[test]
@@ -2574,10 +2579,10 @@ mod tests {
         let mut b = proc();
         a.user = Some("alice".to_string());
         b.user = Some("bob".to_string());
-        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::USER), -1);
+        assert_eq!(Process_compareByKey_Base(&a, &b, ProcessField::USER as RowField), -1);
         // NULL user compares as "" (sorts first).
         let c = proc();
-        assert_eq!(Process_compareByKey_Base(&c, &a, ProcessField::USER), -1);
+        assert_eq!(Process_compareByKey_Base(&c, &a, ProcessField::USER as RowField), -1);
     }
 
     #[test]
@@ -2588,7 +2593,7 @@ mod tests {
         Process_setPid(&mut a, 1);
         Process_setPid(&mut b, 2);
         assert_eq!(
-            Process_compareByKey_Base(&a, &b, ProcessField::NULL_FIELD),
+            Process_compareByKey_Base(&a, &b, ProcessField::NULL_FIELD as RowField),
             -1
         );
     }

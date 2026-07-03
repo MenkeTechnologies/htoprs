@@ -1054,7 +1054,7 @@ pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: ProcessF
             p1.super_.isRunningInContainer as i32,
             p2.super_.isRunningInContainer as i32
         ),
-        _ => Process_compareByKey_Base(&p1.super_, &p2.super_, key),
+        _ => Process_compareByKey_Base(&p1.super_, &p2.super_, key as RowField),
     }
 }
 
