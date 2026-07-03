@@ -60,6 +60,7 @@ use crate::ported::row::{
     spaceship_number, PercentageAttr, Row, RowClass, Row_class, Row_display, Row_fieldWidths,
     Row_getGroupOrParent, Row_init, Row_pidDigits, Row_printCount, Row_printKBytes,
     Row_printLeftAlignedField, Row_printPercentage, Row_printTime, Row_uidDigits,
+    Row_updateFieldWidth,
 };
 use crate::ported::scheduling::Scheduling_formatPolicy;
 use crate::ported::settings::{RowField, Settings, Settings_isReadonly};
@@ -1216,16 +1217,23 @@ pub fn Process_done() {
 /// faithfully; the body stays a stub. Returns the command bytes
 /// (C `const char*`).
 pub fn Process_getCommand(this: &Process) -> Option<&[u8]> {
-    let _ = this;
-    todo!("port of Process.c:831 — needs settings->showThreadNames (Settings subset lacks the field; Row::host is an opaque pointer)")
+    let host = unsafe { &*(this.super_.host as *const Machine) };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Process_getCommand: host->settings is NULL");
+    if (Process_isUserlandThread(this) && settings.showThreadNames)
+        || this.mergedCommand.str.is_none()
+    {
+        return this.cmdline.as_deref().map(str::as_bytes);
+    }
+    this.mergedCommand.str.as_deref().map(str::as_bytes)
 }
 
 /// Port of `static const char* Process_getSortKey(const Process* this)`
 /// from `Process.c:841`: `return Process_getCommand(this)`. A thin
-/// delegation to [`Process_getCommand`] (still stubbed pending the
-/// `Settings` substrate), so it panics through that `todo!()` when
-/// actually reached; the wiring itself is faithful. Returns the command
-/// bytes (C `const char*`).
+/// delegation to [`Process_getCommand`]. Returns the command bytes
+/// (C `const char*`).
 pub fn Process_getSortKey(this: &Process) -> Option<&[u8]> {
     Process_getCommand(this)
 }
@@ -1802,14 +1810,22 @@ pub fn Process_updateExe(this: &mut Process, exe: Option<&str>) {
     this.mergedCommand.lastUpdate = 0;
 }
 
-/// TODO: port of `void Process_updateCPUFieldWidths(float percentage)`
-/// from `Process.c:1122`. The arithmetic is pure (`isgreaterequal`,
-/// `ceil(log10(...))`), but every branch writes the field-width table via
-/// [`Row_updateFieldWidth`](crate::ported::row::Row_updateFieldWidth) —
-/// which is itself a stub (its backing `Row_fieldWidths[LAST_RESERVED_FIELD]`
-/// global is not modeled). Stays a stub until that lands.
-pub fn Process_updateCPUFieldWidths() {
-    todo!("port of Process.c:1122 — needs Row_updateFieldWidth (Row_fieldWidths global unported)")
+/// Port of `void Process_updateCPUFieldWidths(float percentage)` from
+/// `Process.c:1122`. Grows the `PERCENT_CPU` / `PERCENT_NORM_CPU` column
+/// widths to fit the largest CPU% seen: 4 below 99.9%, else enough digits for
+/// the integer part plus two chars (the `.` and one precision digit).
+pub fn Process_updateCPUFieldWidths(percentage: f32) {
+    // C `!isgreaterequal(percentage, 99.9F)` — false for NaN (quiet compare).
+    if !(percentage >= 99.9_f32) {
+        Row_updateFieldWidth(ProcessField::PERCENT_CPU as RowField, 4);
+        Row_updateFieldWidth(ProcessField::PERCENT_NORM_CPU as RowField, 4);
+        return;
+    }
+
+    // Two extra characters: one for "." and another for precision.
+    let width = ((percentage + 0.1).log10().ceil() as i32 + 2) as usize;
+    Row_updateFieldWidth(ProcessField::PERCENT_CPU as RowField, width);
+    Row_updateFieldWidth(ProcessField::PERCENT_NORM_CPU as RowField, width);
 }
 
 #[cfg(test)]
@@ -2496,5 +2512,48 @@ mod tests {
         assert!(!Process_isVisible(&p, &s)); // hiding → thread hidden
         p.isUserlandThread = false;
         assert!(Process_isVisible(&p, &s)); // non-thread stays visible
+    }
+
+    /// [`Process_getCommand`]: returns the merged command when present, the
+    /// raw cmdline otherwise, and always the cmdline for a userland thread
+    /// when `showThreadNames` is set.
+    #[test]
+    fn get_command_picks_cmdline_or_merged() {
+        use crate::ported::settings::Settings;
+
+        let mut machine = Machine::default();
+        machine.settings = Some(Settings::default());
+        let mut p = Process::default();
+        p.super_.host = &machine as *const Machine as *const c_void;
+        p.cmdline = Some("cmd".to_string());
+        p.mergedCommand.str = Some("merged".to_string());
+
+        // Non-thread, merged present → merged.
+        assert_eq!(Process_getCommand(&p), Some(b"merged".as_slice()));
+        // No merged → cmdline.
+        p.mergedCommand.str = None;
+        assert_eq!(Process_getCommand(&p), Some(b"cmd".as_slice()));
+
+        // Userland thread + showThreadNames → cmdline even with a merged str.
+        let mut s = Settings::default();
+        s.showThreadNames = true;
+        machine.settings = Some(s);
+        p.mergedCommand.str = Some("merged".to_string());
+        p.isUserlandThread = true;
+        assert_eq!(Process_getCommand(&p), Some(b"cmd".as_slice()));
+    }
+
+    /// [`Process_updateCPUFieldWidths`]: never shrinks below 4, and grows for
+    /// out-of-range percentages (the width is monotonic via
+    /// [`Row_updateFieldWidth`]).
+    #[test]
+    fn update_cpu_field_widths_floor_and_growth() {
+        Process_updateCPUFieldWidths(50.0);
+        let w = Row_fieldWidths[ProcessField::PERCENT_CPU as usize].load(Ordering::Relaxed);
+        assert!(w >= 4);
+        // 999.9% → ceil(log10(1000)) + 2 = 5.
+        Process_updateCPUFieldWidths(999.9);
+        let w2 = Row_fieldWidths[ProcessField::PERCENT_CPU as usize].load(Ordering::Relaxed);
+        assert!(w2 >= 5);
     }
 }
