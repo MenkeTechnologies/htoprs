@@ -20,32 +20,22 @@
 //!   over the now-modeled `ScreenSettings` (they never touch
 //!   `Process_fields[]`, only branch on `treeView`/`treeViewAlwaysByPID`).
 //!
+//! Ported field family (now that the platform `Process_fields[]` table
+//! exists in `linux/linuxprocess.rs`): `toFieldName` / `toFieldIndex` /
+//! `ScreenSettings_readFields` / `ScreenSettings_setSortKey` index the
+//! `ProcessFieldData` table (`.name`/`.flags`/`.defaultSortDesc`) and resolve
+//! dynamic columns through `DynamicColumn_lookup`/`DynamicColumn_search`.
+//!
 //! Stubbed (cannot be ported faithfully yet — the specific blocker is
 //! named on each stub below):
 //!
-//! * The field-name/index family `toFieldName` / `toFieldIndex` /
-//!   `ScreenSettings_readFields` / `ScreenSettings_setSortKey` and the
-//!   `writeFields` writer all index the platform `Process_fields[]`
-//!   `ProcessFieldData` table (its `.name`/`.flags`/`.defaultSortDesc`)
-//!   and `LAST_PROCESSFIELD`/`ROW_DYNAMIC_FIELDS`/`RowField`, none of
-//!   which is ported (`process.rs` has the `ProcessField` enum but not
-//!   the data table). (`DynamicColumn_lookup`/`DynamicColumn_search` are
-//!   now ported in `dynamiccolumn.rs`, but the `Process_fields[]` table
-//!   remains the blocker for this whole family.)
 //! * The screen constructors `Settings_newScreen` /
 //!   `Settings_newDynamicScreen` / `Settings_initScreenSettings` /
 //!   `Settings_defaultScreens` remain stubbed. The `Settings.screens`
-//!   array is now modeled (a `Vec<ScreenSettings>`, the C
-//!   `ScreenSettings** screens` + `nScreens`), and `ScreenSettings` itself
-//!   is fully modeled (all `Settings.h:42` fields except `table`, whose
-//!   `Table` type is unported and is only written by the stubbed
-//!   `Settings_newDynamicScreen`). But each constructor still bottoms out
-//!   on the stubbed field family — `Settings_initScreenSettings`'s first
-//!   act is `ScreenSettings_readFields`, and `Settings_newScreen` /
-//!   `Settings_newDynamicScreen` compute their `sortKey` via `toFieldIndex`
-//!   / `Process_fields[sortKey].defaultSortDesc` — and `Settings_defaultScreens`
-//!   additionally needs the unported `Platform_defaultScreens` /
-//!   `Platform_defaultDynamicScreens`.
+//!   array and `ScreenSettings` (including its `table` handle) are modeled,
+//!   and the field family they call is now ported, so the remaining blocker
+//!   is `Settings_defaultScreens`, which needs the unported
+//!   `Platform_defaultScreens` / `Platform_defaultDynamicScreens` tables.
 //! * `Settings_read` / `Settings_write` / `Settings_new` /
 //!   `signal_safe_fprintf` are the file-I/O layer (`open`/`fstat`/
 //!   `mkstemp`/`rename`/`realpath`, env reads, `Platform_*`) sitting on
@@ -67,6 +57,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::ported::dynamiccolumn::{DynamicColumn_lookup, DynamicColumn_search};
+use crate::ported::hashtable::Hashtable;
+use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::machine::{Machine, TableHandle};
 use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
 use crate::ported::xutils::{String_split, String_trim};
@@ -424,26 +417,99 @@ pub fn Settings_defaultMeters(this: &mut Settings, host: &Machine) {
     ];
 }
 
-/// TODO: port of `static const char* toFieldName(Hashtable* columns, int id, bool* enabled` from `Settings.c:181`.
-/// Needs the platform `Process_fields[]` table and the `DynamicColumn`
-/// `Hashtable` — left stubbed.
-pub fn toFieldName() {
-    todo!("port of Settings.c:181")
+/// Port of `static const char* toFieldName(Hashtable* columns, int id, bool*
+/// enabled)` from `Settings.c:181`. Maps a field id to its display name:
+/// negative ids are disabled/`None`; dynamic ids (`>= ROW_DYNAMIC_FIELDS`,
+/// i.e. `LAST_PROCESSFIELD`) resolve through `columns`; reserved ids index
+/// the platform `Process_fields[]` table. `enabled` (C `bool*`) is an
+/// optional out-flag.
+pub fn toFieldName<'a>(
+    columns: &'a Hashtable,
+    id: i32,
+    enabled: Option<&mut bool>,
+) -> Option<&'a str> {
+    if id < 0 {
+        if let Some(e) = enabled {
+            *e = false;
+        }
+        return None;
+    }
+    // ROW_DYNAMIC_FIELDS == LAST_RESERVED_FIELD == LAST_PROCESSFIELD.
+    if id as usize >= LAST_PROCESSFIELD {
+        let column = DynamicColumn_lookup(columns, id as u32);
+        if let Some(e) = enabled {
+            *e = column.map_or(false, |c| c.enabled);
+        }
+        return column.map(|c| c.name.as_str());
+    }
+    if let Some(e) = enabled {
+        *e = true;
+    }
+    Some(Process_fields[id as usize].name)
 }
 
-/// TODO: port of `static int toFieldIndex(Hashtable* columns, const char* str` from `Settings.c:198`.
-/// Needs `toFieldName` (`Process_fields[]`) and `DynamicColumn_search`
-/// over the `Hashtable` — left stubbed.
-pub fn toFieldIndex() {
-    todo!("port of Settings.c:198")
+/// Port of `static int toFieldIndex(Hashtable* columns, const char* str)` from
+/// `Settings.c:198`. Resolves a config field token to a field id: a leading
+/// digit is the old zero-based enum value (`atoi + 1`); a `Dynamic(<name>)`
+/// token resolves through [`DynamicColumn_search`]; otherwise the field name
+/// is matched against the table by-name. Returns `-1` when unresolved.
+pub fn toFieldIndex(columns: &Hashtable, str_: &str) -> i32 {
+    if str_.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        // "+1" for compatibility with the older enum format.
+        let id = atoi(str_) + 1;
+        if toFieldName(columns, id, None).is_some() {
+            return id;
+        }
+    } else {
+        // Dynamically-defined columns are stored by-name: `Dynamic(<name>)`.
+        if let Some(after) = str_.strip_prefix("Dynamic(") {
+            // C `sscanf(str, "Dynamic(%30s)", dynamic)`: up to 30 non-space
+            // chars, then `strrchr(dynamic, ')')` truncates at the last ')'.
+            let token: String = after
+                .chars()
+                .take_while(|c| !c.is_whitespace())
+                .take(30)
+                .collect();
+            if let Some(pos) = token.rfind(')') {
+                let name = &token[..pos];
+                let mut key: u32 = 0;
+                if DynamicColumn_search(Some(columns), name, Some(&mut key)).is_some() {
+                    return key as i32;
+                }
+            }
+        }
+        // Fallback: iterative by-name scan of the reserved field table.
+        for p in 1..LAST_PROCESSFIELD as i32 {
+            if let Some(p_name) = toFieldName(columns, p, None) {
+                if p_name == str_ {
+                    return p;
+                }
+            }
+        }
+    }
+    -1
 }
 
-/// TODO: port of `static void ScreenSettings_readFields(ScreenSettings* ss, Hashtable* columns, const char* line` from `Settings.c:230`.
-/// Needs `toFieldIndex` (still stubbed) plus the platform
-/// `Process_fields[id].flags` table and `LAST_PROCESSFIELD`, neither
-/// ported — left stubbed.
-pub fn ScreenSettings_readFields() {
-    todo!("port of Settings.c:230")
+/// Port of `static void ScreenSettings_readFields(ScreenSettings* ss,
+/// Hashtable* columns, const char* line)` from `Settings.c:230`. Parses a
+/// space-separated field list, replacing `ss.fields` with the resolved ids
+/// and OR-ing each reserved field's scan flags into `ss.flags`. The C
+/// `memset` + `xRealloc` array bookkeeping is subsumed by the `Vec`.
+pub fn ScreenSettings_readFields(ss: &mut ScreenSettings, columns: &Hashtable, line: &str) {
+    let trim = String_trim(line);
+    let ids = String_split(&trim, ' ');
+
+    // C resets the default fields (`memset(ss->fields, 0, …)`) then refills.
+    ss.fields.clear();
+    for id_str in &ids {
+        let id = toFieldIndex(columns, id_str);
+        if id >= 0 {
+            ss.fields.push(id);
+        }
+        if id > 0 && (id as usize) < LAST_PROCESSFIELD {
+            ss.flags |= Process_fields[id as usize].flags;
+        }
+    }
 }
 
 /// TODO: port of `static ScreenSettings* Settings_initScreenSettings(ScreenSettings* ss, Settings* this, const char* columns` from `Settings.c:254`.
@@ -659,11 +725,28 @@ pub fn ScreenSettings_invertSortOrder(this: &mut ScreenSettings) {
     *attr = if *attr == 1 { -1 } else { 1 };
 }
 
-/// TODO: port of `void ScreenSettings_setSortKey(ScreenSettings* this, ProcessField sortKey` from `Settings.c:918`.
-/// Needs `Process_fields[sortKey].defaultSortDesc` from the platform
-/// field table — left stubbed.
-pub fn ScreenSettings_setSortKey() {
-    todo!("port of Settings.c:918")
+/// Port of `void ScreenSettings_setSortKey(ScreenSettings* this, ProcessField
+/// sortKey)` from `Settings.c:918`. Sets the flat or tree sort key (whichever
+/// the current view mode selects) and its default direction from
+/// `Process_fields[sortKey].defaultSortDesc`; setting the flat key also
+/// leaves tree view.
+pub fn ScreenSettings_setSortKey(this: &mut ScreenSettings, sortKey: RowField) {
+    if this.treeViewAlwaysByPID || !this.treeView {
+        this.sortKey = sortKey;
+        this.direction = if Process_fields[sortKey as usize].defaultSortDesc {
+            -1
+        } else {
+            1
+        };
+        this.treeView = false;
+    } else {
+        this.treeSortKey = sortKey;
+        this.treeDirection = if Process_fields[sortKey as usize].defaultSortDesc {
+            -1
+        } else {
+            1
+        };
+    }
 }
 
 /// The file-static `bool readonly` from `Settings.c:938`. A process-wide
@@ -1107,5 +1190,81 @@ mod tests {
         assert!(!Settings_isReadonly());
         Settings_enableReadonly();
         assert!(Settings_isReadonly());
+    }
+
+    /// [`ScreenSettings_setSortKey`]: flat/tree mode picks the right key pair
+    /// and derives the direction from `Process_fields[key].defaultSortDesc`.
+    #[test]
+    fn set_sort_key_flat_and_tree_modes() {
+        use crate::ported::process::ProcessField;
+
+        // Flat view: sets sortKey + direction (PERCENT_CPU is defaultSortDesc
+        // → -1), and leaves tree view.
+        let mut ss = ScreenSettings {
+            treeView: false,
+            ..Default::default()
+        };
+        ScreenSettings_setSortKey(&mut ss, ProcessField::PERCENT_CPU as RowField);
+        assert_eq!(ss.sortKey, ProcessField::PERCENT_CPU as RowField);
+        assert_eq!(ss.direction, -1);
+        assert!(!ss.treeView);
+        // PID is not defaultSortDesc → +1.
+        ScreenSettings_setSortKey(&mut ss, ProcessField::PID as RowField);
+        assert_eq!(ss.direction, 1);
+
+        // Tree view (not alwaysByPID): sets the tree key pair, keeps treeView.
+        let mut ss = ScreenSettings {
+            treeView: true,
+            treeViewAlwaysByPID: false,
+            ..Default::default()
+        };
+        ScreenSettings_setSortKey(&mut ss, ProcessField::PERCENT_CPU as RowField);
+        assert_eq!(ss.treeSortKey, ProcessField::PERCENT_CPU as RowField);
+        assert_eq!(ss.treeDirection, -1);
+        assert!(ss.treeView);
+    }
+
+    /// [`toFieldName`] / [`toFieldIndex`] over the reserved field table (empty
+    /// dynamic-column hashtable): id→name, the old-enum `atoi+1` digit form,
+    /// by-name lookup, and the unresolved `-1`.
+    #[test]
+    fn to_field_name_and_index_reserved() {
+        use crate::ported::hashtable::Hashtable_new;
+        use crate::ported::process::ProcessField;
+
+        let ht = Hashtable_new(0, false);
+        assert_eq!(toFieldName(&ht, ProcessField::PID as i32, None), Some("PID"));
+        assert_eq!(toFieldName(&ht, -1, None), None);
+        // "0" → atoi 0 + 1 = 1 (PID) in the old zero-based enum form.
+        assert_eq!(toFieldIndex(&ht, "0"), ProcessField::PID as i32);
+        // By-name.
+        assert_eq!(toFieldIndex(&ht, "Command"), ProcessField::COMM as i32);
+        assert_eq!(toFieldIndex(&ht, "RCHAR"), ProcessField::RCHAR as i32);
+        // Unresolved.
+        assert_eq!(toFieldIndex(&ht, "Nonexistent"), -1);
+    }
+
+    /// [`ScreenSettings_readFields`]: parses a space-separated field list into
+    /// `fields` and OR-s each reserved field's scan flags into `flags`.
+    #[test]
+    fn read_fields_parses_ids_and_flags() {
+        use crate::ported::hashtable::Hashtable_new;
+        use crate::ported::process::{ProcessField, PROCESS_FLAG_IO};
+
+        let ht = Hashtable_new(0, false);
+        let mut ss = ScreenSettings::default();
+        // Old-enum digit form: "0 1" → PID(1), COMM(2); both flags 0.
+        ScreenSettings_readFields(&mut ss, &ht, "0 1");
+        assert_eq!(
+            ss.fields,
+            vec![ProcessField::PID as RowField, ProcessField::COMM as RowField]
+        );
+        assert_eq!(ss.flags, 0);
+
+        // By-name field carrying a scan flag: RCHAR → PROCESS_FLAG_IO.
+        let mut ss = ScreenSettings::default();
+        ScreenSettings_readFields(&mut ss, &ht, "RCHAR");
+        assert_eq!(ss.fields, vec![ProcessField::RCHAR as RowField]);
+        assert_eq!(ss.flags, PROCESS_FLAG_IO);
     }
 }

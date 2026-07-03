@@ -48,8 +48,11 @@
 
 use crate::ported::crt::ColorElements::*;
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::process::ProcessField;
+use crate::ported::settings::{RowField, Settings};
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendChr, RichString_appendnAscii,
     RichString_appendnWideColumns,
@@ -57,7 +60,7 @@ use crate::ported::richstring::{
 use crate::ported::xutils::countDigits;
 use core::any::Any;
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 /// Port of `#define SPACESHIP_NUMBER(a, b) (((a) > (b)) - ((a) < (b)))`
 /// from `Macros.h:33`. A three-way comparison collapsing to `-1`/`0`/`1`
@@ -111,6 +114,14 @@ pub static Row_pidDigits: AtomicI32 = AtomicI32::new(ROW_MIN_PID_DIGITS);
 /// (`Row.c:33`). Mutable process-wide state; see [`Row_pidDigits`].
 /// Written by [`Row_setUidColumnWidth`].
 pub static Row_uidDigits: AtomicI32 = AtomicI32::new(ROW_MIN_UID_DIGITS);
+
+/// Port of the global `uint8_t Row_fieldWidths[LAST_PROCESSFIELD]`
+/// (`Row.c:106`) — the process-wide auto-adjusted column widths, indexed by
+/// [`RowField`]. Modeled as an array of `AtomicU8` (the interior-mutability
+/// pattern [`Row_pidDigits`] uses), sized by the Linux `LAST_PROCESSFIELD`.
+/// Reset by [`Row_resetFieldWidths`] and grown by [`Row_updateFieldWidth`].
+pub static Row_fieldWidths: [AtomicU8; LAST_PROCESSFIELD] =
+    [const { AtomicU8::new(0) }; LAST_PROCESSFIELD];
 
 /// `static const char unitPrefixes[]` from `XUtils.h:160` — the
 /// unit-prefix letters `Row_printKBytes` indexes by magnitude. `XUtils.h`
@@ -373,68 +384,115 @@ pub fn Row_setUidColumnWidth(maxUid: u32) {
     debug_assert!(digits <= ROW_MAX_UID_DIGITS);
 }
 
-/// TODO: port of `void Row_resetFieldWidths(void)` from `Row.c:108`.
-/// Not portable yet: iterates the platform `Process_fields[]` table
-/// (reading `.autoWidth` / `.title`) to seed the `Row_fieldWidths[]`
-/// global. `Process_fields` is not ported (no `ProcessFieldData` table in
-/// `process.rs`), and `Row_fieldWidths` is sized `LAST_RESERVED_FIELD` —
-/// a platform constant (`Process.h:229` aliases it as `LAST_PROCESSFIELD`)
-/// not modeled in the port. Stays a stub until both exist.
+/// Port of `void Row_resetFieldWidths(void)` from `Row.c:107`. Reseeds each
+/// auto-width field's tracked width in [`Row_fieldWidths`] from its title
+/// length.
 pub fn Row_resetFieldWidths() {
-    todo!("port of Row.c:108 — needs Process_fields table + LAST_RESERVED_FIELD")
+    for i in 0..LAST_PROCESSFIELD {
+        if !Process_fields[i].autoWidth {
+            continue;
+        }
+        // C `strlen(Process_fields[i].title)`; autoWidth fields always have a
+        // title, so `None` (defensively → 0) never occurs in practice.
+        let len = Process_fields[i].title.map_or(0, |t| t.len());
+        debug_assert!(len <= u8::MAX as usize);
+        Row_fieldWidths[i].store(len as u8, Ordering::Relaxed);
+    }
 }
 
-/// TODO: port of `void Row_updateFieldWidth(RowField key, size_t width)`
-/// from `Row.c:119`. The body is self-contained (index + grow the
-/// `Row_fieldWidths[]` global), but that global is `uint8_t
-/// Row_fieldWidths[LAST_RESERVED_FIELD]` — a platform-sized array not
-/// modeled in the port (`LAST_RESERVED_FIELD` is unknown without the
-/// platform `ProcessField.h`). Stays a stub until that constant is
-/// ported.
-pub fn Row_updateFieldWidth() {
-    todo!("port of Row.c:119 — needs Row_fieldWidths[LAST_RESERVED_FIELD] global")
+/// Port of `void Row_updateFieldWidth(RowField key, size_t width)` from
+/// `Row.c:119`. Grows the tracked width for `key` toward `width`, capped at
+/// `u8::MAX`.
+pub fn Row_updateFieldWidth(key: RowField, width: usize) {
+    if width > u8::MAX as usize {
+        Row_fieldWidths[key as usize].store(u8::MAX, Ordering::Relaxed);
+    } else if width > Row_fieldWidths[key as usize].load(Ordering::Relaxed) as usize {
+        Row_fieldWidths[key as usize].store(width as u8, Ordering::Relaxed);
+    }
 }
 
 /// TODO: port of `static const char* alignedTitleDynamicColumn(const
 /// Settings* settings, int key, char* titleBuffer, size_t
-/// titleBufferSize)` from `Row.c:127`. Not portable yet: looks up
-/// `settings->dynamicColumns` (a `Hashtable`) via `Hashtable_get` and
-/// reads `column->width` / `column->heading`. `Hashtable_get`
-/// (`hashtable.rs`), `DynamicColumn.{width,heading}` and
-/// `DYNAMIC_{MAX,DEFAULT}_COLUMN_WIDTH` (`dynamiccolumn.rs`) are all now
-/// present, but the `Settings` struct (`settings.rs`) still carries no
-/// `dynamicColumns` field — the `Hashtable` to look the column up in —
-/// and that field is owned by `settings.rs`, not this module. Stays a stub.
-pub fn alignedTitleDynamicColumn() {
+/// titleBufferSize)` from `Row.c:127`. Looks up `settings->dynamicColumns`
+/// (a `Hashtable`) via `Hashtable_get` and reads `column->width` /
+/// `column->heading`. `Hashtable_get`, `DynamicColumn.{width,heading}` and
+/// `DYNAMIC_{MAX,DEFAULT}_COLUMN_WIDTH` all exist, but the `Settings` struct
+/// still carries no `dynamicColumns` field (the `Hashtable` to look the
+/// column up in). Stays a stub until that field is modeled.
+pub fn alignedTitleDynamicColumn(_settings: &Settings, _field: RowField) -> String {
     todo!("port of Row.c:127 — needs Settings.dynamicColumns + Hashtable_get + DynamicColumn")
 }
 
-/// TODO: port of `static const char* alignedTitleProcessField(ProcessField
-/// field, char* titleBuffer, size_t titleBufferSize)` from `Row.c:141`.
-/// Not portable yet: reads `Process_fields[field]` (`.title`,
-/// `.pidColumn`, `.autoWidth`, `.autoTitleRightAlign`) and the
-/// `Row_fieldWidths[]` global. `Process_fields` is not ported. Stays a
-/// stub until the `ProcessFieldData` table exists.
-pub fn alignedTitleProcessField() {
-    todo!("port of Row.c:141 — needs Process_fields table")
+/// Port of `static const char* alignedTitleProcessField(ProcessField field,
+/// char* titleBuffer, size_t titleBufferSize)` from `Row.c:141`. Formats a
+/// reserved process field's column title: right-aligned to the pid/uid digit
+/// width for pid/`ST_UID` columns, auto-width-aligned (right or left+truncate)
+/// for auto-width columns, else the raw title. Returns an owned `String`
+/// (C fills a caller buffer or returns a static string).
+pub fn alignedTitleProcessField(field: RowField) -> String {
+    let fd = &Process_fields[field as usize];
+    let title = match fd.title {
+        Some(t) => t,
+        None => return "- ".to_string(),
+    };
+
+    if fd.pidColumn {
+        let w = Row_pidDigits.load(Ordering::Relaxed) as usize;
+        return format!("{title:>w$} ");
+    }
+
+    if field == ProcessField::ST_UID as RowField {
+        let w = Row_uidDigits.load(Ordering::Relaxed) as usize;
+        return format!("{title:>w$} ");
+    }
+
+    if fd.autoWidth {
+        let w = Row_fieldWidths[field as usize].load(Ordering::Relaxed) as usize;
+        if fd.autoTitleRightAlign {
+            return format!("{title:>w$} ");
+        }
+        return format!("{title:<w$.w$} ");
+    }
+
+    title.to_string()
 }
 
-/// TODO: port of `const char* RowField_alignedTitle(const Settings*
-/// settings, RowField field)` from `Row.c:168`. Dispatches to
-/// [`alignedTitleProcessField`] (blocked on `Process_fields`) or
-/// [`alignedTitleDynamicColumn`] (blocked on `Settings.dynamicColumns`);
-/// blocked transitively on both helpers.
-pub fn RowField_alignedTitle() {
-    todo!("port of Row.c:168 — needs alignedTitleProcessField/alignedTitleDynamicColumn")
+/// Port of `const char* RowField_alignedTitle(const Settings* settings,
+/// RowField field)` from `Row.c:168`. Reserved fields (`< LAST_PROCESSFIELD`)
+/// go through [`alignedTitleProcessField`]; dynamic fields through
+/// [`alignedTitleDynamicColumn`].
+pub fn RowField_alignedTitle(settings: &Settings, field: RowField) -> String {
+    if (field as usize) < LAST_PROCESSFIELD {
+        alignedTitleProcessField(field)
+    } else {
+        alignedTitleDynamicColumn(settings, field)
+    }
 }
 
-/// TODO: port of `RowField RowField_keyAt(const Settings* settings, int
-/// at)` from `Row.c:179`. Walks `settings->ss->fields` measuring each
-/// column with [`RowField_alignedTitle`]. `Settings` (`settings.rs`) has
-/// no `ss`/`ScreenSettings` field, and `RowField_alignedTitle` is itself
-/// blocked. Stays a stub.
-pub fn RowField_keyAt() {
-    todo!("port of Row.c:179 — needs Settings.ss.fields + RowField_alignedTitle")
+/// Port of `RowField RowField_keyAt(const Settings* settings, int at)` from
+/// `Row.c:179`. Walks the active screen's field list
+/// (`settings->ss->fields`, i.e. `screens[ssIndex].fields`) measuring each
+/// column title with [`RowField_alignedTitle`] to find which field the
+/// horizontal offset `at` lands on; defaults to `COMM`.
+pub fn RowField_keyAt(settings: &Settings, at: i32) -> RowField {
+    let fields = &settings.screens[settings.ssIndex as usize].fields;
+    let mut rem = at;
+    for &field in fields {
+        // C loop terminates at the `NULL_FIELD` (0) sentinel.
+        if field == 0 {
+            break;
+        }
+        let len = if rem > 0 {
+            RowField_alignedTitle(settings, field).len().min(rem as usize) as i32
+        } else {
+            0
+        };
+        if rem <= len {
+            return field;
+        }
+        rem -= len;
+    }
+    ProcessField::COMM as RowField
 }
 
 /// Port of `Row.c:193`.
@@ -1718,5 +1776,70 @@ mod tests {
         assert_eq!(Row_uidDigits.load(Ordering::Relaxed), 10);
         Row_setUidColumnWidth(0);
         assert_eq!(Row_uidDigits.load(Ordering::Relaxed), ROW_MIN_UID_DIGITS);
+    }
+
+    /// [`Row_resetFieldWidths`] seeds an auto-width field to its title length;
+    /// [`Row_updateFieldWidth`] grows the width upward only and caps at
+    /// `u8::MAX`. (All `Row_fieldWidths` mutation lives in this one test to
+    /// avoid racing the shared global across the parallel suite.)
+    #[test]
+    fn field_widths_reset_grow_and_cap() {
+        Row_resetFieldWidths();
+        let cgroup = ProcessField::CGROUP as usize;
+        // CGROUP is autoWidth with title "CGROUP (raw)".
+        assert_eq!(
+            Row_fieldWidths[cgroup].load(Ordering::Relaxed),
+            "CGROUP (raw)".len() as u8
+        );
+
+        let key = ProcessField::CGROUP as RowField;
+        Row_updateFieldWidth(key, 40);
+        assert_eq!(Row_fieldWidths[cgroup].load(Ordering::Relaxed), 40);
+        // Smaller width never shrinks.
+        Row_updateFieldWidth(key, 5);
+        assert_eq!(Row_fieldWidths[cgroup].load(Ordering::Relaxed), 40);
+        // Capped at u8::MAX.
+        Row_updateFieldWidth(key, 1000);
+        assert_eq!(Row_fieldWidths[cgroup].load(Ordering::Relaxed), u8::MAX);
+    }
+
+    /// [`alignedTitleProcessField`] on non-pid, non-uid, non-auto fields (no
+    /// dependence on the process-wide digit/width globals): a `None` title
+    /// (a gap index) becomes `"- "`, and a plain field returns its title
+    /// verbatim (trailing spaces preserved).
+    #[test]
+    fn aligned_title_reserved_plain_fields() {
+        // Index 9 is a gap in the field table → EMPTY_FIELD (title None).
+        assert_eq!(alignedTitleProcessField(9), "- ");
+        assert_eq!(
+            alignedTitleProcessField(ProcessField::PRIORITY as RowField),
+            "PRI "
+        );
+        assert_eq!(
+            alignedTitleProcessField(ProcessField::COMM as RowField),
+            "Command "
+        );
+    }
+
+    /// [`RowField_keyAt`] walks the active screen's field list, measuring each
+    /// column title, to map a horizontal offset to a field; past the end it
+    /// falls back to `COMM`. Uses non-pid/non-auto fields (`PRIORITY`/`NICE`,
+    /// both 4-char titles) so the result is independent of the digit globals.
+    #[test]
+    fn rowfield_keyat_walks_active_screen_fields() {
+        use crate::ported::settings::ScreenSettings;
+        let mut s = Settings::default();
+        s.screens = vec![ScreenSettings {
+            fields: vec![
+                ProcessField::PRIORITY as RowField,
+                ProcessField::NICE as RowField,
+            ],
+            ..Default::default()
+        }];
+        // ssIndex defaults to 0.
+        assert_eq!(RowField_keyAt(&s, 0), ProcessField::PRIORITY as RowField);
+        assert_eq!(RowField_keyAt(&s, 4), ProcessField::PRIORITY as RowField);
+        assert_eq!(RowField_keyAt(&s, 5), ProcessField::NICE as RowField);
+        assert_eq!(RowField_keyAt(&s, 100), ProcessField::COMM as RowField);
     }
 }
