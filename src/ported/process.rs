@@ -2357,8 +2357,13 @@ pub fn Process_updateCPUFieldWidths(percentage: f32) {
         return;
     }
 
-    // Two extra characters: one for "." and another for precision.
-    let width = ((percentage + 0.1).log10().ceil() as i32 + 2) as usize;
+    // Two extra characters: one for "." and another for precision. C computes
+    // `ceil(log10(percentage + 0.1)) + 2` in floating point and truncates to
+    // the `uint8_t width`; keep the whole expression in `f32` and cast to `u8`
+    // last (matching the C type) so a non-finite `percentage` — e.g. the first
+    // darwin sample's zero-delta CPU% — saturates to `u8::MAX` instead of
+    // overflowing an intermediate `i32 + 2`.
+    let width = ((percentage + 0.1).log10().ceil() + 2.0) as u8 as usize;
     Row_updateFieldWidth(ProcessField::PERCENT_CPU as RowField, width);
     Row_updateFieldWidth(ProcessField::PERCENT_NORM_CPU as RowField, width);
 }

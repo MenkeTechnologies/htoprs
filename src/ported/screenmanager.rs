@@ -75,7 +75,7 @@ use crate::ported::crt::{
     KEY_FOCUS_OUT, KEY_LEFT, KEY_RESIZE, KEY_RIGHT, KEY_UP,
 };
 use crate::ported::functionbar::Ncurses;
-use crate::ported::header::{Header, Header_draw};
+use crate::ported::header::{Header, Header_draw, Header_updateData};
 use crate::ported::machine::Machine;
 use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_draw, Panel_getCh, Panel_move, Panel_onKey,
@@ -366,6 +366,18 @@ pub fn checkRecalculation(
 
     // if (*redraw) { Table_rebuildPanel(host->activeTable);
     //               if (!this->state->hideMeters) Header_draw(this->header); }
+    // "always update header, especially to avoid gaps in graph meters"
+    // (C ScreenManager.c:152-153, inside the rescan block that always sets
+    // redraw). Runs each meter's `updateValues` slot so `curItems`/
+    // `curAttributes` reflect the sampled data before `Header_draw` — without
+    // this a meter is drawn at its `Meter_new` init state (`curItems ==
+    // maxItems`), which over-runs the shorter class `attributes` palette.
+    if !this.header.is_null() {
+        // SAFETY: `header` is non-null (guarded) and aliases the caller-owned
+        // `Header` for the run.
+        Header_updateData(unsafe { &mut *this.header });
+    }
+
     if *redraw {
         // SAFETY: `host` aliases the caller-owned `Machine` for the run (see
         // the module docs); C dereferences `host->activeTable` unconditionally.
