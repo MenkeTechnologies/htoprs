@@ -14,6 +14,13 @@
 #![allow(dead_code)]
 
 use crate::ported::crt::ColorElements;
+// Per-OS platform selection (see htop's Platform.c linking). macOS reads uptime
+// from `sysctl KERN_BOOTTIME` (darwin::platform); other targets keep the linux
+// path. Without this the macOS build ran the Linux `/proc/uptime` reader, which
+// fails off-Linux → "Uptime: (unknown)".
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_getUptime;
+#[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::Platform_getUptime;
 use crate::ported::meter::{Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE};
 use crate::ported::object::ObjectClass;

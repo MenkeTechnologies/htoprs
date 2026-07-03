@@ -40,6 +40,13 @@
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+// htop links each OS's Platform.c; the Rust analog selects the platform module
+// by cfg. macOS reads load via `getloadavg` (darwin::platform); other targets
+// keep the existing linux path. Without this the macOS build ran the Linux
+// `/proc/loadavg` reader, which fails off-Linux → "Load average: NaN NaN NaN".
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_getLoadAverage;
+#[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::Platform_getLoadAverage;
 use crate::ported::meter::{
     Meter, MeterClass, Meter_class, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,
