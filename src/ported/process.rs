@@ -48,7 +48,11 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
+use crate::ported::richstring::{
+    RichString, RichString_appendWide, RichString_setAttrn, RichString_size,
+};
 use crate::ported::row::{spaceship_number, Row, Row_class, Row_getGroupOrParent, Row_init};
 use crate::ported::settings::Settings_isReadonly;
 use crate::ported::xutils::compareRealNumbers;
@@ -677,13 +681,91 @@ pub fn Process_makeCommandStr() {
 /// TODO: port of `void Process_writeCommand(const Process* this, int attr,
 /// int baseAttr, RichString* str)` from `Process.c:494`. Blocked on the
 /// unported ncurses draw layer: it builds a `RichString` via
-/// `RichString_appendWide` / `RichString_setAttrn` and reads
-/// `this->super.host->settings` (`highlightBaseName`,
-/// `highlightDeletedExe`, `showProgramPath`) — `RichString` is unported,
-/// [`Row::host`](crate::ported::row::Row::host) is an opaque pointer, and
-/// the `Settings` subset models none of those flags.
-pub fn Process_writeCommand() {
-    todo!("port of Process.c:494 — needs RichString + host->settings flags")
+/// Port of `void Process_writeCommand(const Process* this, int attr, int
+/// baseAttr, RichString* str)` from `Process.c:494`. Appends the process's
+/// command to `str`: when the cached merged-command string is present it is
+/// appended and its recorded highlight regions are re-applied (filtered by
+/// the `highlightBaseName`/`highlightDeletedExe` settings); otherwise the raw
+/// `cmdline` is appended, trimmed to its basename per `showProgramPath`, with
+/// the basename span highlighted when `highlightBaseName` is set.
+///
+/// Reads `this->super.host->settings` via the established
+/// `Row::host as *const Machine` deref (the host is a live back-pointer, as
+/// in C).
+pub fn Process_writeCommand(this: &Process, attr: i32, baseAttr: i32, str: &mut RichString) {
+    let mc = &this.mergedCommand;
+    let str_start = RichString_size(str) as usize;
+
+    // C `const Settings* settings = this->super.host->settings;`
+    let host = unsafe { &*(this.super_.host as *const Machine) };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Process_writeCommand: host->settings is NULL");
+    let highlight_base_name = settings.highlightBaseName;
+    let highlight_separator = true;
+    let highlight_deleted = settings.highlightDeletedExe;
+
+    let merged_command = match &mc.str {
+        // C `if (!mergedCommand)` — no cached string: render the cmdline.
+        None => {
+            let cmdline_full = this.cmdline.as_deref().unwrap_or("");
+            let cmdline_bytes = cmdline_full.as_bytes();
+            let mut len: usize = 0;
+            let mut basename: usize = 0;
+            let mut cmd_offset: usize = 0; // C's `cmdline += basename`
+            let mut str_start = str_start;
+
+            if highlight_base_name || !settings.showProgramPath {
+                for i in 0..this.cmdlineBasenameEnd.min(cmdline_bytes.len()) {
+                    if cmdline_bytes[i] == b'/' {
+                        basename = i + 1;
+                    } else if cmdline_bytes[i] == b':' {
+                        len = i + 1;
+                        break;
+                    }
+                }
+                if len == 0 {
+                    if settings.showProgramPath {
+                        str_start += basename;
+                    } else {
+                        cmd_offset = basename;
+                    }
+                    len = this.cmdlineBasenameEnd - basename;
+                }
+            }
+
+            RichString_appendWide(str, attr, &cmdline_bytes[cmd_offset.min(cmdline_bytes.len())..]);
+            if settings.highlightBaseName {
+                RichString_setAttrn(str, baseAttr, str_start, len);
+            }
+            return;
+        }
+        Some(s) => s,
+    };
+
+    RichString_appendWide(str, attr, merged_command.as_bytes());
+
+    // C `CLAMP(mc->highlightCount, 0, ARRAYSIZE(mc->highlights))`.
+    let hl_count = mc.highlightCount.min(mc.highlights.len());
+    for hl in &mc.highlights[..hl_count] {
+        if hl.length == 0 {
+            continue;
+        }
+        if hl.flags & CMDLINE_HIGHLIGHT_FLAG_SEPARATOR != 0 && !highlight_separator {
+            continue;
+        }
+        if hl.flags & CMDLINE_HIGHLIGHT_FLAG_BASENAME != 0 && !highlight_base_name {
+            continue;
+        }
+        if hl.flags & CMDLINE_HIGHLIGHT_FLAG_DELETED != 0 && !highlight_deleted {
+            continue;
+        }
+        if hl.flags & CMDLINE_HIGHLIGHT_FLAG_PREFIXDIR != 0 && !highlight_deleted {
+            continue;
+        }
+        RichString_setAttrn(str, hl.attr, str_start + hl.offset, hl.length);
+    }
 }
 
 /// Port of `processStateChar(ProcessState state)` from `Process.c:568`.
@@ -1937,5 +2019,37 @@ mod tests {
         assert_eq!(p.cmdlineBasenameStart, 0);
         assert_eq!(p.cmdlineBasenameEnd, 0);
         assert_eq!(p.mergedCommand.lastUpdate, 0);
+    }
+
+    /// [`Process_writeCommand`]: the cached merged-command string is appended
+    /// verbatim; with no cached string and `showProgramPath == false` +
+    /// `highlightBaseName`, only the basename of the cmdline is rendered.
+    #[test]
+    fn write_command_merged_and_cmdline_basename() {
+        use crate::ported::settings::Settings;
+
+        // Merged-command path: appended verbatim (7 chars).
+        let mut machine = Machine::default();
+        machine.settings = Some(Settings::default());
+        let mut p = Process::default();
+        p.super_.host = &machine as *const Machine as *const c_void;
+        p.mergedCommand.str = Some("foo bar".to_string());
+        p.mergedCommand.highlightCount = 0;
+        let mut rs = RichString::default();
+        Process_writeCommand(&p, 0, 0, &mut rs);
+        assert_eq!(RichString_size(&rs), 7);
+
+        // Cmdline path: "/bin/ls" trimmed to basename "ls" (2 chars).
+        let mut settings = Settings::default();
+        settings.highlightBaseName = true;
+        settings.showProgramPath = false;
+        machine.settings = Some(settings);
+        let mut p = Process::default();
+        p.super_.host = &machine as *const Machine as *const c_void;
+        p.cmdline = Some("/bin/ls".to_string());
+        p.cmdlineBasenameEnd = 7;
+        let mut rs = RichString::default();
+        Process_writeCommand(&p, 0, 0, &mut rs);
+        assert_eq!(RichString_size(&rs), 2);
     }
 }
