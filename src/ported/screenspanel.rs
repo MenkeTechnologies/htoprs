@@ -30,15 +30,15 @@
 //! [`ScreensPanel_update`]) reorder the one owned `Vec` in place (identity
 //! preserved) rather than juggle two divergent copies.
 //!
-//! The `columns` / `availableColumns` / `scr` back-pointers and the C
-//! `char buffer[]` scratch field are still omitted (the same reduced-struct
-//! precedent as `columnspanel.rs`), so the functions that dereference them
-//! (`ScreensPanel_new`, `addNewScreen`, and the focus-change /
-//! `F5`-new-screen paths of `ScreensPanel_eventHandlerNormal`) stay stubs —
-//! the specific blocker is named on each below. `renamingItem` is a C
-//! `ListItem*`; the faithful safe-Rust analog is the item's **index**
-//! (`Option<usize>`, `None` == C `NULL`), since renaming never reorders the
-//! list, so the index of the item under edit is stable.
+//! The `columns` / `availableColumns` sub-panels are now modeled as `*mut`
+//! aliases into the boxes the [`ScreenManager`] owns (captured before the
+//! `ScreenManager_add` move; see [`ScreensPanel_new`]), and `scr` /
+//! `settings` are the two back-pointers wired at construction; only the C
+//! `char buffer[]` scratch is omitted (the [`LineEditor`] carries its own
+//! buffer). `renamingItem` is a C `ListItem*`; the faithful safe-Rust analog
+//! is the item's **index** (`Option<usize>`, `None` == C `NULL`), since
+//! renaming never reorders the list, so the index of the item under edit is
+//! stable.
 //!
 //! # Ported (self-contained, or transitively-blocked exactly like the
 //! ported `ColumnsPanel_eventHandler`)
@@ -76,12 +76,17 @@
 //!   dirty, then writes each row's value into its screen's `heading` and
 //!   reorders `screens[]` to panel order.
 //! - [`ScreensPanel_eventHandlerNormal`] (`ScreensPanel.c:234`) — the
-//!   non-rename key `switch` plus its rebuild/update tail. The `F5`/`^N`
-//!   new-screen arm and the focus-change tail block are honest inline
-//!   stubs (blockers below); the move/toggle/rename/event arms run to
-//!   completion and drive the ported `rebuildSettingsArray` /
-//!   `ScreensPanel_update` (the same transitive-block pattern as
-//!   `ScreensPanel_eventHandlerRenaming`).
+//!   non-rename key `switch` plus its rebuild/update tail, including the
+//!   `F5`/`^N` new-screen arm ([`addNewScreen`]) and the focus-change tail
+//!   that refills the `columns` / `availableColumns` sub-panels through the
+//!   raw pointers ([`ColumnsPanel_fill`] / [`AvailableColumnsPanel_fill`]).
+//! - [`ScreensPanel_new`] (`ScreensPanel.c:381`) — builds the panel +
+//!   [`FunctionBar`], the [`ColumnsPanel`] / [`AvailableColumnsPanel`]
+//!   sub-panels (boxed and moved into `scr`, with raw aliases captured
+//!   before the move), and seeds the rows from `settings->screens[]`.
+//! - [`addNewScreen`] (`ScreensPanel.c:223`) — via the ported
+//!   [`Settings_newScreen`], appends a fresh screen and returns its index,
+//!   which the new row carries as its `ssIndex` alias.
 //!
 //! # Stubbed (cannot be ported faithfully yet — blocker named on each)
 //!
@@ -91,36 +96,22 @@
 //!   (cancel any pending edit, null every `item->ss` so the settings array
 //!   keeps them, then `Panel_delete`); the bookkeeping only matters for the
 //!   C manual-free protocol, and destruction is `Drop`.
-//! - [`ScreensPanel_new`] (`ScreensPanel.c:381`) — builds
-//!   `ColumnsPanel_new` / `AvailableColumnsPanel_new` (both stubbed) and
-//!   stores them in the omitted `columns` / `availableColumns` fields, so
-//!   the reduced struct cannot express it.
-//!
-//! Now ported (the substrate they needed has landed):
-//!
-//! - [`addNewScreen`] (`ScreensPanel.c:223`) — [`Settings_newScreen`] is
-//!   ported now; it appends a fresh screen and returns its index, which the
-//!   new row carries as its `ssIndex` alias.
-//!
-//! One arm *inside* the ported [`ScreensPanel_eventHandlerNormal`] remains an
-//! honest inline stub: the focus-change tail block (needs the omitted
-//! `columns` / `availableColumns` sub-panels, their stubbed `ColumnsPanel_fill`
-//! / `AvailableColumnsPanel_fill`, and `settings->dynamicColumns`). The
-//! `F5`/`^N` new-screen arm is now ported: `settings->dynamicScreens` is a
-//! modeled `Settings` field (`Option<*mut Hashtable>`) and [`addNewScreen`]
-//! is ported — though the focus-change tail it flows into still hits that one
-//! remaining stub.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use std::sync::Mutex;
 
+use crate::ported::availablecolumnspanel::{
+    AvailableColumnsPanel, AvailableColumnsPanel_fill, AvailableColumnsPanel_new,
+};
+use crate::ported::columnspanel::{ColumnsPanel, ColumnsPanel_fill, ColumnsPanel_new};
 use crate::ported::crt::{
     ColorElements, KEY_DC, KEY_DEL_MAC, KEY_DOWN, KEY_END, KEY_ENTER, KEY_HOME, KEY_MOUSE,
     KEY_NPAGE, KEY_PPAGE, KEY_RECLICK, KEY_UP,
 };
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
+use crate::ported::hashtable::Hashtable;
 use crate::ported::lineeditor::{
     LineEditor, LineEditor_getCursor, LineEditor_getText, LineEditor_handleKey,
     LineEditor_initWithMax, LineEditor_setText,
@@ -130,12 +121,14 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_delete, Panel_get, Panel_getSelectedIndex,
-    Panel_insert, Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_onKey, Panel_remove,
-    Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelected,
-    Panel_setSelectionColor, Panel_size, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_delete, Panel_get, Panel_getSelectedIndex,
+    Panel_insert, Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_new, Panel_onKey,
+    Panel_remove, Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar,
+    Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
+    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
+use crate::ported::screenmanager::{ScreenManager, ScreenManager_add};
 use crate::ported::settings::{ScreenDefaults, ScreenSettings, Settings, Settings_newScreen};
 
 /// Port of `#define SCREEN_NAME_LEN 20` from `ScreensPanel.h:24`.
@@ -162,6 +155,22 @@ const LBRACKET: i32 = b'[' as i32;
 const RBRACKET: i32 = b']' as i32;
 const MINUS: i32 = b'-' as i32;
 const PLUS: i32 = b'+' as i32;
+
+/// Port of `static const char* const ScreensFunctions[]`
+/// (`ScreensPanel.c:50`), minus the trailing `NULL` (Rust length is the
+/// terminator). The default bar for the static-screens build.
+const ScreensFunctions: [&str; 10] = [
+    "      ", "Rename", "      ", "      ", "New   ", "      ", "MoveUp", "MoveDn", "Remove",
+    "Done  ",
+];
+
+/// Port of `static const char* const DynamicFunctions[]`
+/// (`ScreensPanel.c:51`), minus the trailing `NULL`. The bar shown when the
+/// platform provides dynamic screens (no "New" key — screens are fixed).
+const DynamicFunctions: [&str; 10] = [
+    "      ", "Rename", "      ", "      ", "      ", "      ", "MoveUp", "MoveDn", "Remove",
+    "Done  ",
+];
 
 /// Port of `static const char* const ScreensRenamingFunctions[]`
 /// (`ScreensPanel.c:52`), minus the trailing `NULL` (Rust length is the
@@ -687,26 +696,14 @@ pub fn addNewScreen(this: &mut ScreensPanel) {
 /// reorder happened ([`rebuildSettingsArray`]), and, when the event was
 /// handled, syncs the settings ([`ScreensPanel_update`]).
 ///
-/// The `F5`/`^N` "new screen" arm is ported now: `this->settings->dynamicScreens`
-/// is a modeled `Settings` field (`Option<*mut Hashtable>`) and [`addNewScreen`]
-/// (via the ported [`Settings_newScreen`]) is ported. One piece still needs
-/// substrate the reduced model cannot provide and is an honest inline stub:
-///
-/// - the focus-change tail (`newFocus && oldFocus != newFocus`) calls
-///   `ColumnsPanel_fill(this->columns, ...)` /
-///   `AvailableColumnsPanel_fill(this->availableColumns, ...)` against
-///   `this->settings->dynamicColumns` — the `columns` / `availableColumns`
-///   sub-panels are omitted from the reduced struct (their constructors
-///   `ColumnsPanel_new` / `AvailableColumnsPanel_new` are stubbed), the
-///   `*_fill` functions are stubbed, and `dynamicColumns` is another
-///   unmodeled `Settings` `Hashtable` field.
-///
-/// So arms that keep the focused row identity (Enter toggle, MoveUp/Dn,
-/// rename, event-select, lost-focus, page-nav that cannot move) run to
-/// completion and drive the now-ported [`rebuildSettingsArray`] /
-/// [`ScreensPanel_update`]; arms that change the focused row (delete,
-/// type-select, an actual page move) reach the focus-change stub, and
-/// `F5`/`^N` reaches the new-screen stub.
+/// Fully ported now, including the focus-change tail (`newFocus &&
+/// oldFocus != newFocus`): it reads `this->settings->dynamicColumns` and
+/// refills the sub-panels via [`ColumnsPanel_fill`]`(this->columns,
+/// newFocus->ss, ...)` / [`AvailableColumnsPanel_fill`]`(this->availableColumns,
+/// newFocus->ss->dynamic, ...)` through the `columns` / `availableColumns`
+/// raw pointers (aliasing the `scr`-owned boxes; see [`ScreensPanel_new`]).
+/// The `F5`/`^N` "new screen" arm runs [`addNewScreen`] (via the ported
+/// [`Settings_newScreen`]) and then flows into the same focus-change tail.
 pub fn ScreensPanel_eventHandlerNormal(this: &mut ScreensPanel, ch: i32) -> HandlerResult {
     // C: const void* oldFocus = Panel_get(super, super->prevSelected);
     let oldFocus = this.focus_ptr(this.super_.prevSelected);
@@ -834,7 +831,34 @@ pub fn ScreensPanel_eventHandlerNormal(this: &mut ScreensPanel, ch: i32) -> Hand
         this.focus_ptr(this.super_.selected)
     };
     if !newFocus.is_null() && oldFocus != newFocus {
-        todo!("port of ScreensPanel.c:345 — needs columns/availableColumns sub-panels + stubbed ColumnsPanel_fill/AvailableColumnsPanel_fill + settings->dynamicColumns (unmodeled Settings Hashtable field)")
+        // C: Hashtable* dynamicColumns = this->settings->dynamicColumns;
+        //    ColumnsPanel_fill(this->columns, newFocus->ss, dynamicColumns);
+        //    AvailableColumnsPanel_fill(this->availableColumns, newFocus->ss->dynamic, dynamicColumns);
+        // newFocus->ss is the selected row's screen (its modeled index).
+        let ss_index = this.item_ssIndex(this.super_.selected as usize);
+        // Read the screen's ss pointer and `dynamic` name through the settings
+        // back-pointer; the `&mut` borrow ends at the raw-pointer cast, so the
+        // subsequent shared read is a fresh, non-overlapping borrow.
+        // SAFETY: `settings` is the live back-pointer wired at construction.
+        let ss_ptr: *mut ScreenSettings = {
+            let s = unsafe { &mut *this.settings };
+            &mut s.screens[ss_index]
+        };
+        let dynamic = unsafe { &*this.settings }.screens[ss_index].dynamic.clone();
+        let dc_ptr = unsafe { &*this.settings }
+            .dynamicColumns
+            .expect("ScreensPanel focus change: settings->dynamicColumns is NULL");
+        // SAFETY: `dynamicColumns` is a borrowed Hashtable owned by the Machine.
+        let dc: &Hashtable = unsafe { &*dc_ptr };
+        // SAFETY: `columns` / `availableColumns` alias the `scr`-owned boxes
+        // (heap-stable, distinct from `this`'s own storage and from `dc`).
+        ColumnsPanel_fill(unsafe { &mut *this.columns }, ss_ptr, dc);
+        AvailableColumnsPanel_fill(
+            unsafe { &mut *this.availableColumns },
+            dynamic.as_deref(),
+            Some(dc),
+        );
+        result = HandlerResult::HANDLED;
     }
 
     this.super_.prevSelected = this.super_.selected;
@@ -854,9 +878,10 @@ pub fn ScreensPanel_eventHandlerNormal(this: &mut ScreensPanel, ch: i32) -> Hand
 /// Port of `static HandlerResult ScreensPanel_eventHandler(Panel* super,
 /// int ch)` from `ScreensPanel.c:363`. Dispatches to the renaming handler
 /// while a rename is in progress (C `if (this->renamingItem)`), otherwise
-/// to the normal handler. [`ScreensPanel_eventHandlerNormal`] is still a
-/// stub, so the not-renaming path panics in it (the honest transitive
-/// block); the renaming path runs [`ScreensPanel_eventHandlerRenaming`].
+/// to the normal handler. Both branches are fully ported now: the
+/// not-renaming path runs [`ScreensPanel_eventHandlerNormal`] (whose
+/// focus-change tail refills the `columns` / `availableColumns` sub-panels),
+/// the renaming path runs [`ScreensPanel_eventHandlerRenaming`].
 pub fn ScreensPanel_eventHandler(this: &mut ScreensPanel, ch: i32) -> HandlerResult {
     if this.renamingItem.is_some() {
         ScreensPanel_eventHandlerRenaming(this, ch)
@@ -865,14 +890,139 @@ pub fn ScreensPanel_eventHandler(this: &mut ScreensPanel, ch: i32) -> HandlerRes
     }
 }
 
-/// TODO: port of `ScreensPanel* ScreensPanel_new(Settings* settings)` from
-/// `ScreensPanel.c:381`. Allocates the panel, builds the two child panels
-/// via the stubbed `ColumnsPanel_new` / `AvailableColumnsPanel_new`, and
-/// seeds the rows from `settings->screens[]` — the same `item->ss`
-/// aliasing `settings->screens[i]` that blocks [`rebuildSettingsArray`].
-/// Left as a stub.
-pub fn ScreensPanel_new() {
-    todo!("port of ScreensPanel.c:381 — needs ColumnsPanel_new/AvailableColumnsPanel_new (stubbed) + settings->screens[] aliasing")
+/// Port of `ScreensPanel* ScreensPanel_new(Settings* settings)` from
+/// `ScreensPanel.c:381`. Builds the panel + [`FunctionBar`] (the
+/// `DynamicFunctions` vs `ScreensFunctions` bar per `settings->dynamicScreens`),
+/// lazily builds the shared renaming bar, constructs the [`ColumnsPanel`] /
+/// [`AvailableColumnsPanel`] sub-panels, seeds the rows from
+/// `settings->screens[]`, and sets `prevSelected`.
+///
+/// The C signature is `ScreensPanel_new(Settings* settings)`; a
+/// `scr: *mut ScreenManager` is added because the ownership model differs
+/// from C. In htop the [`ScreenManager`] is created with `owner = true` and
+/// frees the sub-panels, while `ScreensPanel` holds non-owning `ColumnsPanel*`
+/// / `AvailableColumnsPanel*` pointers (`CategoriesPanel_makeScreensPage`
+/// then also hands the same pointers to `ScreenManager_add`). The Rust
+/// `ScreenManager.panels: Vec<Box<dyn PanelClass>>` is the single owner, so
+/// the two sub-panels are boxed and moved into `scr` here, and the struct
+/// keeps `*mut` aliases into those boxes. The raw pointer is captured from
+/// each `Box` **before** the move (`&mut *box as *mut _`); the `Box` move
+/// preserves the pointee address, so the alias stays valid (see the
+/// [`ScreensPanel::scr`] SAFETY note).
+///
+/// C body (`ScreensPanel.c:381`):
+/// ```c
+/// FunctionBar* fuBar = FunctionBar_new(settings->dynamicScreens ? DynamicFunctions : ScreensFunctions, NULL, NULL);
+/// if (!Screens_renamingBar) Screens_renamingBar = FunctionBar_new(ScreensRenamingFunctions, NULL, NULL);
+/// Panel_init(super, 1, 1, 1, 1, Class(ListItem), true, fuBar);
+/// Hashtable* columns = settings->dynamicColumns;
+/// this->settings = settings;
+/// this->columns = ColumnsPanel_new(settings->screens[0], columns, &(settings->changed));
+/// this->availableColumns = AvailableColumnsPanel_new((Panel*) this->columns, columns);
+/// this->moving = false; this->renamingItem = NULL; this->renamingNewItem = false; this->saved = NULL;
+/// super->cursorOn = false;
+/// LineEditor_initWithMax(&this->editor, SCREEN_NAME_LEN - 1);
+/// Panel_setHeader(super, "Screens");
+/// for (i < settings->nScreens) { ss = screens[i]; Panel_add(super, ScreenListItem_new(ss->heading, ss)); }
+/// super->prevSelected = super->selected;
+/// ```
+pub fn ScreensPanel_new(settings: *mut Settings, scr: *mut ScreenManager) -> ScreensPanel {
+    // SAFETY: `settings` is the config layer owned by `htop.c`, wired at the
+    // call site; borrowed here only to read screens/dynamicScreens/dynamicColumns
+    // during construction.
+    let settings_ref = unsafe { &mut *settings };
+
+    // C: FunctionBar* fuBar = FunctionBar_new(settings->dynamicScreens ? DynamicFunctions : ScreensFunctions, NULL, NULL);
+    let funcs: &[&str] = if settings_ref.dynamicScreens.is_some() {
+        &DynamicFunctions[..]
+    } else {
+        &ScreensFunctions[..]
+    };
+    let fuBar = FunctionBar_new(Some(funcs), None, None);
+
+    // C: if (!Screens_renamingBar) Screens_renamingBar = FunctionBar_new(ScreensRenamingFunctions, NULL, NULL);
+    {
+        let mut bar = Screens_renamingBar.lock().unwrap();
+        if bar.is_none() {
+            *bar = Some(FunctionBar_new(Some(&ScreensRenamingFunctions), None, None));
+        }
+    }
+
+    // C: Panel_init(super, 1, 1, 1, 1, Class(ListItem), true, fuBar);
+    let super_ = Panel_new(1, 1, 1, 1, Some(fuBar));
+
+    // C: Hashtable* columns = settings->dynamicColumns;
+    // SAFETY: `dynamicColumns` is a borrowed Hashtable owned by the Machine.
+    let columns_ht: &Hashtable = unsafe {
+        &*settings_ref
+            .dynamicColumns
+            .expect("ScreensPanel_new: settings->dynamicColumns is NULL")
+    };
+
+    // C: this->columns = ColumnsPanel_new(settings->screens[0], columns, &(settings->changed));
+    let ss0: *mut ScreenSettings = &mut settings_ref.screens[0];
+    let changed_ptr: *mut bool = &mut settings_ref.changed;
+    let mut columns_box = Box::new(ColumnsPanel_new(ss0, columns_ht, changed_ptr));
+    // Capture the raw pointer BEFORE moving the box into the ScreenManager; the
+    // move preserves the pointee address so it stays valid.
+    let columns_ptr: *mut ColumnsPanel = &mut *columns_box;
+    // C: (Panel*) this->columns — the sub-panel's embedded base (offset 0).
+    let columns_panel_ptr: *mut Panel = &mut columns_box.super_;
+
+    // C: this->availableColumns = AvailableColumnsPanel_new((Panel*) this->columns, columns);
+    let mut avail_box = Box::new(AvailableColumnsPanel_new(columns_panel_ptr, columns_ht));
+    let avail_ptr: *mut AvailableColumnsPanel = &mut *avail_box;
+
+    // SAFETY: `scr` owns the two sub-panels for this panel's lifetime; move the
+    // boxes in. The `columns_ptr` / `avail_ptr` captured above remain valid
+    // (heap-stable pointees).
+    let scr_ref = unsafe { &mut *scr };
+    ScreenManager_add(scr_ref, columns_box, 20);
+    ScreenManager_add(scr_ref, avail_box, -1);
+
+    let mut this = ScreensPanel {
+        super_,
+        settings,
+        scr,
+        columns: columns_ptr,
+        availableColumns: avail_ptr,
+        // C: LineEditor_initWithMax(&this->editor, SCREEN_NAME_LEN - 1); done below.
+        editor: LineEditor::default(),
+        // C: this->moving = false;
+        moving: false,
+        // C: this->saved = NULL;
+        saved: None,
+        // C: this->renamingItem = NULL;
+        renamingItem: None,
+        // C: this->renamingNewItem = false;
+        renamingNewItem: false,
+    };
+
+    // C: super->cursorOn = false;
+    this.super_.cursorOn = false;
+    // C: LineEditor_initWithMax(&this->editor, SCREEN_NAME_LEN - 1);
+    LineEditor_initWithMax(&mut this.editor, SCREEN_NAME_LEN - 1);
+    // C: Panel_setHeader(super, "Screens");
+    Panel_setHeader(&mut this.super_, "Screens");
+
+    // C: for (i < settings->nScreens) { ss = screens[i]; name = ss->heading;
+    //       Panel_add(super, ScreenListItem_new(name, ss)); }
+    // SAFETY: independent re-borrow of the settings back-pointer (the earlier
+    // `settings_ref` borrow ended once its last use produced raw pointers).
+    let n = unsafe { &*settings }.screens.len();
+    for i in 0..n {
+        let name = unsafe { &*settings }.screens[i]
+            .heading
+            .clone()
+            .unwrap_or_default();
+        // The C `ScreenSettings* ss` alias is the screen's index `i`.
+        Panel_add(&mut this.super_, Box::new(ScreenListItem_new(&name, i)));
+    }
+
+    // C: super->prevSelected = super->selected;
+    this.super_.prevSelected = this.super_.selected;
+
+    this
 }
 
 /// Port of `void ScreensPanel_update(Panel* super)` from
@@ -922,14 +1072,13 @@ pub fn ScreensPanel_update(this: &mut ScreensPanel) {
     }
 }
 
-/// Reduced model of the C `ScreensPanel` struct (`ScreensPanel.h:27`). Only
-/// the fields the ported functions touch are modeled: the embedded `Panel
-/// super`, the inline rename [`LineEditor`], and the four rename/move
-/// scalars. The `settings` / `columns` / `availableColumns` / `scr`
-/// back-pointers and the C `char buffer[]` scratch are omitted — every
-/// function that dereferences them stays a stub (see the module docs).
-/// `super_` avoids the Rust `super` keyword, matching the `columnspanel.rs`
-/// convention.
+/// Model of the C `ScreensPanel` struct (`ScreensPanel.h:27`): the embedded
+/// `Panel super`, the `settings` / `scr` back-pointers, the `columns` /
+/// `availableColumns` sub-panel raw pointers (aliasing the boxes the `scr`
+/// owns — see [`ScreensPanel_new`]), the inline rename [`LineEditor`], and
+/// the four rename/move scalars. Only the C `char buffer[]` scratch is
+/// omitted (the [`LineEditor`] carries its own buffer). `super_` avoids the
+/// Rust `super` keyword, matching the `columnspanel.rs` convention.
 pub struct ScreensPanel {
     /// C `Panel super` — the embedded panel base.
     pub super_: Panel,
@@ -940,6 +1089,24 @@ pub struct ScreensPanel {
     /// a heap `Settings` and the rename/move helpers that never touch
     /// settings leave it null.
     pub settings: *mut Settings,
+    /// C `ScreenManager* scr` — non-owning back-pointer to the manager that
+    /// owns the two sub-panels below.
+    ///
+    /// SAFETY: `scr` owns the `columns` / `availableColumns` sub-panels (as
+    /// `Box<dyn PanelClass>` elements of [`ScreenManager::panels`]) for this
+    /// panel's lifetime; the raw pointers below alias into those boxes, whose
+    /// pointee addresses are heap-stable across `Vec` reallocation.
+    pub scr: *mut ScreenManager,
+    /// C `ColumnsPanel* columns` — the "Active Columns" editor for the
+    /// selected screen. Owned by [`ScreensPanel::scr`] (added via
+    /// `ScreenManager_add` in [`ScreensPanel_new`]); this raw pointer is
+    /// captured before the box is moved into the manager and stays valid
+    /// because the `Box`'s pointee address is stable across the move.
+    pub columns: *mut ColumnsPanel,
+    /// C `AvailableColumnsPanel* availableColumns` — the "Available Columns"
+    /// picker. Owned by [`ScreensPanel::scr`]; same capture-before-move
+    /// raw-pointer aliasing as [`ScreensPanel::columns`].
+    pub availableColumns: *mut AvailableColumnsPanel,
     /// C `LineEditor editor` — the inline editor used while renaming.
     pub editor: LineEditor,
     /// C `bool moving` — whether the panel is in row-reorder mode.
@@ -975,6 +1142,7 @@ use crate::ported::panel::PanelItem;
 mod tests {
     use super::*;
     use crate::ported::crt::{KEY_ENTER, KEY_UP};
+    use crate::ported::hashtable::Hashtable_new;
     use crate::ported::panel::Panel_new;
     use crate::ported::settings::HeaderLayout;
 
@@ -996,6 +1164,9 @@ mod tests {
         ScreensPanel {
             super_,
             settings: core::ptr::null_mut(),
+            scr: core::ptr::null_mut(),
+            columns: core::ptr::null_mut(),
+            availableColumns: core::ptr::null_mut(),
             editor: LineEditor::default(),
             moving: false,
             saved: None,
@@ -1038,6 +1209,9 @@ mod tests {
         let sp = ScreensPanel {
             super_,
             settings: ptr,
+            scr: core::ptr::null_mut(),
+            columns: core::ptr::null_mut(),
+            availableColumns: core::ptr::null_mut(),
             editor: LineEditor::default(),
             moving: false,
             saved: None,
@@ -1331,25 +1505,87 @@ mod tests {
         assert_eq!(settings.ssIndex, 1);
     }
 
-    #[test]
-    #[should_panic(expected = "ScreensPanel.c:345")]
-    fn normal_delete_reaches_focus_change_stub() {
-        // Deleting the focused row changes the focused item => the C
-        // focus-change tail (ColumnsPanel_fill on the omitted sub-panels)
-        // fires and hits the honest inline stub.
-        let (_settings, mut p) = wired(&["A", "B", "C"]);
-        p.super_.selected = 1;
-        p.super_.prevSelected = 1;
-        let _ = ScreensPanel_eventHandlerNormal(&mut p, KEY_F9);
+    // ── ScreensPanel_new + focus-change tail (full wiring) ─────────────
+
+    /// A fully-wired `ScreensPanel` built through [`ScreensPanel_new`]: a
+    /// boxed `Settings` (one screen per name) with a live `dynamicColumns`
+    /// [`Hashtable`], and a boxed [`ScreenManager`] that owns the
+    /// `columns` / `availableColumns` sub-panels the constructor adds. Every
+    /// owner is returned so the caller keeps it alive for the panel's raw
+    /// back-pointers (the same keep-alive contract as [`wired`]).
+    fn full(names: &[&str]) -> (Box<Settings>, Box<Hashtable>, Box<ScreenManager>, ScreensPanel) {
+        let mut dyncols = Box::new(Hashtable_new(8, false));
+        let mut settings = make_settings(names);
+        settings.dynamicColumns = Some(dyncols.as_mut() as *mut Hashtable);
+        let mut scr = Box::new(ScreenManager {
+            x1: 0,
+            y1: 0,
+            x2: 0,
+            y2: -1,
+            allowFocusChange: true,
+            panelCount: 0,
+            panels: Vec::new(),
+            name: None,
+            header: None,
+            host: None,
+            // ScreenManager_insert -> header_height derefs `state`; a minimal
+            // State (hideMeters=false, no header) makes the layout math return 0.
+            state: Some(crate::ported::action::State {
+                host: core::ptr::null_mut(),
+                mainPanel: core::ptr::null_mut(),
+                header: core::ptr::null_mut(),
+                failedUpdate: None,
+                pauseUpdate: false,
+                hideSelection: false,
+                hideMeters: false,
+            }),
+        });
+        let sp = ScreensPanel_new(
+            settings.as_mut() as *mut Settings,
+            scr.as_mut() as *mut ScreenManager,
+        );
+        (settings, dyncols, scr, sp)
     }
 
     #[test]
-    #[should_panic(expected = "ScreensPanel.c:345")]
-    fn normal_f5_new_screen_reaches_stub() {
-        // The new-screen arm (addNewScreen) is now ported; the flow proceeds
-        // past it into the focus-change tail, which is the remaining stub
-        // (ScreensPanel.c:345 — needs the columns/availableColumns sub-panels).
-        let (_settings, mut p) = wired(&["Main"]);
-        let _ = ScreensPanel_eventHandlerNormal(&mut p, KEY_F5);
+    fn screens_panel_new_seeds_rows_and_wires_subpanels() {
+        let (_s, _hc, scr, p) = full(&["A", "B"]);
+        // Rows seeded from settings->screens[] in order.
+        assert_eq!(Panel_size(&p.super_), 2);
+        assert_eq!(value_at(&p, 0), "A");
+        assert_eq!(value_at(&p, 1), "B");
+        // The two sub-panels were boxed into the manager, and the struct holds
+        // live aliases into them.
+        assert_eq!(scr.panels.len(), 2);
+        assert!(!p.columns.is_null());
+        assert!(!p.availableColumns.is_null());
+        // C: super->prevSelected = super->selected;
+        assert_eq!(p.super_.prevSelected, p.super_.selected);
+        // Default (static-screens) function bar was installed.
+        assert!(p.super_.defaultBar.is_some());
+    }
+
+    #[test]
+    fn normal_delete_refills_columns_and_handles() {
+        // Deleting the focused row changes the focused item => the ported
+        // focus-change tail refills the sub-panels and returns HANDLED.
+        let (_s, _hc, _scr, mut p) = full(&["A", "B", "C"]);
+        p.super_.selected = 1;
+        p.super_.prevSelected = 1;
+        let r = ScreensPanel_eventHandlerNormal(&mut p, KEY_F9);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(Panel_size(&p.super_), 2); // one screen removed
+    }
+
+    #[test]
+    fn normal_f5_new_screen_adds_row_and_handles() {
+        // F5 appends a "New" screen (addNewScreen), enters rename, and flows
+        // through the now-ported focus-change tail to return HANDLED.
+        let (_s, _hc, _scr, mut p) = full(&["Main"]);
+        let r = ScreensPanel_eventHandlerNormal(&mut p, KEY_F5);
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(Panel_size(&p.super_), 2); // Main + New
+        assert!(p.renamingNewItem); // entered rename of the freshly added item
+        assert_eq!(value_at(&p, 1), "New");
     }
 }

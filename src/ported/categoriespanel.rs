@@ -40,6 +40,9 @@
 //!   sub-panel via the ported [`DisplayOptionsPanel_new`] /
 //!   [`ColorsPanel_new`] / [`HeaderOptionsPanel_new`] and register it with
 //!   `ScreenManager_add`.
+//! - [`CategoriesPanel_makeScreensPage`] (`CategoriesPanel.c:87`) — builds the
+//!   [`ScreensPanel_new`] editor (which itself boxes the `columns` /
+//!   `availableColumns` sub-panels into `scr`) and registers it.
 //!
 //! # Stubbed (blocked on specific unported substrate)
 //!
@@ -51,9 +54,6 @@
 //!   [`crate::ported::meterspanel::MetersPanel`] *owns* its `Vector` meters —
 //!   there is no shared-ownership bridge, so the panel cannot be built without
 //!   moving the header's meters out (breaking the header).
-//! - [`CategoriesPanel_makeScreensPage`] (`CategoriesPanel.c:87`) —
-//!   `ScreensPanel_new` is a `todo!()` stub (`screenspanel.rs`), and it splits
-//!   into `columns`/`availableColumns` sub-panels the `ScreensPanel` owns.
 //! - [`CategoriesPanel_makeScreenTabsPage`] (`CategoriesPanel.c:78`) — PCP-only
 //!   in C (`#if defined(HTOP_PCP)`), and it hands the `ScreenTabsPanel`'s owned
 //!   `names` sub-panel to a separate `ScreenManager_add`, which the
@@ -78,6 +78,7 @@ use crate::ported::panel::{
 use crate::ported::screenmanager::{
     ScreenManager, ScreenManager_add, ScreenManager_remove, ScreenManager_size,
 };
+use crate::ported::screenspanel::ScreensPanel_new;
 use crate::ported::settings::Settings;
 
 // The two Ctrl-key codes `CategoriesPanel_eventHandler` matches in its
@@ -255,14 +256,32 @@ pub fn CategoriesPanel_makeScreenTabsPage(this: &mut CategoriesPanel) {
     todo!("port of CategoriesPanel.c:78 — PCP-only; also needs to split the ScreenTabsPanel's owned `names` sub-panel into a separately ScreenManager_add-able panel (owned-sub-panel model can't)")
 }
 
-/// TODO: port of `static void CategoriesPanel_makeScreensPage(CategoriesPanel*
-/// this)` from `CategoriesPanel.c:87`. Blocked: `ScreensPanel_new` is a
-/// `todo!()` stub (`screenspanel.rs` — needs `ColumnsPanel_new`/
-/// `AvailableColumnsPanel_new`), and the C hands the `ScreensPanel`'s owned
-/// `columns`/`availableColumns` sub-panels to separate `ScreenManager_add`s.
+/// Port of `static void CategoriesPanel_makeScreensPage(CategoriesPanel* this)`
+/// from `CategoriesPanel.c:87`.
+///
+/// ```c
+/// Settings* settings = this->host->settings;
+/// Panel* screens = (Panel*) ScreensPanel_new(settings);
+/// Panel* columns = (Panel*) ((ScreensPanel*)screens)->columns;
+/// Panel* availableColumns = (Panel*) ((ScreensPanel*)screens)->availableColumns;
+/// ScreenManager_add(this->scr, screens, 20);
+/// ScreenManager_add(this->scr, columns, 20);
+/// ScreenManager_add(this->scr, availableColumns, -1);
+/// ```
+///
+/// [`ScreensPanel_new`] already boxes the `columns` / `availableColumns`
+/// sub-panels and moves them into `scr` (the Rust `ScreenManager.panels` is
+/// the single owner — see its docs), so the two extra `ScreenManager_add`s
+/// the C performs here are done inside the constructor. This function only
+/// adds the `ScreensPanel` itself, matching the sibling `make*Page` ports.
 pub fn CategoriesPanel_makeScreensPage(this: &mut CategoriesPanel) {
-    let _ = this;
-    todo!("port of CategoriesPanel.c:87 — ScreensPanel_new is a stub (needs ColumnsPanel_new/AvailableColumnsPanel_new) + splitting its owned columns/availableColumns sub-panels")
+    let settings = this.host_settings();
+    let scr = this.scr;
+    // SAFETY: `scr` is the self-referential back-pointer (owns this panel and
+    // the sub-panels the constructor adds); the same raw-`scr` add every
+    // sibling `make*Page` performs.
+    let screens = ScreensPanel_new(settings, scr);
+    ScreenManager_add(unsafe { &mut *scr }, Box::new(screens), 20);
 }
 
 /// Port of `static void CategoriesPanel_makeHeaderOptionsPage(CategoriesPanel*

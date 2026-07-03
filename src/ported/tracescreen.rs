@@ -54,13 +54,9 @@
 //! - [`TraceScreen_updateTrace`] (`TraceScreen.c:134`) — the vtable `onErr`
 //!   hook: the `select`/`fread` pipe drain, the `'\n'`-split
 //!   [`InfoScreen_addLine`] path, the `follow` `Panel_setSelected`, and the
-//!   inlined `xWaitpid(WNOHANG)` liveness check. The `contLine` branch's
-//!   `InfoScreen_appendLine` remains an `infoscreen.rs` `todo!()` (its
-//!   weak-panel shared-`Object*` merge cannot be modelled by owned `Box`es);
-//!   its ported signature is argument-less, so the C `(&this->super, line)`
-//!   arguments are dropped there and the stub `todo!()`-panics only if a real
-//!   continuation line is reached (the same handling `InfoScreen_run` uses
-//!   for the `IncSet_handleKey` stub).
+//!   inlined `xWaitpid(WNOHANG)` liveness check. The `contLine` branch calls
+//!   the now-ported [`InfoScreen_appendLine`]`(&this->super, line)` to merge a
+//!   continuation onto the previous partial line.
 //! - [`TraceScreen_onKey`] (`TraceScreen.c:185`) — the vtable `onKey` hook:
 //!   the `f`/`F8` follow toggle and the `t`/`F9` tracing toggle
 //!   (`FunctionBar_setLabel` relabel + repaint). The C `InfoScreen_draw(this)`
@@ -458,13 +454,10 @@ pub fn TraceScreen_forkTracer(this: &mut TraceScreen) -> bool {
 /// - **`xWaitpid(this->child, NULL, WNOHANG, false)` inlined.** With
 ///   `wait_for_exit == false` (`XUtils.c:321`) it is just the `EINTR`-retry
 ///   `waitpid`; inlined because `XUtils.c` is unported.
-/// - **`InfoScreen_appendLine` (contLine branch) is an [`infoscreen.rs`]
-///   `todo!()`** — its weak-panel shared-`Object*` merge cannot be modelled by
-///   owned `Box`es. Its ported signature is argument-less, so the C
-///   `(&this->super, line)` arguments are dropped at the call site (same
-///   documented handling `InfoScreen_run` uses for the `IncSet_handleKey`
-///   stub); the stub `todo!()`-panics if a real continuation line is ever
-///   reached, so no argument is observed.
+/// - **`InfoScreen_appendLine` (contLine branch).** The now-ported
+///   [`InfoScreen_appendLine`]`(&mut this.super_, &s)` merges the continuation
+///   line `s` onto the previous partial line, mirroring the C
+///   `InfoScreen_appendLine(&this->super, line)`.
 ///
 /// [`infoscreen.rs`]: crate::ported::infoscreen
 pub fn TraceScreen_updateTrace(this: &mut TraceScreen) {
@@ -521,13 +514,12 @@ pub fn TraceScreen_updateTrace(this: &mut TraceScreen) {
         while i < nread {
             if buffer[i] == b'\n' {
                 // C: buffer[i] = '\0'; — line is buffer[line_start..i].
+                let s = String::from_utf8_lossy(&buffer[line_start..i]).into_owned();
                 if this.contLine {
                     // C: InfoScreen_appendLine(&this->super, line);
-                    // (argument-less infoscreen.rs stub — see fn docs.)
-                    InfoScreen_appendLine();
+                    InfoScreen_appendLine(&mut this.super_, &s);
                     this.contLine = false;
                 } else {
-                    let s = String::from_utf8_lossy(&buffer[line_start..i]).into_owned();
                     InfoScreen_addLine(&mut this.super_, &s);
                 }
                 // C: line = buffer + i + 1;

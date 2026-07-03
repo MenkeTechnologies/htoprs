@@ -42,6 +42,10 @@
 //! - [`InfoScreen_addLine`] (`InfoScreen.c:73`) — `ListItem_new` +
 //!   `Vector_add` + the `IncSet_filter` gate that decides whether the new
 //!   line is also shown in the panel.
+//! - [`InfoScreen_appendLine`] (`InfoScreen.c:81`) — `ListItem_append` onto the
+//!   last `lines` item (empty-vector -> `InfoScreen_addLine`), with the
+//!   `displayLast != last` data-pointer identity guard before a weak
+//!   [`PanelItem::Borrowed`] add of the newly-matching last line.
 //! - [`InfoScreen_run`] (`InfoScreen.c:96`) — the full ncurses event-loop
 //!   control flow: the `As_InfoScreen` vtable dispatch (trait methods), the
 //!   `Panel_draw`/`FunctionBar_setLabel`/`Panel_getCh`/`Panel_onKey`/
@@ -97,13 +101,6 @@
 //!   `"..."` ellipsis reproduced on the byte buffer; `String_stripControlChars`
 //!   (`XUtils.h:147`, absent from the port-purity snapshot) is inlined as a
 //!   byte loop rather than a module-level `fn`.
-//! - [`InfoScreen_appendLine`] (`InfoScreen.c:81`) — the body is portable (the
-//!   weak-panel raw-pointer technique it needs is proven by the ported
-//!   [`InfoScreen_addLine`] and `incset.rs`'s `updateWeakPanel`), but its
-//!   faithful `(this, line)` signature would break the committed 0-arg caller
-//!   `InfoScreen_appendLine()` in `tracescreen.rs:527`, which is outside this
-//!   port group's 3-file scope. Kept a zero-argument stub so the build compiles;
-//!   un-stubbing it also needs a one-line caller fix in `tracescreen.rs`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -120,11 +117,11 @@ use crate::ported::incset::{
     IncSet, IncSet_activate, IncSet_delete, IncSet_drawBar, IncSet_filter, IncSet_getListItemValue,
     IncSet_handleKey, IncSet_new, IncType,
 };
-use crate::ported::listitem::ListItem_new;
+use crate::ported::listitem::{ListItem, ListItem_append, ListItem_new};
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    Panel, PanelItem, Panel_delete, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
-    Panel_setHeader,
+    Panel, PanelItem, Panel_delete, Panel_draw, Panel_get, Panel_getCh, Panel_new, Panel_onKey,
+    Panel_resize, Panel_setHeader, Panel_size,
 };
 use crate::ported::process::Process;
 use crate::ported::vector::{Vector, Vector_add, Vector_delete, Vector_new, Vector_prune};
@@ -476,26 +473,82 @@ pub fn InfoScreen_addLine(this: &mut InfoScreen, line: &str) {
     }
 }
 
-/// TODO: port of `void InfoScreen_appendLine(InfoScreen* this, const char*
-/// line)` from `InfoScreen.c:81`. **Not a soundness blocker** — the weak-panel
-/// raw-pointer technique this port needs (in-place `ListItem_append` on the last
-/// `lines` box, then the `displayLast != last` data-pointer identity guard, then
-/// a [`PanelItem::Borrowed`] weak-add of the matching fragment) is fully proven
-/// by the ported [`InfoScreen_addLine`] and `incset.rs`'s
-/// [`updateWeakPanel`](crate::ported::incset)/`IncSet_handleKey`, which alias
-/// `lines`-owned boxes into the panel exactly the same way.
+/// Port of `void InfoScreen_appendLine(InfoScreen* this, const char* line)`
+/// from `InfoScreen.c:81`. Appends `line` onto the last `lines` item (a
+/// continuation of a partial line) rather than starting a new one; when the
+/// `lines` vector is empty it defers to [`InfoScreen_addLine`]. If a filter is
+/// active, the newly-appended text can newly match it — in which case the last
+/// line's box is shown in the panel, but only if it is not already the panel's
+/// last item (the `displayLast != last` guard prevents a double-add).
 ///
-/// The blocker is purely the **committed 0-arg caller**
-/// `InfoScreen_appendLine()` in `tracescreen.rs:527` (the contLine branch of
-/// `TraceScreen_scan`), which is pinned to this stub's zero-argument signature.
-/// Giving the fn its faithful `(this, line)` signature would break that call —
-/// and `tracescreen.rs` is outside this port group's 3-file scope, so the caller
-/// cannot be updated here. Un-stubbing this fn therefore also requires a
-/// one-line caller fix in `tracescreen.rs`
-/// (`InfoScreen_appendLine(&mut this.super_, &s)`), out of scope. Kept
-/// zero-argument so the build stays green.
-pub fn InfoScreen_appendLine() {
-    todo!("port of InfoScreen.c:81 — body is portable (weak-panel raw-pointer technique, proven by InfoScreen_addLine/updateWeakPanel); blocked only by the committed 0-arg caller tracescreen.rs:527, outside this 3-file scope")
+/// **Weak panel + identity guard.** Like [`InfoScreen_addLine`], the panel add
+/// is a non-owning [`PanelItem::Borrowed`] raw-pointer alias into the
+/// `lines`-owned `Box` (never a clone), so the panel stays a filtered view of
+/// `lines`. The C `displayLast != last` pointer-identity test compares the last
+/// `display` item's object pointer against `last` (the last `lines` element's
+/// data pointer); it is reproduced by comparing both as `*const ()`
+/// data-pointers — the same identity technique [`updateWeakPanel`] uses. The
+/// `(ListItem*)last` downcast for [`ListItem_append`] goes through the `Any`
+/// supertrait (`&mut dyn Object` -> `&mut dyn Any` -> `&mut ListItem`), as
+/// sibling code (`columnspanel.rs`) does.
+///
+/// SAFETY: the derefs below alias the `lines`-owned box only while `lines` is
+/// alive; `lines` owns the `ListItem` boxes (heap-stable across `Vector`
+/// growth), and in [`InfoScreen`] `display` is declared before `lines`, so the
+/// panel's borrowed pointer drops before `lines` frees the box (identical
+/// invariant to [`InfoScreen_addLine`]).
+pub fn InfoScreen_appendLine(this: &mut InfoScreen, line: &str) {
+    // C: if (!Vector_size(this->lines)) { InfoScreen_addLine(this, line); return; }
+    if this.lines.array.is_empty() {
+        InfoScreen_addLine(this, line);
+        return;
+    }
+
+    // C: Object* last = Vector_get(this->lines, Vector_size(this->lines) - 1);
+    //    ListItem_append((ListItem*)last, line);
+    let last_idx = this.lines.array.len() - 1;
+    {
+        let obj: &mut dyn Object = &mut **this.lines.array[last_idx]
+            .as_mut()
+            .expect("last lines slot is non-NULL");
+        // (ListItem*)last — downcast via the Any supertrait, as sibling code does.
+        let any: &mut dyn core::any::Any = obj;
+        let last_item = any
+            .downcast_mut::<ListItem>()
+            .expect("lines items are ListItem");
+        ListItem_append(last_item, line);
+    }
+
+    // Data-pointer identity of `last` (the lines-owned box) for the
+    // `displayLast != last` guard. SAFETY: raw pointer taken and immediately
+    // reduced to an identity; the box is heap-stable (see fn SAFETY note).
+    let last_ptr: *mut dyn Object = &mut **this.lines.array[last_idx]
+        .as_mut()
+        .expect("last lines slot is non-NULL");
+    let last_id = last_ptr as *const dyn Object as *const ();
+
+    // C: const char* incFilter = IncSet_filter(this->inc);
+    let incFilter = IncSet_filter(&this.inc);
+
+    // C: Object* displayLast = Panel_size(this->display)
+    //        ? Panel_get(this->display, Panel_size(this->display) - 1) : NULL;
+    let display_size = Panel_size(&this.display);
+    let displayLast_id: *const () = if display_size != 0 {
+        Panel_get(&this.display, display_size - 1) as *const dyn Object as *const ()
+    } else {
+        core::ptr::null()
+    };
+
+    // C: if (incFilter && displayLast != last && String_contains_i(line, incFilter, true))
+    //        Panel_add(this->display, last);
+    if let Some(incFilter) = incFilter {
+        if displayLast_id != last_id && String_contains_i(line, incFilter, true) {
+            // Weak (borrowed) add: alias the last `lines` box, don't clone.
+            this.display.items.push(PanelItem::Borrowed(last_ptr));
+            this.display.prevSelected = -1;
+            this.display.needsRedraw = true;
+        }
+    }
 }
 
 /// Port of `void InfoScreen_run(InfoScreen* this)` from `InfoScreen.c:96`.
@@ -805,6 +858,91 @@ mod tests {
         assert_eq!(line_value(&this.lines, 0), "");
         // No filter -> shown in the panel too.
         assert_eq!(Panel_size(&this.display), 1);
+    }
+
+    // ── InfoScreen_appendLine (InfoScreen.c:81) ──────────────────────────
+
+    #[test]
+    fn append_line_on_empty_defers_to_add_line() {
+        // C: if (!Vector_size(this->lines)) { InfoScreen_addLine(this, line); return; }
+        let mut this = fresh(10, "H");
+        InfoScreen_appendLine(&mut this, "hello");
+        // Behaves exactly like InfoScreen_addLine: recorded and (no filter) shown.
+        assert_eq!(Vector_size(&this.lines), 1);
+        assert_eq!(line_value(&this.lines, 0), "hello");
+        assert_eq!(Panel_size(&this.display), 1);
+        assert_eq!(panel_value(&this.display, 0), "hello");
+    }
+
+    #[test]
+    fn append_line_concatenates_onto_last_line() {
+        // C: ListItem_append((ListItem*)last, line); — merges onto the last line,
+        // does NOT create a new line. With no filter, incFilter is NULL so the
+        // Panel_add branch is skipped; but the panel item weak-aliases the same
+        // `lines` box, so its value reflects the append.
+        let mut this = fresh(10, "H");
+        InfoScreen_addLine(&mut this, "foo");
+        InfoScreen_appendLine(&mut this, "bar");
+        // Still a single line, now concatenated.
+        assert_eq!(Vector_size(&this.lines), 1);
+        assert_eq!(line_value(&this.lines, 0), "foobar");
+        // Panel still has the one weak-aliased item, reflecting the append.
+        assert_eq!(Panel_size(&this.display), 1);
+        assert_eq!(panel_value(&this.display, 0), "foobar");
+    }
+
+    #[test]
+    fn append_line_filter_match_adds_to_display() {
+        // A line hidden by the filter can become visible when the appended
+        // fragment matches: the last box was not in the panel (displayLast is a
+        // different item / NULL), and String_contains_i(line, filter) is true.
+        let mut this = fresh(10, "H");
+        IncSet_setFilter(&mut this.inc, "sh");
+        // "xyz" does not match -> recorded in lines, not shown.
+        InfoScreen_addLine(&mut this, "xyz");
+        assert_eq!(Vector_size(&this.lines), 1);
+        assert_eq!(Panel_size(&this.display), 0);
+        // Append "bash": the appended fragment contains "sh", so the last line
+        // (now "xyzbash") is weak-added to the panel.
+        InfoScreen_appendLine(&mut this, "bash");
+        assert_eq!(Vector_size(&this.lines), 1);
+        assert_eq!(line_value(&this.lines, 0), "xyzbash");
+        assert_eq!(Panel_size(&this.display), 1);
+        assert_eq!(panel_value(&this.display, 0), "xyzbash");
+    }
+
+    #[test]
+    fn append_line_identity_guard_prevents_double_add() {
+        // C: displayLast != last — when the last `lines` box is already the
+        // panel's last item, a matching append must NOT add it a second time.
+        let mut this = fresh(10, "H");
+        IncSet_setFilter(&mut this.inc, "sh");
+        // "bash" matches -> shown; the panel's last item IS the last `lines` box.
+        InfoScreen_addLine(&mut this, "bash");
+        assert_eq!(Panel_size(&this.display), 1);
+        // Append a fragment that ALSO matches the filter ("shzz" contains "sh").
+        // Only the identity guard (displayLast == last) stops a double-add.
+        InfoScreen_appendLine(&mut this, "shzz");
+        assert_eq!(Vector_size(&this.lines), 1);
+        assert_eq!(line_value(&this.lines, 0), "bashshzz");
+        // No duplicate: still exactly one panel item, reflecting the append.
+        assert_eq!(Panel_size(&this.display), 1);
+        assert_eq!(panel_value(&this.display, 0), "bashshzz");
+    }
+
+    #[test]
+    fn append_line_no_filter_never_double_adds() {
+        // With no active filter, incFilter is NULL, so the Panel_add branch is
+        // skipped entirely (C: `if (incFilter && ...)`). The panel keeps its one
+        // weak-aliased item regardless of how many appends land on the line.
+        let mut this = fresh(10, "H");
+        InfoScreen_addLine(&mut this, "a");
+        InfoScreen_appendLine(&mut this, "b");
+        InfoScreen_appendLine(&mut this, "c");
+        assert_eq!(Vector_size(&this.lines), 1);
+        assert_eq!(line_value(&this.lines, 0), "abc");
+        assert_eq!(Panel_size(&this.display), 1);
+        assert_eq!(panel_value(&this.display, 0), "abc");
     }
 
     // ── InfoScreenClass vtable dispatch (InfoScreen.h:35) ─────────────
