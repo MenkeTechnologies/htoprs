@@ -40,7 +40,9 @@ enforced mechanically, following the same precedent as `zshrs`.
 - **Extensions tree:** `src/extensions/<name>.rs` — htoprs-original code that is
   not a translation of htop C and is therefore exempt from the port-purity gate.
   `extensions::theme` holds the named color-scheme system (31 built-in 6-color
-  palettes plus custom-theme plumbing), ported from iftoprs.
+  palettes plus custom-theme plumbing), and `extensions::overlay` the themed
+  keyboard-help overlay, theme chooser, and theme editor (rendering into a
+  `ratatui::Buffer`) — both ported from iftoprs.
 - **Port-purity gate (`build.rs`):** on every `cargo build` / `cargo test` /
   `cargo check` that touches `src/ported/`, every free `fn` name is checked
   against the htop C-function snapshot at `tests/data/htop_c_fn_names.txt`. A

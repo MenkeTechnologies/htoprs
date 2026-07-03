@@ -6,6 +6,9 @@
 //!
 //! [`theme`] holds the named color-scheme system ported from iftoprs
 //! (originally from storageshower): 31 built-in 6-color palettes plus the
-//! custom-theme plumbing.
+//! custom-theme plumbing. [`overlay`] holds the themed keyboard-help overlay,
+//! theme chooser, and theme editor (also ported from iftoprs), which render
+//! into a `ratatui::Buffer` using those palettes.
 
+pub mod overlay;
 pub mod theme;
