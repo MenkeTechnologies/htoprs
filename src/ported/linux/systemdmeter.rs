@@ -11,32 +11,38 @@
 //! statics are single-threaded and unlocked), the same shape
 //! `diskiometer.rs` uses for its file-scope static block. The C struct's
 //! `sd_bus* bus` field (`SystemdMeter.c:59`, guarded on
-//! `!BUILD_STATIC || HAVE_LIBSYSTEMD`) is *not* modeled: it is touched only
-//! by `updateViaLib` and `SystemdMeter_done`, both of which stay stubbed
-//! (the dlopen'd libsystemd sd-bus FFI has no Rust counterpart), so there is
-//! nothing that reads it.
+//! `!BUILD_STATIC || HAVE_LIBSYSTEMD`) is modeled linux-only as a cached
+//! `zbus::blocking::Connection` — the pure-Rust D-Bus handle `updateViaLib`
+//! opens once and reuses.
+//!
+//! GOVERNING RULE: no FFI, no dlopen. The C `updateViaLib` dlopen's
+//! `libsystemd.so.0` and `dlsym`s the sd-bus symbols; that entire mechanism
+//! is replaced by the `zbus` crate (pure-Rust D-Bus over the bus socket, no
+//! shared object loaded). On non-linux the C's no-libsystemd variant is
+//! mirrored: `updateViaLib` reports failure and the `systemctl show` exec
+//! fallback ([`updateViaExec`]) runs.
 //!
 //! `CRT_colors[X]` is reproduced as `ColorElements::X.packed(scheme)`
 //! (`CRT_colorSchemes[CRT_colorScheme][X]`), the mapping the other ported
 //! meter renderers use. `xSnprintf(buffer, ..., "%u", v)` becomes
 //! `format!("{v}")`; the returned `len` is the string's byte length.
+//! `Meter_name(this)` reads the mirrored instance field `this.name`
+//! (`meter.rs`, `Meter.h:101`).
 //!
-//! Ported (self-contained — `RichString` + `CRT_colors` + `String_eq` are
-//! ported and the ctx cache is modeled here):
+//! Ported:
+//! - [`SystemdMeter_done`] (`SystemdMeter.c:71`) — the `.done` teardown
+//! - [`updateViaLib`] (`SystemdMeter.c:98`) — linux: zbus D-Bus property
+//!   reads; non-linux: no-op failure so the exec fallback runs
 //! - [`updateViaExec`] (`SystemdMeter.c:214`) — the `systemctl show` spawn +
 //!   parse (inlined `libc` fork/exec/pipe/waitpid, the `openfilesscreen.rs`
 //!   precedent; takes `user: bool`, so needs no `Meter_name`)
+//! - [`SystemdMeter_updateValues`] (`SystemdMeter.c:300`) — the `.updateValues`
+//!   refresh slot
 //! - [`zeroDigitColor`] (`SystemdMeter.c:318`)
 //! - [`valueDigitColor`] (`SystemdMeter.c:329`)
 //! - `SystemdMeter_display` (`SystemdMeter.c:341`)
 //! - [`SystemdMeter_display_system`] (`SystemdMeter.c:399`)
 //! - [`SystemdMeter_display_user`] (`SystemdMeter.c:403`)
-//!
-//! Stubbed (blocked on unported substrate — each keeps its `todo!()`; see
-//! the per-fn docs):
-//! - `SystemdMeter_done` (`SystemdMeter.c:71`)
-//! - `updateViaLib` (`SystemdMeter.c:98`)
-//! - `SystemdMeter_updateValues` (`SystemdMeter.c:300`)
 #![allow(non_snake_case)]
 // `SystemdMeterContext_t` mirrors the C typedef name verbatim (SystemdMeter.c:57).
 #![allow(non_camel_case_types)]
@@ -52,6 +58,7 @@ use std::os::unix::io::FromRawFd;
 use std::sync::Mutex;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::meter::Meter;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii,
 };
@@ -64,12 +71,19 @@ use crate::ported::xutils::{String_eq, String_startsWith};
 const INVALID_VALUE: u32 = u32::MAX;
 
 /// Port of `typedef struct SystemdMeterContext` from `SystemdMeter.c:57`.
-/// The C `sd_bus* bus` field (`:59`) is omitted: it is used only by the
-/// stubbed `updateViaLib` / `SystemdMeter_done` (the dlopen'd libsystemd
-/// sd-bus FFI is not ported), so nothing reads it. `char* systemState`
-/// (`:61`) becomes `Option<String>` (NULL ⇒ `None`); the `unsigned int`
-/// counters map to `u32`.
+/// `char* systemState` (`:61`) becomes `Option<String>` (NULL ⇒ `None`); the
+/// `unsigned int` counters map to `u32`. The C `sd_bus* bus` field (`:59`,
+/// guarded on `!BUILD_STATIC || HAVE_LIBSYSTEMD`) becomes a cached
+/// `zbus::blocking::Connection` — the pure-Rust D-Bus analogue of the sd-bus
+/// handle `updateViaLib` reuses across refreshes (`if (!ctx->bus)`,
+/// `SystemdMeter.c:127`). It is linux-only, matching the C guard: the darwin
+/// build compiles the no-libsystemd variant where `bus` does not exist.
 struct SystemdMeterContext_t {
+    /// C `sd_bus* bus` (`SystemdMeter.c:59`) — the cached system/session bus
+    /// connection, opened once and reused (`SystemdMeter.c:127`). Dropping it
+    /// (setting `None`) is the `sd_bus_unref` (`:80`/`:199`).
+    #[cfg(target_os = "linux")]
+    bus: Option<zbus::blocking::Connection>,
     /// C `char* systemState` (`SystemdMeter.c:61`).
     systemState: Option<String>,
     /// C `unsigned int nFailedUnits` (`SystemdMeter.c:62`).
@@ -84,10 +98,12 @@ struct SystemdMeterContext_t {
 
 impl SystemdMeterContext_t {
     /// Zero-initialized cache, matching the C file-scope statics
-    /// (`systemState == NULL`, all counters `0`). `const` so it can seed a
-    /// `Mutex` static initializer.
+    /// (`bus == NULL`, `systemState == NULL`, all counters `0`). `const` so it
+    /// can seed a `Mutex` static initializer.
     const fn new() -> Self {
         SystemdMeterContext_t {
+            #[cfg(target_os = "linux")]
+            bus: None,
             systemState: None,
             nFailedUnits: 0,
             nInstalledJobs: 0,
@@ -106,30 +122,145 @@ static ctx_system: Mutex<SystemdMeterContext_t> = Mutex::new(SystemdMeterContext
 /// `SystemdMeter.c:69`.
 static ctx_user: Mutex<SystemdMeterContext_t> = Mutex::new(SystemdMeterContext_t::new());
 
-/// TODO: port of `static void SystemdMeter_done(ATTR_UNUSED Meter* this)`
-/// from `SystemdMeter.c:71`. Blocked on two fronts: (1) it selects
-/// `&ctx_user` vs `&ctx_system` via `String_eq(Meter_name(this), ...)`, but
-/// the partial `Meter` in `meter.rs` carries no `name` field — `Meter_name`
-/// (`Meter.h:101`, `As_Meter(this)->name`) has no instance target to read;
-/// (2) the body is a `.done` free-teardown that unrefs `ctx->bus` /
-/// `dlclose`s the libsystemd handle, and the dlopen'd sd-bus path is not
-/// ported (the `bus` field is not even modeled). Freeing `ctx->systemState`
-/// is handled by `Drop` on the ctx cache. Kept stubbed per the teardown
-/// rule and the `Meter_name` blocker.
-pub fn SystemdMeter_done() {
-    todo!("port of SystemdMeter.c:71: needs Meter.name (Meter_name) + sd_bus/dlopen teardown")
+/// Port of `static void SystemdMeter_done(ATTR_UNUSED Meter* this)` from
+/// `SystemdMeter.c:71`. The `.done` teardown slot: selects `&ctx_user` vs
+/// `&ctx_system` via `String_eq(Meter_name(this), "SystemdUser")`
+/// (`this.name`, `Meter.h:101`), frees `ctx->systemState` (`:74`, here setting
+/// `None`), and drops the cached bus (`sym_sd_bus_unref(ctx->bus);
+/// ctx->bus = NULL`, `:79`-`:82`/`:85`-`:88`) — on linux setting
+/// `ctx.bus = None` runs the `zbus::blocking::Connection` `Drop`, the
+/// `sd_bus_unref` analogue. The C `dlclose`-when-both-contexts-are-torn-down
+/// branch (`:90`-`:93`) is a dlopen-handle-lifecycle detail with no zbus
+/// counterpart (zbus links no shared object), so it is not modeled.
+pub fn SystemdMeter_done(this: &mut Meter) {
+    // C: SystemdMeterContext_t* ctx =
+    //        String_eq(Meter_name(this), "SystemdUser") ? &ctx_user : &ctx_system;
+    let ctx_mutex = if String_eq(this.name, "SystemdUser") {
+        &ctx_user
+    } else {
+        &ctx_system
+    };
+    let mut ctx = ctx_mutex.lock().unwrap();
+
+    // C: free(ctx->systemState); ctx->systemState = NULL;
+    ctx.systemState = None;
+
+    // C: if (ctx->bus) sym_sd_bus_unref(ctx->bus); ctx->bus = NULL;
+    //    (dropping the cached Connection is the unref).
+    #[cfg(target_os = "linux")]
+    {
+        ctx.bus = None;
+    }
 }
 
-/// TODO: port of `static int updateViaLib(bool user)` from
-/// `SystemdMeter.c:98`. Blocked: the entire body is the dlopen'd libsystemd
-/// sd-bus client — `dlopen("libsystemd.so.0")` + `dlsym` symbol resolution
-/// of `sd_bus_open_system` / `sd_bus_open_user` /
-/// `sd_bus_get_property_string` / `sd_bus_get_property_trivial` /
-/// `sd_bus_unref`, then D-Bus property reads off `org.freedesktop.systemd1`.
-/// No libsystemd FFI binding is ported anywhere in the crate, so there is no
-/// faithful call target; reproducing it would be an adhoc reimplementation.
-pub fn updateViaLib() {
-    todo!("port of SystemdMeter.c:98: needs libsystemd sd-bus FFI (dlopen/dlsym)")
+/// Port of `static int updateViaLib(bool user)` from `SystemdMeter.c:98`
+/// (linux arm). The C body is the dlopen'd libsystemd sd-bus client; here the
+/// GOVERNING RULE forbids FFI/dlopen, so the equivalent work is done with the
+/// pure-Rust `zbus` crate's blocking D-Bus client — no shared object is
+/// loaded, zbus speaks the D-Bus wire protocol directly over the bus socket.
+///
+/// The `dlopen`/`dlsym` symbol-resolution preamble (`:100`-`:123`) has no
+/// analogue and drops out. The bus connect (`:127`-`:135`,
+/// `sd_bus_open_user`/`sd_bus_open_system` cached in `ctx->bus`) becomes
+/// `zbus::blocking::Connection::session()`/`::system()`, cached in `ctx.bus`
+/// and reused across refreshes (the `if (!ctx->bus)` guard). Each
+/// property read off service `org.freedesktop.systemd1`, object
+/// `/org/freedesktop/systemd1`, interface `org.freedesktop.systemd1.Manager`
+/// (`:137`-`:193`) maps to a `zbus::blocking::Proxy::get_property`: the
+/// `sd_bus_get_property_string("SystemState")` (`:141`) is
+/// `get_property::<String>`; each `sd_bus_get_property_trivial(…, 'u', …)`
+/// (`:151`-`:191`, the `u` D-Bus type is `u32`) is `get_property::<u32>`.
+///
+/// Any failure jumps to the C `busfailure` label (`:198`-`:201`):
+/// `sd_bus_unref(ctx->bus); ctx->bus = NULL; return -2` — here dropping the
+/// cached `Connection` (`ctx.bus = None`) and returning `-2`, so the caller
+/// falls back to [`updateViaExec`]. The `dlfailure` path (`return -1`) folds
+/// into the same negative-return contract (a failed `Connection::*` open has
+/// no bus to unref, returning `-2`). The return value is only tested `< 0` by
+/// the caller, so `-1`/`-2` are interchangeable there.
+#[cfg(target_os = "linux")]
+pub fn updateViaLib(user: bool) -> i32 {
+    use zbus::blocking::{Connection, Proxy};
+
+    // C: SystemdMeterContext_t* ctx = user ? &ctx_user : &ctx_system;
+    let ctx_mutex = if user { &ctx_user } else { &ctx_system };
+    let mut ctx = ctx_mutex.lock().unwrap();
+
+    // C: if (!ctx->bus) { r = user ? sd_bus_open_user(&ctx->bus)
+    //                              : sd_bus_open_system(&ctx->bus);
+    //                     if (r < 0) goto busfailure; }
+    if ctx.bus.is_none() {
+        let conn = if user {
+            Connection::session()
+        } else {
+            Connection::system()
+        };
+        match conn {
+            Ok(c) => ctx.bus = Some(c),
+            // Open failed: no bus to unref, fall back to exec (busfailure).
+            Err(_) => return -2,
+        }
+    }
+
+    // C: static const char* busServiceName/busObjectPath/busInterfaceName.
+    const BUS_SERVICE_NAME: &str = "org.freedesktop.systemd1";
+    const BUS_OBJECT_PATH: &str = "/org/freedesktop/systemd1";
+    const BUS_INTERFACE_NAME: &str = "org.freedesktop.systemd1.Manager";
+
+    // `Connection` is a cheap ref-counted handle; clone it out of `ctx` so the
+    // proxy borrows the clone, leaving `ctx` free for the property writes.
+    let conn = ctx.bus.as_ref().unwrap().clone();
+    let proxy = match Proxy::new(&conn, BUS_SERVICE_NAME, BUS_OBJECT_PATH, BUS_INTERFACE_NAME) {
+        Ok(p) => p,
+        // C busfailure: unref bus, return -2.
+        Err(_) => {
+            ctx.bus = None;
+            return -2;
+        }
+    };
+
+    // C: r = sd_bus_get_property_string(…, "SystemState", …, &ctx->systemState);
+    //    if (r < 0) goto busfailure;
+    match proxy.get_property::<String>("SystemState") {
+        Ok(v) => ctx.systemState = Some(v),
+        Err(_) => {
+            ctx.bus = None;
+            return -2;
+        }
+    }
+
+    // C: r = sd_bus_get_property_trivial(…, "<name>", …, 'u', &ctx-><field>);
+    //    if (r < 0) goto busfailure;   (repeated for each u32 counter)
+    macro_rules! read_u32_property {
+        ($property:literal, $field:ident) => {
+            match proxy.get_property::<u32>($property) {
+                Ok(v) => ctx.$field = v,
+                Err(_) => {
+                    ctx.bus = None;
+                    return -2;
+                }
+            }
+        };
+    }
+    read_u32_property!("NFailedUnits", nFailedUnits);
+    read_u32_property!("NInstalledJobs", nInstalledJobs);
+    read_u32_property!("NNames", nNames);
+    read_u32_property!("NJobs", nJobs);
+
+    // C: /* success */ return 0;
+    0
+}
+
+/// Port of `static int updateViaLib(bool user)` from `SystemdMeter.c:98`
+/// (non-linux arm). Mirrors htop's `BUILD_STATIC && !HAVE_LIBSYSTEMD` variant
+/// where no libsystemd path exists and `SystemdMeter_updateValues` reaches
+/// only [`updateViaExec`]. There is no systemd D-Bus off Linux, so this
+/// always reports failure (`return -1`, the C `dlfailure` value), which makes
+/// the caller fall back to the `systemctl show` exec path — behaviorally
+/// identical to the C `#else` branch that calls `updateViaExec` directly.
+#[cfg(not(target_os = "linux"))]
+pub fn updateViaLib(_user: bool) -> i32 {
+    -1
 }
 
 /// Port of `static void updateViaExec(bool user)` from `SystemdMeter.c:214`.
@@ -337,18 +468,49 @@ pub fn updateViaExec(user: bool) {
     // C: fclose(commandOutput);  (BufReader/File Drop here.)
 }
 
-/// TODO: port of `static void SystemdMeter_updateValues(Meter* this)` from
-/// `SystemdMeter.c:300`. Blocked on `Meter_name`: it selects `&ctx_user` vs
-/// `&ctx_system` via `String_eq(Meter_name(this), "SystemdUser")` — the
-/// concrete class name (`As_Meter(this)->name`, `Meter.h:101`) — but the
-/// ported `Meter` (`meter.rs`) carries no per-instance klass pointer (its
-/// `klass()` always returns the base `Meter_class`), so `user` cannot be
-/// derived from a `&Meter`. It also drives the refresh through `updateViaLib`
-/// (still stubbed — libsystemd sd-bus FFI) with an `updateViaExec` fallback
-/// (now ported), and writes `this->txtBuffer` (modeled) from
-/// `ctx->systemState`; but the `Meter_name` blocker prevents a faithful port.
-pub fn SystemdMeter_updateValues() {
-    todo!("port of SystemdMeter.c:300: needs Meter.name (Meter_name) + updateViaLib")
+/// Port of `static void SystemdMeter_updateValues(Meter* this)` from
+/// `SystemdMeter.c:300`. Selects `&ctx_user` vs `&ctx_system` via
+/// `String_eq(Meter_name(this), "SystemdUser")` (`this.name`, `Meter.h:101`),
+/// resets the cache (`systemState = NULL`; counters ⇒ `INVALID_VALUE`,
+/// `:304`-`:306`), then refreshes: `if (updateViaLib(user) < 0)
+/// updateViaExec(user)` (`:308`-`:313`). On non-linux [`updateViaLib`] always
+/// returns `-1`, so the fallback exec path runs — matching the C `#else`
+/// (no-libsystemd) branch that calls `updateViaExec` directly. Finally writes
+/// `this->txtBuffer` from `ctx->systemState` (`"???"` when unset, `:315`).
+///
+/// The `updateViaLib`/`updateViaExec` calls each lock the ctx cache
+/// internally, so the reset and the final `txtBuffer` read take the lock in
+/// their own scopes — the `std::sync::Mutex` is not reentrant.
+pub fn SystemdMeter_updateValues(this: &mut Meter) {
+    // C: bool user = String_eq(Meter_name(this), "SystemdUser");
+    let user = String_eq(this.name, "SystemdUser");
+    // C: SystemdMeterContext_t* ctx = user ? &ctx_user : &ctx_system;
+    let ctx_mutex = if user { &ctx_user } else { &ctx_system };
+
+    // C: free(ctx->systemState); ctx->systemState = NULL;
+    //    ctx->nFailedUnits = ctx->nInstalledJobs = ctx->nNames = ctx->nJobs
+    //        = INVALID_VALUE;
+    {
+        let mut ctx = ctx_mutex.lock().unwrap();
+        ctx.systemState = None;
+        ctx.nFailedUnits = INVALID_VALUE;
+        ctx.nInstalledJobs = INVALID_VALUE;
+        ctx.nNames = INVALID_VALUE;
+        ctx.nJobs = INVALID_VALUE;
+    }
+
+    // C: if (updateViaLib(user) < 0) updateViaExec(user);
+    if updateViaLib(user) < 0 {
+        updateViaExec(user);
+    }
+
+    // C: xSnprintf(this->txtBuffer, …, "%s",
+    //        ctx->systemState ? ctx->systemState : "???");
+    let ctx = ctx_mutex.lock().unwrap();
+    this.txtBuffer = ctx
+        .systemState
+        .clone()
+        .unwrap_or_else(|| "???".to_string());
 }
 
 /// Port of `static int zeroDigitColor(unsigned int value)` from
@@ -492,6 +654,8 @@ mod tests {
     #[test]
     fn display_running_all_known() {
         let ctx = SystemdMeterContext_t {
+            #[cfg(target_os = "linux")]
+            bus: None,
             systemState: Some("running".to_string()),
             nFailedUnits: 0,
             nInstalledJobs: 5,
@@ -506,6 +670,8 @@ mod tests {
     #[test]
     fn display_no_state_all_invalid() {
         let ctx = SystemdMeterContext_t {
+            #[cfg(target_os = "linux")]
+            bus: None,
             systemState: None,
             nFailedUnits: INVALID_VALUE,
             nInstalledJobs: INVALID_VALUE,
