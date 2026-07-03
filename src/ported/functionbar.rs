@@ -366,7 +366,14 @@ impl Ncurses {
     /// Map an ncurses color number to a crossterm [`Color`]: `0..=7` are
     /// the eight ANSI colors, `8` is gray, `-1` is the terminal default
     /// (`Color::Reset`).
+    ///
+    /// When an htoprs theme is active, [`crate::extensions::colors::remap`]
+    /// redirects the eight ANSI slots (`0..=8`) to 256-color palette values —
+    /// this is the single choke point that recolors the whole UI per theme.
     fn to_color(n: i16) -> Color {
+        if let Some(idx) = crate::extensions::colors::remap(n) {
+            return Color::AnsiValue(idx);
+        }
         match n {
             0 => Color::Black,
             1 => Color::DarkRed,

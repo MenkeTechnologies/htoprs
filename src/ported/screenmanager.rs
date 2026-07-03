@@ -722,6 +722,12 @@ pub fn ScreenManager_run(
 
         if redraw || force_redraw {
             ScreenManager_drawPanels(this, focus, force_redraw);
+            // htoprs extension: paint the themed help/chooser/editor overlay
+            // over the freshly-drawn panels (no-op when no overlay is open).
+            {
+                let mut out = io::stdout().lock();
+                crate::extensions::overlay::draw_active(&mut out);
+            }
             force_redraw = false;
             // SAFETY: `host` aliases the caller-owned `Machine` for the run
             // (see the module docs); C dereferences it unconditionally here.
@@ -757,6 +763,15 @@ pub fn ScreenManager_run(
                 closeTimeout = 0;
             }
             redraw = false;
+            continue;
+        }
+
+        // htoprs extension: give the theme/help overlay first refusal on the
+        // key. It consumes its hotkeys (h/? c C x g) and, while open, every
+        // key — repainting panels + overlay in the (possibly new) theme.
+        if crate::extensions::overlay::dispatch_key(ch) {
+            redraw = true;
+            force_redraw = true;
             continue;
         }
 

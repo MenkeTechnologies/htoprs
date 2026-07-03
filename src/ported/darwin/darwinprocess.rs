@@ -5,10 +5,18 @@
 //!   `taskAccess`/`translated`).
 //! - [`DarwinProcess_new`] (`DarwinProcess.c:57`).
 //!
+//! Also ported: the leaf column renderers
+//! [`DarwinProcess_rowWriteField`] (`DarwinProcess.c:78`) and
+//! [`DarwinProcess_compareByKey`] (`DarwinProcess.c:96`) — the `TRANSLATED`
+//! platform field plus base-field delegation.
+//!
 //! The remaining `pub fn`s are honest `todo!()` placeholders named after
 //! their C counterparts, blocked on unported substrate:
-//! - `Process_delete` / `DarwinProcess_rowWriteField` / `_compareByKey`
-//!   need the `Object_setClass` / `ProcessClass` vtable wiring.
+//! - `Process_delete` is a pure `free()` teardown; Rust `Drop` reclaims the
+//!   allocation (no faithful safe-Rust analog).
+//! - `DarwinProcess_scanThreads` needs the mach thread APIs
+//!   (`task_for_pid`/`task_threads`/`thread_info`) and the still-stubbed
+//!   `ProcessTable_getProcess`.
 //! - the `kinfo_proc` struct (absent from `libc`), required by
 //!   `DarwinProcess_setFromKInfoProc` / `_updateCmdLine`.
 //! - `Process_fillStarttimeBuffer` (stub in `process.rs`) and
@@ -24,22 +32,26 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use core::any::Any;
 use std::mem::{size_of, size_of_val, zeroed};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 
+use crate::ported::crt::{ColorElements as CE, ColorScheme};
 use crate::ported::darwin::darwinmachine::DarwinMachine;
 use crate::ported::darwin::darwinprocesstable::{kinfo_proc, DarwinProcessTable};
 use crate::ported::darwin::platform::Platform_machTicksToNanoseconds;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::process::{
-    Process, ProcessClass, ProcessState, Process_fillStarttimeBuffer, Process_getPid, Process_init,
-    Process_setParent, Process_setPid, Process_setThreadGroup, Process_updateCPUFieldWidths,
-    Process_updateCmdline, Process_updateComm, Process_updateExe, PROCESS_FLAG_CWD,
+    Process, ProcessClass, ProcessState, Process_compareByKey_Base, Process_fillStarttimeBuffer,
+    Process_getPid, Process_init, Process_setParent, Process_setPid, Process_setThreadGroup,
+    Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm, Process_updateExe,
+    Process_writeField, PROCESS_FLAG_CWD,
 };
-use crate::ported::richstring::RichString;
-use crate::ported::row::{Row, RowClass};
+use crate::ported::richstring::{RichString, RichString_appendWide};
+use crate::ported::row::{spaceship_number, Row, RowClass};
+use crate::ported::settings::RowField;
 
 /// Port of htop's `struct DarwinProcess_` (`DarwinProcess.h:18`). "Extends"
 /// [`Process`] via the embedded `super_` field (htop's `Process super;`
@@ -131,19 +143,82 @@ pub fn DarwinProcess_new(host: *const Machine) -> Box<DarwinProcess> {
     this
 }
 
-/// TODO: port of `void Process_delete(Object* cast` from `DarwinProcess.c:71`.
+/// TODO: port of `void Process_delete(Object* cast)` from
+/// `DarwinProcess.c:71`. Kept stubbed: the C body is a pure teardown —
+/// `Process_done(&this->super)` followed by `free(this)` (no Darwin-only
+/// heap fields to release). Rust owns the [`DarwinProcess`] allocation and
+/// its `Option<String>` base fields, so `Drop` reclaims them automatically;
+/// there is no faithful safe-Rust analog (the linux `Process_delete` /
+/// `Affinity_delete` precedent).
 pub fn Process_delete() {
-    todo!("port of DarwinProcess.c:71")
+    todo!("port of DarwinProcess.c:71 — pure free() teardown; Rust Drop handles it")
 }
 
-/// TODO: port of `static void DarwinProcess_rowWriteField(const Row* super, RichString* str, ProcessField field` from `DarwinProcess.c:78`.
-pub fn DarwinProcess_rowWriteField() {
-    todo!("port of DarwinProcess.c:78")
+/// `TRANSLATED = 100` (`darwin/ProcessField.h:11`) — the Darwin platform
+/// `ProcessField` id, spliced into the C `ReservedFields` enum by
+/// `PLATFORM_PROCESS_FIELDS`. Modeled as a local [`RowField`] constant
+/// (data, not a function): the shared [`ProcessField`](crate::ported::process::ProcessField)
+/// enum reserves id `100` for the Linux `CTID`, so the Darwin id cannot live
+/// on that enum; the `switch` below matches the raw field id exactly as the C
+/// does.
+const TRANSLATED: RowField = 100;
+
+/// Port of `static void DarwinProcess_rowWriteField(const Row* super,
+/// RichString* str, ProcessField field)` from `DarwinProcess.c:78` — the
+/// Darwin-specific per-field renderer. Handles the platform `TRANSLATED`
+/// column (`'T'`/`'N'` per `dp->translated`) and delegates every other key to
+/// the base [`Process_writeField`]. Mirrors the ported
+/// [`crate::ported::linux::linuxprocess::LinuxProcess_rowWriteField`]: the
+/// default arm `return`s after delegating, the platform arm formats into a
+/// buffer, and the shared tail appends it with the `DEFAULT_COLOR` attr
+/// (`CRT_colors[DEFAULT_COLOR]`).
+///
+/// This is the `writeField` [`RowClass`] vtable slot for `DarwinProcess`; the
+/// C `const Row* super` receiver is a `&dyn Object` downcast to
+/// [`DarwinProcess`] (C's `(const DarwinProcess*)super`).
+pub fn DarwinProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, field: RowField) {
+    let dp = (super_ as &dyn Any)
+        .downcast_ref::<DarwinProcess>()
+        .expect("DarwinProcess_rowWriteField: row is not a DarwinProcess");
+
+    let scheme = ColorScheme::active();
+    let attr = CE::DEFAULT_COLOR.packed(scheme);
+    let buffer: String;
+
+    match field {
+        // case TRANSLATED: xSnprintf(buffer, n, "%c ", dp->translated ? 'T' : 'N');
+        f if f == TRANSLATED => {
+            buffer = format!("{} ", if dp.translated { 'T' } else { 'N' });
+        }
+        _ => {
+            Process_writeField(&dp.super_, str, field);
+            return;
+        }
+    }
+
+    RichString_appendWide(str, attr, buffer.as_bytes());
 }
 
-/// TODO: port of `static int DarwinProcess_compareByKey(const Process* v1, const Process* v2, ProcessField key` from `DarwinProcess.c:96`.
-pub fn DarwinProcess_compareByKey() {
-    todo!("port of DarwinProcess.c:96")
+/// Port of `static int DarwinProcess_compareByKey(const Process* v1, const
+/// Process* v2, ProcessField key)` from `DarwinProcess.c:96`. Compares two
+/// processes on the Darwin platform `TRANSLATED` field, delegating unhandled
+/// keys to [`Process_compareByKey_Base`]. This is the `compareByKey`
+/// [`ProcessClass`] slot; the C `const Process*` receivers are `&dyn Object`
+/// downcast to `DarwinProcess` (C's `(const DarwinProcess*)`). `SPACESHIP_NUMBER`
+/// on the `bool` fields matches the C, which promotes them in the macro's
+/// integer comparison.
+pub fn DarwinProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: RowField) -> i32 {
+    let p1 = (v1 as &dyn Any)
+        .downcast_ref::<DarwinProcess>()
+        .expect("DarwinProcess_compareByKey: v1 is not a DarwinProcess");
+    let p2 = (v2 as &dyn Any)
+        .downcast_ref::<DarwinProcess>()
+        .expect("DarwinProcess_compareByKey: v2 is not a DarwinProcess");
+
+    match key {
+        k if k == TRANSLATED => spaceship_number!(p1.translated as i32, p2.translated as i32),
+        _ => Process_compareByKey_Base(&p1.super_, &p2.super_, key),
+    }
 }
 
 /// Port of `static void DarwinProcess_updateExe(pid_t pid, Process* proc)`
@@ -531,7 +606,14 @@ pub fn DarwinProcess_setFromLibprocPidinfo(
     dpt.super_.runningTasks += pti.pti_numrunning as u32;
 }
 
-/// TODO: port of `void DarwinProcess_scanThreads(DarwinProcess* dp, DarwinProcessTable* dpt` from `DarwinProcess.c:410`.
+/// TODO: port of `void DarwinProcess_scanThreads(DarwinProcess* dp,
+/// DarwinProcessTable* dpt)` from `DarwinProcess.c:410`. Blocked on absent
+/// substrate: it walks the task's threads via the mach APIs
+/// `task_for_pid`/`task_threads`/`thread_info` (not modeled) and materializes
+/// each thread as a row through `ProcessTable_getProcess` (still a stub in
+/// `processtable.rs`), keyed by `host->settings->hideUserlandThreads`. Not a
+/// leaf column renderer; deferred until the mach thread layer and
+/// `ProcessTable_getProcess` land.
 pub fn DarwinProcess_scanThreads() {
     todo!("port of DarwinProcess.c:410")
 }

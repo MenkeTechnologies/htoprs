@@ -12,14 +12,31 @@
 //! styles want `ratatui::style::Color`, so [`tr`] converts at the boundary —
 //! the same adaptation the theme port made for `Color::Indexed` → `AnsiValue`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Write;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::cursor::MoveTo;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::style::{
+    Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
+use crossterm::{queue, terminal};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::theme::{CustomThemeColors, Theme, ThemeName};
+
+// ncurses key constants, mirrored from `crate::ported::crt` so this module
+// stays self-contained (and testable in isolation). Values are octal exactly
+// as in `crt.rs`.
+const KEY_DOWN: i32 = 0o402;
+const KEY_UP: i32 = 0o403;
+const KEY_LEFT: i32 = 0o404;
+const KEY_RIGHT: i32 = 0o405;
+const KEY_BACKSPACE: i32 = 0o407;
+const KEY_ENTER: i32 = 0o527;
 
 /// Convert a [`Theme`] color (`crossterm::style::Color`) into the
 /// `ratatui::style::Color` the buffer styling API expects. `Theme` only ever
@@ -146,6 +163,9 @@ pub struct OverlayState {
     pub active_custom_theme: Option<String>,
     /// Last status line set by a toggle/save (iftoprs `set_status` analog).
     pub status: Option<String>,
+    /// True once the user has engaged the theme UI (`c`/`C`). While set, the
+    /// live palette is pushed to [`super::colors`] so the htoprs UI recolors.
+    pub themed: bool,
 }
 
 impl Default for OverlayState {
@@ -169,7 +189,18 @@ impl OverlayState {
             custom_themes: HashMap::new(),
             active_custom_theme: None,
             status: None,
+            themed: false,
         }
+    }
+
+    /// The palette currently driving the theme: the active custom palette if
+    /// one is applied, otherwise the built-in theme's palette.
+    pub fn current_palette(&self) -> [u8; 6] {
+        self.active_custom_theme
+            .as_ref()
+            .and_then(|name| self.custom_themes.get(name))
+            .map(|ct| [ct.c1, ct.c2, ct.c3, ct.c4, ct.c5, ct.c6])
+            .unwrap_or_else(|| Theme::palette_values(self.theme_name))
     }
 
     /// Switch to a built-in theme, clearing any active custom palette.
@@ -331,10 +362,12 @@ impl OverlayState {
             KeyCode::Char('h') | KeyCode::Char('?') => self.show_help = !self.show_help,
             KeyCode::Char('c') => {
                 self.show_help = false;
+                self.themed = true;
                 self.theme_chooser.open(self.theme_name);
             }
             KeyCode::Char('C') => {
                 self.show_help = false;
+                self.themed = true;
                 let palette = self
                     .active_custom_theme
                     .as_ref()
@@ -377,6 +410,152 @@ impl OverlayState {
             draw_theme_editor(buf, area, self);
         }
     }
+
+    /// Route a raw ncurses key int (as read by `Panel_getCh`) into
+    /// [`OverlayState::handle_key`]. Returns `true` if consumed.
+    pub fn handle_ncurses_key(&mut self, ch: i32) -> bool {
+        match ncurses_to_keycode(ch) {
+            Some(code) => self.handle_key(KeyEvent::new(code, KeyModifiers::NONE)),
+            None => false,
+        }
+    }
+
+    /// Whether any overlay (help/chooser/editor) is currently visible.
+    pub fn any_active(&self) -> bool {
+        self.show_help || self.theme_chooser.active || self.theme_edit.active
+    }
+}
+
+/// Map a raw ncurses key int to the crossterm [`KeyCode`] the overlay handlers
+/// expect. Printable ASCII becomes `Char`; the rest map from the `KEY_*`
+/// constants (mirrored from `crt.rs`).
+fn ncurses_to_keycode(ch: i32) -> Option<KeyCode> {
+    match ch {
+        KEY_UP => Some(KeyCode::Up),
+        KEY_DOWN => Some(KeyCode::Down),
+        KEY_LEFT => Some(KeyCode::Left),
+        KEY_RIGHT => Some(KeyCode::Right),
+        KEY_ENTER | 10 | 13 => Some(KeyCode::Enter),
+        27 => Some(KeyCode::Esc),
+        KEY_BACKSPACE | 127 | 8 => Some(KeyCode::Backspace),
+        c if (32..=126).contains(&c) => Some(KeyCode::Char(c as u8 as char)),
+        _ => None,
+    }
+}
+
+thread_local! {
+    /// The live overlay state for the running TUI. Thread-local because the TUI
+    /// draws and reads keys on a single thread (`ScreenManager_run`).
+    static OVERLAY: RefCell<OverlayState> = RefCell::new(OverlayState::new());
+}
+
+/// True if any overlay is currently visible — the run loop uses this to keep
+/// the panels frozen and to know whether a redraw must repaint the overlay.
+pub fn overlay_active() -> bool {
+    OVERLAY.with(|o| o.borrow().any_active())
+}
+
+/// Route an ncurses key int into the live overlay. Returns `true` if the
+/// overlay consumed it (an overlay hotkey, or any key while an overlay is
+/// open). On a theme change, pushes the live palette to [`super::colors`] so
+/// the htoprs UI recolors immediately.
+pub fn dispatch_key(ch: i32) -> bool {
+    OVERLAY.with(|o| {
+        let mut s = o.borrow_mut();
+        let consumed = s.handle_ncurses_key(ch);
+        if consumed && s.themed {
+            super::colors::apply_palette(s.current_palette());
+        }
+        consumed
+    })
+}
+
+/// Draw the active overlay (if any) over the current screen, then flush.
+/// A no-op when no overlay is visible. Called from the run loop right after
+/// the panels are drawn.
+pub fn draw_active<W: Write>(out: &mut W) {
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    OVERLAY.with(|o| {
+        let s = o.borrow();
+        if !s.any_active() {
+            return;
+        }
+        let area = Rect::new(0, 0, cols, rows);
+        let mut b = Buffer::empty(area);
+        s.render(&mut b, area);
+        blit(out, &b);
+    });
+    let _ = out.flush();
+}
+
+/// Convert a ratatui [`Color`] to its `crossterm::style::Color` equivalent
+/// (inverse of [`tr`]). `Indexed` → `AnsiValue` preserves 256-color themes.
+fn ct(c: Color) -> crossterm::style::Color {
+    use crossterm::style::Color as X;
+    match c {
+        Color::Reset => X::Reset,
+        Color::Black => X::Black,
+        Color::Red => X::DarkRed,
+        Color::Green => X::DarkGreen,
+        Color::Yellow => X::DarkYellow,
+        Color::Blue => X::DarkBlue,
+        Color::Magenta => X::DarkMagenta,
+        Color::Cyan => X::DarkCyan,
+        Color::Gray => X::Grey,
+        Color::DarkGray => X::DarkGrey,
+        Color::LightRed => X::Red,
+        Color::LightGreen => X::Green,
+        Color::LightYellow => X::Yellow,
+        Color::LightBlue => X::Blue,
+        Color::LightMagenta => X::Magenta,
+        Color::LightCyan => X::Cyan,
+        Color::White => X::White,
+        Color::Indexed(n) => X::AnsiValue(n),
+        Color::Rgb(r, g, b) => X::Rgb { r, g, b },
+    }
+}
+
+/// Blit only the cells an overlay actually painted onto `out` via crossterm.
+/// Untouched backdrop cells (blank, default style) are skipped so the panels
+/// drawn underneath show through around the modal.
+fn blit<W: Write>(out: &mut W, buf: &Buffer) {
+    let area = buf.area();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let cell = &buf[(x, y)];
+            if cell.symbol() == " "
+                && cell.fg == Color::Reset
+                && cell.bg == Color::Reset
+                && cell.modifier.is_empty()
+            {
+                continue;
+            }
+            let _ = queue!(
+                out,
+                MoveTo(x, y),
+                SetAttribute(Attribute::Reset),
+                SetForegroundColor(ct(cell.fg)),
+                SetBackgroundColor(ct(cell.bg))
+            );
+            if cell.modifier.contains(Modifier::BOLD) {
+                let _ = queue!(out, SetAttribute(Attribute::Bold));
+            }
+            if cell.modifier.contains(Modifier::DIM) {
+                let _ = queue!(out, SetAttribute(Attribute::Dim));
+            }
+            if cell.modifier.contains(Modifier::REVERSED) {
+                let _ = queue!(out, SetAttribute(Attribute::Reverse));
+            }
+            if cell.modifier.contains(Modifier::UNDERLINED) {
+                let _ = queue!(out, SetAttribute(Attribute::Underlined));
+            }
+            let _ = queue!(out, Print(cell.symbol()));
+        }
+    }
+    let _ = queue!(out, SetAttribute(Attribute::Reset), ResetColor);
 }
 
 // ─── Buffer helpers (iftoprs render.rs) ────────────────────────────────────────
@@ -1106,5 +1285,88 @@ mod tests {
         assert_eq!(tr(crossterm::style::Color::Black), Color::Black);
         assert_eq!(tr(crossterm::style::Color::White), Color::White);
         assert_eq!(tr(crossterm::style::Color::Reset), Color::Reset);
+    }
+
+    // ── ncurses key mapping ──
+
+    #[test]
+    fn ncurses_key_mapping() {
+        assert_eq!(ncurses_to_keycode(b'h' as i32), Some(KeyCode::Char('h')));
+        assert_eq!(ncurses_to_keycode(b'C' as i32), Some(KeyCode::Char('C')));
+        assert_eq!(ncurses_to_keycode(27), Some(KeyCode::Esc));
+        assert_eq!(ncurses_to_keycode(13), Some(KeyCode::Enter));
+        assert_eq!(ncurses_to_keycode(KEY_UP), Some(KeyCode::Up));
+        assert_eq!(ncurses_to_keycode(KEY_DOWN), Some(KeyCode::Down));
+        assert_eq!(ncurses_to_keycode(KEY_BACKSPACE), Some(KeyCode::Backspace));
+        assert_eq!(ncurses_to_keycode(-1), None); // ERR
+    }
+
+    #[test]
+    fn handle_ncurses_key_toggles_help() {
+        let mut s = OverlayState::new();
+        assert!(s.handle_ncurses_key(b'h' as i32));
+        assert!(s.show_help);
+    }
+
+    #[test]
+    fn engaging_theme_sets_themed_flag() {
+        let mut s = OverlayState::new();
+        assert!(!s.themed);
+        s.handle_ncurses_key(b'c' as i32);
+        assert!(s.themed);
+        assert!(s.theme_chooser.active);
+    }
+
+    #[test]
+    fn current_palette_tracks_builtin_then_custom() {
+        let mut s = OverlayState::new();
+        s.set_theme(ThemeName::BladeRunner);
+        assert_eq!(s.current_palette(), Theme::palette_values(ThemeName::BladeRunner));
+        s.custom_themes.insert(
+            "x".into(),
+            CustomThemeColors { c1: 1, c2: 2, c3: 3, c4: 4, c5: 5, c6: 6 },
+        );
+        s.active_custom_theme = Some("x".into());
+        assert_eq!(s.current_palette(), [1, 2, 3, 4, 5, 6]);
+    }
+
+    // ── crossterm color conversion / blit ──
+
+    #[test]
+    fn ct_maps_indexed_to_ansi_value() {
+        assert_eq!(ct(Color::Indexed(200)), crossterm::style::Color::AnsiValue(200));
+        assert_eq!(ct(Color::Reset), crossterm::style::Color::Reset);
+        assert_eq!(ct(Color::White), crossterm::style::Color::White);
+    }
+
+    #[test]
+    fn blit_skips_blank_backdrop_and_emits_modal() {
+        // A buffer with one styled cell surrounded by default blanks: the blit
+        // must emit the styled cell's symbol but not the blank backdrop.
+        let mut b = Buffer::empty(Rect::new(0, 0, 4, 2));
+        b[(1u16, 0u16)].set_symbol("X");
+        b[(1u16, 0u16)].set_style(Style::default().fg(Color::Indexed(99)));
+        let mut out: Vec<u8> = Vec::new();
+        blit(&mut out, &b);
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains('X'));
+        // The blank cell at (0,0) must not have been moved-to/printed as content.
+        assert!(!s.contains("  ")); // no run of emitted blanks
+    }
+
+    #[test]
+    fn thread_local_dispatch_consumes_hotkey() {
+        // Runs on its own test thread → fresh OVERLAY.
+        assert!(!overlay_active());
+        assert!(dispatch_key(b'h' as i32)); // help toggles on, consumed
+        assert!(overlay_active());
+        assert!(dispatch_key(b'h' as i32)); // toggles off
+        assert!(!overlay_active());
+    }
+
+    #[test]
+    fn thread_local_non_hotkey_not_consumed_when_idle() {
+        assert!(!dispatch_key(b'z' as i32));
+        assert!(!overlay_active());
     }
 }

@@ -346,6 +346,17 @@ impl PanelClass for Panel {
     fn as_panel_mut(&mut self) -> &mut Panel {
         self
     }
+    /// C `Panel_class.eventHandler = Panel_selectByTyping` (`Panel.c:33`): the
+    /// base panel's event handler is incremental type-to-select. It returns
+    /// `BREAK_LOOP` on Enter, which is what lets a modal picker built on a
+    /// plain `Panel` (the sort-by-column / signal / affinity lists that
+    /// [`crate::ported::action::Action_pickFromVector`] runs) exit and hand
+    /// back the selected row. Overriding it here — rather than inheriting the
+    /// trait's `IGNORED` NULL-slot default — mirrors the C class table, where
+    /// the base `Panel_class` sets this slot explicitly.
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        Panel_selectByTyping(self, ev)
+    }
 }
 
 /// Port of `Panel* Panel_new(int x, int y, int w, int h, const ObjectClass* type,

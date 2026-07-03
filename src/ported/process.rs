@@ -1,8 +1,9 @@
-//! Partial port of `Process.c` + `Process.h` — the process data model
-//! and its pure comparison / predicate logic. Everything requiring the
-//! unported `Machine` / `Settings` / `Table` substrate, syscalls, or the
-//! ncurses draw layer remains a `todo!()` stub named after its real htop
-//! C function.
+//! Port of `Process.c` + `Process.h` — the process data model, its pure
+//! comparison / predicate logic, and the column-rendering / merged-command
+//! layer. The `Machine` / `Settings` substrate the render and compare paths
+//! read is now modeled (`Row::host` is dereferenced back to the owning
+//! [`Machine`], whose `settings` carry the flags these functions consume),
+//! so the module has no remaining `todo!()` stubs.
 //!
 //! Ported data model: [`Process`] (every `Process.h` field; embeds
 //! [`Row`] as its `super` base — htop's emulated OOP), the [`ProcessField`]
@@ -25,23 +26,16 @@
 //! NUL-terminated reads treat any index at/after the slice length as the
 //! terminating NUL (`0`). Out-params are returned as tuples/`Option`.
 //!
-//! Still stubbed (need unported substrate): [`Process_compare`] (reads
-//! `settings->ss` / `ScreenSettings` via the opaque host pointer;
-//! [`Process_compareByParent`] *is* ported — its group/parent prefix is
-//! pure and it tie-breaks into this stub, matching the
-//! [`Process_getSortKey`] → [`Process_getCommand`] precedent),
-//! [`Process_getCommand`] (reads `host->settings->showThreadNames` — the
-//! ported `Settings` subset has no `showThreadNames` field and `Row::host`
-//! is an opaque pointer), [`Process_makeCommandStr`] (every branch is
-//! driven by a `Settings` flag; the ported subset models none of
-//! `showMergedCommand` / `showProgramPath` / `findCommInCmdline` /
-//! `stripExeFromCmdline` / `showThreadNames` / `shadowDistPathPrefix` /
-//! `lastUpdate`, and it also needs `CRT_treeStr[TREE_STR_VERT]`, the
-//! `CMDLINE_HIGHLIGHT_FLAG_*` constants, and `CRT_colors[...]`), and the
-//! writeField / init-display functions. The `COMM`
-//! sort case in [`Process_compareByKey_Base`] delegates to the stubbed
-//! [`Process_getCommand`], so that one case is not exercisable until the
-//! `Settings` substrate lands (every other case is pure and tested).
+//! Ported render / compare / filter layer (reads the modeled `Settings`
+//! via the `Row::host as *const Machine` back-pointer, as in C):
+//! [`Process_writeField`] (the per-column value writer switch),
+//! [`Process_writeCommand`] + [`Process_makeCommandStr`] (the merged
+//! command builder with the `CMDLINE_HIGHLIGHT_FLAG_*` regions and
+//! `TREE_STR_VERT` separator), [`Process_getCommand`] /
+//! [`Process_getSortKey`] (drive the `COMM` sort case),
+//! [`Process_compare`] (active sort key/direction via `settings->ss`) and
+//! its [`Process_compareByParent`] tree-mode tie-break,
+//! [`Process_matchesFilter`], and [`Process_isHighlighted`].
 //! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
 //! *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
@@ -199,8 +193,8 @@ pub struct ProcessCmdlineHighlight {
 }
 
 /// Port of `struct ProcessMergedCommand_` from `Process.h:74`. Populated
-/// by `Process_makeCommandStr` (stubbed) with the merged Command string
-/// and the highlight regions `Process_writeCommand` uses to color it.
+/// by [`Process_makeCommandStr`] with the merged Command string and the
+/// highlight regions [`Process_writeCommand`] uses to color it.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessMergedCommand {
     /// C `uint64_t lastUpdate` — settings-marker for cache invalidation.
@@ -757,32 +751,30 @@ pub fn Process_fillStarttimeBuffer(this: &mut Process) {
 /// NUL and returns the pointer just past the copied bytes (stpcpy
 /// semantics) so callers can chain; a `Vec<u8>` tracks its own end and
 /// carries no NUL, so the append leaves `dst` extended in place and no
-/// end pointer is needed. Only reachable from the stubbed
-/// [`Process_makeCommandStr`] in C.
+/// end pointer is needed. Only reachable from
+/// [`Process_makeCommandStr`], as in C.
 pub fn stpcpyWithNewlineConversion(dst: &mut Vec<u8>, src: &[u8]) {
     for &c in src {
         dst.push(if c == b'\n' { b' ' } else { c });
     }
 }
 
-/// TODO: port of `void Process_makeCommandStr(Process* this, const
-/// Settings* settings)` from `Process.c:183`. Core inputs entirely
-/// unmodeled: every branch is driven by a `Settings` flag, and the
-/// ported `Settings` subset (`settings.rs`) models none of the seven it
-/// reads — `showMergedCommand`, `showProgramPath`, `findCommInCmdline`,
-/// `stripExeFromCmdline`, `showThreadNames`, `shadowDistPathPrefix`
-/// (`Process.c:186-191`), and `lastUpdate` (`Process.c:193`, the
-/// cache-invalidation stamp). It further needs the field separator
-/// `CRT_treeStr[TREE_STR_VERT]` (`Process.c:213`) — the `TREE_STR` tables
-/// are unported — and the `CMDLINE_HIGHLIGHT_FLAG_*` constants + the
-/// `CRT_colors[...]` palette (`Process.c:307-310`), neither defined in
-/// the port. The pure Process-field inputs it consumes (`cmdline`,
+/// Port of `void Process_makeCommandStr(Process* this, const
+/// Settings* settings)` from `Process.c:183`. Rebuilds the cached
+/// merged-command string in `this->mergedCommand`: every branch is driven
+/// by a `Settings` flag (`showMergedCommand`, `showProgramPath`,
+/// `findCommInCmdline`, `stripExeFromCmdline`, `showThreadNames`,
+/// `shadowDistPathPrefix` — `Process.c:186-191` — and the `lastUpdate`
+/// cache-invalidation stamp, `Process.c:193`), all of which the modeled
+/// [`Settings`] now carries. The field separator is
+/// `CRT_treeStr[TREE_STR_VERT]` ([`TreeStr::TREE_STR_VERT`],
+/// `Process.c:213`); highlight regions use the `CMDLINE_HIGHLIGHT_FLAG_*`
+/// constants + the `CRT_colors[...]` palette (via [`ColorScheme`],
+/// `Process.c:307-310`). Consumes the pure Process-field inputs (`cmdline`,
 /// `procComm`, `procExe`, `cmdlineBasenameStart/End`,
 /// `procExeBasenameOffset`, `procExeDeleted`, `usesDeletedLib`, `state`)
-/// *are* modeled, and its string helpers [`stpcpyWithNewlineConversion`],
-/// [`findCommInCmdline`], [`matchCmdlinePrefixWithExeSuffix`] are ported —
-/// but with the Settings flags absent there is no faithful subset to
-/// port, so the whole body stays a stub.
+/// and the string helpers [`stpcpyWithNewlineConversion`],
+/// [`findCommInCmdline`], [`matchCmdlinePrefixWithExeSuffix`].
 pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
     let show_merged_command = settings.showMergedCommand;
     let show_program_path = settings.showProgramPath;
@@ -1184,9 +1176,6 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
     commit(this, &buf, &highlights);
 }
 
-/// TODO: port of `void Process_writeCommand(const Process* this, int attr,
-/// int baseAttr, RichString* str)` from `Process.c:494`. Blocked on the
-/// unported ncurses draw layer: it builds a `RichString` via
 /// Port of `void Process_writeCommand(const Process* this, int attr, int
 /// baseAttr, RichString* str)` from `Process.c:494`. Appends the process's
 /// command to `str`: when the cached merged-command string is present it is
@@ -1652,18 +1641,13 @@ pub fn Process_done(this: Process) {
     let _ = this;
 }
 
-/// TODO: port of `const char* Process_getCommand(const Process* this)`
-/// from `Process.c:831`. Blocked on a single missing input:
-/// `this->super.host->settings->showThreadNames` (`Process.c:834`). Two
-/// gaps make it unreachable — [`Row::host`](crate::ported::row::Row::host)
-/// is an opaque `*const c_void` (the `Machine` deref to reach `settings`
-/// is unavailable), and even given `settings`, the ported `Settings`
-/// subset (`settings.rs`) carries no `showThreadNames` field. The other
-/// three inputs the C body reads *are* modeled — `mergedCommand.str`
-/// ([`Process::mergedCommand`]), `cmdline` ([`Process::cmdline`]), and
-/// [`Process_isUserlandThread`] — so only the flag blocks it. Signature is
-/// set so the `COMM` case of [`Process_compareByKey_Base`] can call it
-/// faithfully; the body stays a stub. Returns the command bytes
+/// Port of `const char* Process_getCommand(const Process* this)`
+/// from `Process.c:831`. Reads `this->super.host->settings->showThreadNames`
+/// (`Process.c:834`) via the `Row::host as *const Machine` deref: a
+/// userland thread with `showThreadNames` set, or a process with no cached
+/// merged-command string, renders its raw `cmdline`; otherwise the cached
+/// `mergedCommand.str` is returned. Drives the `COMM` case of
+/// [`Process_compareByKey_Base`]. Returns the command bytes
 /// (C `const char*`).
 pub fn Process_getCommand(this: &Process) -> Option<&[u8]> {
     let host = unsafe { &*(this.super_.host as *const Machine) };
@@ -1699,7 +1683,7 @@ pub fn Process_rowGetSortKey(super_: &dyn Object) -> Option<&[u8]> {
     Process_getSortKey(this)
 }
 
-/// TODO: port of `static bool Process_isHighlighted(const Process* this)`
+/// Port of `static bool Process_isHighlighted(const Process* this)`
 /// from `Process.c:852`. True when the row belongs to another user and
 /// `shadowOtherUsers` is set, so the display shadows it. Reads
 /// `this->super.host->settings->shadowOtherUsers` and `host->htopUserId` via
@@ -1715,7 +1699,7 @@ pub fn Process_isHighlighted(this: &Process) -> bool {
 
 /// Port of `bool Process_rowIsHighlighted(const Row* super)` from
 /// `Process.c:858`. Casts the `Row*` to `Process*` (the `Object_isA`
-/// guard + `Any` downcast idiom) and delegates to the still-stubbed
+/// guard + `Any` downcast idiom) and delegates to
 /// [`Process_isHighlighted`]; the wiring is faithful.
 pub fn Process_rowIsHighlighted(super_: &dyn Object) -> bool {
     debug_assert!(Object_isA(Some(super_), &Process_class));
@@ -1900,14 +1884,14 @@ pub fn Process_rowSendSignal(super_: &dyn Object, sgn: Arg) -> bool {
     Process_sendSignal(this, sgn)
 }
 
-/// TODO: port of `int Process_compare(const void* v1, const void* v2)`
-/// from `Process.c:914`. Not portable yet: reads
-/// `p1->super.host->settings->ss` and calls
-/// `ScreenSettings_getActiveSortKey` / `ScreenSettings_getActiveDirection`
-/// — the unported `Settings` / `ScreenSettings` substrate. The per-field
-/// comparison it dispatches to *is* ported (see
-/// [`Process_compareByKey_Base`]); only the active-key/direction lookup
-/// is missing. Signature matches the two-`Process` C comparator.
+/// Port of `int Process_compare(const void* v1, const void* v2)`
+/// from `Process.c:914`. Reads the active screen's sort key/direction from
+/// `p1->super.host->settings->ss` (via the `Row::host as *const Machine`
+/// deref) with [`ScreenSettings_getActiveSortKey`] /
+/// [`ScreenSettings_getActiveDirection`], dispatches the per-field
+/// comparison ([`Process_compareByKey_Base`], or a subclass `compareByKey`
+/// slot), tie-breaks equal rows by PID, then applies the sort direction.
+/// Signature matches the two-`Process` C comparator.
 pub fn Process_compare(v1: &dyn Object, v2: &dyn Object) -> i32 {
     let p1 = v1
         .as_process()
@@ -1952,10 +1936,8 @@ pub fn Process_compare(v1: &dyn Object, v2: &dyn Object) -> i32 {
 /// `Process*`; here the `Object_isA` guard + `Any` downcast idiom (as in
 /// [`Process_rowGetSortKey`]) yields the `Process` views, the Row-level
 /// group/parent read goes through the embedded `super_`, and the
-/// tie-break passes those views to [`Process_compare`] (still stubbed
-/// pending the `Settings`/`ScreenSettings` substrate, so a tie panics
-/// through that `todo!()`; the wiring itself is faithful, matching the
-/// [`Process_getSortKey`] → [`Process_getCommand`] precedent).
+/// tie-break passes those views to [`Process_compare`], matching the
+/// [`Process_getSortKey`] → [`Process_getCommand`] precedent.
 pub fn Process_compareByParent(r1: &dyn Object, r2: &dyn Object) -> i32 {
     debug_assert!(Object_isA(Some(r1), &Process_class));
     debug_assert!(Object_isA(Some(r2), &Process_class));
@@ -1993,11 +1975,10 @@ pub fn Process_compareByParent(r1: &dyn Object, r2: &dyn Object) -> i32 {
 /// `SPACESHIP_DEFAULTSTR` / [`compareRealNumbers`], line-for-line with
 /// the C switch.
 ///
-/// The `COMM` case delegates to [`Process_getCommand`] (stubbed — needs
-/// the `Settings` substrate), so only that one arm is not yet
-/// exercisable; every other arm is pure. The C `default:` (an
-/// `assert(0)` "should never be reached" path that still returns a PID
-/// compare) maps to the `_` arm.
+/// The `COMM` case delegates to [`Process_getCommand`], which reads the
+/// modeled `Settings` via the `Row::host` back-pointer; every other arm
+/// is pure. The C `default:` (an `assert(0)` "should never be reached"
+/// path that still returns a PID compare) maps to the `_` arm.
 pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: RowField) -> i32 {
     // `key` is a RowField (int) so it can carry platform field ids from any
     // platform; the reserved fields this handles are matched against their

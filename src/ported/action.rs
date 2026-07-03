@@ -64,16 +64,25 @@
 //!   `Action_setScreenTab` call `MainPanel_setFunctionBar(st->mainPanel, …)`,
 //!   which the minimal `State` (no `mainPanel`) cannot reach; also blocked on
 //!   `Action_follow`.
-//! - **`Panel`/`ScreenManager`/`IncSet`/`MainPanel` glue:**
-//!   `Action_pickFromVector`, `Action_runSetup`/`actionSetup`,
-//!   `changePriority`/`actionHigherPriority`/`actionLowerPriority`,
-//!   `addUserToVector`/`actionFilterByUser`, `actionIncFilter`/
-//!   `actionIncSearch`, `actionTag`/`actionUntagAll`/`actionTagAllChildren`,
-//!   `actionSetSortColumn` (needs `Action_pickFromVector` + a `Panel` of
-//!   `ListItem`s), `actionExpandOrCollapse`/`actionCollapseIntoParent`/
-//!   `actionExpandCollapseOrSortColumn`. These reach `st->mainPanel`, which
-//!   the minimal `State` does not model, and several need mutable panel
-//!   accessors the ported `Panel` API does not expose.
+//! - **Column-sort picker (now ported):** `Action_pickFromVector`
+//!   (`Action.c:59`) builds a transient two-panel `ScreenManager` (the picker
+//!   `list` + the shared `mainPanel`), runs its modal loop with focus locked to
+//!   the picker, and returns the picked object — enabled now that
+//!   `ScreenManager_new`/`_add`/`_run` take `*mut` back-pointers. On it,
+//!   `actionSetSortColumn` (`Action.c:192`) is ported: it builds the sortable-
+//!   column `ListItem` picker (`Process_fields[]` / `DynamicColumn` via
+//!   `Hashtable_get`) and applies the pick via `Action_setSortKey`. The single
+//!   remaining gap is `beep()` in `Action_pickFromVector`'s `follow` branch
+//!   (unported ncurses bell), unreached by the `follow = false` sort path.
+//! - **Setup screen (now ported):** `Action_runSetup` (`Action.c:101`) /
+//!   `actionSetup` — the `owner = true` setup `ScreenManager` seeded by
+//!   `CategoriesPanel_new`, with `CRT_setMouse` / `Header_writeBackToSettings`
+//!   write-back, all now-ported substrate.
+//! - **`Panel`/`MainPanel` glue (still blocked):**
+//!   `changePriority`/`actionHigherPriority`/`actionLowerPriority`
+//!   (`MainPanel_foreachRow` callback-type mismatch with `Process_rowChangePriorityBy`
+//!   + `beep`), `addUserToVector`/`actionFilterByUser` (`UsersTable_foreach` on
+//!   the opaque `usersTable`).
 //! - **`actionKill` (`Action.c:524`):** signal delivery is available via
 //!   the crate's `nix`/`libc` deps, but the handler reaches `st->mainPanel`
 //!   (`Panel_setHeader`/`Panel_draw`/`MainPanel_foreachRow`) which the
@@ -97,23 +106,40 @@
 #![allow(non_camel_case_types)] // `Htop_Reaction` mirrors the C type name verbatim
 #![allow(dead_code)]
 
-use crate::ported::crt::{ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB};
-use crate::ported::header::Header;
+use crate::ported::categoriespanel::CategoriesPanel_new;
+use crate::ported::crt::{CRT_setMouse, ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB};
+use crate::ported::dynamiccolumn::DynamicColumn;
+use crate::ported::functionbar::{FunctionBar_newEnterEsc, Ncurses};
+use crate::ported::hashtable::Hashtable_get;
+use crate::ported::header::{Header, Header_writeBackToSettings};
 use crate::ported::incset::{IncSet_activate, IncSet_filter, IncSet_reset, IncType};
-use crate::ported::listitem::ListItem_new;
+use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::machine::{Machine, Machine_scanTables};
 use crate::ported::mainpanel::{MainPanel, MainPanel_selectedRow, MainPanel_setFunctionBar};
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    Panel, Panel_add, Panel_onKey, Panel_setSelected, Panel_setSelectionColor, Panel_size,
+    Panel, PanelClass, PanelItem, Panel_add, Panel_getSelected, Panel_move, Panel_new, Panel_onKey,
+    Panel_resize, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
 };
 use crate::ported::process::ProcessField;
 use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
+use crate::ported::screenmanager::{
+    ScreenManager_add, ScreenManager_delete, ScreenManager_new, ScreenManager_remove,
+    ScreenManager_run,
+};
 use crate::ported::settings::{
-    RowField, ScreenSettings_invertSortOrder, ScreenSettings_setSortKey, Settings,
-    Settings_isReadonly,
+    RowField, ScreenSettings_getActiveSortKey, ScreenSettings_invertSortOrder,
+    ScreenSettings_setSortKey, Settings, Settings_isReadonly,
 };
 use crate::ported::table::{Table_collapseAllBranches, Table_expandTree};
+use crate::ported::xutils::String_trim;
+
+/// Port of `#define ROW_DYNAMIC_FIELDS LAST_RESERVED_FIELD` (`RowField.h:53`).
+/// `LAST_RESERVED_FIELD == LAST_PROCESSFIELD` (`Process.h:229`), the reserved
+/// (non-dynamic) field count; a `RowField` at or above this indexes a
+/// runtime-discovered [`DynamicColumn`] instead of `Process_fields[]`.
+const ROW_DYNAMIC_FIELDS: i32 = LAST_PROCESSFIELD as i32;
 
 /// Port of `#define SCREEN_TAB_MARGIN_LEFT 2` (`CRT.h:17`). Used by
 /// [`Action_setScreenTab`] to skip the left margin before the first tab.
@@ -189,28 +215,227 @@ pub struct State {
     pub hideMeters: bool,
 }
 
-/// TODO: port of `Object* Action_pickFromVector(State* st, Panel* list, int x,
-/// bool follow)` from `Action.c:59`. Builds a two-panel `ScreenManager`,
-/// runs its modal loop, and returns the picked row. Blocked on the
-/// `screenmanager.rs` ownership model: `ScreenManager_new(header, host, state,
-/// owner)` takes the `Machine`/`State` **by value** (owned `Option<T>` fields),
-/// but this handler only holds them as `*mut Machine`/`&State` back-pointers
-/// and cannot move `*st.host`/`*st` into the manager without fabricating
-/// ownership; `ScreenManager_add` likewise takes an owned `Panel`, and
-/// `ScreenManager_run` is itself a `todo!()`. Reconciling the by-value manager
-/// API is outside `action.rs`.
-pub fn Action_pickFromVector() {
-    todo!("port of Action.c:59 — ScreenManager_new/add take Machine/State/Panel by value; cannot pass *mut back-pointers")
+/// Port of `Object* Action_pickFromVector(State* st, Panel* list, int x,
+/// bool follow)` from `Action.c:59`. Builds a transient two-panel
+/// `ScreenManager` — the picker `list` on the left (width `x`) and the shared
+/// `mainPanel` filling the rest — runs its modal loop with focus locked to the
+/// picker (`allowFocusChange = false`), and returns the picked object, or `None`.
+///
+/// The `ScreenManager` back-pointers are now raw pointers
+/// ([`ScreenManager_new`] takes `*mut Header`/`*mut Machine`/`*mut State`), so
+/// the earlier by-value ownership blocker is gone. Two ownership adaptations of
+/// the C `owner = false` manager remain:
+///
+/// - `list` is taken as an owned `Box<dyn PanelClass>` (the boxed picker of any
+///   subclass, matching the manager's `Vec<Box<dyn PanelClass>>` element). C
+///   frees it via the caller's `Object_delete(sortPanel)` **after** reading the
+///   pick; here `Action_pickFromVector` owns it for the modal run, extracts the
+///   selected item as an owned `Box<dyn Object>` (the C `Object*` return), and
+///   drops the remainder on return — the same net "panel built, run, pick read,
+///   panel freed" effect.
+/// - `mainPanel` is the caller-owned `*mut MainPanel` shared with the main loop's
+///   `ScreenManager` (which owns the real `Box<MainPanel>`; the address is
+///   move-stable). It is re-boxed via [`Box::from_raw`], added for display, then
+///   [`ScreenManager_remove`]d and [`Box::into_raw`]-leaked so the transient
+///   manager never drops it — the faithful analog of C's `owner = false` (the
+///   manager frees neither panel). The `Vec`-owner [`ScreenManager_delete`] then
+///   drops an empty manager.
+///
+/// The C pointer identity `panelFocus == list` is the picker's fixed panel
+/// index (`0`); `ch == 13` is Enter. `COLS`/`LINES` come from
+/// `Ncurses::cols()`/`Ncurses::lines()`.
+///
+/// # Gap: `beep()`
+///
+/// In the `follow` branch, C `beep()`s when the mainPanel's selection changed
+/// during the modal and returns `NULL`. The ncurses audible bell has no facade
+/// in `crt.rs`, so that mismatch path returns `None` without the bell — a
+/// documented cosmetic gap; the control flow (return `None`) is otherwise
+/// faithful. `actionSetSortColumn` passes `follow = false`, so it never reaches
+/// this branch.
+pub fn Action_pickFromVector(
+    st: &mut State,
+    list: Box<dyn PanelClass>,
+    x: i32,
+    follow: bool,
+) -> Option<Box<dyn Object>> {
+    // C: MainPanel* mainPanel = st->mainPanel; Header* header = st->header;
+    //    Machine* host = st->host;
+    let mainPanel = st.mainPanel;
+    let header = st.header;
+    let host = st.host;
+    let st_ptr: *mut State = st;
+
+    // C: int y = ((Panel*)mainPanel)->y;
+    // SAFETY: mainPanel is the caller-owned MainPanel* (main loop precondition).
+    let y = unsafe { (*mainPanel).super_.y };
+
+    // C: ScreenManager* scr = ScreenManager_new(header, host, st, false);
+    //    scr->allowFocusChange = false;
+    let mut scr = ScreenManager_new(header, host, st_ptr);
+    scr.allowFocusChange = false;
+
+    // C: ScreenManager_add(scr, list, x);
+    let mut list = list;
+    ScreenManager_add(&mut scr, list, x);
+    // C: ScreenManager_add(scr, (Panel*)mainPanel, -1);
+    // Re-box the shared mainPanel WITHOUT taking ownership (C owner = false):
+    // SAFETY: mainPanel points into the main loop's Box<MainPanel> (allocated by
+    // Box, move-stable). Reclaimed and Box::into_raw-leaked below, so this
+    // transient box never drops the MainPanel.
+    let mp_box: Box<MainPanel> = unsafe { Box::from_raw(mainPanel) };
+    ScreenManager_add(&mut scr, mp_box, -1);
+
+    // C: Panel* panelFocus; int ch; bool unfollow = false;
+    let mut panelFocus: usize = 0;
+    let mut ch: i32 = 0;
+    let mut unfollow = false;
+    // C: int row = follow ? MainPanel_selectedRow(mainPanel) : -1;
+    // SAFETY: mainPanel valid (main loop precondition); read-only here.
+    let row = if follow {
+        MainPanel_selectedRow(unsafe { &*mainPanel })
+    } else {
+        -1
+    };
+    // C: if (follow && host->activeTable->following == -1) { ...; unfollow = true; }
+    if follow {
+        // SAFETY: host valid; activeTable is the non-null back-pointer.
+        let at = unsafe {
+            (*host)
+                .activeTable
+                .expect("Action_pickFromVector: host->activeTable is NULL")
+        };
+        if unsafe { (*at).following } == -1 {
+            unsafe {
+                (*at).following = row;
+            }
+            unfollow = true;
+        }
+    }
+
+    // C: ScreenManager_run(scr, &panelFocus, &ch, NULL);
+    ScreenManager_run(&mut scr, Some(&mut panelFocus), Some(&mut ch), None);
+
+    // C: if (unfollow) host->activeTable->following = -1;
+    if unfollow {
+        let at = unsafe {
+            (*host)
+                .activeTable
+                .expect("Action_pickFromVector: host->activeTable is NULL")
+        };
+        unsafe {
+            (*at).following = -1;
+        }
+    }
+
+    // C: ScreenManager_delete(scr);  (owner = false — frees neither panel)
+    // Reclaim both panels first so the Vec-owner drop does not free them.
+    // Remove index 1 (mainPanel) before index 0 (list) — removing 0 first would
+    // shift the mainPanel down to index 0.
+    let mp_reclaimed = ScreenManager_remove(&mut scr, 1);
+    // Leak the transient MainPanel box WITHOUT dropping: the main loop's
+    // ScreenManager still owns the real Box<MainPanel> (C owner = false).
+    let _leaked: *mut dyn PanelClass = Box::into_raw(mp_reclaimed);
+    list = ScreenManager_remove(&mut scr, 0);
+    ScreenManager_delete(scr);
+
+    // C: Panel_move((Panel*)mainPanel, 0, y);
+    //    Panel_resize((Panel*)mainPanel, COLS, LINES - y - 1);
+    // SAFETY: mainPanel valid; the main loop is suspended, so no live &mut aliases
+    // it (matching C, which writes through the shared pointer here).
+    Panel_move(unsafe { &mut (*mainPanel).super_ }, 0, y);
+    Panel_resize(
+        unsafe { &mut (*mainPanel).super_ },
+        Ncurses::cols(),
+        Ncurses::lines() - y - 1,
+    );
+
+    // C: if (panelFocus == list && ch == 13) { ... }  (picker is panel index 0)
+    if panelFocus == 0 && ch == 13 {
+        let return_selection = if follow {
+            // C: const Row* selected = (const Row*)Panel_getSelected((Panel*)mainPanel);
+            //    if (selected && selected->id == row) return Panel_getSelected(list);
+            let matches = match Panel_getSelected(unsafe { &(*mainPanel).super_ }) {
+                Some(o) => {
+                    let any: &dyn core::any::Any = o;
+                    any.downcast_ref::<Row>().is_some_and(|r| r.id == row)
+                }
+                None => false,
+            };
+            // C beep()s here on mismatch; the bell is unported (see the fn docs),
+            // so the mismatch path falls through to `None`.
+            matches
+        } else {
+            // C: else return Panel_getSelected(list);
+            true
+        };
+        if return_selection {
+            // Panel_getSelected(list) as an owned Object, moved out of the
+            // reclaimed picker (the caller reads it, then drops it — the C
+            // read-then-Object_delete(sortPanel) sequence).
+            let panel = list.as_panel_mut();
+            let sel = panel.selected;
+            if sel >= 0 && (sel as usize) < panel.items.len() {
+                if let PanelItem::Owned(b) = panel.items.remove(sel as usize) {
+                    return Some(b);
+                }
+            }
+        }
+    }
+
+    // C: return NULL;
+    None
 }
 
-/// TODO: port of `static void Action_runSetup(State* st)` from `Action.c:101`.
-/// Builds a setup `ScreenManager` via `ScreenManager_new(st->header, st->host,
-/// st, true)` and `CategoriesPanel_new`, runs it, then writes settings back.
-/// Blocked on the same `ScreenManager_new` by-value ownership mismatch as
-/// [`Action_pickFromVector`] (cannot move `*st.host`/`*st` from the raw
-/// back-pointers into the manager).
-pub fn Action_runSetup(_st: &State) {
-    todo!("port of Action.c:101 — ScreenManager_new takes Machine/State by value; cannot pass *mut back-pointers")
+/// Port of `static void Action_runSetup(State* st)` from `Action.c:101`.
+/// Builds the setup `ScreenManager` via [`ScreenManager_new`], seeds it with the
+/// config-category panel tree ([`CategoriesPanel_new`], which self-registers
+/// into `scr`), runs the modal loop, then — if the settings changed — re-applies
+/// the mouse mode ([`CRT_setMouse`]) and writes the header layout back
+/// ([`Header_writeBackToSettings`]).
+///
+/// The C `ScreenManager_new(st->header, st->host, st, true)` `owner = true` maps
+/// to the `Vec<Box<dyn PanelClass>>` owner default (the manager drops its panels
+/// on [`ScreenManager_delete`]), so no panel re-boxing is needed here (unlike
+/// [`Action_pickFromVector`], which shares the caller-owned `mainPanel`). C
+/// `Header_writeBackToSettings(const Header*)` reaches settings internally; the
+/// ported signature takes `settings` explicitly, so `host->settings` is threaded
+/// in. `settings->changed`/`enableMouse` are read before the mutable settings
+/// borrow so they do not alias.
+pub fn Action_runSetup(st: &mut State) {
+    // C: const Settings* settings = st->host->settings;  (read per use below)
+    let host = st.host;
+    let header = st.header;
+    let st_ptr: *mut State = st;
+
+    // C: ScreenManager* scr = ScreenManager_new(st->header, st->host, st, true);
+    let mut scr = ScreenManager_new(header, host, st_ptr);
+    // C: CategoriesPanel_new(scr, st->header, st->host);  (self-registers into scr)
+    CategoriesPanel_new(&mut scr, header, host);
+    // C: ScreenManager_run(scr, NULL, NULL, "Setup");
+    ScreenManager_run(&mut scr, None, None, Some("Setup"));
+    // C: ScreenManager_delete(scr);
+    ScreenManager_delete(scr);
+
+    // C: if (settings->changed) { CRT_setMouse(...); Header_writeBackToSettings(...); }
+    // SAFETY: host valid (C precondition); settings read immutably here.
+    let changed = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .expect("Action_runSetup: host->settings is NULL")
+            .changed
+    };
+    if changed {
+        // C: CRT_setMouse(settings->enableMouse);
+        let enableMouse = unsafe { (*host).settings.as_ref().unwrap().enableMouse };
+        CRT_setMouse(enableMouse);
+        // C: Header_writeBackToSettings(st->header);
+        // SAFETY: header/settings are distinct allocations (header owned apart
+        // from host->settings), so &Header and &mut Settings do not alias.
+        let settings = unsafe { (*host).settings.as_mut().unwrap() };
+        Header_writeBackToSettings(unsafe { &*header }, settings);
+    }
 }
 
 /// TODO: port of `static bool changePriority(MainPanel* panel, int delta)` from
@@ -423,15 +648,129 @@ pub fn Action_readableProcess(st: &State) -> bool {
         .is_none()
 }
 
-/// TODO: port of `static Htop_Reaction actionSetSortColumn(State* st)` from
-/// `Action.c:192`. Builds a `ListItem` sort-column picker, runs it through
-/// [`Action_pickFromVector`], and applies the chosen key via
-/// [`Action_setSortKey`]. Blocked on [`Action_pickFromVector`] (the
-/// `ScreenManager` by-value ownership mismatch), plus the unported
-/// `Hashtable_get(dynamicColumns)` / `Process_fields[]` / `DynamicColumn`
-/// substrate and the `Class(ListItem)` panel constructor.
-pub fn actionSetSortColumn(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:192 — needs Action_pickFromVector (ScreenManager by-value mismatch) + Hashtable/Process_fields/DynamicColumn")
+/// Port of `static Htop_Reaction actionSetSortColumn(State* st)` from
+/// `Action.c:192`. Builds a `ListItem` picker of the active screen's sortable
+/// columns, runs it through [`Action_pickFromVector`], and applies the chosen
+/// key via [`Action_setSortKey`].
+///
+/// Each of the active screen's `fields` (`settings->ss->fields`, modeled as
+/// `screens[ssIndex].fields`, walked to the C `0` terminator) yields a
+/// [`ListItem`]: a dynamic field (`>= ROW_DYNAMIC_FIELDS`) resolves its label
+/// through [`Hashtable_get`] on `settings->dynamicColumns` (skipped on a miss —
+/// the C `if (!column) continue;`), using `caption` or falling back to `name`;
+/// a reserved field uses [`String_trim`]`(Process_fields[f].name)`. The item
+/// matching [`ScreenSettings_getActiveSortKey`] is pre-selected at loop index
+/// `i` (faithful to the C `Panel_setSelected(sortPanel, i)`, which indexes by
+/// the field position). `Class(ListItem)` / `true` (owner) have no analog in the
+/// reduced [`Panel_new`]; the picker's owned `ListItem`s free with it.
+///
+/// `Object_delete(sortPanel)` has no separate call: [`Action_pickFromVector`]
+/// consumes the boxed picker (owning it for the modal run and dropping the
+/// non-picked items on return). `host->activeTable->needsSort` is set through the
+/// `*mut Table` back-pointer.
+pub fn actionSetSortColumn(st: &mut State) -> Htop_Reaction {
+    // C: Htop_Reaction reaction = HTOP_OK;
+    let mut reaction: Htop_Reaction = HTOP_OK;
+    // C: Panel* sortPanel = Panel_new(0, 0, 0, 0, Class(ListItem), true,
+    //                                 FunctionBar_newEnterEsc("Sort   ", "Cancel "));
+    let mut sortPanel = Panel_new(0, 0, 0, 0, Some(FunctionBar_newEnterEsc("Sort   ", "Cancel ")));
+    // C: Panel_setHeader(sortPanel, "Sort by");
+    Panel_setHeader(&mut sortPanel, "Sort by");
+
+    // C: Machine* host = st->host; Settings* settings = host->settings;
+    let host = st.host;
+    // C: const RowField* fields = settings->ss->fields;
+    //    Hashtable* dynamicColumns = settings->dynamicColumns;
+    // (snapshot the field list, dynamicColumns pointer, and the active sort key
+    // up front so the picker-building mutations do not alias the settings borrow.)
+    let (fields, dynamicColumns, activeSortKey) = unsafe {
+        let settings = (*host)
+            .settings
+            .as_ref()
+            .expect("actionSetSortColumn: host->settings is NULL");
+        let ss = &settings.screens[settings.ssIndex as usize];
+        (
+            ss.fields.clone(),
+            settings.dynamicColumns,
+            ScreenSettings_getActiveSortKey(ss),
+        )
+    };
+
+    // C: for (int i = 0; fields[i]; i++) { ... }
+    for i in 0..fields.len() {
+        let field = fields[i];
+        if field == 0 {
+            break; // the C `fields[i]` 0-terminator
+        }
+        // C: char* name = NULL;
+        let name: String;
+        if field >= ROW_DYNAMIC_FIELDS {
+            // C: DynamicColumn* column = Hashtable_get(dynamicColumns, fields[i]);
+            //    if (!column) continue;
+            let column = match dynamicColumns {
+                // SAFETY: dynamicColumns is the Machine-owned Hashtable pointer
+                // (settings->dynamicColumns), valid for the run.
+                Some(dc) => Hashtable_get(unsafe { &*dc }, field as u32).and_then(|o| {
+                    let any: &dyn core::any::Any = o;
+                    any.downcast_ref::<DynamicColumn>()
+                }),
+                None => None,
+            };
+            let column = match column {
+                Some(c) => c,
+                None => continue,
+            };
+            // C: name = xStrdup(column->caption ? column->caption : column->name);
+            name = column
+                .caption
+                .clone()
+                .unwrap_or_else(|| column.name.clone());
+        } else {
+            // C: name = String_trim(Process_fields[fields[i]].name);
+            name = String_trim(Process_fields[field as usize].name);
+        }
+        // C: Panel_add(sortPanel, (Object*) ListItem_new(name, fields[i]));
+        Panel_add(&mut sortPanel, Box::new(ListItem_new(&name, field)));
+        // C: if (fields[i] == ScreenSettings_getActiveSortKey(settings->ss))
+        //       Panel_setSelected(sortPanel, i);
+        if field == activeSortKey {
+            Panel_setSelected(&mut sortPanel, i as i32);
+        }
+        // C: free(name);  — the owned `name` String drops at end of iteration.
+    }
+
+    // C: const ListItem* field = (const ListItem*) Action_pickFromVector(st, sortPanel, 14, false);
+    let picked = Action_pickFromVector(st, Box::new(sortPanel), 14, false);
+    // C: if (field) reaction |= Action_setSortKey(settings, field->key);
+    if let Some(obj) = picked {
+        let any: &dyn core::any::Any = &*obj;
+        if let Some(item) = any.downcast_ref::<ListItem>() {
+            // SAFETY: host valid (C precondition); settings borrowed mutably here
+            // only (no other live settings borrow).
+            let settings = unsafe {
+                (*host)
+                    .settings
+                    .as_mut()
+                    .expect("actionSetSortColumn: host->settings is NULL")
+            };
+            reaction |= Action_setSortKey(settings, item.key);
+        }
+    }
+    // C: Object_delete(sortPanel);  — consumed by Action_pickFromVector.
+
+    // C: host->activeTable->needsSort = true;
+    // SAFETY: host valid; activeTable is the non-null back-pointer.
+    let at = unsafe {
+        (*host)
+            .activeTable
+            .expect("actionSetSortColumn: host->activeTable is NULL")
+    };
+    unsafe {
+        (*at).needsSort = true;
+    }
+
+    // C: return reaction | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
+    reaction | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
 /// Port of `static Htop_Reaction actionSortByPID(State* st)` from
@@ -811,8 +1150,7 @@ pub fn actionCollapseIntoParent(st: &mut State) -> Htop_Reaction {
 
 /// Port of `static Htop_Reaction actionExpandCollapseOrSortColumn(State* st)`
 /// from `Action.c:372`. In tree view, dispatches to [`actionExpandOrCollapse`];
-/// otherwise to [`actionSetSortColumn`] (which remains a `todo!()` blocked on
-/// [`Action_pickFromVector`] — a faithful stub-chain call).
+/// otherwise to [`actionSetSortColumn`] (the now-ported sort-column picker).
 pub fn actionExpandCollapseOrSortColumn(st: &mut State) -> Htop_Reaction {
     // SAFETY: st->host is a valid, non-null Machine* (C precondition).
     let treeView = unsafe {
@@ -1009,32 +1347,33 @@ pub fn actionSetAffinity(st: &mut State) -> Htop_Reaction {
 /// `Action.c:480`. The whole function is `#ifdef SCHEDULER_SUPPORT` (Linux
 /// scheduling only — not compiled on the darwin-first target), and its body
 /// drives the `Scheduling_*` policy/priority panels through
-/// [`Action_pickFromVector`]. Blocked on both the `SCHEDULER_SUPPORT` gate and
-/// the `Action_pickFromVector` `ScreenManager` by-value ownership mismatch.
+/// [`Action_pickFromVector`] (itself now ported). Blocked on the
+/// `SCHEDULER_SUPPORT` gate: the whole function is not compiled on the
+/// darwin-first target, and its body needs the unported `Scheduling_*` substrate.
 pub fn actionSetSchedPolicy(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:480 — #ifdef SCHEDULER_SUPPORT (Linux) + Action_pickFromVector (ScreenManager by-value mismatch)")
+    todo!("port of Action.c:480 — #ifdef SCHEDULER_SUPPORT (Linux-only, not compiled on darwin) + unported Scheduling_* panels")
 }
 
 /// TODO: port of `static Htop_Reaction actionKill(State* st)` from
 /// `Action.c:524`. Presents the `SignalsPanel` picker via
 /// [`Action_pickFromVector`], then delivers the chosen signal to every
-/// tagged/selected row through `MainPanel_foreachRow`. Blocked on multiple
-/// pieces: [`Action_pickFromVector`] (`ScreenManager` by-value mismatch); the
-/// `Process_rowSendSignal` callback is `fn(&dyn Object, Arg) -> bool`,
-/// incompatible with the ported `MainPanel_foreachRowFn` (`fn(&mut Row, &Arg)`);
-/// and `Panel_draw` / `refresh()` / `beep()` / `napms()` are unported ncurses.
+/// tagged/selected row through `MainPanel_foreachRow`. The picker itself is now
+/// portable ([`Action_pickFromVector`]); the remaining blockers are the
+/// `Process_rowSendSignal` callback (`fn(&dyn Object, Arg) -> bool`), incompatible
+/// with the ported `MainPanel_foreachRowFn` (`fn(&mut Row, &Arg)`), and the
+/// unported ncurses `Panel_draw` / `refresh()` / `beep()` / `napms()` epilogue.
 pub fn actionKill(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:524 — Action_pickFromVector (ScreenManager mismatch) + Process_rowSendSignal callback-type mismatch + refresh/beep/napms unported")
+    todo!("port of Action.c:524 — Process_rowSendSignal callback-type mismatch with MainPanel_foreachRowFn + refresh/beep/napms unported")
 }
 
 /// TODO: port of `static Htop_Reaction actionFilterByUser(State* st)` from
 /// `Action.c:548`. Builds a users picker (populated by [`addUserToVector`] via
-/// `UsersTable_foreach`), runs it through [`Action_pickFromVector`], and sets
-/// `host->userId` from the pick. Blocked on [`Action_pickFromVector`]
-/// (`ScreenManager` by-value mismatch), the unported `UsersTable_foreach`
-/// (the machine's `usersTable` is an opaque handle) and `Vector_insertionSort`.
+/// `UsersTable_foreach`), runs it through the now-ported [`Action_pickFromVector`],
+/// and sets `host->userId` from the pick. Blocked on the unported
+/// `UsersTable_foreach` (the machine's `usersTable` is an opaque handle) and
+/// `Vector_insertionSort`.
 pub fn actionFilterByUser(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:548 — Action_pickFromVector (ScreenManager mismatch) + UsersTable_foreach (opaque usersTable) + Vector_insertionSort")
+    todo!("port of Action.c:548 — UsersTable_foreach (opaque usersTable) + Vector_insertionSort unported")
 }
 
 /// Port of `Htop_Reaction Action_follow(State* st)` from `Action.c:568`. Pins
@@ -1063,11 +1402,8 @@ pub fn Action_follow(st: &mut State) -> Htop_Reaction {
 }
 
 /// Port of `static Htop_Reaction actionSetup(State* st)` from `Action.c:574`.
-/// Runs the setup screen via [`Action_runSetup`] and returns the
-/// refresh/redraw/resize reaction. `Action_runSetup` remains a `todo!()`
-/// (blocked on the `ScreenManager_new` by-value ownership mismatch); this
-/// handler calls it by name (faithful stub-chain, per the `Machine_scanTables`
-/// precedent).
+/// Runs the setup screen via the now-ported [`Action_runSetup`] and returns the
+/// refresh/redraw/resize reaction.
 pub fn actionSetup(st: &mut State) -> Htop_Reaction {
     Action_runSetup(st);
     HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR | HTOP_RESIZE
@@ -1095,11 +1431,11 @@ pub fn actionShowLocks(_st: &mut State) -> Htop_Reaction {
 /// TODO: port of `static Htop_Reaction actionBacktrace(State *st)` from
 /// `Action.c:616`. The whole function is `#if defined(HAVE_BACKTRACE_SCREEN)`
 /// (Linux-only, not compiled on the darwin-first target). Its body builds a
-/// `BacktracePanel` inside a `ScreenManager`, blocked on the same
-/// `ScreenManager_new` by-value ownership mismatch as [`Action_pickFromVector`]
-/// (plus `Vector`/`BacktracePanel_new`).
+/// `BacktracePanel` inside a `ScreenManager`; blocked on the
+/// `HAVE_BACKTRACE_SCREEN` gate (not compiled on darwin) plus the unported
+/// `BacktracePanel_new` / `Vector` backtrace substrate.
 pub fn actionBacktrace(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:616 — #if HAVE_BACKTRACE_SCREEN (Linux) + ScreenManager_new by-value mismatch")
+    todo!("port of Action.c:616 — #if HAVE_BACKTRACE_SCREEN (Linux-only, not compiled on darwin) + unported BacktracePanel_new/Vector")
 }
 
 /// TODO: port of `static Htop_Reaction actionStrace(State* st)` from

@@ -1249,15 +1249,6 @@ fn LinuxProcess_totalIORate(lp: &LinuxProcess) -> f64 {
     totalRate
 }
 
-/// TODO: port of `static void LinuxProcess_rowWriteField(const Row* super,
-/// RichString* str, ProcessField field)` from `LinuxProcess.c:226`.
-/// Blocked: the `switch (field)` dispatches on the Linux platform
-/// [`ProcessField`] ids (`M_DRS`, `M_LRS`, `RCHAR`, `OOM`, `IO_PRIORITY`,
-/// `CGROUP`, …) defined in `linux/ProcessField.h`, but the shared
-/// [`ProcessField`] enum intentionally
-/// models only the reserved generic fields — the platform variants are not
-/// enumerated, so the switch arms cannot be written yet. (The `Row_print*`
-/// primitives it calls are already ported; only the field ids are missing.)
 /// Port of `static void LinuxProcess_rowWriteField(const Row* super,
 /// RichString* str, ProcessField field)` from `LinuxProcess.c:226` — the
 /// Linux-specific per-field renderer. Handles the Linux platform fields and
