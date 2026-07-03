@@ -159,8 +159,11 @@ pub fn ProcessTable_new(
 /// + `free(this)` — Rust `Drop` reclaims the [`FreeBSDProcessTable`]
 /// allocation and the base table's owned rows, so there is no faithful
 /// safe-Rust analog (the darwin `ProcessTable_delete` precedent).
-pub fn ProcessTable_delete() {
-    todo!("port of FreeBSDProcessTable.c:56 — pure free() teardown; Rust Drop handles it")
+pub fn ProcessTable_delete(mut this: FreeBSDProcessTable) {
+    // C `void ProcessTable_delete(Object* cast)` (FreeBSDProcessTable.c:56):
+    // `ProcessTable_done(&this->super); free(this);`. `ProcessTable_done` takes
+    // `&mut` and tears the base down in place; `this` then drops (the free).
+    crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }
 
 /// Decodes a fixed-size, NUL-terminated `[c_char; N]` kernel string field

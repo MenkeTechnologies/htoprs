@@ -200,8 +200,14 @@ pub fn FreeBSDProcess_new(machine: *const Machine) -> Box<FreeBSDProcess> {
 /// allocation and its `Option<String>` fields, so `Drop` reclaims them
 /// automatically; there is no faithful safe-Rust analog (the darwin/linux
 /// `Process_delete` precedent).
-pub fn Process_delete() {
-    todo!("port of FreeBSDProcess.c:69 — pure free() teardown; Rust Drop handles it")
+pub fn Process_delete(this: FreeBSDProcess) {
+    // C `void Process_delete(Object* cast)` (FreeBSDProcess.c:69):
+    // `Process_done(&this->super); free(this);`. Take `this` by value — the base
+    // teardown is `Process_done` on the moved-out `super_`, the scalar fields
+    // drop trivially, and `free(this)` folds into the by-value consume (the
+    // darwin `Process_delete` / destructor-sweep idiom).
+    let FreeBSDProcess { super_, .. } = this;
+    crate::ported::process::Process_done(super_);
 }
 
 /// Port of `static void FreeBSDProcess_rowWriteField(const Row* super,
