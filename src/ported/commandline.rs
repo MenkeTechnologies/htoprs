@@ -23,6 +23,10 @@ pub fn printVersionFlag(name: &str) {
 /// `HAVE_GETMOUSE` gates the `-M` line; the mouse is always compiled
 /// in here, so it is emitted unconditionally. `Platform_longOptionsUsage`
 /// is a no-op until platform options are ported.
+///
+/// The htoprs binary itself does not call this — its `-h` handler renders
+/// the styled help screen in [`crate::extensions::help`] instead. This
+/// faithful port is retained as the spec that styled screen tracks.
 pub fn printHelpFlag(name: &str) {
     print!(
         "{name} {VERSION}\n\

@@ -30,7 +30,7 @@ fn main() {
                 return;
             }
             "-h" | "--help" => {
-                commandline::printHelpFlag(name);
+                htoprs::extensions::help::print_help(name);
                 return;
             }
             _ => {}

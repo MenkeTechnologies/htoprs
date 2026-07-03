@@ -21,6 +21,8 @@
 //! [`filter`] regex + saved named filters, [`export`] table -> JSON/CSV,
 //! [`alerts`] debounced threshold rules, [`graph`] braille history graph.
 //! [`braille`] is the shared glyph renderer used by [`procring`] and [`graph`].
+//! [`help`] renders the styled `htoprs -h` screen (figlet banner + status box
+//! + sectioned option list) shown in place of the plain ported `printHelpFlag`.
 
 pub mod colors;
 pub mod overlay;
@@ -33,6 +35,7 @@ pub mod export;
 pub mod filter;
 pub mod finder;
 pub mod graph;
+pub mod help;
 pub mod model;
 pub mod procring;
 pub mod snapshot;

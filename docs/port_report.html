@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T19:41:09Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T19:48:14Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,11 +70,11 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">841</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val green">843</div><div class="stat-label">Fns ported</div></div>
         <div class="stat-card"><div class="stat-val">67</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1101</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">76.39%</div><div class="stat-label">Coverage</div></div>
-        <div class="stat-card"><div class="stat-val cyan">118</div><div class="stat-label">Files started</div></div>
+        <div class="stat-card"><div class="stat-val cyan">76.57%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">119</div><div class="stat-label">Files started</div></div>
       </div>
 
       <h2 class="tutorial-title"><span class="step-hash">~</span>PER-FILE</h2>
@@ -159,6 +159,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>freebsd/FreeBSDProcess.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
           <tr><td><code>freebsd/FreeBSDProcessTable.c</code></td><td>6</td><td>1</td><td>7</td><td>86%</td></tr>
           <tr><td><code>freebsd/Platform.c</code></td><td>15</td><td>2</td><td>17</td><td>88%</td></tr>
+          <tr><td><code>generic/gettime.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>generic/hostname.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>generic/uname.c</code></td><td>2</td><td>0</td><td>3</td><td>67%</td></tr>
           <tr><td><code>htop.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
@@ -205,13 +206,13 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-03T19:41:09Z",
+  "generated": "2026-07-03T19:48:14Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1101,
-  "ported": 841,
+  "ported": 843,
   "stubbed": 67,
-  "coverage_pct": 76.39,
-  "files_started": 118,
+  "coverage_pct": 76.57,
+  "files_started": 119,
   "per_file": [
     {
       "cfile": "Action.c",
@@ -680,6 +681,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       "ported": 15,
       "stubbed": 2,
       "defined": 17
+    },
+    {
+      "cfile": "generic/gettime.c",
+      "ported": 2,
+      "stubbed": 0,
+      "defined": 2
     },
     {
       "cfile": "generic/hostname.c",

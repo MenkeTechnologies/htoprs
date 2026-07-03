@@ -103,25 +103,25 @@ const SENSOR_MAX_TYPES: usize = 23;
 /// read, but the whole layout is transcribed so the sysctl length matches.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct sensor {
-    desc: [c_char; 32],
-    tv: libc::timeval,
-    value: i64,
-    type_: c_int,
-    status: c_int,
-    numt: c_int,
-    flags: c_int,
+pub struct sensor {
+    pub desc: [c_char; 32],
+    pub tv: libc::timeval,
+    pub value: i64,
+    pub type_: c_int,
+    pub status: c_int,
+    pub numt: c_int,
+    pub flags: c_int,
 }
 
 /// Port of `struct sensordev` (`sys/sensors.h`) — a sensor device. Only
 /// `xname` is read (matched against the device name).
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct sensordev {
-    num: c_int,
-    xname: [c_char; 16],
-    maxnumt: [c_int; SENSOR_MAX_TYPES],
-    sensors_count: c_int,
+pub struct sensordev {
+    pub num: c_int,
+    pub xname: [c_char; 16],
+    pub maxnumt: [c_int; SENSOR_MAX_TYPES],
+    pub sensors_count: c_int,
 }
 
 /// Port of `bool Platform_init(void)` (`Platform.c:152`).
@@ -439,7 +439,12 @@ pub fn Platform_getNetworkIO(_data: &mut NetworkIOData) -> bool {
 /// gaps (`ENXIO`) and stopping at the end of the list (`ENOENT`). Writes the
 /// device number into `mib[2]` (as the C does) so the caller's follow-up
 /// `sysctl(mib, 5, …)` reads that device's sensors.
-fn findDevice(name: &str, mib: &mut [c_int; 5], snsrdev: &mut sensordev, sdlen: &mut usize) -> bool {
+pub fn findDevice(
+    name: &str,
+    mib: &mut [c_int; 5],
+    snsrdev: &mut sensordev,
+    sdlen: &mut usize,
+) -> bool {
     let mut devn: c_int = 0;
     loop {
         mib[2] = devn;

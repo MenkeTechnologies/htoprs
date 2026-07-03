@@ -29,6 +29,7 @@ pub mod dynamicscreen;
 pub mod envscreen;
 pub mod filedescriptormeter;
 pub mod functionbar;
+pub mod generic;
 pub mod gpumeter;
 pub mod hashtable;
 pub mod header;

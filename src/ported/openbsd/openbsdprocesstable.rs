@@ -260,12 +260,14 @@ pub fn OpenBSDProcessTable_updateProcessName(
         j -= 1;
     }
 
-    // s = "arg0 arg1 … " (each arg followed by a space, as strlcat does).
-    let mut s = String::new();
-    for a in &args {
-        s.push_str(&String::from_utf8_lossy(a));
-        s.push(' ');
-    }
+    // s = "arg0 arg1 … argN": the C strlcats each arg + a space into a buffer
+    // sized to exactly `Σ(strlen+1)`, so the final trailing space is truncated
+    // — i.e. the args joined by single spaces.
+    let s = args
+        .iter()
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // `end` is a byte offset into arg0 (== the head of `s`); lossy decoding of
     // non-UTF-8 argv can shift lengths, so clamp into the string bounds.
