@@ -201,11 +201,10 @@ mod tests {
         m.settings = Some(Settings {
             highlightChanges: false,
             highlightDelaySecs: 0,
-            ss: ScreenSettings {
+            screens: vec![ScreenSettings {
                 treeView: false,
-                table: None,
-            },
-            screens: Vec::new(),
+                ..Default::default()
+            }],
             ..Default::default()
         });
         m

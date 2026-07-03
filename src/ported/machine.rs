@@ -61,52 +61,13 @@
 /// dereference them, so the identity (`usize`) is all that is needed.
 pub type TableHandle = usize;
 
-/// The subset of htop's `ScreenSettings` (`Settings.h:42`) the ported
-/// logic touches: `Table* table` (defaulted by
-/// `Machine_populateTablesFromSettings`; a null `Table*` is `None`) and
-/// `bool treeView` (read by `Table_updateDisplayList` via
-/// `settings->ss`). The full struct carries a sort key, column list,
-/// tree flags, etc. — none of which these functions read.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ScreenSettings {
-    /// C `Table* table`.
-    pub table: Option<TableHandle>,
-    /// C `bool treeView`.
-    pub treeView: bool,
-}
-
-/// The subset of htop's `Settings` (`Settings.h`) the ported logic
-/// touches: the active screen `ss`, the `highlightChanges` /
-/// `highlightDelaySecs` flags read by `Table_cleanupRow`, and the
-/// `screens` array walked by `Machine_populateTablesFromSettings` (C's
-/// `size_t nScreens` is `screens.len()`). The real `Settings` holds
-/// meters, colour scheme, and many more flags, none read here.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Settings {
-    /// C `bool highlightChanges`.
-    pub highlightChanges: bool,
-    /// C `int highlightDelaySecs`.
-    pub highlightDelaySecs: i32,
-    /// C `bool showCPUFrequency` — gates `LinuxMachine_scanCPUFrequency`
-    /// in `Machine_scan`.
-    pub showCPUFrequency: bool,
-    /// C `bool showCachedMemory` — MemoryMeter shows/masks the cache classes.
-    pub showCachedMemory: bool,
-    /// C `bool detailedCPUTime` — CPUMeter breaks out kernel/irq/steal/…
-    pub detailedCPUTime: bool,
-    /// C `bool showCPUUsage` — CPUMeter shows the usage percentage text.
-    pub showCPUUsage: bool,
-    /// C `bool accountGuestInCPUMeter` — count guest time in the CPU bar.
-    pub accountGuestInCPUMeter: bool,
-    /// C `bool showCPUTemperature` (behind `BUILD_WITH_CPU_TEMP`).
-    pub showCPUTemperature: bool,
-    /// C `bool degreeFahrenheit` (behind `BUILD_WITH_CPU_TEMP`).
-    pub degreeFahrenheit: bool,
-    /// C `ScreenSettings* ss` — the active screen settings.
-    pub ss: ScreenSettings,
-    /// C `ScreenSettings** screens` (+ `size_t nScreens`).
-    pub screens: Vec<ScreenSettings>,
-}
+/// htop's `Settings` and `ScreenSettings` are a single struct each in the C
+/// source; the canonical Rust port lives in [`crate::ported::settings`].
+/// They are re-exported here (not re-declared) so `machine::Settings` /
+/// `machine::ScreenSettings` keep resolving for the existing `Machine`
+/// consumers while there is exactly one definition of each — the C's active
+/// screen `ss` is `screens[ssIndex]`, so `ss` is not a separate field.
+pub use crate::ported::settings::{ScreenSettings, Settings};
 
 /// Port of htop's `struct Machine_` (`Machine.h:42`). See the module
 /// docs for which fields are read by the ported logic and which are
@@ -319,11 +280,13 @@ mod tests {
                 ScreenSettings {
                     table: Some(100),
                     treeView: false,
+                    ..Default::default()
                 },
                 ScreenSettings::default(),
                 ScreenSettings {
                     table: Some(100),
                     treeView: false,
+                    ..Default::default()
                 },
             ],
             ..Default::default()

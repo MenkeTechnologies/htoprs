@@ -453,15 +453,16 @@ pub fn Table_buildTree(this: &mut Table) {
 /// straight into `displayList`. Clears `needsSort`.
 ///
 /// Reads `host->settings->ss->treeView`; a valid non-null `host` with a
-/// populated `settings` is the precondition (as in C).
+/// populated `settings` is the precondition (as in C). The canonical
+/// `Settings` models the active screen `ss` as `screens[ssIndex]` (C's `ss`
+/// is a pointer into `screens`), so the read goes through that index.
 pub fn Table_updateDisplayList(this: &mut Table) {
     let tree_view = unsafe {
-        (*this.host)
+        let settings = (*this.host)
             .settings
             .as_ref()
-            .expect("Table_updateDisplayList: host->settings is NULL")
-            .ss
-            .treeView
+            .expect("Table_updateDisplayList: host->settings is NULL");
+        settings.screens[settings.ssIndex as usize].treeView
     };
 
     if tree_view {
@@ -683,11 +684,10 @@ mod tests {
         m.settings = Some(Settings {
             highlightChanges: highlight_changes,
             highlightDelaySecs: highlight_delay,
-            ss: ScreenSettings {
+            screens: vec![ScreenSettings {
                 treeView: tree_view,
-                table: None,
-            },
-            screens: Vec::new(),
+                ..Default::default()
+            }],
             ..Default::default()
         });
         m

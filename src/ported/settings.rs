@@ -67,7 +67,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::ported::machine::Machine;
+use crate::ported::machine::{Machine, TableHandle};
 use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
 use crate::ported::xutils::{String_split, String_trim};
 
@@ -122,7 +122,7 @@ pub fn HeaderLayout_getColumns(hLayout: HeaderLayout) -> usize {
 /// `NULL`) from "set to the empty list". `len` still counts *modes*, as
 /// in C — it is written by `Settings_readMeterModes`, not by
 /// `Settings_readMeters`.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct MeterColumnSetting {
     pub len: usize,
     pub names: Option<Vec<String>>,
@@ -148,7 +148,7 @@ pub struct MeterColumnSetting {
 /// `Hashtable* dynamicColumns/dynamicMeters/dynamicScreens` fields are still
 /// omitted (they need the file-path and Hashtable substrate and no ported
 /// reader touches them yet).
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub hLayout: HeaderLayout,
     pub hColumns: Vec<MeterColumnSetting>,
@@ -592,17 +592,21 @@ pub fn Settings_new() {
 /// modeled directly rather than the narrower `ProcessField` enum.
 pub type RowField = i32;
 
-/// Port of htop's `ScreenSettings` (`Settings.h:42`). All C fields are
-/// modeled except `table` (`struct Table_*`): `Table.c` is unported and
-/// the only writer of that field, `Settings_newDynamicScreen`, is itself
-/// stubbed, so there is nothing to hold. The C `char* heading` /
-/// `char* dynamic` (either may be `NULL`) become `Option<String>`, and
+/// Port of htop's `ScreenSettings` (`Settings.h:42`). The C `char* heading`
+/// / `char* dynamic` (either may be `NULL`) become `Option<String>`, and
 /// `RowField* fields` (a heap array sized to `LAST_PROCESSFIELD`) becomes
-/// an owned `Vec<RowField>`.
-#[derive(Default, Clone, Debug)]
+/// an owned `Vec<RowField>`. The C `struct Table_* table` is modeled as an
+/// `Option<TableHandle>` (the opaque table id used across the port; `None` =
+/// C `NULL`), keeping `ScreenSettings` the single canonical config type that
+/// both [`crate::ported::machine`] and the panels share.
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct ScreenSettings {
     pub heading: Option<String>,
     pub dynamic: Option<String>,
+    /// C `struct Table_* table` — the table this screen drives (`None` =
+    /// `NULL`, defaulted to the process table by
+    /// [`crate::ported::machine::Machine_populateTablesFromSettings`]).
+    pub table: Option<TableHandle>,
     pub fields: Vec<RowField>,
     pub flags: u32,
     pub direction: i32,
