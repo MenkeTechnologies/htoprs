@@ -408,7 +408,8 @@ pub fn FreeBSDMachine_scanMemoryInfo(this: &mut FreeBSDMachine) {
 
     // swap
     let mut swap: [libc::kvm_swap; 16] = unsafe { std::mem::zeroed() };
-    let nswap = unsafe { libc::kvm_getswapinfo(this.kd, swap.as_mut_ptr(), swap.len() as c_int, 0) };
+    let nswap =
+        unsafe { libc::kvm_getswapinfo(this.kd, swap.as_mut_ptr(), swap.len() as c_int, 0) };
     this.super_.totalSwap = 0;
     this.super_.usedSwap = 0;
     for s in swap.iter().take(nswap.max(0) as usize) {

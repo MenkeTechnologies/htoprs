@@ -92,9 +92,7 @@ use crate::ported::infoscreen::{
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::{
-    Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected,
-};
+use crate::ported::panel::{Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected};
 use crate::ported::process::{
     Process, Process_getCommand, Process_getPid, Process_getThreadGroup, Process_isThread,
 };
@@ -281,7 +279,14 @@ pub fn ProcessLocksScreen_scan(this: &mut ProcessLocksScreen) {
                 let filename = d.filename.as_deref().unwrap_or("<N/A>");
                 let entry = format!(
                     "{:5} {:<10} {:<10} {:<10} {:#6x} {:10} {:19} {}  {}",
-                    d.fd, d.locktype, d.exclusive, d.readwrite, d.dev, d.inode, d.start, end,
+                    d.fd,
+                    d.locktype,
+                    d.exclusive,
+                    d.readwrite,
+                    d.dev,
+                    d.inode,
+                    d.start,
+                    end,
                     filename
                 );
                 InfoScreen_addLine(&mut this.super_, &entry);

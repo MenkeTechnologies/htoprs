@@ -507,10 +507,7 @@ pub fn SystemdMeter_updateValues(this: &mut Meter) {
     // C: xSnprintf(this->txtBuffer, …, "%s",
     //        ctx->systemState ? ctx->systemState : "???");
     let ctx = ctx_mutex.lock().unwrap();
-    this.txtBuffer = ctx
-        .systemState
-        .clone()
-        .unwrap_or_else(|| "???".to_string());
+    this.txtBuffer = ctx.systemState.clone().unwrap_or_else(|| "???".to_string());
 }
 
 /// Port of `static int zeroDigitColor(unsigned int value)` from

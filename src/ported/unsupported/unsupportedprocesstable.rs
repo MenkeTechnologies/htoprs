@@ -21,8 +21,8 @@ use crate::ported::machine::Machine;
 use crate::ported::object::Object;
 use crate::ported::process::{
     Process, ProcessState, Process_fillStarttimeBuffer, Process_setParent, Process_setPid,
-    Process_setThreadGroup, Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm,
-    Process_updateExe, PROCESS_FLAG_CWD,
+    Process_setThreadGroup, Process_updateCPUFieldWidths, Process_updateCmdline,
+    Process_updateComm, Process_updateExe, PROCESS_FLAG_CWD,
 };
 use crate::ported::processtable::{
     ProcessTable, ProcessTable_cleanupEntries, ProcessTable_getProcess, ProcessTable_init,

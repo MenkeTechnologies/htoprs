@@ -1513,7 +1513,14 @@ mod tests {
     /// `columns` / `availableColumns` sub-panels the constructor adds. Every
     /// owner is returned so the caller keeps it alive for the panel's raw
     /// back-pointers (the same keep-alive contract as [`wired`]).
-    fn full(names: &[&str]) -> (Box<Settings>, Box<Hashtable>, Box<ScreenManager>, ScreensPanel) {
+    fn full(
+        names: &[&str],
+    ) -> (
+        Box<Settings>,
+        Box<Hashtable>,
+        Box<ScreenManager>,
+        ScreensPanel,
+    ) {
         let mut dyncols = Box::new(Hashtable_new(8, false));
         let mut settings = make_settings(names);
         settings.dynamicColumns = Some(dyncols.as_mut() as *mut Hashtable);

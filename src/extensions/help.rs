@@ -34,7 +34,10 @@ const RULE_WIDTH: usize = 57;
 fn section(label: &str) -> String {
     // "  ── " (5) + label + " " (1), then fill with `─` to RULE_WIDTH.
     let used = 5 + label.chars().count() + 1;
-    format!("  ── {label} {}", "─".repeat(RULE_WIDTH.saturating_sub(used)))
+    format!(
+        "  ── {label} {}",
+        "─".repeat(RULE_WIDTH.saturating_sub(used))
+    )
 }
 
 /// One option row: `  -x, --long=ARG                 // description`,
@@ -57,26 +60,77 @@ pub fn print_help(name: &str) {
     println!("  USAGE: {name} [OPTIONS]\n");
 
     println!("{}", section("DISPLAY"));
-    println!("{}", opt("-t, --tree", "Show the tree view (can be combined with -s)"));
-    println!("{}", opt("-s, --sort-key=COLUMN", "Sort by COLUMN in list view (try --sort-key=help for a list)"));
-    println!("{}", opt("-H, --highlight-changes[=DELAY]", "Highlight new and old processes"));
+    println!(
+        "{}",
+        opt("-t, --tree", "Show the tree view (can be combined with -s)")
+    );
+    println!(
+        "{}",
+        opt(
+            "-s, --sort-key=COLUMN",
+            "Sort by COLUMN in list view (try --sort-key=help for a list)"
+        )
+    );
+    println!(
+        "{}",
+        opt(
+            "-H, --highlight-changes[=DELAY]",
+            "Highlight new and old processes"
+        )
+    );
     println!("{}", opt("-C, --no-color", "Use a monochrome color scheme"));
-    println!("{}", opt("-U, --no-unicode", "Do not use unicode but plain ASCII"));
+    println!(
+        "{}",
+        opt("-U, --no-unicode", "Do not use unicode but plain ASCII")
+    );
     println!("{}", opt("    --no-function-bar", "Hide the function bar"));
     println!("{}", opt("    --no-meters", "Hide meters"));
     println!();
 
     println!("{}", section("FILTERING"));
-    println!("{}", opt("-F, --filter=FILTER", "Show only the commands matching the given filter"));
-    println!("{}", opt("-p, --pid=PID[,PID,PID...]", "Show only the given PIDs"));
-    println!("{}", opt("-u, --user[=USERNAME]", "Show only processes for a given user (or $USER)"));
+    println!(
+        "{}",
+        opt(
+            "-F, --filter=FILTER",
+            "Show only the commands matching the given filter"
+        )
+    );
+    println!(
+        "{}",
+        opt("-p, --pid=PID[,PID,PID...]", "Show only the given PIDs")
+    );
+    println!(
+        "{}",
+        opt(
+            "-u, --user[=USERNAME]",
+            "Show only processes for a given user (or $USER)"
+        )
+    );
     println!();
 
     println!("{}", section("BEHAVIOR"));
-    println!("{}", opt("-d, --delay=DELAY", "Set the delay between updates, in tenths of seconds"));
-    println!("{}", opt("-n, --max-iterations=NUMBER", "Exit htoprs after NUMBER iterations/frame updates"));
+    println!(
+        "{}",
+        opt(
+            "-d, --delay=DELAY",
+            "Set the delay between updates, in tenths of seconds"
+        )
+    );
+    println!(
+        "{}",
+        opt(
+            "-n, --max-iterations=NUMBER",
+            "Exit htoprs after NUMBER iterations/frame updates"
+        )
+    );
     println!("{}", opt("-M, --no-mouse", "Disable the mouse"));
-    println!("{}", opt("    --readonly", "Disable all system and process changing features"));
+    println!(
+        "{}",
+        opt(
+            "    --readonly",
+            "Disable all system and process changing features"
+        )
+    );
     println!();
 
     println!("{}", section("MONITOR"));
@@ -125,7 +179,10 @@ mod tests {
         // The widest real spec must survive intact and still leave a space
         // before `//` (the `:<48` pad is wider than the spec).
         let row = opt("-H, --highlight-changes[=DELAY]", "y");
-        assert!(row.contains("-H, --highlight-changes[=DELAY]"), "spec preserved");
+        assert!(
+            row.contains("-H, --highlight-changes[=DELAY]"),
+            "spec preserved"
+        );
         let slashes = row.find("//").expect("comment marker present");
         assert_eq!(&row[slashes - 1..slashes], " ", "space before //");
     }

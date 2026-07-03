@@ -454,8 +454,7 @@ pub extern "C" fn SolarisProcessTable_walkproc(
         sp.super_.percent_cpu = (ps.pr_pctcpu as f64 / 32768.0 * 100.0) as f32;
         Process_updateCPUFieldWidths(sp.super_.percent_cpu);
 
-        sp.super_.time =
-            (ps.pr_time.tv_sec * 100 + ps.pr_time.tv_nsec / 10_000_000) as u64;
+        sp.super_.time = (ps.pr_time.tv_sec * 100 + ps.pr_time.tv_nsec / 10_000_000) as u64;
         if !preExisting {
             // Tasks done only for NEW processes
             sp.super_.isUserlandThread = false;
@@ -490,8 +489,7 @@ pub extern "C" fn SolarisProcessTable_walkproc(
         sp.super_.percent_cpu = (lwp.pr_pctcpu as f64 / 32768.0 * 100.0) as f32;
         Process_updateCPUFieldWidths(sp.super_.percent_cpu);
 
-        sp.super_.time =
-            (lwp.pr_time.tv_sec * 100 + lwp.pr_time.tv_nsec / 10_000_000) as u64;
+        sp.super_.time = (lwp.pr_time.tv_sec * 100 + lwp.pr_time.tv_nsec / 10_000_000) as u64;
         if !preExisting {
             // Tasks done only for NEW LWPs
             sp.super_.isUserlandThread = true;

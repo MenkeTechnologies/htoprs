@@ -152,8 +152,18 @@ mod tests {
     #[test]
     fn store_put_replaces_and_roundtrips() {
         let mut s = FilterStore::default();
-        s.put(Filter { name: "a".into(), pattern: "x".into(), regex: false, field: Field::Any });
-        s.put(Filter { name: "a".into(), pattern: "y".into(), regex: false, field: Field::Any });
+        s.put(Filter {
+            name: "a".into(),
+            pattern: "x".into(),
+            regex: false,
+            field: Field::Any,
+        });
+        s.put(Filter {
+            name: "a".into(),
+            pattern: "y".into(),
+            regex: false,
+            field: Field::Any,
+        });
         assert_eq!(s.filters.len(), 1);
         assert_eq!(s.get("a").unwrap().pattern, "y");
         let back = FilterStore::from_json(&s.to_json()).unwrap();

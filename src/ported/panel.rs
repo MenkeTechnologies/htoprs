@@ -742,7 +742,9 @@ pub fn Panel_draw(
             let row_pid: Option<u32>;
             {
                 let item_obj: &dyn Object = this.items[i as usize].object();
-                row_pid = item_obj.as_process().map(|p| Process_getPid(p).max(0) as u32);
+                row_pid = item_obj
+                    .as_process()
+                    .map(|p| Process_getPid(p).max(0) as u32);
                 let sz = RichString_size(&item);
                 RichString_rewind(&mut item, sz);
                 item.highlightAttr = 0;

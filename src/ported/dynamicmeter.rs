@@ -60,59 +60,38 @@ use crate::ported::xutils::String_safeStrncpy;
 
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
-};
-#[cfg(target_os = "linux")]
-use crate::ported::linux::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
-};
-#[cfg(target_os = "freebsd")]
-use crate::ported::freebsd::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
-};
-#[cfg(target_os = "netbsd")]
-use crate::ported::netbsd::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
-};
-#[cfg(target_os = "openbsd")]
-use crate::ported::openbsd::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
-};
-#[cfg(any(target_os = "solaris", target_os = "illumos"))]
-use crate::ported::solaris::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
 };
 #[cfg(target_os = "dragonfly")]
 use crate::ported::dragonflybsd::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
+};
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::{
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
+};
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::{
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
+};
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::{
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
+};
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::{
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
+};
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::{
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
 };
 #[cfg(not(any(
     target_os = "macos",
@@ -125,11 +104,8 @@ use crate::ported::dragonflybsd::platform::{
     target_os = "dragonfly"
 )))]
 use crate::ported::unsupported::platform::{
-    Platform_dynamicMeters,
-    Platform_dynamicMetersDone,
-    Platform_dynamicMeterInit,
-    Platform_dynamicMeterUpdateValues,
-    Platform_dynamicMeterDisplay,
+    Platform_dynamicMeterDisplay, Platform_dynamicMeterInit, Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeters, Platform_dynamicMetersDone,
 };
 
 /// Subset of htop's `DynamicMeter` struct (`DynamicMeter.h:17`).

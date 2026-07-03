@@ -45,8 +45,8 @@ use crate::ported::machine::Machine;
 use crate::ported::meter::Meter;
 use crate::ported::networkiometer::NetworkIOData;
 use crate::ported::openbsd::openbsdmachine::{
-    kvm_close, kvm_getenvv, kvm_getprocs, kvm_openfiles, OpenBSDMachine, KVM_NO_FILES,
-    _POSIX2_LINE_MAX,
+    kvm_close, kvm_getenvv, kvm_getprocs, kvm_openfiles, OpenBSDMachine, _POSIX2_LINE_MAX,
+    KVM_NO_FILES,
 };
 
 // `VM_LOADAVG` (`sys/sysctl.h`) — the `CTL_VM` sysctl for load average.
@@ -223,12 +223,7 @@ pub fn Platform_setCPUValues(mtr: &mut Meter, cpu: u32) -> f64 {
 
     mtr.values[CPU_METER_NICE] = cpuData.nicePeriod as f64 / total * 100.0;
     mtr.values[CPU_METER_NORMAL] = cpuData.userPeriod as f64 / total * 100.0;
-    let detailed = unsafe {
-        (*host)
-            .settings
-            .as_ref()
-            .is_some_and(|s| s.detailedCPUTime)
-    };
+    let detailed = unsafe { (*host).settings.as_ref().is_some_and(|s| s.detailedCPUTime) };
     if detailed {
         mtr.values[CPU_METER_KERNEL] = cpuData.sysPeriod as f64 / total * 100.0;
         mtr.values[CPU_METER_IRQ] = cpuData.intrPeriod as f64 / total * 100.0;
@@ -472,10 +467,7 @@ pub fn findDevice(
             }
         }
         let xname_bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(
-                snsrdev.xname.as_ptr() as *const u8,
-                snsrdev.xname.len(),
-            )
+            core::slice::from_raw_parts(snsrdev.xname.as_ptr() as *const u8, snsrdev.xname.len())
         };
         let n = xname_bytes
             .iter()

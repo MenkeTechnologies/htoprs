@@ -633,7 +633,12 @@ pub fn draw_chrome<W: Write>(out: &mut W) {
         let title_cw = title.chars().count() as u16;
         if title_cw < cols {
             let tx = (cols - title_cw) / 2;
-            let _ = queue!(out, MoveTo(tx, 0), SetAttribute(Attribute::Bold), Print(&title));
+            let _ = queue!(
+                out,
+                MoveTo(tx, 0),
+                SetAttribute(Attribute::Bold),
+                Print(&title)
+            );
         }
         let _ = queue!(out, SetAttribute(Attribute::Reset), ResetColor);
     });
@@ -738,7 +743,14 @@ pub(crate) fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style, mw: 
 
 /// Draw a filled box with a double-line border. Returns the top-left `(x0, y0)`
 /// of the box, centered in `area`.
-pub(crate) fn draw_box(buf: &mut Buffer, area: Rect, bw: u16, bh: u16, bg: Color, border_style: Style) -> (u16, u16) {
+pub(crate) fn draw_box(
+    buf: &mut Buffer,
+    area: Rect,
+    bw: u16,
+    bh: u16,
+    bg: Color,
+    border_style: Style,
+) -> (u16, u16) {
     let x0 = (area.width.saturating_sub(bw)) / 2;
     let y0 = (area.height.saturating_sub(bh)) / 2;
     let x1 = x0 + bw - 1;
@@ -1217,7 +1229,10 @@ mod tests {
         s.set_theme(ThemeName::BladeRunner);
         assert!(s.handle_key(key(KeyCode::Char('C'))));
         assert!(s.theme_edit.active);
-        assert_eq!(s.theme_edit.colors, Theme::palette_values(ThemeName::BladeRunner));
+        assert_eq!(
+            s.theme_edit.colors,
+            Theme::palette_values(ThemeName::BladeRunner)
+        );
     }
 
     #[test]
@@ -1381,7 +1396,8 @@ mod tests {
     fn editor_esc_cancels_and_restores_builtin() {
         let mut s = OverlayState::new();
         s.set_theme(ThemeName::BladeRunner);
-        s.theme_edit.open(Theme::palette_values(ThemeName::BladeRunner));
+        s.theme_edit
+            .open(Theme::palette_values(ThemeName::BladeRunner));
         s.handle_key(key(KeyCode::Char('l'))); // perturb the live palette
         s.handle_key(key(KeyCode::Esc));
         assert!(!s.theme_edit.active);
@@ -1469,7 +1485,10 @@ mod tests {
 
     #[test]
     fn tr_maps_ansi_and_black() {
-        assert_eq!(tr(crossterm::style::Color::AnsiValue(99)), Color::Indexed(99));
+        assert_eq!(
+            tr(crossterm::style::Color::AnsiValue(99)),
+            Color::Indexed(99)
+        );
         assert_eq!(tr(crossterm::style::Color::Black), Color::Black);
         assert_eq!(tr(crossterm::style::Color::White), Color::White);
         assert_eq!(tr(crossterm::style::Color::Reset), Color::Reset);
@@ -1509,10 +1528,20 @@ mod tests {
     fn current_palette_tracks_builtin_then_custom() {
         let mut s = OverlayState::new();
         s.set_theme(ThemeName::BladeRunner);
-        assert_eq!(s.current_palette(), Theme::palette_values(ThemeName::BladeRunner));
+        assert_eq!(
+            s.current_palette(),
+            Theme::palette_values(ThemeName::BladeRunner)
+        );
         s.custom_themes.insert(
             "x".into(),
-            CustomThemeColors { c1: 1, c2: 2, c3: 3, c4: 4, c5: 5, c6: 6 },
+            CustomThemeColors {
+                c1: 1,
+                c2: 2,
+                c3: 3,
+                c4: 4,
+                c5: 5,
+                c6: 6,
+            },
         );
         s.active_custom_theme = Some("x".into());
         assert_eq!(s.current_palette(), [1, 2, 3, 4, 5, 6]);
@@ -1522,7 +1551,10 @@ mod tests {
 
     #[test]
     fn ct_maps_indexed_to_ansi_value() {
-        assert_eq!(ct(Color::Indexed(200)), crossterm::style::Color::AnsiValue(200));
+        assert_eq!(
+            ct(Color::Indexed(200)),
+            crossterm::style::Color::AnsiValue(200)
+        );
         assert_eq!(ct(Color::Reset), crossterm::style::Color::Reset);
         assert_eq!(ct(Color::White), crossterm::style::Color::White);
     }

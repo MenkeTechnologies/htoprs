@@ -112,7 +112,7 @@ use crate::ported::action::{
     HTOP_RESIZE, HTOP_SAVE_SETTINGS, HTOP_UPDATE_PANELHDR,
 };
 use crate::ported::crt::{
-    ColorElements, ColorScheme, KEY_F, KEY_LEFT, KEY_MAX, KEY_MOUSE, KEY_RESIZE, KEY_RIGHT, ERR,
+    ColorElements, ColorScheme, ERR, KEY_F, KEY_LEFT, KEY_MAX, KEY_MOUSE, KEY_RESIZE, KEY_RIGHT,
 };
 use crate::ported::functionbar::{
     FunctionBar, FunctionBar_append, FunctionBar_delete, FunctionBar_new, FunctionBar_setLabel,
@@ -137,10 +137,10 @@ use crate::ported::vector::Vector_new;
 // darwin/Platform.c, whose `Platform_setBindings` is a no-op ((void) keys).
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::platform::Platform_setBindings;
-#[cfg(target_os = "linux")]
-use crate::ported::linux::platform::Platform_setBindings;
 #[cfg(target_os = "freebsd")]
 use crate::ported::freebsd::platform::Platform_setBindings;
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::Platform_setBindings;
 #[cfg(target_os = "netbsd")]
 use crate::ported::netbsd::platform::Platform_setBindings;
 #[cfg(target_os = "openbsd")]
@@ -427,7 +427,9 @@ pub fn MainPanel_eventHandler(this: &mut MainPanel, ch: i32) -> HandlerResult {
         {
             // C: ScreenSettings_invertSortOrder(ss);
             unsafe {
-                ScreenSettings_invertSortOrder(&mut (*host).settings.as_mut().unwrap().screens[ssidx]);
+                ScreenSettings_invertSortOrder(
+                    &mut (*host).settings.as_mut().unwrap().screens[ssidx],
+                );
             }
         } else {
             // C: reaction |= Action_setSortKey(settings, field);
@@ -447,8 +449,13 @@ pub fn MainPanel_eventHandler(this: &mut MainPanel, ch: i32) -> HandlerResult {
         // C: bool filterChanged = IncSet_handleKey(this->inc, ch, super, MainPanel_getValue, NULL);
         // See the divergence note: NULL lines -> empty placeholder Vector.
         let mut lines = Vector_new(&Object_class, false, 10);
-        let filterChanged =
-            IncSet_handleKey(&mut this.inc, ch, &mut this.super_, MainPanel_getValue, &mut lines);
+        let filterChanged = IncSet_handleKey(
+            &mut this.inc,
+            ch,
+            &mut this.super_,
+            MainPanel_getValue,
+            &mut lines,
+        );
         if filterChanged {
             // C: host->activeTable->incFilter = IncSet_filter(this->inc);
             let filter = IncSet_filter(&this.inc).map(|s| s.to_string());

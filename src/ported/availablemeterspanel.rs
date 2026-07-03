@@ -70,7 +70,9 @@ use std::io::{self, Write};
 
 use crate::ported::cpumeter::CPUMeter_class;
 use crate::ported::crt::{KEY_ENTER, KEY_F, KEY_LEFT, KEY_RECLICK};
+use crate::ported::dynamicmeter::DynamicMeter;
 use crate::ported::functionbar::FunctionBar_new;
+use crate::ported::hashtable::Hashtable_foreach;
 use crate::ported::header::{
     Header, Header_addMeterByClass, Header_calculateHeight, Header_draw, Header_updateData,
 };
@@ -78,14 +80,12 @@ use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::machine::Machine;
 use crate::ported::meter::{MeterClass, Meter_toListItem};
 use crate::ported::meterspanel::MetersPanel;
-use crate::ported::dynamicmeter::DynamicMeter;
-use crate::ported::hashtable::Hashtable_foreach;
 use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelected, Panel_new,
     Panel_setHeader, Panel_setSelected, Panel_size,
 };
-use crate::ported::settings::Settings;
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
+use crate::ported::settings::Settings;
 // Platform dispatch (darwin-first): the available-meter registry comes from
 // this build's platform, mirroring htop linking one platform's `Platform.c`
 // (the same cfg split `header.rs` uses).

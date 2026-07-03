@@ -76,9 +76,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ported::crt::ColorScheme;
 use crate::ported::dynamiccolumn::{DynamicColumn_lookup, DynamicColumn_search};
+use crate::ported::dynamicscreen::DynamicScreen;
 use crate::ported::hashtable::Hashtable;
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
-use crate::ported::dynamicscreen::DynamicScreen;
 use crate::ported::machine::{Machine, TableHandle};
 use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
 use crate::ported::process::{ProcessField, DEFAULT_HIGHLIGHT_SECS};
@@ -949,9 +949,7 @@ pub fn Settings_read(
                 //    return false;
                 match e.raw_os_error() {
                     Some(code)
-                        if code == libc::EACCES
-                            || code == libc::EPERM
-                            || code == libc::EROFS => {}
+                        if code == libc::EACCES || code == libc::EPERM || code == libc::EROFS => {}
                     _ => return false,
                 }
             }
@@ -1119,9 +1117,7 @@ pub fn Settings_read(
             this.delay = atoi(val).clamp(1, 255);
         } else if String_eq(key, "color_scheme") {
             this.colorScheme = atoi(val);
-            if this.colorScheme < 0
-                || this.colorScheme >= ColorScheme::LAST_COLORSCHEME as i32
-            {
+            if this.colorScheme < 0 || this.colorScheme >= ColorScheme::LAST_COLORSCHEME as i32 {
                 this.colorScheme = 0;
             }
         } else if String_eq(key, "enable_mouse") {

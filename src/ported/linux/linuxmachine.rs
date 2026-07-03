@@ -1145,7 +1145,11 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<LinuxMachine> 
             continue;
         }
         // sscanf(buffer, "btime %lld\n", &this->boottime)
-        match buffer[6..].split_whitespace().next().and_then(|t| t.parse::<i64>().ok()) {
+        match buffer[6..]
+            .split_whitespace()
+            .next()
+            .and_then(|t| t.parse::<i64>().ok())
+        {
             Some(v) => {
                 this.boottime = v;
                 break;

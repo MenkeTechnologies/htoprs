@@ -77,11 +77,13 @@ pub fn fuzzy(query: &str, items: &[String]) -> Vec<Match> {
     let mut out: Vec<Match> = items
         .iter()
         .enumerate()
-        .filter_map(|(idx, s)| score(query, s).map(|(sc, pos)| Match {
-            idx,
-            score: sc,
-            positions: pos,
-        }))
+        .filter_map(|(idx, s)| {
+            score(query, s).map(|(sc, pos)| Match {
+                idx,
+                score: sc,
+                positions: pos,
+            })
+        })
         .collect();
     out.sort_by(|a, b| b.score.cmp(&a.score).then(a.idx.cmp(&b.idx)));
     out

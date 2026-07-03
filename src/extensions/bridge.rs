@@ -24,10 +24,7 @@ pub fn proc_from(p: &Process) -> Proc {
         ppid: Process_getParent(p).max(0) as u32,
         // htop falls back to the numeric uid when the name is unresolved
         // (`Process_writeField` USER arm).
-        user: p
-            .user
-            .clone()
-            .unwrap_or_else(|| p.st_uid.to_string()),
+        user: p.user.clone().unwrap_or_else(|| p.st_uid.to_string()),
         comm: p.procComm.clone().unwrap_or_default(),
         cmdline: p.cmdline.clone().unwrap_or_default(),
         state: processStateChar(p.state),

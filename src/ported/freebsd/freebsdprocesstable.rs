@@ -36,7 +36,9 @@ use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::ptr;
 
 use crate::ported::freebsd::freebsdmachine::FreeBSDMachine;
-use crate::ported::freebsd::freebsdprocess::{FreeBSDProcess, FreeBSDProcess_new, FreeBSDSchedClass};
+use crate::ported::freebsd::freebsdprocess::{
+    FreeBSDProcess, FreeBSDProcess_new, FreeBSDSchedClass,
+};
 use crate::ported::machine::Machine;
 use crate::ported::object::Object;
 use crate::ported::process::{
@@ -477,8 +479,7 @@ pub fn ProcessTable_goThroughEntries(fpt: &mut FreeBSDProcessTable) {
             (*fp).super_.time = (kproc.ki_runtime + 5000) / 10000;
 
             (*fp).super_.percent_cpu = (100.0 * kproc.ki_pctcpu as f64 / kernelFScale) as f32;
-            (*fp).super_.percent_mem =
-                (100.0 * (*fp).super_.m_resident as f64 / totalMem) as f32;
+            (*fp).super_.percent_mem = (100.0 * (*fp).super_.m_resident as f64 / totalMem) as f32;
             Process_updateCPUFieldWidths((*fp).super_.percent_cpu);
 
             if kproc.ki_stat == libc::SRUN && kproc.ki_oncpu != NOCPU {

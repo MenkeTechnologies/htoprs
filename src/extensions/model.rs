@@ -35,10 +35,31 @@ pub fn synthetic_table(t: u64) -> Vec<Proc> {
         (100, 1, "root", "kthreadd", "[kthreadd]", 'S'),
         (200, 1, "user", "zsh", "-zsh", 'S'),
         (201, 200, "user", "cargo", "cargo build --workspace", 'R'),
-        (202, 201, "user", "rustc", "rustc --edition 2021 src/lib.rs", 'R'),
+        (
+            202,
+            201,
+            "user",
+            "rustc",
+            "rustc --edition 2021 src/lib.rs",
+            'R',
+        ),
         (300, 1, "user", "firefox", "/usr/lib/firefox/firefox", 'S'),
-        (301, 300, "user", "firefox-tab", "firefox -contentproc -childID 7", 'R'),
-        (400, 1, "postgres", "postgres", "postgres -D /var/lib/pg/data", 'S'),
+        (
+            301,
+            300,
+            "user",
+            "firefox-tab",
+            "firefox -contentproc -childID 7",
+            'R',
+        ),
+        (
+            400,
+            1,
+            "postgres",
+            "postgres",
+            "postgres -D /var/lib/pg/data",
+            'S',
+        ),
     ];
 
     let mut out: Vec<Proc> = BASE

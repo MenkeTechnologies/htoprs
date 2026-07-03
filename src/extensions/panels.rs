@@ -33,7 +33,9 @@ use crate::extensions::alerts::{AlertEngine, Firing, Metric, Rule};
 use crate::extensions::filter::{Compiled, Field, Filter, FilterStore};
 use crate::extensions::graph::Scalar;
 use crate::extensions::model::Proc;
-use crate::extensions::overlay::{blit, draw_box, modal_palette, ncurses_to_keycode, set_str, ModalPalette};
+use crate::extensions::overlay::{
+    blit, draw_box, modal_palette, ncurses_to_keycode, set_str, ModalPalette,
+};
 use crate::extensions::procring::ProcRing;
 use crate::extensions::snapshot::{diff, Diff, Snapshot};
 use crate::extensions::{export, finder};
@@ -201,13 +203,13 @@ impl PanelState {
         }
         // Idle hotkeys. Bytes chosen from keys htop leaves unbound.
         match ch {
-            0x66 => self.open_finder(),          // 'f'
-            0x72 => self.open_filter(),           // 'r'
-            0x64 => self.snapshot_action(),       // 'd'
-            0x6f => self.export_action(),         // 'o'
-            0x41 => self.modal = Modal::Alerts,   // 'A'
-            0x47 => self.modal = Modal::Graph,    // 'G'
-            0x76 => self.toggle_spark(),          // 'v'
+            0x66 => self.open_finder(),         // 'f'
+            0x72 => self.open_filter(),         // 'r'
+            0x64 => self.snapshot_action(),     // 'd'
+            0x6f => self.export_action(),       // 'o'
+            0x41 => self.modal = Modal::Alerts, // 'A'
+            0x47 => self.modal = Modal::Graph,  // 'G'
+            0x76 => self.toggle_spark(),        // 'v'
             _ => return false,
         }
         true
@@ -391,7 +393,14 @@ impl PanelState {
     }
 
     /// Draw a centered box titled `title` holding `lines` of pre-styled text.
-    fn render_lines(&self, buf: &mut Buffer, area: Rect, s: &Sty, title: &str, lines: Vec<(String, Style)>) {
+    fn render_lines(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        s: &Sty,
+        title: &str,
+        lines: Vec<(String, Style)>,
+    ) {
         let inner_w = lines
             .iter()
             .map(|(t, _)| t.chars().count())
@@ -418,13 +427,27 @@ impl PanelState {
             s.body.add_modifier(Modifier::BOLD),
         ));
         lines.push((
-            format!("{} matches · ↑/↓ move · Enter jump · Esc cancel", self.finder_hits.len()),
+            format!(
+                "{} matches · ↑/↓ move · Enter jump · Esc cancel",
+                self.finder_hits.len()
+            ),
             s.dim,
         ));
         for (row, m) in self.finder_hits.iter().take(LIST_ROWS).enumerate() {
-            let Some(p) = self.table.get(m.idx) else { continue };
-            let line = format!("{:>7}  {:<14} {}", p.pid, trunc(&p.comm, 14), trunc(&p.cmdline, 48));
-            let st = if row == self.finder_sel { s.sel } else { s.body };
+            let Some(p) = self.table.get(m.idx) else {
+                continue;
+            };
+            let line = format!(
+                "{:>7}  {:<14} {}",
+                p.pid,
+                trunc(&p.comm, 14),
+                trunc(&p.cmdline, 48)
+            );
+            let st = if row == self.finder_sel {
+                s.sel
+            } else {
+                s.body
+            };
             lines.push((line, st));
         }
         self.render_lines(buf, area, s, "Fuzzy process finder", lines);
@@ -437,11 +460,20 @@ impl PanelState {
             Field::Cmdline => "cmdline",
             Field::User => "user",
         };
-        let mode = if self.filter_regex { "regex" } else { "substring" };
+        let mode = if self.filter_regex {
+            "regex"
+        } else {
+            "substring"
+        };
         let mut lines = vec![
-            (format!("/ {}▏", self.filter_query), s.body.add_modifier(Modifier::BOLD)),
             (
-                format!("field: {field}  mode: {mode}  · Tab field · ~ regex · Enter save · Esc close"),
+                format!("/ {}▏", self.filter_query),
+                s.body.add_modifier(Modifier::BOLD),
+            ),
+            (
+                format!(
+                    "field: {field}  mode: {mode}  · Tab field · ~ regex · Enter save · Esc close"
+                ),
                 s.dim,
             ),
         ];
@@ -451,7 +483,12 @@ impl PanelState {
                 lines.push((format!("{} live matches", hits.len()), s.body));
                 for p in hits.iter().take(LIST_ROWS - 2) {
                     lines.push((
-                        format!("{:>7}  {:<14} {}", p.pid, trunc(&p.comm, 14), trunc(&p.cmdline, 46)),
+                        format!(
+                            "{:>7}  {:<14} {}",
+                            p.pid,
+                            trunc(&p.comm, 14),
+                            trunc(&p.cmdline, 46)
+                        ),
                         s.body,
                     ));
                 }
@@ -465,7 +502,12 @@ impl PanelState {
             lines.push((self.filter_msg.clone(), s.title));
         }
         if !self.filters.filters.is_empty() {
-            let names: Vec<&str> = self.filters.filters.iter().map(|f| f.name.as_str()).collect();
+            let names: Vec<&str> = self
+                .filters
+                .filters
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect();
             lines.push((format!("saved: {}", names.join(", ")), s.dim));
         }
         self.render_lines(buf, area, s, "Regex / saved filters", lines);
@@ -481,7 +523,12 @@ impl PanelState {
             }
             Some(d) => {
                 lines.push((
-                    format!("+{} started  -{} exited  ~{} changed", d.added.len(), d.removed.len(), d.changed.len()),
+                    format!(
+                        "+{} started  -{} exited  ~{} changed",
+                        d.added.len(),
+                        d.removed.len(),
+                        d.changed.len()
+                    ),
                     s.body.add_modifier(Modifier::BOLD),
                 ));
                 for p in d.added.iter().take(5) {
@@ -494,7 +541,10 @@ impl PanelState {
                     lines.push((
                         format!(
                             "~ {:>7} {} cpu {:.0}→{:.0}",
-                            c.pid, trunc(&c.after.comm, 20), c.before.cpu, c.after.cpu
+                            c.pid,
+                            trunc(&c.after.comm, 20),
+                            c.before.cpu,
+                            c.after.cpu
                         ),
                         s.body,
                     ));
@@ -513,7 +563,10 @@ impl PanelState {
         lines.push((format!("firing now: {}", self.firings.len()), s.title));
         for f in self.firings.iter().take(LIST_ROWS - 4) {
             lines.push((
-                format!("! {:>7}  {}  = {:.0}  ({} ticks)", f.pid, f.rule, f.value, f.sustained),
+                format!(
+                    "! {:>7}  {}  = {:.0}  ({} ticks)",
+                    f.pid, f.rule, f.value, f.sustained
+                ),
                 s.alert,
             ));
         }
@@ -529,7 +582,10 @@ impl PanelState {
                     Metric::Cpu => "cpu%",
                     Metric::MemKb => "mem_kb",
                 };
-                format!("  {} : {} ≥ {:.0} for {} ticks", r.name, m, r.threshold, r.for_ticks)
+                format!(
+                    "  {} : {} ≥ {:.0} for {} ticks",
+                    r.name, m, r.threshold, r.for_ticks
+                )
             })
             .collect()
     }
@@ -539,8 +595,13 @@ impl PanelState {
         let height = 6usize;
         let max = self.cpu_peak.max(1.0);
         let rows = self.cpu_hist.render(width, height, max);
-        let mut lines: Vec<(String, Style)> =
-            vec![(format!("total CPU — peak {max:.0}%  ({} samples)", self.cpu_hist.len()), s.dim)];
+        let mut lines: Vec<(String, Style)> = vec![(
+            format!(
+                "total CPU — peak {max:.0}%  ({} samples)",
+                self.cpu_hist.len()
+            ),
+            s.dim,
+        )];
         for r in rows {
             lines.push((r, s.spark));
         }
@@ -560,8 +621,18 @@ impl PanelState {
 
 fn default_rules() -> Vec<Rule> {
     vec![
-        Rule { name: "hot-cpu".into(), metric: Metric::Cpu, threshold: 90.0, for_ticks: 3 },
-        Rule { name: "big-mem".into(), metric: Metric::MemKb, threshold: 2_000_000.0, for_ticks: 3 },
+        Rule {
+            name: "hot-cpu".into(),
+            metric: Metric::Cpu,
+            threshold: 90.0,
+            for_ticks: 3,
+        },
+        Rule {
+            name: "big-mem".into(),
+            metric: Metric::MemKb,
+            threshold: 2_000_000.0,
+            for_ticks: 3,
+        },
     ]
 }
 
@@ -619,11 +690,17 @@ impl Sty {
         Sty {
             bg: p.bg,
             border: Style::default().fg(p.border),
-            title: Style::default().fg(p.title).bg(p.bg).add_modifier(Modifier::BOLD),
+            title: Style::default()
+                .fg(p.title)
+                .bg(p.bg)
+                .add_modifier(Modifier::BOLD),
             body: Style::default().fg(p.text).bg(p.bg),
             dim: Style::default().fg(Color::Indexed(240)).bg(p.bg),
             sel: Style::default().fg(p.bg).bg(p.accent),
-            alert: Style::default().fg(Color::Red).bg(p.bg).add_modifier(Modifier::BOLD),
+            alert: Style::default()
+                .fg(Color::Red)
+                .bg(p.bg)
+                .add_modifier(Modifier::BOLD),
             started: Style::default().fg(Color::Green).bg(p.bg),
             spark: Style::default().fg(p.accent).bg(p.bg),
         }
@@ -725,9 +802,15 @@ pub fn draw_spark_col<W: Write>(out: &mut W, y: i32, x: i32, w: i32, pid: u32) {
         // glyphs are 3 bytes each — an `n`-slice lands mid-char and panics.
         let spark = s.ring.cpu_sparkline(pid, SPARK_W, 100.0);
         let sx = x + w - SPARK_W as i32;
-        Ncurses::attrset(out, ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()));
+        Ncurses::attrset(
+            out,
+            ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()),
+        );
         Ncurses::mvaddstr(out, y, sx, &spark);
-        Ncurses::attrset(out, ColorElements::RESET_COLOR.packed(ColorScheme::active()));
+        Ncurses::attrset(
+            out,
+            ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+        );
     });
 }
 
@@ -779,7 +862,13 @@ mod tests {
         // advance so pid 500 disappears, then diff
         PANELS.with(|p| p.borrow_mut().ingest(synthetic_table(4), None));
         dispatch_key(0x64); // 'd' -> diff
-        let removed = PANELS.with(|p| p.borrow().diff.as_ref().map(|d| d.removed.len()).unwrap_or(0));
+        let removed = PANELS.with(|p| {
+            p.borrow()
+                .diff
+                .as_ref()
+                .map(|d| d.removed.len())
+                .unwrap_or(0)
+        });
         assert!(removed >= 1, "pid 500 should show as removed");
         dispatch_key(27);
     }
@@ -792,8 +881,16 @@ mod tests {
         dispatch_key(0x76);
         assert!(!PANELS.with(|p| p.borrow().spark_col));
         // A sustained 90%+ pid fires after for_ticks and yields a recolor.
-        let hot = Proc { pid: 999, ppid: 1, user: "u".into(), comm: "hot".into(),
-            cmdline: "hot".into(), state: 'R', cpu: 99.0, mem_kb: 1 };
+        let hot = Proc {
+            pid: 999,
+            ppid: 1,
+            user: "u".into(),
+            comm: "hot".into(),
+            cmdline: "hot".into(),
+            state: 'R',
+            cpu: 99.0,
+            mem_kb: 1,
+        };
         for _ in 0..3 {
             PANELS.with(|p| p.borrow_mut().ingest(vec![hot.clone()], None));
         }

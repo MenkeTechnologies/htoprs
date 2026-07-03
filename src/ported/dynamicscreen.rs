@@ -53,40 +53,19 @@ use crate::ported::hashtable::{Hashtable, Hashtable_delete, Hashtable_foreach, H
 use crate::ported::object::{Object, ObjectClass, Object_class};
 
 #[cfg(target_os = "macos")]
-use crate::ported::darwin::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
-#[cfg(target_os = "linux")]
-use crate::ported::linux::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
-#[cfg(target_os = "freebsd")]
-use crate::ported::freebsd::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
-#[cfg(target_os = "netbsd")]
-use crate::ported::netbsd::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
-#[cfg(target_os = "openbsd")]
-use crate::ported::openbsd::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
-#[cfg(any(target_os = "solaris", target_os = "illumos"))]
-use crate::ported::solaris::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
+use crate::ported::darwin::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
 #[cfg(target_os = "dragonfly")]
-use crate::ported::dragonflybsd::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
+use crate::ported::dragonflybsd::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
 #[cfg(not(any(
     target_os = "macos",
     target_os = "linux",
@@ -97,10 +76,7 @@ use crate::ported::dragonflybsd::platform::{
     target_os = "illumos",
     target_os = "dragonfly"
 )))]
-use crate::ported::unsupported::platform::{
-    Platform_dynamicScreens,
-    Platform_dynamicScreensDone,
-};
+use crate::ported::unsupported::platform::{Platform_dynamicScreens, Platform_dynamicScreensDone};
 
 /// Model of the C `DynamicScreen` struct (`DynamicScreen.h`). `name` is read
 /// by [`DynamicScreen_compare`] / [`DynamicScreen_lookup`]; `heading` (C

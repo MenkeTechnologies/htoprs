@@ -59,12 +59,7 @@ impl Canvas {
         //   dot2 dot5  ->  0x02 0x10
         //   dot3 dot6      0x04 0x20
         //   dot7 dot8      0x40 0x80
-        const MAP: [[u8; 2]; 4] = [
-            [0x01, 0x08],
-            [0x02, 0x10],
-            [0x04, 0x20],
-            [0x40, 0x80],
-        ];
+        const MAP: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
         self.cells[cy * self.w + cx] |= MAP[y % 4][x % 2];
     }
 

@@ -107,43 +107,40 @@
 #![allow(dead_code)]
 
 use crate::ported::categoriespanel::CategoriesPanel_new;
+use crate::ported::commandline::{COPYRIGHT, VERSION};
+use crate::ported::commandscreen::{CommandScreen_delete, CommandScreen_new};
 use crate::ported::crt::{
     CRT_enableDelay, CRT_readKey, CRT_setMouse, ColorElements, ColorScheme, KEY_DOWN, KEY_F,
     KEY_RECLICK, KEY_SHIFT_TAB,
 };
-use crate::ported::commandline::{COPYRIGHT, VERSION};
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::platform::{Platform_memoryClasses, Platform_numberOfMemoryClasses};
-#[cfg(not(target_os = "macos"))]
-use crate::ported::linux::platform::{Platform_memoryClasses, Platform_numberOfMemoryClasses};
-use crate::ported::commandscreen::{CommandScreen_delete, CommandScreen_new};
-use crate::ported::processlocksscreen::{ProcessLocksScreen_delete, ProcessLocksScreen_new};
-use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
-use crate::ported::infoscreen::InfoScreen_run;
-use crate::ported::openfilesscreen::{OpenFilesScreen_delete, OpenFilesScreen_new};
-use crate::ported::tracescreen::{TraceScreen_delete, TraceScreen_forkTracer, TraceScreen_new};
 use crate::ported::dynamiccolumn::DynamicColumn;
+use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
 use crate::ported::functionbar::{FunctionBar_newEnterEsc, Ncurses};
 use crate::ported::hashtable::Hashtable_get;
 use crate::ported::header::{Header, Header_writeBackToSettings};
 use crate::ported::incset::{IncSet_activate, IncSet_filter, IncSet_reset, IncType};
+use crate::ported::infoscreen::InfoScreen_run;
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(not(target_os = "macos"))]
+use crate::ported::linux::platform::{Platform_memoryClasses, Platform_numberOfMemoryClasses};
 use crate::ported::listitem::{ListItem, ListItem_getRef, ListItem_new};
 use crate::ported::machine::{Machine, Machine_scanTables};
 use crate::ported::mainpanel::{
     MainPanel, MainPanel_foreachRow, MainPanel_selectedRow, MainPanel_setFunctionBar,
 };
 use crate::ported::object::{Arg, Object};
+use crate::ported::openfilesscreen::{OpenFilesScreen_delete, OpenFilesScreen_new};
 use crate::ported::panel::{
     Panel, PanelClass, PanelItem, Panel_add, Panel_draw, Panel_getSelected, Panel_insert,
     Panel_move, Panel_new, Panel_onKey, Panel_resize, Panel_setHeader, Panel_setSelected,
     Panel_setSelectionColor, Panel_size,
 };
-use crate::ported::userstable::{UsersTable, UsersTable_foreach};
 use crate::ported::process::{
     Process, ProcessField, Process_rowChangePriorityBy, Process_rowSendSignal,
 };
-use crate::ported::signalspanel::{SignalsPanel_new, SIGNALSPANEL_INITSELECTEDSIGNAL};
+use crate::ported::processlocksscreen::{ProcessLocksScreen_delete, ProcessLocksScreen_new};
 use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
 use crate::ported::screenmanager::{
     ScreenManager_add, ScreenManager_delete, ScreenManager_new, ScreenManager_remove,
@@ -153,7 +150,10 @@ use crate::ported::settings::{
     RowField, ScreenSettings_getActiveSortKey, ScreenSettings_invertSortOrder,
     ScreenSettings_setSortKey, Settings, Settings_isReadonly,
 };
+use crate::ported::signalspanel::{SignalsPanel_new, SIGNALSPANEL_INITSELECTEDSIGNAL};
 use crate::ported::table::{Table_collapseAllBranches, Table_expandTree};
+use crate::ported::tracescreen::{TraceScreen_delete, TraceScreen_forkTracer, TraceScreen_new};
+use crate::ported::userstable::{UsersTable, UsersTable_foreach};
 use crate::ported::xutils::String_trim;
 
 /// Port of `#define ROW_DYNAMIC_FIELDS LAST_RESERVED_FIELD` (`RowField.h:53`).
@@ -707,7 +707,13 @@ pub fn actionSetSortColumn(st: &mut State) -> Htop_Reaction {
     let mut reaction: Htop_Reaction = HTOP_OK;
     // C: Panel* sortPanel = Panel_new(0, 0, 0, 0, Class(ListItem), true,
     //                                 FunctionBar_newEnterEsc("Sort   ", "Cancel "));
-    let mut sortPanel = Panel_new(0, 0, 0, 0, Some(FunctionBar_newEnterEsc("Sort   ", "Cancel ")));
+    let mut sortPanel = Panel_new(
+        0,
+        0,
+        0,
+        0,
+        Some(FunctionBar_newEnterEsc("Sort   ", "Cancel ")),
+    );
     // C: Panel_setHeader(sortPanel, "Sort by");
     Panel_setHeader(&mut sortPanel, "Sort by");
 
@@ -1770,25 +1776,101 @@ struct HelpItem {
 /// Port of `static const struct { ... } helpLeft[]` from `Action.c:686`.
 #[allow(non_upper_case_globals)]
 const helpLeft: &[HelpItem] = &[
-    HelpItem { key: "      #: ", roInactive: false, info: "hide/show header meters" },
-    HelpItem { key: "    Tab: ", roInactive: false, info: "switch to next screen tab" },
-    HelpItem { key: " Arrows: ", roInactive: false, info: "scroll process list" },
-    HelpItem { key: " Digits: ", roInactive: false, info: "incremental PID search" },
-    HelpItem { key: "   F3 /: ", roInactive: false, info: "incremental name search" },
-    HelpItem { key: "   F4 \\: ", roInactive: false, info: "incremental name filtering" },
-    HelpItem { key: "   F5 t: ", roInactive: false, info: "tree view" },
-    HelpItem { key: "      p: ", roInactive: false, info: "toggle program path" },
-    HelpItem { key: "      m: ", roInactive: false, info: "toggle merged command" },
-    HelpItem { key: "      Z: ", roInactive: false, info: "pause/resume process updates" },
-    HelpItem { key: "      u: ", roInactive: false, info: "show processes of a single user" },
-    HelpItem { key: "      H: ", roInactive: false, info: "hide/show user process threads" },
-    HelpItem { key: "      K: ", roInactive: false, info: "hide/show kernel threads" },
-    HelpItem { key: "      O: ", roInactive: false, info: "hide/show processes in containers" },
-    HelpItem { key: "      F: ", roInactive: false, info: "cursor follows process" },
-    HelpItem { key: "  + - *: ", roInactive: false, info: "expand/collapse tree/toggle all" },
-    HelpItem { key: "N P M T: ", roInactive: false, info: "sort by PID, CPU%, MEM% or TIME" },
-    HelpItem { key: "      I: ", roInactive: false, info: "invert sort order" },
-    HelpItem { key: " F6 > .: ", roInactive: false, info: "select sort column" },
+    HelpItem {
+        key: "      #: ",
+        roInactive: false,
+        info: "hide/show header meters",
+    },
+    HelpItem {
+        key: "    Tab: ",
+        roInactive: false,
+        info: "switch to next screen tab",
+    },
+    HelpItem {
+        key: " Arrows: ",
+        roInactive: false,
+        info: "scroll process list",
+    },
+    HelpItem {
+        key: " Digits: ",
+        roInactive: false,
+        info: "incremental PID search",
+    },
+    HelpItem {
+        key: "   F3 /: ",
+        roInactive: false,
+        info: "incremental name search",
+    },
+    HelpItem {
+        key: "   F4 \\: ",
+        roInactive: false,
+        info: "incremental name filtering",
+    },
+    HelpItem {
+        key: "   F5 t: ",
+        roInactive: false,
+        info: "tree view",
+    },
+    HelpItem {
+        key: "      p: ",
+        roInactive: false,
+        info: "toggle program path",
+    },
+    HelpItem {
+        key: "      m: ",
+        roInactive: false,
+        info: "toggle merged command",
+    },
+    HelpItem {
+        key: "      Z: ",
+        roInactive: false,
+        info: "pause/resume process updates",
+    },
+    HelpItem {
+        key: "      u: ",
+        roInactive: false,
+        info: "show processes of a single user",
+    },
+    HelpItem {
+        key: "      H: ",
+        roInactive: false,
+        info: "hide/show user process threads",
+    },
+    HelpItem {
+        key: "      K: ",
+        roInactive: false,
+        info: "hide/show kernel threads",
+    },
+    HelpItem {
+        key: "      O: ",
+        roInactive: false,
+        info: "hide/show processes in containers",
+    },
+    HelpItem {
+        key: "      F: ",
+        roInactive: false,
+        info: "cursor follows process",
+    },
+    HelpItem {
+        key: "  + - *: ",
+        roInactive: false,
+        info: "expand/collapse tree/toggle all",
+    },
+    HelpItem {
+        key: "N P M T: ",
+        roInactive: false,
+        info: "sort by PID, CPU%, MEM% or TIME",
+    },
+    HelpItem {
+        key: "      I: ",
+        roInactive: false,
+        info: "invert sort order",
+    },
+    HelpItem {
+        key: " F6 > .: ",
+        roInactive: false,
+        info: "select sort column",
+    },
 ];
 
 /// Port of `static const struct { ... } helpRight[]` from `Action.c:713`.
@@ -1797,28 +1879,104 @@ const helpLeft: &[HelpItem] = &[
 /// build compiles them out (matching the `#if`/`#ifdef` guards in the C).
 #[allow(non_upper_case_globals)]
 const helpRight: &[HelpItem] = &[
-    HelpItem { key: "  S-Tab: ", roInactive: false, info: "switch to previous screen tab" },
-    HelpItem { key: "  Space: ", roInactive: false, info: "tag process" },
-    HelpItem { key: "      c: ", roInactive: false, info: "tag process and its children" },
-    HelpItem { key: "      U: ", roInactive: false, info: "untag all processes" },
-    HelpItem { key: "   F9 k: ", roInactive: true, info: "kill process/tagged processes" },
-    HelpItem { key: "   F7 ]: ", roInactive: true, info: "higher priority (root only)" },
-    HelpItem { key: "   F8 [: ", roInactive: true, info: "lower priority (+ nice)" },
+    HelpItem {
+        key: "  S-Tab: ",
+        roInactive: false,
+        info: "switch to previous screen tab",
+    },
+    HelpItem {
+        key: "  Space: ",
+        roInactive: false,
+        info: "tag process",
+    },
+    HelpItem {
+        key: "      c: ",
+        roInactive: false,
+        info: "tag process and its children",
+    },
+    HelpItem {
+        key: "      U: ",
+        roInactive: false,
+        info: "untag all processes",
+    },
+    HelpItem {
+        key: "   F9 k: ",
+        roInactive: true,
+        info: "kill process/tagged processes",
+    },
+    HelpItem {
+        key: "   F7 ]: ",
+        roInactive: true,
+        info: "higher priority (root only)",
+    },
+    HelpItem {
+        key: "   F8 [: ",
+        roInactive: true,
+        info: "lower priority (+ nice)",
+    },
     #[cfg(target_os = "linux")]
-    HelpItem { key: "      a: ", roInactive: true, info: "set CPU affinity" },
+    HelpItem {
+        key: "      a: ",
+        roInactive: true,
+        info: "set CPU affinity",
+    },
     #[cfg(target_os = "linux")]
-    HelpItem { key: "      b: ", roInactive: false, info: "show process backtrace" },
-    HelpItem { key: "      e: ", roInactive: false, info: "show process environment" },
-    HelpItem { key: "      i: ", roInactive: true, info: "set IO priority" },
-    HelpItem { key: "      l: ", roInactive: true, info: "list open files with lsof" },
-    HelpItem { key: "      x: ", roInactive: false, info: "list file locks of process" },
-    HelpItem { key: "      s: ", roInactive: true, info: "trace syscalls with strace" },
-    HelpItem { key: "      w: ", roInactive: false, info: "wrap process command in multiple lines" },
+    HelpItem {
+        key: "      b: ",
+        roInactive: false,
+        info: "show process backtrace",
+    },
+    HelpItem {
+        key: "      e: ",
+        roInactive: false,
+        info: "show process environment",
+    },
+    HelpItem {
+        key: "      i: ",
+        roInactive: true,
+        info: "set IO priority",
+    },
+    HelpItem {
+        key: "      l: ",
+        roInactive: true,
+        info: "list open files with lsof",
+    },
+    HelpItem {
+        key: "      x: ",
+        roInactive: false,
+        info: "list file locks of process",
+    },
+    HelpItem {
+        key: "      s: ",
+        roInactive: true,
+        info: "trace syscalls with strace",
+    },
+    HelpItem {
+        key: "      w: ",
+        roInactive: false,
+        info: "wrap process command in multiple lines",
+    },
     #[cfg(target_os = "linux")]
-    HelpItem { key: "      Y: ", roInactive: true, info: "set scheduling policy" },
-    HelpItem { key: " F2 C S: ", roInactive: false, info: "setup" },
-    HelpItem { key: " F1 h ?: ", roInactive: false, info: "show this help screen" },
-    HelpItem { key: "  F10 q: ", roInactive: false, info: "quit" },
+    HelpItem {
+        key: "      Y: ",
+        roInactive: true,
+        info: "set scheduling policy",
+    },
+    HelpItem {
+        key: " F2 C S: ",
+        roInactive: false,
+        info: "setup",
+    },
+    HelpItem {
+        key: " F1 h ?: ",
+        roInactive: false,
+        info: "show this help screen",
+    },
+    HelpItem {
+        key: "  F10 q: ",
+        roInactive: false,
+        info: "quit",
+    },
 ];
 
 /// Port of `static Htop_Reaction actionHelp(State* st)` from `Action.c:751`.
@@ -1848,9 +2006,19 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
 
     // C `#define addattrstatestr(attr, state, desc)`: attributed state glyph,
     // then default-colored `": " desc`.
-    fn addattrstatestr<W: Write>(out: &mut W, scheme: ColorScheme, attr: i32, state: &str, desc: &str) {
+    fn addattrstatestr<W: Write>(
+        out: &mut W,
+        scheme: ColorScheme,
+        attr: i32,
+        state: &str,
+        desc: &str,
+    ) {
         addattrstr(out, attr, state);
-        addattrstr(out, ColorElements::DEFAULT_COLOR.packed(scheme), &format!(": {desc}"));
+        addattrstr(
+            out,
+            ColorElements::DEFAULT_COLOR.packed(scheme),
+            &format!(": {desc}"),
+        );
     }
 
     let scheme = ColorScheme::active();
@@ -1907,7 +2075,13 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
     addbartext(&mut out, scheme, CPU_SYSTEM.packed(scheme), "/", "kernel");
     if detailedCPUTime {
         addbartext(&mut out, scheme, CPU_IRQ.packed(scheme), "/", "irq");
-        addbartext(&mut out, scheme, CPU_SOFTIRQ.packed(scheme), "/", "soft-irq");
+        addbartext(
+            &mut out,
+            scheme,
+            CPU_SOFTIRQ.packed(scheme),
+            "/",
+            "soft-irq",
+        );
         addbartext(&mut out, scheme, CPU_STEAL.packed(scheme), "/", "steal");
         addbartext(&mut out, scheme, CPU_GUEST.packed(scheme), "/", "guest");
         addbartext(&mut out, scheme, CPU_IOWAIT.packed(scheme), "/", "io-wait");
@@ -1947,8 +2121,7 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
             if i == 0 { "" } else { "/" },
             Platform_memoryClasses[i].label,
         );
-        barTxtLen +=
-            (if i == 0 { 0 } else { 1 }) + Platform_memoryClasses[i].label.len() as i32;
+        barTxtLen += (if i == 0 { 0 } else { 1 }) + Platform_memoryClasses[i].label.len() as i32;
     }
     for _ in barTxtLen..45 {
         addattrstr(&mut out, BAR_SHADOW.packed(scheme), " "); // pad to 45 chars if necessary
@@ -1967,11 +2140,23 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
     {
         use crate::ported::crt::ColorElements::{SWAP_CACHE, SWAP_FRONTSWAP};
         addbartext(&mut out, scheme, SWAP_CACHE.packed(scheme), "/", "cache");
-        addbartext(&mut out, scheme, SWAP_FRONTSWAP.packed(scheme), "/", "frontswap");
+        addbartext(
+            &mut out,
+            scheme,
+            SWAP_FRONTSWAP.packed(scheme),
+            "/",
+            "frontswap",
+        );
     }
     #[cfg(not(target_os = "linux"))]
     {
-        addbartext(&mut out, scheme, BAR_SHADOW.packed(scheme), "                ", "");
+        addbartext(
+            &mut out,
+            scheme,
+            BAR_SHADOW.packed(scheme),
+            "                ",
+            "",
+        );
     }
     addbartext(
         &mut out,
@@ -2010,11 +2195,41 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
 
     // C: mvaddstr(line, 0, "Process state: ");  (note: no line++ here)
     Ncurses::mvaddstr(&mut out, line, 0, "Process state: ");
-    addattrstatestr(&mut out, scheme, PROCESS_RUN_STATE.packed(scheme), "R", "running; ");
-    addattrstatestr(&mut out, scheme, PROCESS_SHADOW.packed(scheme), "S", "sleeping; ");
-    addattrstatestr(&mut out, scheme, PROCESS_RUN_STATE.packed(scheme), "t", "traced/stopped; ");
-    addattrstatestr(&mut out, scheme, PROCESS_D_STATE.packed(scheme), "Z", "zombie; ");
-    addattrstatestr(&mut out, scheme, PROCESS_D_STATE.packed(scheme), "D", "disk sleep");
+    addattrstatestr(
+        &mut out,
+        scheme,
+        PROCESS_RUN_STATE.packed(scheme),
+        "R",
+        "running; ",
+    );
+    addattrstatestr(
+        &mut out,
+        scheme,
+        PROCESS_SHADOW.packed(scheme),
+        "S",
+        "sleeping; ",
+    );
+    addattrstatestr(
+        &mut out,
+        scheme,
+        PROCESS_RUN_STATE.packed(scheme),
+        "t",
+        "traced/stopped; ",
+    );
+    addattrstatestr(
+        &mut out,
+        scheme,
+        PROCESS_D_STATE.packed(scheme),
+        "Z",
+        "zombie; ",
+    );
+    addattrstatestr(
+        &mut out,
+        scheme,
+        PROCESS_D_STATE.packed(scheme),
+        "D",
+        "disk sleep",
+    );
     Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
 
     // C: line += 2;
@@ -2041,13 +2256,23 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
         if entry.key == "      H: " {
             Ncurses::attrset(
                 &mut out,
-                if shadowed { HELP_SHADOW } else { PROCESS_THREAD }.packed(scheme),
+                if shadowed {
+                    HELP_SHADOW
+                } else {
+                    PROCESS_THREAD
+                }
+                .packed(scheme),
             );
             Ncurses::mvaddstr(&mut out, y, 33, "threads");
         } else if entry.key == "      K: " {
             Ncurses::attrset(
                 &mut out,
-                if shadowed { HELP_SHADOW } else { PROCESS_THREAD }.packed(scheme),
+                if shadowed {
+                    HELP_SHADOW
+                } else {
+                    PROCESS_THREAD
+                }
+                .packed(scheme),
             );
             Ncurses::mvaddstr(&mut out, y, 27, "threads");
         }
@@ -2080,7 +2305,7 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
     Ncurses::mvaddstr(&mut out, line, 0, "Press any key to return.");
     line += 1;
     let _ = line; // final post-increment value is unused (matches C)
-    // C: attrset(CRT_colors[DEFAULT_COLOR]); refresh();
+                  // C: attrset(CRT_colors[DEFAULT_COLOR]); refresh();
     Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
     Ncurses::refresh(&mut out);
     // C: CRT_readKey(); clear();

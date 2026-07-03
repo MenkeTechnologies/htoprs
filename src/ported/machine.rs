@@ -76,18 +76,18 @@ use crate::ported::table::{
 // alias, so `Machine_init`/`Machine_scanTables` compile on every target.
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::platform::Platform_getMaxPid;
-#[cfg(target_os = "linux")]
-use crate::ported::linux::platform::Platform_getMaxPid;
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::platform::Platform_getMaxPid;
 #[cfg(target_os = "freebsd")]
 use crate::ported::freebsd::platform::Platform_getMaxPid;
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::Platform_getMaxPid;
 #[cfg(target_os = "netbsd")]
 use crate::ported::netbsd::platform::Platform_getMaxPid;
 #[cfg(target_os = "openbsd")]
 use crate::ported::openbsd::platform::Platform_getMaxPid;
 #[cfg(any(target_os = "solaris", target_os = "illumos"))]
 use crate::ported::solaris::platform::Platform_getMaxPid;
-#[cfg(target_os = "dragonfly")]
-use crate::ported::dragonflybsd::platform::Platform_getMaxPid;
 #[cfg(not(any(
     target_os = "macos",
     target_os = "linux",

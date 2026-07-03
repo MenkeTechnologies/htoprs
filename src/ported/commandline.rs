@@ -13,8 +13,29 @@ use std::ptr;
 // column lookup. Selected by target, mirroring htop's per-platform link.
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::darwinprocess::{Process_fields, LAST_PROCESSFIELD};
-#[cfg(all(not(target_os = "macos"), target_os = "linux"))]
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::dragonflybsdprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::freebsdprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(target_os = "linux")]
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::netbsdprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::openbsdprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::solarisprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_os = "dragonfly"
+)))]
+use crate::ported::unsupported::unsupportedprocess::{Process_fields, LAST_PROCESSFIELD};
 
 // getopt's result globals. The `libc` crate declares `getopt_long` and `option`
 // for the BSD/apple target but not the `optarg`/`optind` externs, so bind the
@@ -219,7 +240,10 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
         ("highlight-changes", 2, b'H' as c_int),
         ("readonly", 0, 128),
     ];
-    let names: Vec<CString> = spec.iter().map(|(n, _, _)| CString::new(*n).unwrap()).collect();
+    let names: Vec<CString> = spec
+        .iter()
+        .map(|(n, _, _)| CString::new(*n).unwrap())
+        .collect();
     let mut long_opts: Vec<libc::option> = spec
         .iter()
         .enumerate()
@@ -230,7 +254,12 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
             val,
         })
         .collect();
-    long_opts.push(libc::option { name: ptr::null(), has_arg: 0, flag: ptr::null_mut(), val: 0 });
+    long_opts.push(libc::option {
+        name: ptr::null(),
+        has_arg: 0,
+        flag: ptr::null_mut(),
+        val: 0,
+    });
 
     // Helpers as closures (free `fn`s in `src/ported` must be C ports; these
     // are marshalling glue, not ports). `optarg` reads the getopt global.
@@ -372,16 +401,14 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
                         }
                         _ => {
                             // Resolve a user name to its uid (Action_setUserOnly).
-                            let uid = CString::new(u.as_str())
-                                .ok()
-                                .and_then(|c| {
-                                    let pw = unsafe { libc::getpwnam(c.as_ptr()) };
-                                    if pw.is_null() {
-                                        None
-                                    } else {
-                                        Some(unsafe { (*pw).pw_uid })
-                                    }
-                                });
+                            let uid = CString::new(u.as_str()).ok().and_then(|c| {
+                                let pw = unsafe { libc::getpwnam(c.as_ptr()) };
+                                if pw.is_null() {
+                                    None
+                                } else {
+                                    Some(unsafe { (*pw).pw_uid })
+                                }
+                            });
                             match uid {
                                 Some(id) => flags.userId = Some(id),
                                 None => {
@@ -425,7 +452,9 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
                     return (CommandLineStatus::ErrorExit, flags);
                 };
                 for pid in arg.split(',') {
-                    flags.pidMatchList.push(scan_int(pid).unwrap_or(0).max(0) as u32);
+                    flags
+                        .pidMatchList
+                        .push(scan_int(pid).unwrap_or(0).max(0) as u32);
                 }
             }
             x if x == b'F' as c_int => {
@@ -522,7 +551,10 @@ mod tests {
 
     #[test]
     fn unknown_flag_is_error_exit() {
-        assert_eq!(parse(&["--definitely-not-a-flag"]).0, CommandLineStatus::ErrorExit);
+        assert_eq!(
+            parse(&["--definitely-not-a-flag"]).0,
+            CommandLineStatus::ErrorExit
+        );
     }
 
     #[test]

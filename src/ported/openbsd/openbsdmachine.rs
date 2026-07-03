@@ -386,7 +386,8 @@ pub fn OpenBSDMachine_updateCPUcount(this: &mut OpenBSDMachine) {
 
     if value != this.super_.existingCPUs {
         // xReallocArray(cpuData, value + 1, sizeof(CPUData)).
-        this.cpuData.resize((value as usize) + 1, CPUData::default());
+        this.cpuData
+            .resize((value as usize) + 1, CPUData::default());
         this.super_.existingCPUs = value;
         change = true;
     }
@@ -577,8 +578,7 @@ pub fn OpenBSDMachine_scanMemoryInfo(this: &mut OpenBSDMachine) {
             };
             nswap as usize
         ];
-        let rnswap =
-            unsafe { swapctl(SWAP_STATS, swdev.as_mut_ptr() as *mut c_void, nswap) };
+        let rnswap = unsafe { swapctl(SWAP_STATS, swdev.as_mut_ptr() as *mut c_void, nswap) };
 
         // Total things up (blocks are 1024/DEV_BSIZE per kB).
         let per_k = (1024 / DEV_BSIZE) as u64;

@@ -255,7 +255,11 @@ pub fn OpenBSDProcessTable_updateProcessName(
     let mut j = end;
     while j > 0 {
         if byte_at(arg0, j) == b' ' && byte_at(arg0, j - 1) != b'\\' {
-            end = if byte_at(arg0, j - 1) == b':' { j - 1 } else { j };
+            end = if byte_at(arg0, j - 1) == b':' {
+                j - 1
+            } else {
+                j
+            };
         }
         j -= 1;
     }
@@ -335,8 +339,7 @@ pub fn OpenBSDProcessTable_scanProcs(this: &mut OpenBSDProcessTable) {
         if kproc.p_tid != -1 {
             let cont_idx = this.super_.super_.table.get(&kproc.p_pid).copied();
             if let Some(idx) = cont_idx {
-                let cont: &mut dyn Object =
-                    this.super_.super_.rows[idx].as_mut().unwrap().as_mut();
+                let cont: &mut dyn Object = this.super_.super_.rows[idx].as_mut().unwrap().as_mut();
                 let cont_any: &mut dyn Any = cont;
                 let cont_op = cont_any
                     .downcast_mut::<OpenBSDProcess>()
@@ -400,7 +403,9 @@ pub fn OpenBSDProcessTable_scanProcs(this: &mut OpenBSDProcessTable) {
                 if name_ptr.is_null() {
                     proc.tty_name = None;
                 } else {
-                    let name = std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned();
+                    let name = std::ffi::CStr::from_ptr(name_ptr)
+                        .to_string_lossy()
+                        .into_owned();
                     if name == "??" {
                         proc.tty_name = None;
                     } else {

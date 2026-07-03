@@ -104,11 +104,7 @@ extern "C" {
         cnt: *mut c_int,
     ) -> *const kinfo_proc2;
     /// `char** kvm_getenvv2(kvm_t*, const struct kinfo_proc2*, int)` (`kvm.h`).
-    fn kvm_getenvv2(
-        kd: *mut c_void,
-        p: *const kinfo_proc2,
-        limit: c_int,
-    ) -> *const *const c_char;
+    fn kvm_getenvv2(kd: *mut c_void, p: *const kinfo_proc2, limit: c_int) -> *const *const c_char;
 }
 
 /// Port of `struct io_sysctl` (`sys/iostat.h`) — the per-device IO statistics
@@ -450,8 +446,7 @@ pub fn Platform_getDiskIO(data: &mut DiskIOData) -> bool {
     let mut numDisks: u64 = 0;
 
     let count = size / size_of::<io_sysctl>();
-    let entries =
-        unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const io_sysctl, count) };
+    let entries = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const io_sysctl, count) };
     for io in entries {
         /* ignore NFS activity */
         if io.r#type != IOSTAT_DISK {

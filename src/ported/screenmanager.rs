@@ -839,10 +839,8 @@ pub fn ScreenManager_run(
                 if let Some(table) = unsafe { (*this.host).activeTable } {
                     let panel_ptr = unsafe { (*table).panel };
                     if !panel_ptr.is_null() {
-                        let idx = crate::extensions::bridge::index_of_pid(
-                            unsafe { &*panel_ptr },
-                            pid,
-                        );
+                        let idx =
+                            crate::extensions::bridge::index_of_pid(unsafe { &*panel_ptr }, pid);
                         if let Some(idx) = idx {
                             crate::ported::panel::Panel_setSelected(
                                 unsafe { &mut *panel_ptr },

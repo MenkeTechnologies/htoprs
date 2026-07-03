@@ -48,7 +48,11 @@ impl Scalar {
 
         let start = self.buf.len().saturating_sub(w_dots);
         for (col, &v) in self.buf.iter().skip(start).enumerate() {
-            let frac = if max > 0.0 { (v / max).clamp(0.0, 1.0) } else { 0.0 };
+            let frac = if max > 0.0 {
+                (v / max).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let filled = (frac * h_dots as f64).round() as usize;
             for up in 0..filled {
                 let y = h_dots - 1 - up; // bottom-anchored

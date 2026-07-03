@@ -25,8 +25,14 @@ mod help {
     /// and must NOT be htop's plain help.
     fn assert_branded_help(args: &[&str]) {
         let out = run(&htoprs_bin(), args).stdout;
-        assert!(out.contains("USAGE:"), "branded help shows a usage line: {out:?}");
-        assert!(out.contains("MONITOR"), "branded help lists the monitoring hotkeys");
+        assert!(
+            out.contains("USAGE:"),
+            "branded help shows a usage line: {out:?}"
+        );
+        assert!(
+            out.contains("MONITOR"),
+            "branded help lists the monitoring hotkeys"
+        );
         if let Some(refbin) = ref_available() {
             let h = run(&refbin, args).stdout;
             assert_ne!(

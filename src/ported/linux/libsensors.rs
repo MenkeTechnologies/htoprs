@@ -407,7 +407,8 @@ pub fn LibSensors_getCPUTemperatures(cpus: &mut [CPUData], existingCPUs: u32, ac
                                 let id = LibSensors_stringToID(rest);
                                 if id != -1 {
                                     for i in 1..=existing {
-                                        if cpus[i].physicalID == physicalID && cpus[i].coreID == id {
+                                        if cpus[i].physicalID == physicalID && cpus[i].coreID == id
+                                        {
                                             data[i] = temp;
                                             coreTempCount += 1;
                                         }

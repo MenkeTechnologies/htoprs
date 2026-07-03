@@ -68,8 +68,7 @@ use crate::ported::richstring::{
     RichString_rewind, RichString_size,
 };
 use crate::ported::row::{
-    Row, RowField_alignedTitle, Row_compareByParent_Base, Row_getGroupOrParent,
-    Row_isChildOf,
+    Row, RowField_alignedTitle, Row_compareByParent_Base, Row_getGroupOrParent, Row_isChildOf,
 };
 use crate::ported::settings::{
     RowField, ScreenSettings_getActiveDirection, ScreenSettings_getActiveSortKey, Settings,

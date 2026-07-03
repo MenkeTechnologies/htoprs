@@ -182,12 +182,7 @@ pub fn Platform_setCPUValues(this: &mut Meter, cpu: u32) -> f64 {
         return f64::NAN;
     }
 
-    let detailedCPUTime = unsafe {
-        (*host)
-            .settings
-            .as_ref()
-            .is_some_and(|s| s.detailedCPUTime)
-    };
+    let detailedCPUTime = unsafe { (*host).settings.as_ref().is_some_and(|s| s.detailedCPUTime) };
 
     this.values[CPU_METER_NICE] = cpuData.nicePercent;
     this.values[CPU_METER_NORMAL] = cpuData.userPercent;

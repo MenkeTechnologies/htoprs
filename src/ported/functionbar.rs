@@ -447,7 +447,11 @@ impl Ncurses {
         }
         let end = (n as usize).min(s.len());
         let m = Self::margin();
-        let _ = queue!(out, MoveTo((x + m) as u16, (y + m) as u16), Print(&s[..end]));
+        let _ = queue!(
+            out,
+            MoveTo((x + m) as u16, (y + m) as u16),
+            Print(&s[..end])
+        );
     }
 
     /// ncurses `mvaddch(y, x, ch)`.

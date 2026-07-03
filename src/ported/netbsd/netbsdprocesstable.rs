@@ -39,8 +39,8 @@ use crate::ported::object::Object;
 use crate::ported::process::{
     Process, ProcessState, Process_fillStarttimeBuffer, Process_getPid, Process_getThreadGroup,
     Process_isKernelThread, Process_isUserlandThread, Process_setParent, Process_setPid,
-    Process_setThreadGroup, Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm,
-    Process_updateExe, PROCESS_FLAG_CWD,
+    Process_setThreadGroup, Process_updateCPUFieldWidths, Process_updateCmdline,
+    Process_updateComm, Process_updateExe, PROCESS_FLAG_CWD,
 };
 use crate::ported::processtable::{
     ProcessTable, ProcessTable_cleanupEntries, ProcessTable_getProcess, ProcessTable_init,
@@ -502,10 +502,9 @@ pub fn ProcessTable_goThroughEntries(this: &mut NetBSDProcessTable) {
     let kprocs = unsafe { slice::from_raw_parts(kprocs, count.max(0) as usize) };
 
     for kproc in kprocs {
-        let (pre_existing, idx) =
-            ProcessTable_getProcess(&mut this.super_, kproc.p_pid, |h| {
-                NetBSDProcess_new(h) as Box<dyn Object>
-            });
+        let (pre_existing, idx) = ProcessTable_getProcess(&mut this.super_, kproc.p_pid, |h| {
+            NetBSDProcess_new(h) as Box<dyn Object>
+        });
 
         // Recover a raw `*mut Process` for this row via a checked borrow.
         let proc_ptr: *mut Process = {
@@ -553,8 +552,7 @@ pub fn ProcessTable_goThroughEntries(this: &mut NetBSDProcessTable) {
                 if name.is_null() {
                     proc.tty_name = None;
                 } else {
-                    proc.tty_name =
-                        Some(CStr::from_ptr(name).to_string_lossy().into_owned());
+                    proc.tty_name = Some(CStr::from_ptr(name).to_string_lossy().into_owned());
                 }
 
                 NetBSDProcessTable_updateExe(kproc, proc);
@@ -578,15 +576,14 @@ pub fn ProcessTable_goThroughEntries(this: &mut NetBSDProcessTable) {
             proc.percent_mem = ((proc.m_resident as f64 * nhost_page_kb as f64)
                 / host_total_mem as f64
                 * 100.0) as f32;
-            proc.percent_cpu = getpcpu(&*nhost, kproc)
-                .clamp(0.0, host_active_cpus as f64 * 100.0) as f32;
+            proc.percent_cpu =
+                getpcpu(&*nhost, kproc).clamp(0.0, host_active_cpus as f64 * 100.0) as f32;
             Process_updateCPUFieldWidths(proc.percent_cpu);
 
             proc.nlwp = kproc.p_nlwps as i64;
             proc.nice = kproc.p_nice as i32 - 20;
             proc.time = 100
-                * (kproc.p_rtime_sec as u64
-                    + ((kproc.p_rtime_usec as u64 + 500_000) / 1_000_000));
+                * (kproc.p_rtime_sec as u64 + ((kproc.p_rtime_usec as u64 + 500_000) / 1_000_000));
             proc.priority = kproc.p_priority as i64 - PZERO;
             proc.processor = kproc.p_cpuid as i32;
             proc.minflt = kproc.p_uru_minflt;
@@ -671,7 +668,10 @@ pub static NetBSDProcessTable_class: TableClass = TableClass {
 /// pidMatchList)` from `NetBSDProcessTable.c:40`. Allocates and inits the
 /// `NetBSDProcessTable`, wiring the scan vtable so `Machine_scanTables` can
 /// dispatch prepare/iterate/cleanup through it.
-pub fn ProcessTable_new(host: *const Machine, pidMatchList: Option<usize>) -> Box<NetBSDProcessTable> {
+pub fn ProcessTable_new(
+    host: *const Machine,
+    pidMatchList: Option<usize>,
+) -> Box<NetBSDProcessTable> {
     let mut this = Box::new(NetBSDProcessTable {
         super_: ProcessTable::empty(),
     });
