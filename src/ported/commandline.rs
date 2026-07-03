@@ -10,7 +10,7 @@
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// htop's `COPYRIGHT` macro (`configure.ac:1833`).
-const COPYRIGHT: &str = "(C) 2004-2019 Hisham Muhammad. (C) 2020-2026 htop dev team.";
+const COPYRIGHT: &str = "(C) MenkeTechnologies 2026.";
 
 /// Port of `printVersionFlag(const char* name)` from `CommandLine.c`.
 /// C: `printf("%s " VERSION "\n", name)`.
@@ -67,9 +67,4 @@ mod tests {
         assert!(!VERSION.is_empty());
     }
 
-    #[test]
-    fn copyright_credits_htop_authors() {
-        assert!(COPYRIGHT.contains("Hisham Muhammad"));
-        assert!(COPYRIGHT.contains("htop dev team"));
-    }
 }

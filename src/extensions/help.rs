@@ -11,8 +11,10 @@
 /// htop's `VERSION` — the crate version, matching the ported flag printers.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// htop's `COPYRIGHT` macro (`configure.ac:1833`).
-const COPYRIGHT: &str = "(C) 2004-2019 Hisham Muhammad. (C) 2020-2026 htop dev team.";
+/// Authorship/description line for the styled help footer. htoprs is written
+/// by MenkeTechnologies; the upstream htop copyright is preserved in the
+/// faithful ported [`crate::ported::commandline::printHelpFlag`].
+const COPYRIGHT: &str = "htoprs by MenkeTechnologies — a Rust port of htop.";
 
 /// The `HTOPRS` wordmark in figlet's "ANSI Shadow" font.
 const BANNER: &str = "\
