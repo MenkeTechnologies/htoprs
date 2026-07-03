@@ -36,7 +36,7 @@ use crate::ported::batterymeter::ACPresence;
 use crate::ported::crt::ColorElements;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
 use crate::ported::meter::Meter;
-use crate::ported::xutils::{String_eq, String_startsWith};
+use crate::ported::xutils::{String_contains_i, String_eq, String_startsWith};
 
 /// Port of `typedef struct MemoryClass_` (`linux/Platform.h`) — one
 /// memory-meter class: its label, whether it counts toward the "used" or
@@ -228,6 +228,91 @@ pub fn Generic_hostname() -> String {
 /// `linux/Platform.c` — a thin wrapper delegating to [`Generic_hostname`].
 pub fn Platform_getHostname() -> String {
     Generic_hostname()
+}
+
+/// Port of `static void parseOSRelease(char* buffer, size_t bufferLen)` from
+/// `generic/uname.c:24`. Reads `/etc/os-release` (falling back to
+/// `/usr/lib/os-release`) and returns `PRETTY_NAME`, or `NAME`+`VERSION`, or
+/// the empty string. The C `char*`+len out-param becomes an owned `String`.
+pub fn parseOSRelease() -> String {
+    for path in ["/etc/os-release", "/usr/lib/os-release"] {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let (mut name, mut version) = (String::new(), String::new());
+        for line in content.lines() {
+            if let Some(rest) = line.strip_prefix("PRETTY_NAME=\"") {
+                // C: strrchr for the LAST quote; return immediately.
+                if let Some(end) = rest.rfind('"') {
+                    if end > 0 {
+                        return rest[..end].to_string();
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("NAME=\"") {
+                if let Some(end) = rest.rfind('"') {
+                    if end > 0 {
+                        name = rest[..end].to_string();
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("VERSION=\"") {
+                if let Some(end) = rest.rfind('"') {
+                    if end > 0 {
+                        version = rest[..end].to_string();
+                    }
+                }
+            }
+        }
+        // C: snprintf("%s%s%s", name, name&&version ? " " : "", version)
+        let sep = if !name.is_empty() && !version.is_empty() { " " } else { "" };
+        return format!("{name}{sep}{version}");
+    }
+    String::new()
+}
+
+/// Port of `const char* Generic_uname(void)` / `Generic_unameRelease`
+/// (`generic/uname.c:88/114`). Builds `"<sysname> <release> [<machine>]"`
+/// from `uname(2)`, appending ` @ <distro>` when the OS-release name is
+/// present and not already contained. Cached on first call (C's
+/// `static ... savedString` + `loaded_data`); the port uses a `OnceLock`.
+pub fn Generic_uname() -> &'static str {
+    static SAVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SAVED.get_or_init(|| {
+        // Safety: `uname` fills the whole struct; a zeroed struct is a valid
+        // initial state for the out-param.
+        let mut info: libc::utsname = unsafe { std::mem::zeroed() };
+        let result = unsafe { libc::uname(&mut info) };
+        let distro = parseOSRelease();
+
+        let field = |arr: &[libc::c_char]| -> String {
+            unsafe { CStr::from_ptr(arr.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        if result == 0 {
+            let mut s = format!(
+                "{} {} [{}]",
+                field(&info.sysname),
+                field(&info.release),
+                field(&info.machine)
+            );
+            if !distro.is_empty() && !String_contains_i(&s, &distro, false) {
+                s.push_str(&format!(" @ {distro}"));
+            }
+            s
+        } else if !distro.is_empty() {
+            distro
+        } else {
+            "No information".to_string()
+        }
+    })
+}
+
+/// Port of `const char* Platform_getRelease(void)` from `linux/Platform.c`
+/// — delegates to [`Generic_uname`].
+pub fn Platform_getRelease() -> &'static str {
+    Generic_uname()
 }
 
 /// Port of `void Platform_setMemoryValues(Meter* this)` from
