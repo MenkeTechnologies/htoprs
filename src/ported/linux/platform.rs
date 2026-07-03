@@ -430,6 +430,46 @@ pub fn Platform_getDiskIO(data: &mut crate::ported::diskiometer::DiskIOData) -> 
     true
 }
 
+/// Port of `bool Platform_getNetworkIO(NetworkIOData* data)` from
+/// `linux/Platform.c`. Parses `/proc/net/dev`, summing rx/tx bytes and
+/// packets across all interfaces except loopback (`lo:`). Returns `false`
+/// if the file cannot be opened. `sscanf` field map `%31s %llu %llu %*u×6
+/// %llu %llu` selects whitespace columns 0/1/2/9/10.
+pub fn Platform_getNetworkIO(data: &mut crate::ported::networkiometer::NetworkIOData) -> bool {
+    let content = match std::fs::read_to_string(format!("{PROCDIR}/net/dev")) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    for line in content.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 11 {
+            continue;
+        }
+        let interface_name = f[0];
+        let (rx_bytes, rx_packets, tx_bytes, tx_packets) = match (
+            f[1].parse::<u64>(),
+            f[2].parse::<u64>(),
+            f[9].parse::<u64>(),
+            f[10].parse::<u64>(),
+        ) {
+            (Ok(rb), Ok(rp), Ok(tb), Ok(tp)) => (rb, rp, tb, tp),
+            _ => continue,
+        };
+
+        if String_eq(interface_name, "lo:") {
+            continue;
+        }
+
+        data.bytesReceived += rx_bytes;
+        data.packetsReceived += rx_packets;
+        data.bytesTransmitted += tx_bytes;
+        data.packetsTransmitted += tx_packets;
+    }
+
+    true
+}
+
 // CPUMeter.h `CPU_METER_*` indices into `Meter::values`.
 const CPU_METER_NICE: usize = 0;
 const CPU_METER_NORMAL: usize = 1;
@@ -747,10 +787,6 @@ pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
 }
 
 
-/// TODO: port of `bool Platform_getNetworkIO(NetworkIOData* data` from `Platform.c:722`.
-pub fn Platform_getNetworkIO() {
-    todo!("port of Platform.c:722")
-}
 
 /// Port of `static double Platform_Battery_getProcBatInfo(void)` from
 /// `Platform.c:764`. Sums "last full capacity" (from each `BAT*/info`) and
