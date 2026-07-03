@@ -46,7 +46,8 @@ use crate::ported::darwin::platform::Platform_machTicksToNanoseconds;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::process::{
-    Process, ProcessClass, ProcessState, Process_compareByKey_Base, Process_fillStarttimeBuffer,
+    Process, ProcessClass, ProcessState, Process_compareByKey_Base, Process_done,
+    Process_fillStarttimeBuffer,
     Process_getPid, Process_init, Process_setParent, Process_setPid, Process_setThreadGroup,
     Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm, Process_updateExe,
     Process_writeField, PROCESS_FLAG_CWD,
@@ -164,8 +165,15 @@ pub fn DarwinProcess_new(host: *const Machine) -> Box<DarwinProcess> {
 /// its `Option<String>` base fields, so `Drop` reclaims them automatically;
 /// there is no faithful safe-Rust analog (the linux `Process_delete` /
 /// `Affinity_delete` precedent).
-pub fn Process_delete() {
-    todo!("port of DarwinProcess.c:71 — pure free() teardown; Rust Drop handles it")
+pub fn Process_delete(this: DarwinProcess) {
+    // C `void Process_delete(Object* cast)` (DarwinProcess.c:71):
+    // `Process_done(&this->super); free(this);`. Take `this` by value — the
+    // base teardown is `Process_done` on the moved-out `super_`, the Copy
+    // scalar fields (utime/stime/taskAccess/translated) drop trivially, and the
+    // final `free(this)` folds into the by-value consume (the
+    // `FunctionBar_delete` / destructor-sweep idiom).
+    let DarwinProcess { super_, .. } = this;
+    Process_done(super_);
 }
 
 /// `TRANSLATED = 100` (`darwin/ProcessField.h:11`) — the Darwin platform

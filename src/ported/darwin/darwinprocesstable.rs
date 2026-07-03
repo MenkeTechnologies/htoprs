@@ -43,8 +43,8 @@ use crate::ported::machine::Machine;
 use crate::ported::object::Object;
 use crate::ported::process::ProcessState;
 use crate::ported::processtable::{
-    ProcessTable, ProcessTable_cleanupEntries, ProcessTable_getProcess, ProcessTable_init,
-    ProcessTable_prepareEntries,
+    ProcessTable, ProcessTable_cleanupEntries, ProcessTable_done, ProcessTable_getProcess,
+    ProcessTable_init, ProcessTable_prepareEntries,
 };
 use crate::ported::table::{Table, TableClass};
 
@@ -346,8 +346,12 @@ pub fn ProcessTable_new(
 }
 
 /// TODO: port of `void ProcessTable_delete(Object* cast` from `DarwinProcessTable.c:66`.
-pub fn ProcessTable_delete() {
-    todo!("port of DarwinProcessTable.c:66")
+pub fn ProcessTable_delete(mut this: DarwinProcessTable) {
+    // C `void ProcessTable_delete(Object* cast)` (DarwinProcessTable.c:66):
+    // `ProcessTable_done(&this->super); free(this);`. `ProcessTable_done` takes
+    // `&mut` and tears the base table down in place; `this` then drops at scope
+    // end — the `free(this)`.
+    ProcessTable_done(&mut this.super_);
 }
 
 /// Port of `void ProcessTable_goThroughEntries(ProcessTable* super)` from
