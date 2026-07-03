@@ -110,6 +110,7 @@ use crate::ported::categoriespanel::CategoriesPanel_new;
 use crate::ported::crt::{
     CRT_enableDelay, CRT_setMouse, ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB,
 };
+use crate::ported::commandscreen::{CommandScreen_delete, CommandScreen_new};
 use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
 use crate::ported::infoscreen::InfoScreen_run;
 use crate::ported::dynamiccolumn::DynamicColumn;
@@ -126,7 +127,7 @@ use crate::ported::panel::{
     Panel, PanelClass, PanelItem, Panel_add, Panel_getSelected, Panel_move, Panel_new, Panel_onKey,
     Panel_resize, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
 };
-use crate::ported::process::ProcessField;
+use crate::ported::process::{Process, ProcessField};
 use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
 use crate::ported::screenmanager::{
     ScreenManager_add, ScreenManager_delete, ScreenManager_new, ScreenManager_remove,
@@ -1595,8 +1596,36 @@ pub fn actionShowEnvScreen(st: &mut State) -> Htop_Reaction {
 /// `Action.c:929`. Opens the selected process's `CommandScreen` modally.
 /// Blocked on the same ncurses substrate as [`actionLsof`]: `clear()` is
 /// unported and `CommandScreen` does not implement `InfoScreenClass`.
-pub fn actionShowCommandScreen(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:929 — clear() unported + CommandScreen has no InfoScreenClass impl")
+pub fn actionShowCommandScreen(st: &mut State) -> Htop_Reaction {
+    // C: if (!Action_readableProcess(st)) return HTOP_OK;
+    if !Action_readableProcess(st) {
+        return HTOP_OK;
+    }
+    // C: Process* p = (Process*)Panel_getSelected((Panel*)st->mainPanel);
+    let mainpanel = st.mainPanel;
+    if mainpanel.is_null() {
+        return HTOP_OK;
+    }
+    // C: CommandScreen* cmdScr = CommandScreen_new(p);  (takes `const Process*`)
+    let mut cmd_scr = {
+        // SAFETY: `mainPanel` is the process panel wired at startup.
+        let panel = unsafe { &(*mainpanel).super_ };
+        let p = match Panel_getSelected(panel).and_then(|o| o.as_process()) {
+            Some(p) => p as *const Process,
+            None => return HTOP_OK,
+        };
+        CommandScreen_new(p)
+    };
+    // C: InfoScreen_run((InfoScreen*)cmdScr);
+    InfoScreen_run(&mut cmd_scr);
+    // C: CommandScreen_delete((Object*)cmdScr);
+    CommandScreen_delete(cmd_scr);
+    // C: clear(); CRT_enableDelay();
+    let mut out = std::io::stdout().lock();
+    Ncurses::clear(&mut out);
+    Ncurses::refresh(&mut out);
+    CRT_enableDelay();
+    HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
 /// Port of `void Action_setBindings(Htop_Action* keys)` from `Action.c:947`.

@@ -61,7 +61,8 @@
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreenClass, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled,
+    InfoScreen_init,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::Object;
@@ -81,6 +82,25 @@ const VECTOR_DEFAULT_SIZE: core::ffi::c_int = 10;
 pub struct CommandScreen {
     /// C `InfoScreen super` — the scrollable info-panel base class.
     pub super_: InfoScreen,
+}
+
+/// Port of `const InfoScreenClass CommandScreen_class` (`CommandScreen.c:72`):
+/// `{ .scan = CommandScreen_scan, .draw = CommandScreen_draw }`. Wires the two
+/// installed vtable slots so [`InfoScreen_run`](crate::ported::infoscreen::InfoScreen_run)
+/// dispatches this screen; `onErr`/`onKey` are `NULL` in C (trait defaults).
+impl InfoScreenClass for CommandScreen {
+    fn super_InfoScreen(&mut self) -> &mut InfoScreen {
+        &mut self.super_
+    }
+    fn draw(&mut self) {
+        CommandScreen_draw(&mut self.super_);
+    }
+    fn scan(&mut self) {
+        CommandScreen_scan(&mut self.super_);
+    }
+    fn has_scan(&self) -> bool {
+        true
+    }
 }
 
 /// Port of `static void CommandScreen_scan(InfoScreen* this)` from
