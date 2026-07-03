@@ -184,8 +184,9 @@ impl OverlayState {
         let theme_name = ThemeName::default();
         Self {
             show_help: false,
-            show_border: true,
-            show_header: true,
+            // Off by default so htoprs looks like htop until `b`/`g` are pressed.
+            show_border: false,
+            show_header: false,
             theme_name,
             theme: Theme::from_name(theme_name),
             theme_chooser: ThemeChooser::new(),
@@ -528,6 +529,54 @@ pub fn draw_active<W: Write>(out: &mut W) {
         let mut b = Buffer::empty(area);
         s.render(&mut b, area);
         blit(out, &b);
+    });
+    let _ = out.flush();
+}
+
+/// Draw the themed border chrome (ported from iftoprs `draw`): a box around
+/// the whole screen with a centered title, in the active theme's `scale_line`
+/// color, when `show_border` is set. Drawn after the panels and before the
+/// modal overlays. A no-op when the border is off.
+///
+/// Unlike iftoprs (which insets its content by a 1-cell margin), htoprs's htop
+/// panels fill the screen, so the border overdraws the outermost row/column of
+/// panel content — insetting htop's layout is separate, deeper work.
+pub fn draw_chrome<W: Write>(out: &mut W) {
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    if cols < 2 || rows < 2 {
+        return;
+    }
+    OVERLAY.with(|o| {
+        let s = o.borrow();
+        if !s.show_border {
+            return;
+        }
+        // `Theme` colors are already `crossterm::style::Color`.
+        let bc = s.theme.scale_line;
+        let x1 = cols - 1;
+        let y1 = rows - 1;
+        let _ = queue!(out, SetAttribute(Attribute::Reset), SetForegroundColor(bc));
+        let _ = queue!(out, MoveTo(0, 0), Print("┌"));
+        let _ = queue!(out, MoveTo(x1, 0), Print("┐"));
+        let _ = queue!(out, MoveTo(0, y1), Print("└"));
+        let _ = queue!(out, MoveTo(x1, y1), Print("┘"));
+        for x in 1..x1 {
+            let _ = queue!(out, MoveTo(x, 0), Print("─"));
+            let _ = queue!(out, MoveTo(x, y1), Print("─"));
+        }
+        for y in 1..y1 {
+            let _ = queue!(out, MoveTo(0, y), Print("│"));
+            let _ = queue!(out, MoveTo(x1, y), Print("│"));
+        }
+        // Centered title in the top border.
+        let ver = env!("CARGO_PKG_VERSION");
+        let title = format!(" ▶▶▶ HTOPRS v{} ◀◀◀ ", ver);
+        let title_cw = title.chars().count() as u16;
+        if title_cw < cols {
+            let tx = (cols - title_cw) / 2;
+            let _ = queue!(out, MoveTo(tx, 0), SetAttribute(Attribute::Bold), Print(&title));
+        }
+        let _ = queue!(out, SetAttribute(Attribute::Reset), ResetColor);
     });
     let _ = out.flush();
 }

@@ -639,6 +639,15 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
     let n_panels = this.panelCount as usize;
     let mut out = io::stdout().lock();
     for i in 0..n_panels {
+        // C `Panel_draw` dispatches `Panel_printHeader(this)` through the
+        // object vtable (`Panel.c:247-248`) to (re)build the column-name header
+        // row. The port's free `Panel_draw` takes a base `&mut Panel` and
+        // cannot reach the concrete override, so dispatch `print_header` here
+        // where the boxed `dyn PanelClass` is still available — for `MainPanel`
+        // this fills `super.header` via `Table_printHeader` (the
+        // `PID USER … Command` titles + sort indicator); base panels use the
+        // trait's no-op default (the C NULL `printHeader` slot).
+        this.panels[i].print_header();
         let highlight_selected = {
             let panel_base = this.panels[i].as_panel() as *const Panel;
             panel_base != main_panel_base || !hide_selection
