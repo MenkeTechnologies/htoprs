@@ -130,6 +130,15 @@ pub struct FreeBSDMachine {
 /// Deviation (documented): `openzfs_sysctl_init` / `_updateArcStats` are not
 /// run — the openzfs substrate is unported — so `zfs` stays zeroed.
 pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<FreeBSDMachine> {
+    // Local `len = N; sysctlnametomib(name, MIB, &len)` idiom (the C inlines
+    // this at each MIB init; kept as a nested fn so it stays a faithful
+    // translation without introducing a module-level non-C function).
+    fn nametomib(name: &str, mib: &mut [c_int]) {
+        let mut len = mib.len();
+        unsafe {
+            libc::sysctlnametomib(name.as_ptr() as *const libc::c_char, mib.as_mut_ptr(), &mut len);
+        }
+    }
     let mut this = Box::new(FreeBSDMachine {
         super_: Machine::default(),
         kd: ptr::null_mut(),
@@ -514,6 +523,29 @@ pub fn FreeBSDMachine_scanCPU(this: &mut FreeBSDMachine) {
 /// size), deducts buffers from wired, and totals the swap usage via
 /// `kvm_getswapinfo`.
 pub fn FreeBSDMachine_scanMemoryInfo(this: &mut FreeBSDMachine) {
+    // Local `sysctl(MIB_v_*_count, 4, &memX, ...)` page-count read (the C
+    // repeats this inline per class); nested so it stays a faithful translation
+    // without a module-level non-C function. Returns the count on success and
+    // `> 0`, else 0 (the C `else this->xMem = 0` fallback).
+    fn read_page_count(mib: &[c_int; 4]) -> memory_t {
+        let mut count: libc::c_uint = 0;
+        let mut len = size_of::<libc::c_uint>();
+        let r = unsafe {
+            libc::sysctl(
+                mib.as_ptr() as *mut c_int,
+                4,
+                &mut count as *mut libc::c_uint as *mut c_void,
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if r == 0 && count > 0 {
+            count as memory_t
+        } else {
+            0
+        }
+    }
     let page_kb = this.pageSizeKb as memory_t;
 
     // total memory
@@ -611,38 +643,6 @@ pub fn Machine_getCPUPhysicalCoreID(host: &Machine, id: u32) -> i32 {
 pub fn Machine_getCPUThreadIndex(host: &Machine, id: u32) -> i32 {
     debug_assert!(id < host.existingCPUs);
     0
-}
-
-/// Helper for the C `len = N; sysctlnametomib(name, MIB, &len)` idiom — fills
-/// `mib` with the numeric OID for the dotted `name` (a NUL-terminated str).
-fn nametomib(name: &str, mib: &mut [c_int]) {
-    let mut len = mib.len();
-    unsafe {
-        libc::sysctlnametomib(name.as_ptr() as *const libc::c_char, mib.as_mut_ptr(), &mut len);
-    }
-}
-
-/// Helper for the repeated `sysctl(MIB_v_*_count, 4, &memX, ...)` page-count
-/// reads in `scanMemoryInfo`: returns the `u_int` count on success and `> 0`,
-/// else 0 (the C `else this->xMem = 0` fallback).
-fn read_page_count(mib: &[c_int; 4]) -> memory_t {
-    let mut count: libc::c_uint = 0;
-    let mut len = size_of::<libc::c_uint>();
-    let r = unsafe {
-        libc::sysctl(
-            mib.as_ptr() as *mut c_int,
-            4,
-            &mut count as *mut libc::c_uint as *mut c_void,
-            &mut len,
-            ptr::null_mut(),
-            0,
-        )
-    };
-    if r == 0 && count > 0 {
-        count as memory_t
-    } else {
-        0
-    }
 }
 
 #[cfg(test)]
