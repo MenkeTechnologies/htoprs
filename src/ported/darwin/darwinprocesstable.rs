@@ -10,10 +10,12 @@
 //! - the [`kinfo_proc`] struct family (`sys/sysctl.h` / `sys/proc.h`),
 //!   modeled `#[repr(C)]` because `libc` does not provide it.
 //!
+//! Also ported: [`ProcessTable_goThroughEntries`] (`DarwinProcessTable.c:72`)
+//! — the full `getProcess` → `setFromKInfoProc` → `setFromLibprocPidinfo` →
+//! `scanThreads` scan pipeline (`scanThreads` runs under the faithful High
+//! Sierra kernel-version guard).
+//!
 //! Still `todo!()` and blocked on unported substrate:
-//! - `ProcessTable_getProcess` is still a stub in `processtable.rs`, so the
-//!   per-entry `getProcess` → `setFromKInfoProc` → `scanThreads` pipeline in
-//!   `goThroughEntries` cannot be wired up.
 //! - `ProcessTable_delete` needs `Object_delete` teardown (`Drop` releases
 //!   the owned fields).
 //!
@@ -32,10 +34,11 @@ use std::ptr;
 use crate::ported::crt::CRT_fatalError;
 use crate::ported::darwin::darwinmachine::DarwinMachine;
 use crate::ported::darwin::darwinprocess::{
-    DarwinProcess, DarwinProcess_new, DarwinProcess_setFromKInfoProc,
+    DarwinProcess, DarwinProcess_new, DarwinProcess_scanThreads, DarwinProcess_setFromKInfoProc,
     DarwinProcess_setFromLibprocPidinfo,
 };
 use crate::ported::darwin::platform::Platform_schedulerTicksToNanoseconds;
+use crate::ported::darwin::platformhelpers::{KernelVersion, Platform_KernelVersionIsBetween};
 use crate::ported::machine::Machine;
 use crate::ported::object::Object;
 use crate::ported::process::ProcessState;
@@ -354,10 +357,11 @@ pub fn ProcessTable_delete() {
 /// filling it from its `kinfo_proc` and libproc task info.
 ///
 /// Deviations (documented, not silent):
-/// - `DarwinProcess_scanThreads` is not called — it needs heavy mach FFI
-///   (`task_for_pid`/`task_threads`/`thread_info`) and `task_for_pid` is
-///   SIP-restricted for non-self processes on modern macOS, so per-process
-///   thread rows are not yet emitted.
+/// - [`DarwinProcess_scanThreads`] is called under the faithful High Sierra
+///   guard (`!Platform_KernelVersionIsBetween({17,0,0},{17,5,0})`). On modern
+///   macOS `task_for_pid` is SIP-restricted for non-self processes, so it
+///   clears `taskAccess` and emits no thread rows for those (self and
+///   accessible tasks still enumerate) — the same behavior as htop on macOS.
 /// - `proc->user = UsersTable_getRef(...)` is skipped (the `UsersTable` is
 ///   unported); `st_uid` is still tracked.
 /// - Per [`ProcessTable_getProcess`], a newly-seen process is added inside
@@ -435,7 +439,23 @@ pub fn ProcessTable_goThroughEntries(dpt: &mut DarwinProcessTable) {
                 // proc->user = UsersTable_getRef(...) — UsersTable unported.
             }
 
-            // DarwinProcess_scanThreads(dproc, dpt) — deferred (see fn docs).
+            // Disabled for High Sierra due to a bug in macOS High Sierra.
+            let isScanThreadSupported = !Platform_KernelVersionIsBetween(
+                KernelVersion {
+                    major: 17,
+                    minor: 0,
+                    patch: 0,
+                },
+                KernelVersion {
+                    major: 17,
+                    minor: 5,
+                    patch: 0,
+                },
+            );
+
+            if isScanThreadSupported {
+                DarwinProcess_scanThreads(dproc, dpt_ptr);
+            }
 
             (*dpt_ptr).super_.totalTasks += 1;
         }

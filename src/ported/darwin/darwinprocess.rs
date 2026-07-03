@@ -10,13 +10,15 @@
 //! [`DarwinProcess_compareByKey`] (`DarwinProcess.c:96`) — the `TRANSLATED`
 //! platform field plus base-field delegation.
 //!
+//! Also ported: [`DarwinProcess_scanThreads`] (`DarwinProcess.c:410`) — the
+//! per-task thread walk via the mach `task_for_pid`/`task_threads`/`thread_info`
+//! APIs (through [`libc`]), materializing each thread through
+//! [`ProcessTable_getProcess`].
+//!
 //! The remaining `pub fn`s are honest `todo!()` placeholders named after
 //! their C counterparts, blocked on unported substrate:
 //! - `Process_delete` is a pure `free()` teardown; Rust `Drop` reclaims the
 //!   allocation (no faithful safe-Rust analog).
-//! - `DarwinProcess_scanThreads` needs the mach thread APIs
-//!   (`task_for_pid`/`task_threads`/`thread_info`) and the still-stubbed
-//!   `ProcessTable_getProcess`.
 //! - the `kinfo_proc` struct (absent from `libc`), required by
 //!   `DarwinProcess_setFromKInfoProc` / `_updateCmdLine`.
 //! - `Process_fillStarttimeBuffer` (stub in `process.rs`) and
@@ -49,9 +51,21 @@ use crate::ported::process::{
     Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm, Process_updateExe,
     Process_writeField, PROCESS_FLAG_CWD,
 };
+use crate::ported::processtable::ProcessTable_getProcess;
 use crate::ported::richstring::{RichString, RichString_appendWide};
 use crate::ported::row::{spaceship_number, Row, RowClass};
 use crate::ported::settings::RowField;
+
+extern "C" {
+    // `kern_return_t mach_port_deallocate(ipc_space_t, mach_port_name_t)` —
+    // not exposed by `libc` 0.2 (see `darwin/platform.rs`, which declares it
+    // identically for the monotonic-clock teardown). Releases the task /
+    // thread send rights obtained by `task_for_pid` / `task_threads`.
+    fn mach_port_deallocate(
+        task: libc::mach_port_t,
+        name: libc::mach_port_t,
+    ) -> libc::kern_return_t;
+}
 
 /// Port of htop's `struct DarwinProcess_` (`DarwinProcess.h:18`). "Extends"
 /// [`Process`] via the embedded `super_` field (htop's `Process super;`
@@ -606,16 +620,191 @@ pub fn DarwinProcess_setFromLibprocPidinfo(
     dpt.super_.runningTasks += pti.pti_numrunning as u32;
 }
 
-/// TODO: port of `void DarwinProcess_scanThreads(DarwinProcess* dp,
-/// DarwinProcessTable* dpt)` from `DarwinProcess.c:410`. Blocked on absent
-/// substrate: it walks the task's threads via the mach APIs
-/// `task_for_pid`/`task_threads`/`thread_info` (not modeled) and materializes
-/// each thread as a row through `ProcessTable_getProcess` (still a stub in
-/// `processtable.rs`), keyed by `host->settings->hideUserlandThreads`. Not a
-/// leaf column renderer; deferred until the mach thread layer and
-/// `ProcessTable_getProcess` land.
-pub fn DarwinProcess_scanThreads() {
-    todo!("port of DarwinProcess.c:410")
+/// Port of `void DarwinProcess_scanThreads(DarwinProcess* dp,
+/// DarwinProcessTable* dpt)` from `DarwinProcess.c:410`. Walks the task's
+/// threads via the mach APIs `task_for_pid`/`task_threads`/`thread_info`,
+/// materializing each thread as a row through [`ProcessTable_getProcess`]
+/// (keyed by `host->settings->hideUserlandThreads`) and filling it from the
+/// thread's `THREAD_IDENTIFIER_INFO` / `THREAD_EXTENDED_INFO`.
+///
+/// `task_for_pid` is SIP-restricted for non-self processes on modern macOS;
+/// as in the C, a failure there simply clears `taskAccess` and returns (no
+/// thread rows for that process). The `HAVE_THREAD_EXTENDED_INFO_DATA_T`
+/// branch is taken — the type modern macOS provides ([`libc::thread_extended_info`]).
+///
+/// Deviations (documented): the C `CRT_debug(..., mach_error_string(ret))`
+/// diagnostics on each mach failure are omitted (`CRT_debug` is unported);
+/// the control flow (`taskAccess = false` / `continue` / early return) is
+/// faithful. `tprocess->user = proc->user` copies the C `char*` share by
+/// cloning the owned [`String`]. The trailing `if (!preExisting)
+/// ProcessTable_add(...)` is a no-op here — [`ProcessTable_getProcess`] adds a
+/// freshly-seen row immediately (see its doc).
+///
+/// Raw-pointer params mirror htop's `DarwinProcess*` / `DarwinProcessTable*`
+/// pointer graph: `dp` aliases a boxed row inside `*dpt`, and `getProcess`
+/// appends further boxed rows — the boxes' *pointees* are heap-stable across
+/// the `rows` `Vec` growth, so both pointers stay valid (the same guarantee as
+/// C's per-process `xCalloc`).
+///
+/// # Safety
+/// `dp` points to a live [`DarwinProcess`]; `dpt` points to the live
+/// [`DarwinProcessTable`] owning it.
+// `libc::mach_task_self` is deprecated in `libc` in favor of `mach2`; the C
+// original uses `mach_task_self()` directly, so keep the libc path (as
+// `darwin/platform.rs` does).
+#[allow(deprecated)]
+pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut DarwinProcessTable) {
+    // Process* proc = (Process*) dp;
+    let proc_: *mut Process = &mut (*dp).super_;
+
+    if !(*dp).taskAccess {
+        return;
+    }
+
+    if (*proc_).state == ProcessState::ZOMBIE {
+        return;
+    }
+
+    let pid = Process_getPid(&*proc_);
+
+    let mut task: libc::task_t = 0;
+    let ret = libc::task_for_pid(libc::mach_task_self(), pid, &mut task);
+    if ret != libc::KERN_SUCCESS {
+        // TODO: workaround for modern MacOS limits on task_for_pid().
+        // (KERN_FAILURE is the SIP denial; other errors would be logged via
+        // CRT_debug in the C — omitted, CRT_debug unported.)
+        (*dp).taskAccess = false;
+        return;
+    }
+
+    let mut thread_list: libc::thread_act_array_t = ptr::null_mut();
+    let mut thread_count: libc::mach_msg_type_number_t = 0;
+    let ret = libc::task_threads(task, &mut thread_list, &mut thread_count);
+    if ret != libc::KERN_SUCCESS {
+        (*dp).taskAccess = false;
+        mach_port_deallocate(libc::mach_task_self(), task);
+        return;
+    }
+
+    // const bool hideUserlandThreads = dpt->super.super.host->settings->hideUserlandThreads;
+    let host = (*dpt).super_.super_.host;
+    let hideUserlandThreads = (*host)
+        .settings
+        .as_ref()
+        .map(|s| s.hideUserlandThreads)
+        .unwrap_or(false);
+    let mut isProcessStuck = false;
+
+    for i in 0..thread_count as usize {
+        let thread = *thread_list.add(i);
+
+        let mut identifer_info: libc::thread_identifier_info_data_t = zeroed();
+        let mut identifer_info_count = libc::THREAD_IDENTIFIER_INFO_COUNT;
+        let ret = libc::thread_info(
+            thread,
+            libc::THREAD_IDENTIFIER_INFO as libc::thread_flavor_t,
+            &mut identifer_info as *mut libc::thread_identifier_info_data_t
+                as libc::thread_info_t,
+            &mut identifer_info_count,
+        );
+        if ret != libc::KERN_SUCCESS {
+            continue;
+        }
+
+        let tid = identifer_info.thread_id;
+
+        // Process* tprocess = ProcessTable_getProcess(&dpt->super, (pid_t)tid, ...)
+        let (pre_existing, idx) =
+            ProcessTable_getProcess(&mut (*dpt).super_, tid as libc::pid_t, |h| {
+                DarwinProcess_new(h) as Box<dyn Object>
+            });
+
+        // Recover a raw `*mut DarwinProcess` for this thread row (the C
+        // `(DarwinProcess*)tprocess`). The box's pointee is heap-stable across
+        // the `getProcess`-triggered `rows` growth.
+        let tdproc: *mut DarwinProcess = {
+            let rows = &mut (*dpt).super_.super_.rows;
+            let obj: &mut dyn Object = rows[idx].as_mut().unwrap().as_mut();
+            let any: &mut dyn Any = obj;
+            any.downcast_mut::<DarwinProcess>().unwrap()
+        };
+
+        (*tdproc).super_.super_.updated = true;
+        (*dpt).super_.totalTasks += 1;
+
+        if hideUserlandThreads {
+            (*tdproc).super_.super_.show = false;
+            continue;
+        }
+
+        let tprocessPid = Process_getPid(&(*tdproc).super_);
+        debug_assert!(tprocessPid >= 0);
+        debug_assert_eq!(tprocessPid as u64, tid);
+
+        Process_setParent(&mut (*tdproc).super_, pid);
+        Process_setThreadGroup(&mut (*tdproc).super_, pid);
+        (*tdproc).super_.super_.show = true;
+        (*tdproc).super_.isUserlandThread = true;
+        (*tdproc).super_.st_uid = (*proc_).st_uid;
+        (*tdproc).super_.user = (*proc_).user.clone();
+
+        // HAVE_THREAD_EXTENDED_INFO_DATA_T branch (modern macOS).
+        let mut extended_info: libc::thread_extended_info_data_t = zeroed();
+        let mut extended_info_count = libc::THREAD_EXTENDED_INFO_COUNT;
+        let ret = libc::thread_info(
+            thread,
+            libc::THREAD_EXTENDED_INFO as libc::thread_flavor_t,
+            &mut extended_info as *mut libc::thread_extended_info_data_t as libc::thread_info_t,
+            &mut extended_info_count,
+        );
+        if ret != libc::KERN_SUCCESS {
+            continue;
+        }
+
+        (*tdproc).super_.percent_cpu = extended_info.pth_cpu_usage as f32 / 10.0;
+        (*tdproc).stime = extended_info.pth_system_time;
+        (*tdproc).utime = extended_info.pth_user_time;
+        (*tdproc).super_.time =
+            (extended_info.pth_system_time + extended_info.pth_user_time) / 10_000_000;
+        (*tdproc).super_.priority = extended_info.pth_curpri as i64;
+
+        if extended_info.pth_run_state == libc::TH_STATE_UNINTERRUPTIBLE {
+            isProcessStuck = true;
+            (*tdproc).super_.state = ProcessState::UNINTERRUPTIBLE_WAIT;
+        }
+
+        // TODO: depend on setting
+        // const char* name = pth_name[0] ? pth_name : proc->procComm;
+        let ext_name: Option<String> = if extended_info.pth_name[0] != 0 {
+            Some(
+                std::ffi::CStr::from_ptr(extended_info.pth_name.as_ptr())
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        } else {
+            None
+        };
+        let name: Option<&str> = match &ext_name {
+            Some(s) => Some(s.as_str()),
+            None => (*proc_).procComm.as_deref(),
+        };
+        let namelen = name.map(str::len).unwrap_or(0);
+        Process_updateCmdline(&mut (*tdproc).super_, name, 0, namelen);
+
+        // if (!preExisting) ProcessTable_add(...) — getProcess already added.
+        let _ = pre_existing;
+    }
+
+    if isProcessStuck {
+        (*dp).super_.state = ProcessState::UNINTERRUPTIBLE_WAIT;
+    }
+
+    libc::vm_deallocate(
+        libc::mach_task_self(),
+        thread_list as libc::vm_address_t,
+        size_of::<libc::thread_act_array_t>() * thread_count as usize,
+    );
+    mach_port_deallocate(libc::mach_task_self(), task);
 }
 
 #[cfg(test)]
@@ -816,5 +1005,75 @@ mod tests {
             dp.super_.state,
             ProcessState::RUNNING | ProcessState::SLEEPING
         ));
+    }
+
+    /// scanThreads on our own process: `task_for_pid(self)` always succeeds
+    /// (no SIP restriction on self), so the mach thread walk enumerates our
+    /// live threads into the table as userland-thread rows keyed by tid.
+    #[test]
+    fn scanThreads_enumerates_own_threads() {
+        use crate::ported::darwin::darwinmachine::host_basic_info_data_t;
+        use crate::ported::darwin::darwinprocesstable::ProcessTable_new;
+        use crate::ported::linux::linuxmachine::ZfsArcStats;
+        use crate::ported::settings::Settings;
+
+        // Address-stable host carrying settings; hideUserlandThreads = false so
+        // scanThreads keeps the thread rows visible and fully populated.
+        let mut dm = Box::new(DarwinMachine {
+            super_: Machine::default(),
+            host_info: host_basic_info_data_t::default(),
+            vm_stats: unsafe { zeroed() },
+            prev_load: ptr::null_mut(),
+            curr_load: ptr::null_mut(),
+            GPUService: 0,
+            zfs: ZfsArcStats::default(),
+        });
+        dm.super_.settings = Some(Settings {
+            hideUserlandThreads: false,
+            ..Default::default()
+        });
+
+        let mut dpt = ProcessTable_new(&dm.super_ as *const Machine, None);
+
+        // Add our own process to the table as the scan target; derive a stable
+        // raw pointer into its box (the box pointee survives `rows` growth).
+        let mypid = unsafe { libc::getpid() };
+        let (_pre, idx) = ProcessTable_getProcess(&mut dpt.super_, mypid, |h| {
+            DarwinProcess_new(h) as Box<dyn Object>
+        });
+        let dp: *mut DarwinProcess = {
+            let obj: &mut dyn Object = dpt.super_.super_.rows[idx].as_mut().unwrap().as_mut();
+            (obj as &mut dyn Any)
+                .downcast_mut::<DarwinProcess>()
+                .unwrap()
+        };
+        unsafe {
+            (*dp).taskAccess = true;
+            (*dp).super_.state = ProcessState::RUNNING;
+        }
+
+        let rows_before = dpt.super_.super_.rows.len();
+        let dpt_ptr: *mut DarwinProcessTable = &mut *dpt;
+        unsafe { DarwinProcess_scanThreads(dp, dpt_ptr) };
+
+        // Our own task is readable, so taskAccess stays true and threads were
+        // materialized as new rows.
+        assert!(unsafe { (*dp).taskAccess });
+        assert!(
+            dpt.super_.super_.rows.len() > rows_before,
+            "thread rows were added"
+        );
+        assert!(dpt.super_.totalTasks >= 1);
+
+        // The added rows are userland-thread rows whose thread group is our pid.
+        let thread_rows = dpt
+            .super_
+            .super_
+            .rows
+            .iter()
+            .flatten()
+            .filter(|o| o.as_process().map(|p| p.isUserlandThread).unwrap_or(false))
+            .count();
+        assert!(thread_rows >= 1, "at least one userland thread row");
     }
 }
