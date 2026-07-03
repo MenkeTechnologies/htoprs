@@ -30,11 +30,18 @@ pub struct Prefs {
 /// `~/.config/htoprs/prefs.json` (honoring `$XDG_CONFIG_HOME`), matching the
 /// `$HOME/.config` convention htoprs's `Settings` uses for `htoprc`.
 fn config_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("prefs.json"))
+}
+
+/// The `~/.config/htoprs` directory (honoring `$XDG_CONFIG_HOME`), shared by
+/// the prefs file and the other extension artifacts (saved filters, snapshot
+/// and export dumps). `None` when neither `$XDG_CONFIG_HOME` nor `$HOME` is set.
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("htoprs").join("prefs.json"))
+    Some(base.join("htoprs"))
 }
 
 /// Read the saved prefs, or `None` if the file is absent or unparsable.

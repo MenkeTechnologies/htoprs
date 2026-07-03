@@ -452,7 +452,7 @@ impl OverlayState {
 /// Map a raw ncurses key int to the crossterm [`KeyCode`] the overlay handlers
 /// expect. Printable ASCII becomes `Char`; the rest map from the `KEY_*`
 /// constants (mirrored from `crt.rs`).
-fn ncurses_to_keycode(ch: i32) -> Option<KeyCode> {
+pub(crate) fn ncurses_to_keycode(ch: i32) -> Option<KeyCode> {
     match ch {
         KEY_UP => Some(KeyCode::Up),
         KEY_DOWN => Some(KeyCode::Down),
@@ -642,7 +642,7 @@ fn ct(c: Color) -> crossterm::style::Color {
 /// Blit only the cells an overlay actually painted onto `out` via crossterm.
 /// Untouched backdrop cells (blank, default style) are skipped so the panels
 /// drawn underneath show through around the modal.
-fn blit<W: Write>(out: &mut W, buf: &Buffer) {
+pub(crate) fn blit<W: Write>(out: &mut W, buf: &Buffer) {
     let area = buf.area();
     for y in 0..area.height {
         for x in 0..area.width {
@@ -681,7 +681,7 @@ fn blit<W: Write>(out: &mut W, buf: &Buffer) {
 
 // ─── Buffer helpers (iftoprs render.rs) ────────────────────────────────────────
 
-fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: &str, s: Style) {
+pub(crate) fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: &str, s: Style) {
     let a = buf.area();
     if x < a.x + a.width && y < a.y + a.height {
         let c = &mut buf[(x, y)];
@@ -690,7 +690,7 @@ fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: &str, s: Style) {
     }
 }
 
-fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style, mw: u16) {
+pub(crate) fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style, mw: u16) {
     let aw = buf.area().x + buf.area().width;
     let ah = buf.area().y + buf.area().height;
     if y >= ah {
@@ -710,7 +710,7 @@ fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, st: Style, mw: u16) {
 
 /// Draw a filled box with a double-line border. Returns the top-left `(x0, y0)`
 /// of the box, centered in `area`.
-fn draw_box(buf: &mut Buffer, area: Rect, bw: u16, bh: u16, bg: Color, border_style: Style) -> (u16, u16) {
+pub(crate) fn draw_box(buf: &mut Buffer, area: Rect, bw: u16, bh: u16, bg: Color, border_style: Style) -> (u16, u16) {
     let x0 = (area.width.saturating_sub(bw)) / 2;
     let y0 = (area.height.saturating_sub(bh)) / 2;
     let x1 = x0 + bw - 1;

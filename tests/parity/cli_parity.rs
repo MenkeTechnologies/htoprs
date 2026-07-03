@@ -1,19 +1,30 @@
 //! CLI parity for the flags htoprs has ported so far, checked against the
-//! reference htop 3.5.x. htoprs's `CommandLine.c` help/version printers must
-//! reproduce htop's output exactly (modulo the rebrand), so these compare the
-//! two binaries' output byte-for-byte.
+//! reference htop 3.5.x. htoprs's `CommandLine.c` version printer must
+//! reproduce htop's output exactly (modulo the rebrand), so `version` compares
+//! the two binaries byte-for-byte. `-h`/`--help` is deliberately NOT a parity
+//! surface: `main.rs` routes it to the branded `extensions::help` printer, an
+//! intentional divergence from htop, so those byte-parity checks are ignored
+//! (see the `help` module).
 
 use super::harness::{assert_stdout_parity, canon, htoprs_bin, ref_available, run};
 
 mod help {
     use super::*;
 
+    // htoprs `-h`/`--help` is intentionally routed (main.rs) to the branded
+    // `extensions::help` printer — an ANSI-Shadow banner + styled sections that
+    // diverge from htop's plain help by design. Byte-parity with htop no longer
+    // applies to this surface, so these two checks are ignored rather than
+    // deleted; the faithful port lives on in `commandline::printHelpFlag` (unit
+    // tested there). `help_short_equals_long` below still holds and runs.
     #[test]
+    #[ignore = "help is a deliberate branded extension; not a byte-parity surface"]
     fn help_long() {
         assert_stdout_parity(&["--help"]);
     }
 
     #[test]
+    #[ignore = "help is a deliberate branded extension; not a byte-parity surface"]
     fn help_short() {
         assert_stdout_parity(&["-h"]);
     }

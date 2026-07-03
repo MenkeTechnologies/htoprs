@@ -49,6 +49,28 @@ enforced mechanically, following the same precedent as `zshrs`.
   The overlay is wired into `ScreenManager_run`: `c` opens the theme chooser,
   `C` the editor, `h`/`?` the help overlay, `g` toggles the header, `b` toggles
   the border (`b`, not `x` — htop binds `x` to the file-locks screen).
+  `extensions::bridge` materializes the live ported `Process` rows as the
+  `Proc` model (via `Object::as_process`), and `extensions::panels` is the
+  running-TUI wiring for the htoprs-original monitoring capabilities — the
+  monitoring analog of the theme overlay. A thread-local state is fed the real
+  table each sample tick (advancing the per-PID history rings, the debounced
+  threshold alerts, and the CPU history graph) and gets first refusal on keys,
+  with hotkeys chosen from those htop leaves unbound:
+
+  | Key | Capability |
+  |-----|------------|
+  | `f` | Fuzzy process finder (Enter jumps the cursor to the match) |
+  | `r` | Regex / substring filter over comm/cmdline/user, with a saved named store (`~/.config/htoprs/filters.json`) |
+  | `d` | Snapshot: first press captures a baseline, next press diffs the live table against it (`+`started `-`exited `~`changed); `w` writes the snapshot JSON |
+  | `o` | Export the current table to JSON + CSV under `~/.config/htoprs/` |
+  | `A` | Threshold alerts — the rule set and every currently-firing PID |
+  | `G` | Braille CPU history graph (system total plus the selected PID) |
+  | `v` | Toggle the per-PID CPU sparkline column on the process rows |
+
+  Two of these reach the rows themselves rather than a modal, injected at the
+  per-row draw site in `Panel_draw` (the same extension-hook pattern the theme
+  border uses, so no new ported `fn`): a firing-alert PID's row is recolored,
+  and the `v` sparkline column is overdrawn at the row's right edge.
 - **Port-purity gate (`build.rs`):** on every `cargo build` / `cargo test` /
   `cargo check` that touches `src/ported/`, every free `fn` name is checked
   against the htop C-function snapshot at `tests/data/htop_c_fn_names.txt`. A

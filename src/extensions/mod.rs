@@ -14,13 +14,16 @@
 //! via a base16-style ANSI palette remap consulted by `Ncurses::to_color`.
 //!
 //! The remaining modules are htoprs-original monitoring capabilities htop
-//! lacks, built against [`model::Proc`] (a stand-in for the ported `Process`
-//! until each is wired to `crate::ported::process`):
+//! lacks, built against [`model::Proc`]:
 //! [`procring`] per-process CPU/mem history + sparkline column,
 //! [`finder`] fuzzy process finder, [`snapshot`] capture + diff a table,
 //! [`filter`] regex + saved named filters, [`export`] table -> JSON/CSV,
 //! [`alerts`] debounced threshold rules, [`graph`] braille history graph.
 //! [`braille`] is the shared glyph renderer used by [`procring`] and [`graph`].
+//! [`bridge`] materializes the live ported `Process` rows as `Proc`, and
+//! [`panels`] is the running-TUI wiring — a thread-local state the run loop
+//! feeds each refresh, dispatches keys through, and draws over the panels
+//! (the monitoring analog of [`overlay`]).
 //! [`help`] renders the styled `htoprs -h` screen (figlet banner + status box
 //! + sectioned option list) shown in place of the plain ported `printHelpFlag`.
 
@@ -31,11 +34,13 @@ pub mod theme;
 
 pub mod alerts;
 pub mod braille;
+pub mod bridge;
 pub mod export;
 pub mod filter;
 pub mod finder;
 pub mod graph;
 pub mod help;
 pub mod model;
+pub mod panels;
 pub mod procring;
 pub mod snapshot;

@@ -9,9 +9,11 @@
 //! with htop 3.5.x runs the real comparison. Override the reference binary with
 //! `HTOP_REF=/path/to/htop`.
 //!
-//! htoprs is an early-stage port: only the `CommandLine.c` `-V`/`--version` and
-//! `-h`/`--help` printers are wired today, so those are the deterministic
-//! surfaces compared here. As more of htop's non-interactive CLI is ported
+//! htoprs is an early-stage port: the `CommandLine.c` `-V`/`--version` printer
+//! is wired and is the deterministic surface compared here. (`-h`/`--help` is
+//! deliberately routed to the branded `extensions::help` printer, so it is an
+//! intentional divergence and its parity checks are `#[ignore]`d.) As more of
+//! htop's non-interactive CLI is ported
 //! (the `CommandLine_parseArgs` getopt switch, `--sort-key=help`, etc.), add a
 //! `*_parity.rs` file next to this one and register it in `main.rs`.
 

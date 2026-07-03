@@ -728,6 +728,18 @@ pub fn ScreenManager_run(
             );
         }
 
+        // htoprs extension: feed the freshly-scanned process table to the
+        // monitoring engines (per-PID history rings, alert debounce, CPU graph)
+        // once per real sample tick — the cadence `checkRecalculation` rescans
+        // at, not on every key-driven redraw (which would distort the history).
+        if timedOut {
+            // SAFETY: host aliases the caller-owned Machine; activeTable is the
+            // caller-owned Table for the run (same deref as the draw block).
+            if let Some(table) = unsafe { (*this.host).activeTable } {
+                crate::extensions::panels::ingest(unsafe { &*table });
+            }
+        }
+
         // htoprs extension: bracket the frame's DRAWING in a synchronized-update
         // region (DEC private mode 2026) so the terminal applies the full
         // repaint atomically instead of flickering. htop avoids flicker via
@@ -766,6 +778,9 @@ pub fn ScreenManager_run(
                 let mut out = io::stdout().lock();
                 crate::extensions::overlay::draw_chrome(&mut out);
                 crate::extensions::overlay::draw_active(&mut out);
+                // htoprs extension: the monitoring modal (finder/filter/diff/
+                // export/alerts/graph) over the panels, above the theme overlay.
+                crate::extensions::panels::draw_active(&mut out);
             }
             force_redraw = false;
             // SAFETY: `host` aliases the caller-owned `Machine` for the run
@@ -809,6 +824,36 @@ pub fn ScreenManager_run(
                 closeTimeout = 0;
             }
             redraw = false;
+            continue;
+        }
+
+        // htoprs extension: the monitoring layer gets first refusal. When a
+        // monitoring modal is open it consumes every key; when idle it consumes
+        // only its own hotkeys (f/r/d/o/A/G/v) and yields everything else — it
+        // internally defers to the theme overlay when that is the open modal.
+        if crate::extensions::panels::dispatch_key(ch) {
+            // The finder's Enter picks a pid; move the panel's cursor to it.
+            if let Some(pid) = crate::extensions::panels::take_pending_select() {
+                // SAFETY: activeTable / its panel are the caller-owned Table and
+                // Panel for the run (same deref chain as the draw block).
+                if let Some(table) = unsafe { (*this.host).activeTable } {
+                    let panel_ptr = unsafe { (*table).panel };
+                    if !panel_ptr.is_null() {
+                        let idx = crate::extensions::bridge::index_of_pid(
+                            unsafe { &*panel_ptr },
+                            pid,
+                        );
+                        if let Some(idx) = idx {
+                            crate::ported::panel::Panel_setSelected(
+                                unsafe { &mut *panel_ptr },
+                                idx,
+                            );
+                        }
+                    }
+                }
+            }
+            redraw = true;
+            force_redraw = true;
             continue;
         }
 

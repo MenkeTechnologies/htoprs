@@ -327,7 +327,11 @@ mod tests {
 
     #[test]
     fn enter_applies_selected_layout_and_marks_only_that_row() {
-        let mut scr = ScreenManager_new(Some(header()), Machine::default(), state());
+        // `hdr`/`host`/`st` outlive `scr`, which only aliases them by raw pointer.
+        let mut hdr = header();
+        let mut host = Machine::default();
+        let mut st = state();
+        let mut scr = ScreenManager_new(&mut hdr, &mut host, &mut st);
         // ScreenManager_resize reads panels[panelCount - 1]; give it one panel.
         scr.panelCount = 1;
         scr.panels.push(Box::new(Panel_new(0, 0, 10, 5, None)));
@@ -349,8 +353,9 @@ mod tests {
             assert_eq!(item_checked(&this.super_, i), i == 2, "row {i} check state");
         }
         // The chosen layout is applied to the header via the scr back-pointer.
+        // SAFETY: `scr.header` aliases `hdr`, alive for the test body.
         assert_eq!(
-            scr.header.as_ref().unwrap().headerLayout,
+            unsafe { &*scr.header }.headerLayout,
             HeaderLayout::HF_TWO_33_67
         );
         // Settings marked changed and lastUpdate bumped via the settings pointer.
@@ -360,7 +365,11 @@ mod tests {
 
     #[test]
     fn non_activation_key_is_ignored() {
-        let mut scr = ScreenManager_new(Some(header()), Machine::default(), state());
+        // `hdr`/`host`/`st` outlive `scr`, which only aliases them by raw pointer.
+        let mut hdr = header();
+        let mut host = Machine::default();
+        let mut st = state();
+        let mut scr = ScreenManager_new(&mut hdr, &mut host, &mut st);
         scr.panelCount = 1;
         scr.panels.push(Box::new(Panel_new(0, 0, 10, 5, None)));
         let mut set = settings();
@@ -380,8 +389,9 @@ mod tests {
         }
         assert!(!set.changed);
         assert_eq!(set.lastUpdate, 0);
+        // SAFETY: `scr.header` aliases `hdr`, alive for the test body.
         assert_eq!(
-            scr.header.as_ref().unwrap().headerLayout,
+            unsafe { &*scr.header }.headerLayout,
             HeaderLayout::HF_ONE_100
         );
     }

@@ -475,7 +475,12 @@ mod tests {
             headerMargin: false,
             screenTabs: false,
         };
-        let mut scr = ScreenManager_new(Some(header), Machine::default(), state());
+        // `header`/`state` must outlive the returned `scr`, which only aliases
+        // them by raw pointer; leak them for the test process's lifetime.
+        let header_raw = Box::into_raw(Box::new(header));
+        let state_raw = Box::into_raw(Box::new(state()));
+        let host_raw = Box::into_raw(Box::new(Machine::default()));
+        let mut scr = ScreenManager_new(header_raw, host_raw, state_raw);
         scr.panelCount = 1;
         scr.panels.push(Box::new(Panel_new(0, 0, 10, 5, None)));
         scr

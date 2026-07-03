@@ -111,8 +111,11 @@ mod tests {
 
     #[test]
     fn opt_never_swallows_long_spec() {
-        // The widest real spec must still leave a space before `//`.
+        // The widest real spec must survive intact and still leave a space
+        // before `//` (the `:<48` pad is wider than the spec).
         let row = opt("-H, --highlight-changes[=DELAY]", "y");
-        assert!(row.contains("] //"));
+        assert!(row.contains("-H, --highlight-changes[=DELAY]"), "spec preserved");
+        let slashes = row.find("//").expect("comment marker present");
+        assert_eq!(&row[slashes - 1..slashes], " ", "space before //");
     }
 }

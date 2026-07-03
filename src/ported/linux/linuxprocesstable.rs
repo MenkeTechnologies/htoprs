@@ -94,8 +94,10 @@ pub struct TtyDriver {
 /// Port of `struct LinuxProcessTable_` (`LinuxProcessTable.h:22`).
 /// "Extends" [`ProcessTable`] via the embedded `super_` field and adds
 /// the Linux-specific tty-driver table and capability flags. The
-/// `HAVE_DELAYACCT`-gated netlink fields are omitted here — this build
-/// commits to the non-delayacct branch (see the `libnl` module).
+/// `#ifdef HAVE_DELAYACCT` netlink fields are present under
+/// `cfg(target_os = "linux")` — the delayacct build is modeled as
+/// Linux-only (see the `libnl` module); non-Linux mirrors the
+/// `HAVE_DELAYACCT`-off variant that omits them.
 pub struct LinuxProcessTable {
     /// C `ProcessTable super` — the embedded base table.
     pub super_: ProcessTable,
@@ -106,6 +108,16 @@ pub struct LinuxProcessTable {
     pub haveSmapsRollup: bool,
     /// C `bool haveAutogroup` — autogroup scheduling supported.
     pub haveAutogroup: bool,
+    /// C `int netlink_family` (`#ifdef HAVE_DELAYACCT`) — the resolved
+    /// TASKSTATS generic-netlink family id (or `-1` if unresolved).
+    #[cfg(target_os = "linux")]
+    pub netlink_family: i32,
+    /// C `struct nl_sock* netlink_socket` (`#ifdef HAVE_DELAYACCT`) — the
+    /// persistent generic-netlink socket used for delay-accounting queries.
+    /// `neli`'s `NlSocketHandle` replaces libnl's opaque `nl_sock`; `None`
+    /// until `initNetlinkSocket` opens it (see the `libnl` module).
+    #[cfg(target_os = "linux")]
+    pub netlink_socket: Option<neli::socket::NlSocketHandle>,
 }
 
 /// Port of `LinuxProcessTable.c:71`. Opens `pathname` (relative to the
@@ -401,6 +413,10 @@ pub fn ProcessTable_new(host: *const Machine, pidMatchList: Option<usize>) -> Li
         ttyDrivers: None,
         haveSmapsRollup: false,
         haveAutogroup: false,
+        #[cfg(target_os = "linux")]
+        netlink_family: -1,
+        #[cfg(target_os = "linux")]
+        netlink_socket: None,
     };
 
     ProcessTable_init(&mut this.super_, host, pidMatchList);

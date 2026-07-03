@@ -59,6 +59,7 @@ use crate::ported::crt::{
 use crate::ported::functionbar::{FunctionBar, FunctionBar_delete, FunctionBar_draw, Ncurses};
 use crate::ported::listitem::ListItem;
 use crate::ported::object::Object;
+use crate::ported::process::Process_getPid;
 use crate::ported::richstring::{
     RichString, RichString_rewind, RichString_setAttr, RichString_size, RichString_sizeVal,
     RichString_writeWide,
@@ -735,8 +736,13 @@ pub fn Panel_draw(
         let mut i = first;
         while line < h && i < up_to {
             let mut highlight_attr = 0i32;
+            // htoprs extension: the pid of a process row, for the alert recolor
+            // and sparkline hooks below. `None` for non-process rows (setup
+            // screens, meter lists) — those get no decoration.
+            let row_pid: Option<u32>;
             {
                 let item_obj: &dyn Object = this.items[i as usize].object();
+                row_pid = item_obj.as_process().map(|p| Process_getPid(p).max(0) as u32);
                 let sz = RichString_size(&item);
                 RichString_rewind(&mut item, sz);
                 item.highlightAttr = 0;
@@ -748,6 +754,14 @@ pub fn Panel_draw(
                 item.highlightAttr = selection_color;
                 highlight_attr = selection_color;
             }
+            // htoprs extension: a firing threshold-alert row is recolored, over
+            // the selection highlight (safety visibility wins). No-op otherwise.
+            if let Some(pid) = row_pid {
+                if let Some(attr) = crate::extensions::panels::alert_attr(pid) {
+                    item.highlightAttr = attr;
+                    highlight_attr = attr;
+                }
+            }
             if item.highlightAttr != 0 {
                 Ncurses::attrset(&mut out, item.highlightAttr);
                 let ha = item.highlightAttr;
@@ -758,6 +772,11 @@ pub fn Panel_draw(
             Ncurses::mvhline(&mut out, y + line, x, ' ', w);
             if amt > 0 {
                 Panel::print_offset(&mut out, y + line, x, &item, scrollH, amt);
+            }
+            // htoprs extension: overdraw the per-PID CPU sparkline column at the
+            // row's right edge when the `v` toggle is on (no-op otherwise).
+            if let Some(pid) = row_pid {
+                crate::extensions::panels::draw_spark_col(&mut out, y + line, x, w, pid);
             }
             if highlight_attr != 0 {
                 Ncurses::attrset(

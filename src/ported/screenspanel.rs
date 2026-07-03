@@ -1526,11 +1526,12 @@ mod tests {
             panelCount: 0,
             panels: Vec::new(),
             name: None,
-            header: None,
-            host: None,
+            header: core::ptr::null_mut(),
+            host: core::ptr::null_mut(),
             // ScreenManager_insert -> header_height derefs `state`; a minimal
             // State (hideMeters=false, no header) makes the layout math return 0.
-            state: Some(crate::ported::action::State {
+            // Leaked so the raw `state` pointer stays valid for the panel's run.
+            state: Box::into_raw(Box::new(crate::ported::action::State {
                 host: core::ptr::null_mut(),
                 mainPanel: core::ptr::null_mut(),
                 header: core::ptr::null_mut(),
@@ -1538,7 +1539,7 @@ mod tests {
                 pauseUpdate: false,
                 hideSelection: false,
                 hideMeters: false,
-            }),
+            })),
         });
         let sp = ScreensPanel_new(
             settings.as_mut() as *mut Settings,
