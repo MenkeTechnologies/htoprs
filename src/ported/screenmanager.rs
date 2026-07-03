@@ -76,7 +76,7 @@ use crate::ported::crt::{
 };
 use crate::ported::functionbar::Ncurses;
 use crate::ported::header::{Header, Header_draw, Header_updateData};
-use crate::ported::machine::Machine;
+use crate::ported::machine::{Machine, Machine_scanTables};
 use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_draw, Panel_getCh, Panel_move, Panel_onKey,
     Panel_resize, Panel_size, EVENT_PANEL_LOST_FOCUS,
@@ -359,40 +359,113 @@ pub fn checkRecalculation(
     timedOut: &mut bool,
     force_redraw: &mut bool,
 ) {
-    // The clock params drive the gapped time-sampling core above; bound here
-    // so the faithful seven-arg `&mut` signature (`ScreenManager_run` passes
-    // all of them) compiles warning-free.
-    let _ = (&oldTime, &sortTimeout, &timedOut, &force_redraw);
+    let _ = &force_redraw; // C bumps this on a UID/PID-digit change (unmodeled)
 
-    // if (*redraw) { Table_rebuildPanel(host->activeTable);
-    //               if (!this->state->hideMeters) Header_draw(this->header); }
-    // "always update header, especially to avoid gaps in graph meters"
-    // (C ScreenManager.c:152-153, inside the rescan block that always sets
-    // redraw). Runs each meter's `updateValues` slot so `curItems`/
-    // `curAttributes` reflect the sampled data before `Header_draw` — without
-    // this a meter is drawn at its `Meter_new` init state (`curItems ==
-    // maxItems`), which over-runs the shorter class `attributes` palette.
-    if !this.header.is_null() {
-        // SAFETY: `header` is non-null (guarded) and aliases the caller-owned
-        // `Header` for the run.
-        Header_updateData(unsafe { &mut *this.header });
+    // Platform_gettime_realtime(&host->realtime, &host->realtimeMs): resample
+    // the wall clock into host->realtimeMs so the delay gate advances.
+    #[cfg(target_os = "macos")]
+    {
+        let mut tv = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        // SAFETY: host aliases the caller-owned Machine for the run.
+        let ms = unsafe { &mut (*this.host).realtimeMs };
+        crate::ported::darwin::platform::Platform_gettime_realtime(&mut tv, ms);
+    }
+
+    // newTime = tv_sec*10 + tv_usec/100000 == realtimeMs / 100 (tenths of a
+    // second); host->settings->delay is also in tenths.
+    // SAFETY: host aliases the caller-owned Machine.
+    let newTime = unsafe { (*this.host).realtimeMs } as f64 / 100.0;
+    let delay = unsafe {
+        (*this.host)
+            .settings
+            .as_ref()
+            .map(|s| s.delay)
+            .unwrap_or(15)
+    } as f64;
+
+    *timedOut = (newTime - *oldTime) > delay;
+    *rescan |= *timedOut;
+    if newTime < *oldTime {
+        *rescan = true; // clock was adjusted?
+    }
+
+    if *rescan {
+        *oldTime = newTime;
+
+        // SAFETY: state aliases the caller-owned State.
+        let pauseUpdate = unsafe { (*this.state).pauseUpdate };
+        let treeView = unsafe {
+            (*this.host)
+                .settings
+                .as_ref()
+                .and_then(|s| s.screens.get(s.ssIndex as usize))
+                .map(|ss| ss.treeView)
+                .unwrap_or(false)
+        };
+        if !pauseUpdate && (*sortTimeout == 0 || treeView) {
+            // host->activeTable->needsSort = true; *sortTimeout = 1;
+            if let Some(table) = unsafe { (*this.host).activeTable } {
+                // SAFETY: activeTable is the caller-owned Table for the run.
+                unsafe {
+                    (*table).needsSort = true;
+                }
+            }
+            *sortTimeout = 1;
+        }
+
+        // Machine_scan(host): resample the system-wide metrics (CPU/mem/swap/
+        // load/…). The generic loop dispatches to the per-OS scanner through
+        // the offset-0 `Machine` super downcast — the established darwin idiom
+        // (darwinprocess.rs `host as *const DarwinMachine`); both XMachine
+        // structs are `#[repr(C)]` with `super_: Machine` first.
+        #[cfg(target_os = "macos")]
+        {
+            let dhost = this.host as *mut crate::ported::darwin::darwinmachine::DarwinMachine;
+            // SAFETY: base Machine* round-trips to *mut DarwinMachine (offset 0).
+            crate::ported::darwin::darwinmachine::Machine_scan(unsafe { &mut *dhost });
+        }
+        #[cfg(all(not(target_os = "macos"), target_os = "linux"))]
+        {
+            let lhost = this.host as *mut crate::ported::linux::linuxmachine::LinuxMachine;
+            // SAFETY: base Machine* round-trips to *mut LinuxMachine (offset 0).
+            crate::ported::linux::linuxmachine::Machine_scan(unsafe { &mut *lhost });
+        }
+
+        // if (!pauseUpdate) Machine_scanTables(host): refresh the process table.
+        if !pauseUpdate {
+            // SAFETY: host aliases the caller-owned Machine; the Machine_scan
+            // &mut above has already ended.
+            Machine_scanTables(unsafe { &mut *this.host });
+        }
+
+        // this->state->failedUpdate = Platform_getFailedState(): the failed-
+        // state reader is unported; leave failedUpdate untouched.
+
+        // "always update header, especially to avoid gaps in graph meters"
+        // (ScreenManager.c:152-153). Runs each meter's updateValues slot so
+        // curItems/curAttributes reflect the freshly sampled data before draw.
+        if !this.header.is_null() {
+            // SAFETY: header non-null, aliases the caller-owned Header.
+            Header_updateData(unsafe { &mut *this.header });
+        }
+
+        *redraw = true;
     }
 
     if *redraw {
-        // SAFETY: `host` aliases the caller-owned `Machine` for the run (see
-        // the module docs); C dereferences `host->activeTable` unconditionally.
-        if let Some(table) = unsafe { &*this.host }.activeTable {
-            // C dereferences `host->activeTable` (a `Table*`); the ported
-            // `activeTable` is the same raw `*mut Table` handle, and
-            // `Table_rebuildPanel` takes `&mut Table`.
+        // Table_rebuildPanel(host->activeTable)
+        // SAFETY: host aliases the caller-owned Machine for the run.
+        if let Some(table) = unsafe { (*this.host).activeTable } {
             unsafe {
                 Table_rebuildPanel(&mut *table);
             }
         }
-        // SAFETY: `state` aliases the caller-owned `State` for the run.
-        if !unsafe { &*this.state }.hideMeters && !this.header.is_null() {
-            // SAFETY: `header` is non-null (guarded above), aliasing the
-            // caller-owned `Header`.
+        // if (!this->state->hideMeters) Header_draw(this->header)
+        // SAFETY: state aliases the caller-owned State.
+        if !unsafe { (*this.state).hideMeters } && !this.header.is_null() {
             let header = unsafe { &mut *this.header };
             let mut out = io::stdout().lock();
             Header_draw(header, &mut out);
@@ -400,7 +473,6 @@ pub fn checkRecalculation(
         }
     }
 
-    // *rescan = false;
     *rescan = false;
 }
 
