@@ -144,6 +144,35 @@ pub trait Object: core::any::Any {
         let _ = other;
         unimplemented!("Object::compare: class has no compare method (C NULL vtable slot)")
     }
+
+    /// C `As_Row(this)` — the concrete [`RowClass`](crate::ported::row::RowClass)
+    /// vtable for a `Row`-derived object, or `None` for objects that are not
+    /// `Row`s (meters, panels, list items). The `Row` display/dispatch path
+    /// ([`Row_display`](crate::ported::row::Row_display)) reads the
+    /// `writeField` / `isHighlighted` slots through this. The default models
+    /// a non-`Row` object.
+    fn row_class(&self) -> Option<&'static crate::ported::row::RowClass> {
+        None
+    }
+
+    /// C `(const Row*)cast` — a view of this object's embedded [`Row`] base,
+    /// or `None` for objects that are not `Row`s. `Row`-derived types return
+    /// their embedded `Row` (`Process` → `super_`, `LinuxProcess` →
+    /// `super_.super_`); the shared display path reads `host`/`tag`/tomb/new
+    /// state through it. The default models a non-`Row` object.
+    fn as_row(&self) -> Option<&crate::ported::row::Row> {
+        None
+    }
+
+    /// C `(const Process*)super` — a view of this object's embedded
+    /// [`Process`](crate::ported::process::Process) base, or `None` for
+    /// non-`Process` objects. Both `Process` (itself) and `LinuxProcess`
+    /// (`super_`) return their embedded `Process`, so a `Process`-level vtable
+    /// slot works on either concrete type (C's pointer cast up the embed chain
+    /// has no `Any`-downcast analog). The default models a non-`Process`.
+    fn as_process(&self) -> Option<&crate::ported::process::Process> {
+        None
+    }
 }
 
 /// Port of `bool Object_isA(const Object* o, const ObjectClass* klass)`

@@ -46,6 +46,7 @@
 //! *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements as CE, ColorScheme, TreeStr};
@@ -56,15 +57,16 @@ use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendWide, RichString_setAttrn, RichString_size,
 };
 use crate::ported::row::{
-    spaceship_number, PercentageAttr, Row, Row_class, Row_fieldWidths, Row_getGroupOrParent,
-    Row_init, Row_pidDigits, Row_printCount, Row_printKBytes, Row_printLeftAlignedField,
-    Row_printPercentage, Row_printTime, Row_uidDigits,
+    spaceship_number, PercentageAttr, Row, RowClass, Row_class, Row_display, Row_fieldWidths,
+    Row_getGroupOrParent, Row_init, Row_pidDigits, Row_printCount, Row_printKBytes,
+    Row_printLeftAlignedField, Row_printPercentage, Row_printTime, Row_uidDigits,
 };
 use crate::ported::scheduling::Scheduling_formatPolicy;
 use crate::ported::settings::{RowField, Settings_isReadonly};
 use crate::ported::xutils::{compareRealNumbers, String_startsWith};
 use core::any::Any;
 use core::ffi::c_void;
+use core::ops::Deref;
 use std::sync::atomic::Ordering;
 
 /// Port of `#define SPACESHIP_NULLSTR(a, b)` from `Macros.h:37`:
@@ -455,20 +457,74 @@ impl Default for ProcessState {
     }
 }
 
-/// Port of `const ProcessClass Process_class` from `Process.c:1113`.
-/// Its object-class super chain is `.extends = Class(Row)` with
-/// `.compare = Process_compare`; only the base-class link is modeled by
-/// [`ObjectClass`], and the compare slot is realized by the
-/// [`Object::compare`] impl below. The `RowClass`/`ProcessClass` vtable
-/// slots (`writeField`, `compareByKey`, …) live in stubbed functions.
-pub static Process_class: ObjectClass = ObjectClass {
-    extends: Some(&Row_class),
+/// Port of `typedef int (*Process_CompareByKey)(const Process*, const
+/// Process*, ProcessField)` (`Process.h:242`). The C `const Process*`
+/// receivers are `&dyn Object` here (downcast by the slot).
+pub type Process_CompareByKey = fn(&dyn Object, &dyn Object, ProcessField) -> i32;
+
+/// Port of `typedef struct ProcessClass_` (`Process.h:244`) — the `Process`
+/// vtable, embedding [`RowClass`] (`super_`) and adding the `compareByKey`
+/// slot. `Deref<Target = ObjectClass>` (through the embedded `RowClass`) lets
+/// a `&ProcessClass` coerce to `&ObjectClass` for the class-identity API.
+pub struct ProcessClass {
+    pub super_: RowClass,
+    pub compareByKey: Option<Process_CompareByKey>,
+}
+
+impl Deref for ProcessClass {
+    type Target = ObjectClass;
+    fn deref(&self) -> &ObjectClass {
+        &self.super_.super_
+    }
+}
+
+/// Port of `const ProcessClass Process_class` from `Process.c:1113`. The
+/// `RowClass` vtable wires the slots whose port already matches the slot
+/// signature — `isHighlighted` ([`Process_rowIsHighlighted`]) and
+/// `writeField` ([`Process_rowWriteField`]); `isVisible` / `matchesFilter` /
+/// `sortKeyString` / `compareByParent` / `compareByKey` stay `None` until
+/// those functions are ported to the slot signature. `.compare =
+/// Process_compare` and `.delete` are realized by the [`Object`] impl / `Drop`.
+pub static Process_class: ProcessClass = ProcessClass {
+    super_: RowClass {
+        super_: ObjectClass {
+            extends: Some(&Row_class.super_),
+        },
+        isHighlighted: Some(Process_rowIsHighlighted),
+        isVisible: None,
+        writeField: Some(Process_rowWriteField),
+        matchesFilter: None,
+        sortKeyString: None,
+        compareByParent: None,
+    },
+    compareByKey: None,
 };
 
 impl Object for Process {
-    /// C `this->super.super.klass` set to `&Process_class`.
+    /// C `this->super.super.klass` — the embedded [`ObjectClass`] of the
+    /// [`ProcessClass`] vtable.
     fn klass(&self) -> &'static ObjectClass {
-        &Process_class
+        &Process_class.super_.super_
+    }
+
+    /// C `As_Row(this)` — `Process`'s [`RowClass`] vtable.
+    fn row_class(&self) -> Option<&'static RowClass> {
+        Some(&Process_class.super_)
+    }
+
+    /// C `(const Row*)this` — the embedded base of a `Process`.
+    fn as_row(&self) -> Option<&Row> {
+        Some(&self.super_)
+    }
+
+    /// C `(const Process*)this` — a `Process` is its own embedded `Process`.
+    fn as_process(&self) -> Option<&Process> {
+        Some(self)
+    }
+
+    /// C `Process_class.super.super.display = Row_display`.
+    fn display(&self, out: &mut RichString) {
+        Row_display(self, out)
     }
 
     /// C `Process_class.super.super.compare = Process_compare`. Downcasts
@@ -799,12 +855,16 @@ pub fn processStateChar(state: ProcessState) -> char {
     }
 }
 
-/// TODO: port of `static void Process_rowWriteField(const Row* super,
-/// RichString* str, RowField field)` from `Process.c:590`. Blocked on the
-/// unported ncurses draw layer (delegates into [`Process_writeField`],
-/// which builds a `RichString` and reads `CRT_colors[...]`).
-pub fn Process_rowWriteField() {
-    todo!("port of Process.c:590 — needs RichString + CRT_colors")
+/// Port of `static void Process_rowWriteField(const Row* super, RichString*
+/// str, RowField field)` from `Process.c:590` — the `writeField`
+/// [`RowClass`] vtable slot for `Process`. Downcasts the object (C's
+/// `(const Process*)super`) and delegates to [`Process_writeField`].
+pub fn Process_rowWriteField(super_: &dyn Object, str: &mut RichString, field: RowField) {
+    debug_assert!(Object_isA(Some(super_), &Process_class));
+    let this = super_
+        .as_process()
+        .expect("Process_rowWriteField: row is not a Process");
+    Process_writeField(this, str, field);
 }
 
 /// Port of `void Process_writeField(const Process* this, RichString* str,
@@ -1182,15 +1242,17 @@ pub fn Process_rowGetSortKey(super_: &dyn Object) -> Option<&[u8]> {
 }
 
 /// TODO: port of `static bool Process_isHighlighted(const Process* this)`
-/// from `Process.c:852`. Blocked on the `Machine` host deref: the C body
-/// reads `this->super.host->settings->shadowOtherUsers` and
-/// `host->htopUserId`, but [`Row::host`](crate::ported::row::Row::host)
-/// is an opaque `*const c_void` (no `Machine`/`Settings` deref available)
-/// and the ported `Settings` subset carries no `shadowOtherUsers` field.
-/// Signature set so [`Process_rowIsHighlighted`] can delegate faithfully.
+/// from `Process.c:852`. True when the row belongs to another user and
+/// `shadowOtherUsers` is set, so the display shadows it. Reads
+/// `this->super.host->settings->shadowOtherUsers` and `host->htopUserId` via
+/// the established `Row::host as *const Machine` deref.
 pub fn Process_isHighlighted(this: &Process) -> bool {
-    let _ = this;
-    todo!("port of Process.c:852 — needs host->settings->shadowOtherUsers + host->htopUserId (Row::host is an opaque pointer; Settings subset lacks shadowOtherUsers)")
+    let host = unsafe { &*(this.super_.host as *const Machine) };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Process_isHighlighted: host->settings is NULL");
+    settings.shadowOtherUsers && this.st_uid != host.htopUserId
 }
 
 /// Port of `bool Process_rowIsHighlighted(const Row* super)` from
@@ -1199,8 +1261,8 @@ pub fn Process_isHighlighted(this: &Process) -> bool {
 /// [`Process_isHighlighted`]; the wiring is faithful.
 pub fn Process_rowIsHighlighted(super_: &dyn Object) -> bool {
     debug_assert!(Object_isA(Some(super_), &Process_class));
-    let this = (super_ as &dyn Any)
-        .downcast_ref::<Process>()
+    let this = super_
+        .as_process()
         .expect("Process_rowIsHighlighted: row is not a Process");
     Process_isHighlighted(this)
 }
@@ -2157,7 +2219,7 @@ mod tests {
     fn process_klass_chain_extends_row() {
         // Process_class -> Row_class -> Object_class.
         let p = proc();
-        assert!(core::ptr::eq(p.klass(), &Process_class));
+        assert!(core::ptr::eq(p.klass(), &Process_class.super_.super_));
         assert!(crate::ported::object::Object_isA(
             Some(&p as &dyn Object),
             &Process_class

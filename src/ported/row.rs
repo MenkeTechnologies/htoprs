@@ -44,6 +44,7 @@
 //! *ported*, so scaffolding does not inflate coverage.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
 use crate::ported::crt::ColorElements::*;
@@ -53,9 +54,11 @@ use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::process::ProcessField;
 use crate::ported::settings::{RowField, Settings};
+use crate::ported::table::Table;
+use core::ops::Deref;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendChr, RichString_appendnAscii,
-    RichString_appendnWideColumns,
+    RichString_appendnWideColumns, RichString_setAttr, RichString_size,
 };
 use crate::ported::xutils::countDigits;
 use core::any::Any;
@@ -233,23 +236,80 @@ impl Default for Row {
     }
 }
 
+/// Port of `typedef void (*Row_WriteField)(const Row*, RichString*,
+/// RowField)` (`Row.h:80`). The C `const Row*` receiver is a `&dyn Object`
+/// here; the slot downcasts to its concrete type via `Any`.
+pub type Row_WriteField = fn(&dyn Object, &mut RichString, RowField);
+/// Port of `typedef bool (*Row_IsHighlighted)(const Row*)` (`Row.h:81`).
+pub type Row_IsHighlighted = fn(&dyn Object) -> bool;
+/// Port of `typedef bool (*Row_IsVisible)(const Row*, const Table*)`
+/// (`Row.h:82`).
+pub type Row_IsVisible = fn(&dyn Object, &Table) -> bool;
+/// Port of `typedef bool (*Row_MatchesFilter)(const Row*, const Table*)`
+/// (`Row.h:83`).
+pub type Row_MatchesFilter = fn(&dyn Object, &Table) -> bool;
+/// Port of `typedef const char* (*Row_SortKeyString)(Row*)` (`Row.h:84`);
+/// the C `const char*` becomes an owned `String`.
+pub type Row_SortKeyString = fn(&dyn Object) -> String;
+/// Port of `typedef int (*Row_CompareByParent)(const Row*, const Row*)`
+/// (`Row.h:85`).
+pub type Row_CompareByParent = fn(&dyn Object, &dyn Object) -> i32;
+
+/// Port of `typedef struct RowClass_` (`Row.h:88`) — the `Row` vtable. It
+/// embeds [`ObjectClass`] (`super_`, the first field, so [`Deref`] and the
+/// class-identity pointers coincide) and adds the Row-level virtual slots.
+/// `Deref<Target = ObjectClass>` lets a `&RowClass` coerce to `&ObjectClass`
+/// wherever the class-identity API ([`Object_isA`]) expects one, so the C
+/// `As_Row`/`(ObjectClass*)` casts need no call-site changes.
+pub struct RowClass {
+    pub super_: ObjectClass,
+    pub isHighlighted: Option<Row_IsHighlighted>,
+    pub isVisible: Option<Row_IsVisible>,
+    pub writeField: Option<Row_WriteField>,
+    pub matchesFilter: Option<Row_MatchesFilter>,
+    pub sortKeyString: Option<Row_SortKeyString>,
+    pub compareByParent: Option<Row_CompareByParent>,
+}
+
+impl Deref for RowClass {
+    type Target = ObjectClass;
+    fn deref(&self) -> &ObjectClass {
+        &self.super_
+    }
+}
+
 /// Port of `const RowClass Row_class` from `Row.c:560`:
-/// `{ .super = { .extends = Class(Object), .compare = Row_compare } }`.
-///
-/// Only the base-class link is modeled by [`ObjectClass`] (see
-/// `object.rs`); the `.compare = Row_compare` slot is realized by the
-/// [`Object::compare`] impl below. The `RowClass`-specific vtable slots
-/// (`isHighlighted`, `writeField`, …) are all NULL in the C initializer,
-/// so nothing else is set. Declared `static` for stable-address class
-/// identity, matching C's `const ObjectClass` globals.
-pub static Row_class: ObjectClass = ObjectClass {
-    extends: Some(&Object_class),
+/// `{ .super = { .extends = Class(Object), .compare = Row_compare } }`. The
+/// `.compare = Row_compare` slot is realized by the [`Object::compare`] impl
+/// below; every Row-level virtual slot is `NULL` in the C initializer
+/// (`None` here). Declared `static` for stable-address class identity.
+pub static Row_class: RowClass = RowClass {
+    super_: ObjectClass {
+        extends: Some(&Object_class),
+    },
+    isHighlighted: None,
+    isVisible: None,
+    writeField: None,
+    matchesFilter: None,
+    sortKeyString: None,
+    compareByParent: None,
 };
 
 impl Object for Row {
-    /// C `this->super.klass` set to `&Row_class` by `Object_setClass`.
+    /// C `this->super.klass` set to `&Row_class` by `Object_setClass`; here
+    /// the embedded [`ObjectClass`] of the [`RowClass`] vtable.
     fn klass(&self) -> &'static ObjectClass {
-        &Row_class
+        &Row_class.super_
+    }
+
+    /// C `As_Row(this)` — the concrete [`RowClass`] vtable for a base `Row`.
+    fn row_class(&self) -> Option<&'static RowClass> {
+        Some(&Row_class)
+    }
+
+    /// C `(const Row*)this` — a base `Row` is its own embedded `Row`.
+    fn as_row(&self) -> Option<&Row> {
+        Some(self)
     }
 
     /// C `Row_class.super.compare = Row_compare`. Dispatches to
@@ -337,9 +397,57 @@ pub fn Row_isTomb(this: &Row) -> bool {
     this.tombStampMs > 0
 }
 
-/// TODO: port of `void Row_display(const Object* cast, RichString* out` from `Row.c:62`.
-pub fn Row_display() {
-    todo!("port of Row.c:62")
+/// Port of `void Row_display(const Object* cast, RichString* out)` from
+/// `Row.c:62` — the `Object_display` slot for every `Row`-derived type.
+/// Renders each active-screen field through the concrete row's `writeField`
+/// [`RowClass`] slot, then applies the highlight/tag/tomb/new attribute
+/// overlays. The C `(const Row*)cast` becomes [`Object::as_row`]; the
+/// `As_Row(this)->writeField`/`isHighlighted` vtable dispatch goes through
+/// [`Object::row_class`].
+pub fn Row_display(cast: &dyn Object, out: &mut RichString) {
+    let this = cast.as_row().expect("Row_display: object is not a Row");
+    // C `this->host->settings`.
+    let host = unsafe { &*(this.host as *const Machine) };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Row_display: host->settings is NULL");
+    let scheme = ColorScheme::active();
+
+    let rc = cast
+        .row_class()
+        .expect("Row_display: object has no RowClass vtable");
+    let write_field = rc
+        .writeField
+        .expect("Row_display: RowClass has no writeField slot");
+
+    // C `for (int i = 0; fields[i]; i++) As_Row(this)->writeField(...)`.
+    let fields = &settings.screens[settings.ssIndex as usize].fields;
+    for &field in fields {
+        if field == 0 {
+            break; // NULL_FIELD terminator
+        }
+        write_field(cast, out, field);
+    }
+
+    // C `Row_isHighlighted(this)` — the `isHighlighted` slot, or false.
+    if rc.isHighlighted.map_or(false, |f| f(cast)) {
+        RichString_setAttr(out, PROCESS_SHADOW.packed(scheme));
+    }
+
+    if this.tag {
+        RichString_setAttr(out, PROCESS_TAG.packed(scheme));
+    }
+
+    if settings.highlightChanges {
+        if Row_isTomb(this) {
+            out.highlightAttr = PROCESS_TOMB.packed(scheme);
+        } else if Row_isNew(this) {
+            out.highlightAttr = PROCESS_NEW.packed(scheme);
+        }
+    }
+
+    debug_assert!(RichString_size(out) > 0);
 }
 
 /// Port of `void Row_setPidColumnWidth(pid_t maxPid)` from `Row.c:86`.

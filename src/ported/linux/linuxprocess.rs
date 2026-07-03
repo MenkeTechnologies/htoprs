@@ -43,13 +43,14 @@ use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::process::{
-    spaceship_nullstr, Process, ProcessField, ProcessFieldData, Process_class, Process_compare,
-    Process_compareByKey_Base, Process_getPid, Process_init, Process_writeField, Tristate,
-    PROCESS_FLAG_CWD, PROCESS_FLAG_IO, PROCESS_FLAG_SCHEDPOL,
+    spaceship_nullstr, Process, ProcessClass, ProcessField, ProcessFieldData, Process_class,
+    Process_compare, Process_compareByKey_Base, Process_getPid, Process_init,
+    Process_rowIsHighlighted, Process_writeField, Tristate, PROCESS_FLAG_CWD, PROCESS_FLAG_IO,
+    PROCESS_FLAG_SCHEDPOL,
 };
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
 use crate::ported::row::{
-    spaceship_number, PercentageAttr, Row_fieldWidths, Row_printBytes, Row_printCount,
+    spaceship_number, PercentageAttr, RowClass, Row_fieldWidths, Row_printBytes, Row_printCount,
     Row_printKBytes, Row_printNanoseconds, Row_printPercentage, Row_printRate, Row_printTime,
 };
 use crate::ported::settings::RowField;
@@ -382,22 +383,54 @@ pub struct LinuxProcess {
 }
 
 /// Port of `const ProcessClass LinuxProcess_class` from `LinuxProcess.c:459`.
-/// Only the class-identity link is modeled by [`ObjectClass`]
-/// (`.super.super.extends = Class(Process)`); the vtable slots
-/// (`.writeField = LinuxProcess_rowWriteField`, `.compareByKey =
-/// LinuxProcess_compareByKey`, `.delete = Process_delete`, `.display =
-/// Row_display`, `.compare = Process_compare`) are realized by the ported
-/// free functions and the [`Object`] impl below, mirroring how
-/// `Process_class` models `Process`'s vtable.
-pub static LinuxProcess_class: ObjectClass = ObjectClass {
-    extends: Some(&Process_class),
+/// The `RowClass` vtable wires `isHighlighted` ([`Process_rowIsHighlighted`],
+/// inherited) and `writeField` ([`LinuxProcess_rowWriteField`]); the other
+/// slots (`isVisible` / `matchesFilter` / `sortKeyString` / `compareByParent`
+/// / `compareByKey`) stay `None` until those functions are ported to the slot
+/// signature. `.compare = Process_compare` and `.delete` are realized by the
+/// [`Object`] impl / `Drop`.
+pub static LinuxProcess_class: ProcessClass = ProcessClass {
+    super_: RowClass {
+        super_: ObjectClass {
+            extends: Some(&Process_class.super_.super_),
+        },
+        isHighlighted: Some(Process_rowIsHighlighted),
+        isVisible: None,
+        writeField: Some(LinuxProcess_rowWriteField),
+        matchesFilter: None,
+        sortKeyString: None,
+        compareByParent: None,
+    },
+    compareByKey: None,
 };
 
 impl Object for LinuxProcess {
     /// C `Object_setClass(this, Class(LinuxProcess))` in [`LinuxProcess_new`]:
-    /// the object's class is `&LinuxProcess_class`.
+    /// the embedded [`ObjectClass`] of the [`ProcessClass`] vtable.
     fn klass(&self) -> &'static ObjectClass {
-        &LinuxProcess_class
+        &LinuxProcess_class.super_.super_
+    }
+
+    /// C `As_Row(this)` — `LinuxProcess`'s [`RowClass`] vtable.
+    fn row_class(&self) -> Option<&'static RowClass> {
+        Some(&LinuxProcess_class.super_)
+    }
+
+    /// C `(const Row*)this` — the embedded base (`super_.super_`) of a
+    /// `LinuxProcess`.
+    fn as_row(&self) -> Option<&crate::ported::row::Row> {
+        Some(&self.super_.super_)
+    }
+
+    /// C `(const Process*)this` — the embedded `Process` (`super_`) of a
+    /// `LinuxProcess`, so `Process`-level slots work on a `LinuxProcess`.
+    fn as_process(&self) -> Option<&Process> {
+        Some(&self.super_)
+    }
+
+    /// C `LinuxProcess_class.super.super.display = Row_display`.
+    fn display(&self, out: &mut RichString) {
+        crate::ported::row::Row_display(self, out)
     }
 
     /// C `LinuxProcess_class.super.super.compare = Process_compare`.
@@ -660,9 +693,16 @@ fn LinuxProcess_totalIORate(lp: &LinuxProcess) -> f64 {
 /// delegate to a `Row_print*` helper, `break` arms format into a buffer and
 /// pick a color that the shared tail appends. `HAVE_OPENVZ`/`HAVE_VSERVER`
 /// are off (no `CTID`/`VPID`/`VXID` arms); `HAVE_DELAYACCT` is on.
-pub fn LinuxProcess_rowWriteField(this: &LinuxProcess, str: &mut RichString, field: RowField) {
+///
+/// This is the `writeField` [`RowClass`] vtable slot for `LinuxProcess`; the
+/// C `const Row* super` receiver is a `&dyn Object` downcast to
+/// [`LinuxProcess`] (C's `(const LinuxProcess*)super`).
+pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, field: RowField) {
     use ProcessField as PF;
 
+    let this = (super_ as &dyn Any)
+        .downcast_ref::<LinuxProcess>()
+        .expect("LinuxProcess_rowWriteField: row is not a LinuxProcess");
     let host = unsafe { &*(this.super_.super_.host as *const Machine) };
     let lhost = unsafe { &*(this.super_.super_.host as *const LinuxMachine) };
     let coloring = host
@@ -1176,7 +1216,7 @@ mod tests {
 
         let render = |lp: &LinuxProcess, field: RowField| -> i32 {
             let mut rs = RichString::default();
-            LinuxProcess_rowWriteField(lp, &mut rs, field);
+            LinuxProcess_rowWriteField(lp as &dyn Object, &mut rs, field);
             RichString_size(&rs)
         };
 
@@ -1190,5 +1230,37 @@ mod tests {
         // A base field (STATE running) delegates to Process_writeField → "R ".
         lp.super_.state = ProcessState::RUNNING;
         assert_eq!(render(&lp, ProcessField::STATE as RowField), 2);
+    }
+
+    /// The full display vtable chain: `Object::display` → `Row_display` →
+    /// `row_class().writeField` (`LinuxProcess_rowWriteField`) renders each
+    /// active-screen field. Confirms the `RowClass` vtable dispatch resolves
+    /// to the `LinuxProcess` slot.
+    #[test]
+    fn display_dispatches_writefield_through_rowclass_vtable() {
+        use crate::ported::process::ProcessState;
+        use crate::ported::richstring::{RichString, RichString_size};
+        use crate::ported::settings::{RowField, ScreenSettings, Settings};
+
+        let mut machine = Machine::default();
+        let mut settings = Settings::default();
+        settings.screens = vec![ScreenSettings {
+            fields: vec![
+                ProcessField::PID as RowField,
+                ProcessField::STATE as RowField,
+            ],
+            ..Default::default()
+        }];
+        machine.settings = Some(settings);
+
+        let mut lp = LinuxProcess_new(core::ptr::null());
+        lp.super_.super_.host = &machine as *const Machine as *const c_void;
+        lp.super_.state = ProcessState::RUNNING;
+
+        // Dispatch through the Object::display slot (= Row_display).
+        let mut out = RichString::default();
+        (&lp as &dyn Object).display(&mut out);
+        // PID (>=6 cols) + STATE "R " (2) were both written by the vtable slot.
+        assert!(RichString_size(&out) >= 8);
     }
 }
