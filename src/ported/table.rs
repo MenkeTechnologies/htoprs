@@ -86,9 +86,19 @@
 
 use std::collections::HashMap;
 
+use crate::ported::crt::{ColorElements, ColorScheme, TreeStr};
 use crate::ported::machine::Machine;
+use crate::ported::process::ProcessField;
+use crate::ported::richstring::{
+    RichString, RichString_appendAscii, RichString_appendWide, RichString_getCharVal,
+    RichString_rewind, RichString_size,
+};
 use crate::ported::row::{
-    Row, Row_compare, Row_compareByParent_Base, Row_getGroupOrParent, Row_isChildOf,
+    Row, RowField_alignedTitle, Row_compare, Row_compareByParent_Base, Row_getGroupOrParent,
+    Row_isChildOf,
+};
+use crate::ported::settings::{
+    RowField, ScreenSettings_getActiveDirection, ScreenSettings_getActiveSortKey, Settings,
 };
 use crate::ported::vector::{insertionSort, quickSort};
 
@@ -531,19 +541,58 @@ pub fn Table_rebuildPanel() {
     )
 }
 
-/// TODO: port of `void Table_printHeader(const Settings* settings,
-/// RichString* header)` from `Table.c:368`. A pure function (never
-/// touches `Table`). `ScreenSettings_getActiveSortKey` /
-/// `ScreenSettings_getActiveDirection` are ported and `ScreenSettings`
-/// now models the `fields` array and `treeViewAlwaysByPID`
-/// (`settings.rs`), but the per-column loop is still blocked on unported
-/// callees: `RowField_alignedTitle` (`todo!()` at `row.rs:404`, itself
-/// blocked on `Process_fields` / `DynamicColumn`), `CRT_treeStr` with
-/// `TREE_STR_ASC`/`TREE_STR_DESC` (the `TREE_STR` tables are unported,
-/// see `crt.rs:1889`), and `Settings.showMergedCommand` (still not a
-/// modeled `Settings` field). See the module header for detail.
-pub fn Table_printHeader() {
-    todo!("port of Table.c:368 — needs RowField_alignedTitle + CRT_treeStr/TREE_STR tables + Settings.showMergedCommand")
+/// Port of `void Table_printHeader(const Settings* settings, RichString*
+/// header)` from `Table.c:368`. Rebuilds the column-header `RichString`: for
+/// each active-screen field, appends its aligned title in the header or
+/// selection color, overlays the ascending/descending tree glyph on the
+/// active sort column, and appends `"(merged)"` after `COMM` when
+/// `showMergedCommand` is set. Pure (never touches a `Table`).
+pub fn Table_printHeader(settings: &Settings, header: &mut RichString) {
+    // C `RichString_rewind(header, RichString_size(header))` — clear it.
+    RichString_rewind(header, RichString_size(header));
+
+    let ss = &settings.screens[settings.ssIndex as usize];
+    let key = ScreenSettings_getActiveSortKey(ss);
+    let scheme = ColorScheme::active();
+
+    for &field in &ss.fields {
+        if field == 0 {
+            break; // NULL_FIELD terminator
+        }
+
+        let color = if ss.treeView && ss.treeViewAlwaysByPID {
+            ColorElements::PANEL_HEADER_FOCUS.packed(scheme)
+        } else if key == field {
+            ColorElements::PANEL_SELECTION_FOCUS.packed(scheme)
+        } else {
+            ColorElements::PANEL_HEADER_FOCUS.packed(scheme)
+        };
+
+        RichString_appendWide(header, color, RowField_alignedTitle(settings, field).as_bytes());
+
+        // On the active sort column, override a trailing space with the
+        // ascending/descending tree glyph.
+        if key == field
+            && RichString_getCharVal(header, (RichString_size(header) - 1) as usize) == ' '
+        {
+            let ascending = ScreenSettings_getActiveDirection(ss) == 1;
+            RichString_rewind(header, 1);
+            let glyph = if ascending {
+                TreeStr::TREE_STR_ASC
+            } else {
+                TreeStr::TREE_STR_DESC
+            };
+            RichString_appendWide(
+                header,
+                ColorElements::PANEL_SELECTION_FOCUS.packed(scheme),
+                glyph.glyph().as_bytes(),
+            );
+        }
+
+        if field == ProcessField::COMM as RowField && settings.showMergedCommand {
+            RichString_appendAscii(header, color, b"(merged)");
+        }
+    }
 }
 
 /// Port of `void Table_prepareEntries(Table* this)` from `Table.c:401`.
@@ -964,5 +1013,33 @@ mod tests {
         assert_eq!(ids, vec![1, 2, 4, 5]);
         // index map points at the right slots after compaction
         assert_eq!(t.rows[*t.table.get(&4).unwrap()].as_ref().unwrap().id, 4);
+    }
+
+    /// [`Table_printHeader`] builds a non-empty header from the active
+    /// screen's columns and is idempotent — the leading `RichString_rewind`
+    /// clears the prior contents, so a second call yields the same size.
+    #[test]
+    fn print_header_renders_columns_and_is_idempotent() {
+        use crate::ported::settings::ScreenSettings;
+
+        let mut settings = Settings::default();
+        settings.screens = vec![ScreenSettings {
+            fields: vec![
+                ProcessField::PID as RowField,
+                ProcessField::NICE as RowField,
+            ],
+            sortKey: ProcessField::PID as RowField,
+            direction: 1,
+            ..Default::default()
+        }];
+
+        let mut header = RichString::default();
+        Table_printHeader(&settings, &mut header);
+        let n = RichString_size(&header);
+        assert!(n > 0);
+
+        // Rewind-and-rebuild → identical size (not doubled).
+        Table_printHeader(&settings, &mut header);
+        assert_eq!(RichString_size(&header), n);
     }
 }
