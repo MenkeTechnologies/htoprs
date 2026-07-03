@@ -478,6 +478,21 @@ impl Ncurses {
             queue!(out, Hide)
         };
     }
+
+    /// ncurses `clear()` — erase the whole screen and home the cursor.
+    pub(crate) fn clear<W: Write>(out: &mut W) {
+        let _ = queue!(out, terminal::Clear(terminal::ClearType::All), MoveTo(0, 0));
+    }
+
+    /// ncurses `beep()` — the audible terminal bell (BEL, `\a`).
+    pub(crate) fn beep<W: Write>(out: &mut W) {
+        let _ = out.write_all(b"\x07");
+    }
+
+    /// ncurses `refresh()` — flush the queued output to the terminal.
+    pub(crate) fn refresh<W: Write>(out: &mut W) {
+        let _ = out.flush();
+    }
 }
 
 #[cfg(test)]

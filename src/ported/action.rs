@@ -1476,7 +1476,12 @@ pub fn actionTag(st: &mut State) -> Htop_Reaction {
 /// | HTOP_REDRAW_BAR;`. Blocked on the ncurses `clear()` primitive, which is
 /// not ported in `crt.rs` (no `clear`/`refresh` drawing primitives exist yet).
 pub fn actionRedraw(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:675 — clear() ncurses primitive unported in crt.rs")
+    // C `clear();` — wipe the screen so the next draw is from a clean slate.
+    let mut out = std::io::stdout().lock();
+    Ncurses::clear(&mut out);
+    Ncurses::refresh(&mut out);
+    // HTOP_RECALCULATE here makes Ctrl-L also refresh the data, not just redraw.
+    HTOP_RECALCULATE | HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
 /// Port of `static Htop_Reaction actionTogglePauseUpdate(State* st)` from
