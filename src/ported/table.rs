@@ -668,7 +668,11 @@ pub fn Table_printHeader(settings: &Settings, header: &mut RichString) {
             ColorElements::PANEL_HEADER_FOCUS.packed(scheme)
         };
 
-        RichString_appendWide(header, color, RowField_alignedTitle(settings, field).as_bytes());
+        RichString_appendWide(
+            header,
+            color,
+            RowField_alignedTitle(settings, field).as_bytes(),
+        );
 
         // On the active sort column, override a trailing space with the
         // ascending/descending tree glyph.
@@ -746,8 +750,7 @@ pub fn Table_cleanupRow(this: &mut Table, idx: usize) -> bool {
         // process no longer exists
         if highlight_changes && was_shown {
             // mark tombed
-            this.row_mut(idx).tombStampMs =
-                mono + (1000i64 * highlight_delay as i64) as u64;
+            this.row_mut(idx).tombStampMs = mono + (1000i64 * highlight_delay as i64) as u64;
             should_remove = false;
         } else {
             // immediately remove
@@ -867,10 +870,7 @@ mod tests {
 
     /// The ids in display order.
     fn display_ids(t: &Table) -> Vec<i32> {
-        t.displayList
-            .iter()
-            .map(|&i| t.row(i).id)
-            .collect()
+        t.displayList.iter().map(|&i| t.row(i).id).collect()
     }
 
     #[test]

@@ -204,7 +204,10 @@ pub fn HeaderOptionsPanel_eventHandler(this: &mut HeaderOptionsPanel, ch: i32) -
 /// `CheckItem_set((CheckItem*)Panel_get(super, headerLayout), true)` write is
 /// reproduced by indexing `super_.items[headerLayout]` and downcasting via the
 /// `Any` supertrait, the same mutating analog `ColorsPanel_new` uses.
-pub fn HeaderOptionsPanel_new(settings: *mut Settings, scr: *mut ScreenManager) -> HeaderOptionsPanel {
+pub fn HeaderOptionsPanel_new(
+    settings: *mut Settings,
+    scr: *mut ScreenManager,
+) -> HeaderOptionsPanel {
     let fuBar = FunctionBar_new(Some(&HeaderOptionsFunctions[..]), None, None);
     let super_ = Panel_new(1, 1, 1, 1, Some(fuBar));
 
@@ -218,7 +221,10 @@ pub fn HeaderOptionsPanel_new(settings: *mut Settings, scr: *mut ScreenManager) 
     for i in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
         Panel_add(
             &mut this.super_,
-            Box::new(CheckItem_newByVal(HeaderLayout_layouts[i].description, false)),
+            Box::new(CheckItem_newByVal(
+                HeaderLayout_layouts[i].description,
+                false,
+            )),
         );
     }
 

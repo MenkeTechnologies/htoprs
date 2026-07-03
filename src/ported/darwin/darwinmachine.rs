@@ -99,8 +99,8 @@ pub struct DarwinMachine {
 /// a failure is fatal, as in the C.
 pub fn DarwinMachine_getHostInfo(p: &mut host_basic_info_data_t) {
     // C `HOST_BASIC_INFO_COUNT` == sizeof(host_basic_info_data_t)/sizeof(integer_t).
-    let mut info_size = (size_of::<host_basic_info_data_t>() / size_of::<c_int>())
-        as libc::mach_msg_type_number_t;
+    let mut info_size =
+        (size_of::<host_basic_info_data_t>() / size_of::<c_int>()) as libc::mach_msg_type_number_t;
     let rc = unsafe {
         host_info(
             libc::mach_host_self(),
@@ -140,7 +140,8 @@ pub fn DarwinMachine_freeCPULoadInfo(p: &mut libc::processor_cpu_load_info_t) {
 pub fn DarwinMachine_allocateCPULoadInfo(p: &mut libc::processor_cpu_load_info_t) -> u32 {
     // C passes `sizeof(processor_cpu_load_info_t)`; host_processor_info
     // overwrites it with the real count.
-    let mut info_size = size_of::<libc::processor_cpu_load_info_t>() as libc::mach_msg_type_number_t;
+    let mut info_size =
+        size_of::<libc::processor_cpu_load_info_t>() as libc::mach_msg_type_number_t;
     let mut cpu_count: libc::natural_t = 0;
 
     let rc = unsafe {

@@ -116,9 +116,7 @@ use crate::ported::functionbar::{
 };
 use crate::ported::incset::{IncSet, IncSet_delete, IncSet_drawBar};
 use crate::ported::object::{Arg, Object};
-use crate::ported::panel::{
-    Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size,
-};
+use crate::ported::panel::{Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size};
 use crate::ported::row::Row;
 use crate::ported::table::Table_printHeader;
 
@@ -335,10 +333,16 @@ pub fn MainPanel_drawFunctionBar(this: &mut MainPanel, hideFunctionBar: bool) {
     let state = unsafe { &*this.state };
     if state.pauseUpdate {
         // C: FunctionBar_append("PAUSED", CRT_colors[PAUSED]);
-        FunctionBar_append("PAUSED", ColorElements::PAUSED.packed(ColorScheme::active()));
+        FunctionBar_append(
+            "PAUSED",
+            ColorElements::PAUSED.packed(ColorScheme::active()),
+        );
     } else if let Some(msg) = &state.failedUpdate {
         // C: FunctionBar_append(this->state->failedUpdate, CRT_colors[FAILED_READ]);
-        FunctionBar_append(msg, ColorElements::FAILED_READ.packed(ColorScheme::active()));
+        FunctionBar_append(
+            msg,
+            ColorElements::FAILED_READ.packed(ColorScheme::active()),
+        );
     }
 }
 

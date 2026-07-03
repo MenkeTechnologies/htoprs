@@ -318,7 +318,11 @@ mod tests {
         assert_eq!(m.curItems, 1);
         assert!(m.total >= 4.0, "total clamped up to activeCPUs");
         assert!(m.curAttributes.is_some(), "a bar color is selected");
-        assert_eq!(m.txtBuffer.matches('/').count(), 2, "three '/'-joined figures");
+        assert_eq!(
+            m.txtBuffer.matches('/').count(),
+            2,
+            "three '/'-joined figures"
+        );
     }
 
     #[test]

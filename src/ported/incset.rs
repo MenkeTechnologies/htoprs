@@ -63,8 +63,8 @@
 use std::io::{self, Write};
 
 use crate::ported::crt::{
-    ColorElements, ColorScheme, ERR, KEY_DOWN, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK, KEY_RESIZE,
-    KEY_UP,
+    ColorElements, ColorScheme, ERR, KEY_DOWN, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK,
+    KEY_RESIZE, KEY_UP,
 };
 use crate::ported::functionbar::{
     FunctionBar, FunctionBar_delete, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_getWidth,
@@ -80,8 +80,8 @@ use crate::ported::lineeditor::{
 use crate::ported::listitem::ListItem;
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    Panel, Panel_get, Panel_getSelected, Panel_getSelectedIndex, Panel_prune, Panel_setDefaultBar,
-    Panel_setSelected, Panel_size, PanelItem, KEY_MOUSE_BAR_CLICK,
+    Panel, PanelItem, Panel_get, Panel_getSelected, Panel_getSelectedIndex, Panel_prune,
+    Panel_setDefaultBar, Panel_setSelected, Panel_size, KEY_MOUSE_BAR_CLICK,
 };
 use crate::ported::vector::{Vector, Vector_get, Vector_size};
 use crate::ported::xutils::String_contains_i;
@@ -462,7 +462,9 @@ pub fn IncSet_handleKey(
     }
 
     // C: IncMode* mode = this->active;
-    let mode = this.active.expect("IncSet_handleKey called with no active mode");
+    let mode = this
+        .active
+        .expect("IncSet_handleKey called with no active mode");
     let midx = mode as usize;
     // C: int size = Panel_size(panel);
     let size = Panel_size(panel);
@@ -474,7 +476,11 @@ pub fn IncSet_handleKey(
     // C: if (ch == KEY_MOUSE_BAR_CLICK) { ... IncSet_drawBar; return false; }
     if ch == KEY_MOUSE_BAR_CLICK {
         let fieldStartX = FunctionBar_getWidth(&this.modes[midx].bar);
-        LineEditor_click(&mut this.modes[midx].editor, panel.lastMouseBarClickX, fieldStartX);
+        LineEditor_click(
+            &mut this.modes[midx].editor,
+            panel.lastMouseBarClickX,
+            fieldStartX,
+        );
         IncSet_drawBar(this, panel, functionBar);
         return false;
     }
@@ -495,9 +501,12 @@ pub fn IncSet_handleKey(
     } else if ch == KEY_UP {
         // C: History navigation: older entry
         if this.history.is_some() {
-            let entry =
-                History_navigate(this.history.as_mut().unwrap(), &this.modes[midx].editor, true)
-                    .map(str::to_string);
+            let entry = History_navigate(
+                this.history.as_mut().unwrap(),
+                &this.modes[midx].editor,
+                true,
+            )
+            .map(str::to_string);
             if let Some(entry) = entry {
                 LineEditor_setText(&mut this.modes[midx].editor, &entry);
                 if this.modes[midx].isFilter {
@@ -512,9 +521,12 @@ pub fn IncSet_handleKey(
     } else if ch == KEY_DOWN {
         // C: History navigation: newer entry
         if this.history.is_some() {
-            let entry =
-                History_navigate(this.history.as_mut().unwrap(), &this.modes[midx].editor, false)
-                    .map(str::to_string);
+            let entry = History_navigate(
+                this.history.as_mut().unwrap(),
+                &this.modes[midx].editor,
+                false,
+            )
+            .map(str::to_string);
             if let Some(entry) = entry {
                 LineEditor_setText(&mut this.modes[midx].editor, &entry);
                 if this.modes[midx].isFilter {

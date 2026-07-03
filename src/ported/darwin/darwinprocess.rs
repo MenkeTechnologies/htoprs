@@ -154,9 +154,7 @@ pub fn DarwinProcess_compareByKey() {
 pub fn DarwinProcess_updateExe(pid: libc::pid_t, proc: &mut Process) {
     let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
 
-    let r = unsafe {
-        libc::proc_pidpath(pid, path.as_mut_ptr() as *mut c_void, path.len() as u32)
-    };
+    let r = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr() as *mut c_void, path.len() as u32) };
     if r <= 0 {
         return;
     }
@@ -222,7 +220,10 @@ pub fn DarwinProcess_updateCmdLine(k: &kinfo_proc, proc: &mut Process) {
             k.kp_proc.p_comm.len(),
         )
     };
-    let comm_len = comm_field.iter().position(|&b| b == 0).unwrap_or(comm_field.len());
+    let comm_len = comm_field
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(comm_field.len());
     let comm = String::from_utf8_lossy(&comm_field[..comm_len]).into_owned();
     Process_updateComm(proc, Some(&comm));
 
@@ -328,7 +329,11 @@ pub fn DarwinProcess_updateCmdLine(k: &kinfo_proc, proc: &mut Process) {
         Some((cmdline, end)) => Process_updateCmdline(proc, Some(&cmdline), 0, end),
         None => {
             let end = comm.len();
-            let arg = if comm.is_empty() { None } else { Some(comm.as_str()) };
+            let arg = if comm.is_empty() {
+                None
+            } else {
+                Some(comm.as_str())
+            };
             Process_updateCmdline(proc, arg, 0, end);
         }
     }
@@ -342,12 +347,8 @@ const MAXNAMLEN: c_int = 255;
 extern "C" {
     // `char* devname_r(dev_t dev, mode_t type, char* buf, int len)` — the
     // reentrant tty-name lookup; not exposed by `libc`.
-    fn devname_r(
-        dev: libc::dev_t,
-        mode: libc::mode_t,
-        buf: *mut c_char,
-        len: c_int,
-    ) -> *mut c_char;
+    fn devname_r(dev: libc::dev_t, mode: libc::mode_t, buf: *mut c_char, len: c_int)
+        -> *mut c_char;
 }
 
 /// Port of `static char* DarwinProcess_getDevname(dev_t dev)` from
@@ -419,7 +420,7 @@ pub fn DarwinProcess_setFromKInfoProc(proc: &mut Process, ps: &kinfo_proc, exist
         proc.tty_nr = ps.kp_eproc.e_tdev as u64;
         proc.tty_name = None;
 
-        proc.starttime_ctime = ep.p_starttime.tv_sec as i64;
+        proc.starttime_ctime = ep.p_starttime.tv_sec;
         Process_fillStarttimeBuffer(proc);
 
         DarwinProcess_updateExe(ep.p_pid, proc);
@@ -637,7 +638,10 @@ mod tests {
         let mut st: libc::stat = unsafe { zeroed() };
         let rc = unsafe { libc::stat(b"/dev/null\0".as_ptr() as *const c_char, &mut st) };
         assert_eq!(rc, 0);
-        assert_eq!(DarwinProcess_getDevname(st.st_rdev).as_deref(), Some("null"));
+        assert_eq!(
+            DarwinProcess_getDevname(st.st_rdev).as_deref(),
+            Some("null")
+        );
     }
 
     #[test]

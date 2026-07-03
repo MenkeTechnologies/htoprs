@@ -73,9 +73,7 @@ pub fn MemoryMeter_updateValues(this: &mut Meter) {
     if this.mode == GRAPH_METERMODE || this.mode == BAR_METERMODE {
         for i in 0..Platform_numberOfMemoryClasses {
             let mc = &Platform_memoryClasses[i];
-            if (mc.countsAsCache && !show_cached_memory)
-                || !(mc.countsAsCache || mc.countsAsUsed)
-            {
+            if (mc.countsAsCache && !show_cached_memory) || !(mc.countsAsCache || mc.countsAsUsed) {
                 this.values[i] = f64::NAN;
             }
         }
@@ -102,7 +100,11 @@ pub fn MemoryMeter_display(this: &Meter, out: &mut RichString) {
 
     RichString_writeAscii(out, ColorElements::METER_TEXT.packed(scheme), b":");
     let buffer = Meter_humanUnit(this.total);
-    RichString_appendAscii(out, ColorElements::METER_VALUE.packed(scheme), buffer.as_bytes());
+    RichString_appendAscii(
+        out,
+        ColorElements::METER_VALUE.packed(scheme),
+        buffer.as_bytes(),
+    );
 
     // print the memory classes in the order supplied (specific to each platform)
     for i in 0..Platform_numberOfMemoryClasses {
@@ -111,7 +113,10 @@ pub fn MemoryMeter_display(this: &Meter, out: &mut RichString) {
             let shadow = ColorElements::METER_SHADOW.packed(scheme);
             (shadow, shadow)
         } else {
-            (ColorElements::METER_TEXT.packed(scheme), mc.color.packed(scheme))
+            (
+                ColorElements::METER_TEXT.packed(scheme),
+                mc.color.packed(scheme),
+            )
         };
 
         let buffer = Meter_humanUnit(this.values[i]);
@@ -232,7 +237,8 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]    #[test]
+    #[cfg(not(target_os = "macos"))]
+    #[test]
     fn update_values_sums_used_and_formats() {
         use crate::ported::meter::TEXT_METERMODE;
         // TEXT mode (not graph/bar) → no masking. used = used+shared+compressed.
@@ -246,7 +252,8 @@ mod tests {
         assert_eq!(m.values[4], 1024.0);
     }
 
-    #[cfg(not(target_os = "macos"))]    #[test]
+    #[cfg(not(target_os = "macos"))]
+    #[test]
     fn bar_mode_masks_cache_when_hidden() {
         // BAR mode + showCachedMemory=false → buffers/cache masked to NaN.
         let mut m = hosted(false, BAR_METERMODE);

@@ -85,7 +85,9 @@
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init};
+use crate::ported::infoscreen::{
+    InfoScreen, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
+};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::Panel_new;

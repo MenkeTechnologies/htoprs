@@ -7,9 +7,7 @@
 #![allow(dead_code)]
 
 use crate::ported::crt::ColorElements;
-use crate::ported::meter::{
-    Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE,
-};
+use crate::ported::meter::{Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE};
 use crate::ported::object::ObjectClass;
 
 /// Port of `static void DateTimeMeter_updateValues(Meter* this)` from

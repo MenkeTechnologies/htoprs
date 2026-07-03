@@ -388,8 +388,10 @@ pub fn Action_writeableProcess(st: &State) -> bool {
             .as_ref()
             .expect("Action_writeableProcess: host->settings is NULL")
     };
-    let readonly =
-        Settings_isReadonly() || settings.screens[settings.ssIndex as usize].dynamic.is_some();
+    let readonly = Settings_isReadonly()
+        || settings.screens[settings.ssIndex as usize]
+            .dynamic
+            .is_some();
     !readonly
 }
 
@@ -404,7 +406,9 @@ pub fn Action_readableProcess(st: &State) -> bool {
             .as_ref()
             .expect("Action_readableProcess: host->settings is NULL")
     };
-    settings.screens[settings.ssIndex as usize].dynamic.is_none()
+    settings.screens[settings.ssIndex as usize]
+        .dynamic
+        .is_none()
 }
 
 /// TODO: port of `static Htop_Reaction actionSetSortColumn(State* st)` from
@@ -577,8 +581,7 @@ pub fn actionToggleTreeView(st: &State) -> Htop_Reaction {
             let ss = &mut (*host).settings.as_mut().unwrap().screens[ssidx];
             ss.treeView = !ss.treeView;
         }
-        let all_collapsed =
-            (*host).settings.as_ref().unwrap().screens[ssidx].allBranchesCollapsed;
+        let all_collapsed = (*host).settings.as_ref().unwrap().screens[ssidx].allBranchesCollapsed;
 
         let at = (*host)
             .activeTable
@@ -1070,7 +1073,9 @@ pub fn actionLsof() {
 /// Blocked on the same ncurses substrate as [`actionLsof`]: `clear()` is
 /// unported and `ProcessLocksScreen` does not implement `InfoScreenClass`.
 pub fn actionShowLocks() {
-    todo!("port of Action.c:597 — clear() unported + ProcessLocksScreen has no InfoScreenClass impl")
+    todo!(
+        "port of Action.c:597 — clear() unported + ProcessLocksScreen has no InfoScreenClass impl"
+    )
 }
 
 /// TODO: port of `static Htop_Reaction actionBacktrace(State *st)` from
@@ -1147,7 +1152,9 @@ pub fn addattrstr() {
 /// `refresh()`, [`addattrstr`] and `CRT_readKey`'s companions, plus the
 /// `Platform_memoryClasses` table — none ported in `crt.rs`.
 pub fn actionHelp() {
-    todo!("port of Action.c:751 — clear/attrset/mvaddstr/mvhline/refresh ncurses substrate unported")
+    todo!(
+        "port of Action.c:751 — clear/attrset/mvaddstr/mvhline/refresh ncurses substrate unported"
+    )
 }
 
 /// Port of `static Htop_Reaction actionUntagAll(State* st)` from

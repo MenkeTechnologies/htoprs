@@ -600,7 +600,13 @@ pub fn DiskIOMeter_draw(out: &mut dyn Write, this: &mut Meter, x: i32, y: i32, w
         .diskIOTimeMeter
         .draw
         .expect("DiskIOMeter_draw: time sub-meter draw");
-    time_draw(&mut *out, &mut data.diskIOTimeMeter, x + colwidth + diff, y, colwidth);
+    time_draw(
+        &mut *out,
+        &mut data.diskIOTimeMeter,
+        x + colwidth + diff,
+        y,
+        colwidth,
+    );
 }
 
 /// Port of `static void DiskIOMeter_init(Meter* this)` from `DiskIOMeter.c:265`.

@@ -120,9 +120,9 @@ use crate::ported::listitem::{
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
     HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert, Panel_new,
-    Panel_onKey, Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar,
-    Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, EVENT_PANEL_LOST_FOCUS,
-    EVENT_SET_SELECTED,
+    Panel_onKey, Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection,
+    Panel_setDefaultBar, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor,
+    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::screenmanager::ScreenManager;
@@ -1304,7 +1304,10 @@ mod tests {
         let mut settings = settings_with(vec![builtin("Main"), builtin("I/O")]);
         let mut panel = names_panel(&mut settings);
         // Row 0 edits screens[1]; its display value is the new name.
-        panel.super_.items.push(PanelItem::Owned(name_item("Renamed", Some(1))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Renamed", Some(1))));
 
         renameScreenSettings(&mut panel, 0);
 
@@ -1350,7 +1353,10 @@ mod tests {
     fn start_renaming_enters_edit_mode_on_selected_row() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         panel.super_.selected = 0;
 
         startRenaming(&mut panel);
@@ -1382,7 +1388,10 @@ mod tests {
     fn renaming_default_key_edits_editor_and_row_value() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
 
         let r = ScreenNamesPanel_eventHandlerRenaming(&mut panel, b'X' as i32);
@@ -1396,7 +1405,10 @@ mod tests {
     fn renaming_equals_is_swallowed_without_editing() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
 
         let r = ScreenNamesPanel_eventHandlerRenaming(&mut panel, EQUALS);
@@ -1410,7 +1422,10 @@ mod tests {
     fn renaming_esc_cancels_and_restores_original_name() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
         // Type an edit, then cancel: the saved original must be restored and
         // the screen heading left untouched.
@@ -1435,7 +1450,10 @@ mod tests {
     fn renaming_enter_commits_edit_to_screen_settings() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
         ScreenNamesPanel_eventHandlerRenaming(&mut panel, b'Z' as i32); // "MainZ"
 
@@ -1458,7 +1476,10 @@ mod tests {
         // state stays intact.
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         panel.super_.selected = 0;
         enter_renaming(&mut panel, 0);
 
@@ -1474,7 +1495,10 @@ mod tests {
     fn normal_event_set_selected_is_handled() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
 
         let r = ScreenNamesPanel_eventHandlerNormal(&mut panel, EVENT_SET_SELECTED);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1484,7 +1508,10 @@ mod tests {
     fn normal_enter_restores_focus_color_and_handles() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         Panel_setSelectionColor(&mut panel.super_, ColorElements::PANEL_EDIT);
 
         let r = ScreenNamesPanel_eventHandlerNormal(&mut panel, KEY_ENTER);
@@ -1499,9 +1526,18 @@ mod tests {
     fn normal_navigation_reports_handled_when_focus_moves() {
         let mut settings = settings_with(Vec::new());
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("a", Some(0))));
-        panel.super_.items.push(PanelItem::Owned(name_item("b", Some(1))));
-        panel.super_.items.push(PanelItem::Owned(name_item("c", Some(2))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("a", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("b", Some(1))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("c", Some(2))));
         panel.super_.selected = 0;
 
         // KEY_END moves the selection to the last row -> focus changed.
@@ -1531,7 +1567,10 @@ mod tests {
         // Settings_newScreen): appends a "New" name item and enters renaming.
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         let before = panel.super_.items.len();
         let r = ScreenNamesPanel_eventHandlerNormal(&mut panel, KEY_F5);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1544,7 +1583,10 @@ mod tests {
     fn dispatch_routes_to_normal_when_not_renaming() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         // Not renaming: a benign key that the normal handler resolves cleanly.
         let r = ScreenNamesPanel_eventHandler(&mut panel, EVENT_SET_SELECTED);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1554,7 +1596,10 @@ mod tests {
     fn dispatch_routes_to_renaming_when_renaming() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        panel
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
         // Renaming: a default key edits the editor via the renaming handler.
         let r = ScreenNamesPanel_eventHandler(&mut panel, b'!' as i32);
@@ -1625,7 +1670,10 @@ mod tests {
         // appends a new name item.
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut names = names_panel(&mut settings);
-        names.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
+        names
+            .super_
+            .items
+            .push(PanelItem::Owned(name_item("Main", Some(0))));
         let before = names.super_.items.len();
         let mut tabs = tabs_panel(&mut names);
         Panel_add(

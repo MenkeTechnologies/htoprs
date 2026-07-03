@@ -1043,7 +1043,14 @@ mod tests {
 
         assert_eq!(
             names(&h.columns[0]),
-            ["LoadAverage", "Uptime", "Clock", "Hostname", "Battery", "System"]
+            [
+                "LoadAverage",
+                "Uptime",
+                "Clock",
+                "Hostname",
+                "Battery",
+                "System"
+            ]
         );
         assert_eq!(h.columns[0][0].values.len(), 3); // LoadAverage: 1/5/15
         assert_eq!(h.columns[0][1].values.len(), 0); // Uptime: maxItems 0

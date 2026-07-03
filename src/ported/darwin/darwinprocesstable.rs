@@ -199,7 +199,14 @@ pub fn ProcessTable_getKInfoProcs() -> Vec<kinfo_proc> {
     for retry in 0..4usize {
         let mut size: usize = 0;
         if unsafe {
-            libc::sysctl(mib.as_mut_ptr(), 4, ptr::null_mut(), &mut size, ptr::null_mut(), 0)
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                4,
+                ptr::null_mut(),
+                &mut size,
+                ptr::null_mut(),
+                0,
+            )
         } < 0
             || size == 0
         {
@@ -248,7 +255,10 @@ pub fn ProcessTable_getKInfoProcs() -> Vec<kinfo_proc> {
 /// (`*mut ProcessTable`) and `&mut box.super_.super_` (`*mut Table`). The
 /// `Object_setClass` / `Class(DarwinProcess)` class tags are dropped —
 /// class identity is the Rust type (see [`ProcessTable_init`]).
-pub fn ProcessTable_new(host: *const Machine, pidMatchList: Option<usize>) -> Box<DarwinProcessTable> {
+pub fn ProcessTable_new(
+    host: *const Machine,
+    pidMatchList: Option<usize>,
+) -> Box<DarwinProcessTable> {
     let mut this = Box::new(DarwinProcessTable {
         super_: ProcessTable::empty(),
         global_diff: 0,
@@ -314,8 +324,9 @@ pub fn ProcessTable_goThroughEntries(dpt: &mut DarwinProcessTable) {
     for kp in &procs {
         let pid = kp.kp_proc.p_pid;
 
-        let (pre_existing, idx) =
-            ProcessTable_getProcess(&mut dpt.super_, pid, |h| DarwinProcess_new(h) as Box<dyn Object>);
+        let (pre_existing, idx) = ProcessTable_getProcess(&mut dpt.super_, pid, |h| {
+            DarwinProcess_new(h) as Box<dyn Object>
+        });
 
         // Recover a raw `*mut DarwinProcess` for this row via a normal
         // checked borrow (which ends here). `Object: Any`, so upcast to

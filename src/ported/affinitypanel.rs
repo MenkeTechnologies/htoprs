@@ -232,9 +232,7 @@ pub struct AffinityPanel {
 /// `host`/`topoView`/`width` fields drop, and the embedded `super_` [`Panel`]
 /// is handed to [`Panel_done`] (mirroring the C call graph).
 pub fn AffinityPanel_delete(this: AffinityPanel) {
-    let AffinityPanel {
-        super_, cpuids, ..
-    } = this;
+    let AffinityPanel { super_, cpuids, .. } = this;
     // C: Vector_delete(this->cpuids) — the owned Vec drop recurses per item.
     let _ = cpuids;
     Panel_done(super_);

@@ -180,78 +180,645 @@ pub static Process_fields: [ProcessFieldData; LAST_PROCESSFIELD] = build_process
 const fn build_process_fields() -> [ProcessFieldData; LAST_PROCESSFIELD] {
     use ProcessField as PF;
     let mut t = [EMPTY_FIELD; LAST_PROCESSFIELD];
-    t[PF::PID as usize] = pfd("PID", "PID", "Process/thread ID", 0, true, false, false, false);
-    t[PF::COMM as usize] = pfd("Command", "Command ", "Command line (insert as last column only)", 0, false, false, false, false);
-    t[PF::STATE as usize] = pfd("STATE", "S ", "Process state (S sleeping, R running, D disk, Z zombie, T traced, W paging, I idle)", 0, false, false, false, false);
-    t[PF::PPID as usize] = pfd("PPID", "PPID", "Parent process ID", 0, true, false, false, false);
-    t[PF::PGRP as usize] = pfd("PGRP", "PGRP", "Process group ID", 0, true, false, false, false);
-    t[PF::SESSION as usize] = pfd("SESSION", "SID", "Process's session ID", 0, true, false, false, false);
-    t[PF::TTY as usize] = pfd("TTY", "TTY      ", "Controlling terminal", 0, false, false, false, false);
-    t[PF::TPGID as usize] = pfd("TPGID", "TPGID", "Process ID of the fg process group of the controlling terminal", 0, true, false, false, false);
-    t[PF::MINFLT as usize] = pfd("MINFLT", "     MINFLT ", "Number of minor faults which have not required loading a memory page from disk", 0, false, true, false, false);
-    t[PF::CMINFLT as usize] = pfd("CMINFLT", "    CMINFLT ", "Children processes' minor faults", 0, false, true, false, false);
-    t[PF::MAJFLT as usize] = pfd("MAJFLT", "     MAJFLT ", "Number of major faults which have required loading a memory page from disk", 0, false, true, false, false);
-    t[PF::CMAJFLT as usize] = pfd("CMAJFLT", "    CMAJFLT ", "Children processes' major faults", 0, false, true, false, false);
-    t[PF::UTIME as usize] = pfd("UTIME", " UTIME+  ", "User CPU time - time the process spent executing in user mode", 0, false, true, false, false);
-    t[PF::STIME as usize] = pfd("STIME", " STIME+  ", "System CPU time - time the kernel spent running system calls for this process", 0, false, true, false, false);
-    t[PF::CUTIME as usize] = pfd("CUTIME", " CUTIME+ ", "Children processes' user CPU time", 0, false, true, false, false);
-    t[PF::CSTIME as usize] = pfd("CSTIME", " CSTIME+ ", "Children processes' system CPU time", 0, false, true, false, false);
-    t[PF::PRIORITY as usize] = pfd("PRIORITY", "PRI ", "Kernel's internal priority for the process", 0, false, false, false, false);
-    t[PF::NICE as usize] = pfd("NICE", " NI ", "Nice value (the higher the value, the more it lets other processes take priority)", 0, false, false, false, false);
-    t[PF::STARTTIME as usize] = pfd("STARTTIME", "START ", "Time the process was started", 0, false, false, false, false);
-    t[PF::ELAPSED as usize] = pfd("ELAPSED", "ELAPSED  ", "Time since the process was started", 0, false, false, false, false);
-    t[PF::PROCESSOR as usize] = pfd("PROCESSOR", "CPU ", "Id of the CPU the process last executed on", 0, false, false, false, false);
-    t[PF::M_VIRT as usize] = pfd("M_VIRT", " VIRT ", "Total program size in virtual memory", 0, false, true, false, false);
-    t[PF::M_RESIDENT as usize] = pfd("M_RESIDENT", "  RES ", "Resident set size, size of the text and data sections, plus stack usage", 0, false, true, false, false);
-    t[PF::M_SHARE as usize] = pfd("M_SHARE", "  SHR ", "Size of the process's shared pages", 0, false, true, false, false);
-    t[PF::M_PRIV as usize] = pfd("M_PRIV", " PRIV ", "The private memory size of the process - resident set size minus shared memory", 0, false, true, false, false);
-    t[PF::M_TRS as usize] = pfd("M_TRS", " CODE ", "Size of the .text segment of the process (CODE)", 0, false, true, false, false);
-    t[PF::M_DRS as usize] = pfd("M_DRS", " DATA ", "Size of the .data segment plus stack usage of the process (DATA)", 0, false, true, false, false);
-    t[PF::M_LRS as usize] = pfd("M_LRS", "  LIB ", "The library size of the process (calculated from memory maps)", PROCESS_FLAG_LINUX_LRS_FIX, false, true, false, false);
-    t[PF::ST_UID as usize] = pfd("ST_UID", "UID", "User ID of the process owner", 0, false, false, false, false);
-    t[PF::PERCENT_CPU as usize] = pfd("PERCENT_CPU", " CPU%", "Percentage of the CPU time the process used in the last sampling", 0, false, true, true, true);
+    t[PF::PID as usize] = pfd(
+        "PID",
+        "PID",
+        "Process/thread ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::COMM as usize] = pfd(
+        "Command",
+        "Command ",
+        "Command line (insert as last column only)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::STATE as usize] = pfd(
+        "STATE",
+        "S ",
+        "Process state (S sleeping, R running, D disk, Z zombie, T traced, W paging, I idle)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PPID as usize] = pfd(
+        "PPID",
+        "PPID",
+        "Parent process ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::PGRP as usize] = pfd(
+        "PGRP",
+        "PGRP",
+        "Process group ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::SESSION as usize] = pfd(
+        "SESSION",
+        "SID",
+        "Process's session ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::TTY as usize] = pfd(
+        "TTY",
+        "TTY      ",
+        "Controlling terminal",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::TPGID as usize] = pfd(
+        "TPGID",
+        "TPGID",
+        "Process ID of the fg process group of the controlling terminal",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::MINFLT as usize] = pfd(
+        "MINFLT",
+        "     MINFLT ",
+        "Number of minor faults which have not required loading a memory page from disk",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::CMINFLT as usize] = pfd(
+        "CMINFLT",
+        "    CMINFLT ",
+        "Children processes' minor faults",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::MAJFLT as usize] = pfd(
+        "MAJFLT",
+        "     MAJFLT ",
+        "Number of major faults which have required loading a memory page from disk",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::CMAJFLT as usize] = pfd(
+        "CMAJFLT",
+        "    CMAJFLT ",
+        "Children processes' major faults",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::UTIME as usize] = pfd(
+        "UTIME",
+        " UTIME+  ",
+        "User CPU time - time the process spent executing in user mode",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::STIME as usize] = pfd(
+        "STIME",
+        " STIME+  ",
+        "System CPU time - time the kernel spent running system calls for this process",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::CUTIME as usize] = pfd(
+        "CUTIME",
+        " CUTIME+ ",
+        "Children processes' user CPU time",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::CSTIME as usize] = pfd(
+        "CSTIME",
+        " CSTIME+ ",
+        "Children processes' system CPU time",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::PRIORITY as usize] = pfd(
+        "PRIORITY",
+        "PRI ",
+        "Kernel's internal priority for the process",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::NICE as usize] = pfd(
+        "NICE",
+        " NI ",
+        "Nice value (the higher the value, the more it lets other processes take priority)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::STARTTIME as usize] = pfd(
+        "STARTTIME",
+        "START ",
+        "Time the process was started",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::ELAPSED as usize] = pfd(
+        "ELAPSED",
+        "ELAPSED  ",
+        "Time since the process was started",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PROCESSOR as usize] = pfd(
+        "PROCESSOR",
+        "CPU ",
+        "Id of the CPU the process last executed on",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::M_VIRT as usize] = pfd(
+        "M_VIRT",
+        " VIRT ",
+        "Total program size in virtual memory",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_RESIDENT as usize] = pfd(
+        "M_RESIDENT",
+        "  RES ",
+        "Resident set size, size of the text and data sections, plus stack usage",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_SHARE as usize] = pfd(
+        "M_SHARE",
+        "  SHR ",
+        "Size of the process's shared pages",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_PRIV as usize] = pfd(
+        "M_PRIV",
+        " PRIV ",
+        "The private memory size of the process - resident set size minus shared memory",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_TRS as usize] = pfd(
+        "M_TRS",
+        " CODE ",
+        "Size of the .text segment of the process (CODE)",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_DRS as usize] = pfd(
+        "M_DRS",
+        " DATA ",
+        "Size of the .data segment plus stack usage of the process (DATA)",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_LRS as usize] = pfd(
+        "M_LRS",
+        "  LIB ",
+        "The library size of the process (calculated from memory maps)",
+        PROCESS_FLAG_LINUX_LRS_FIX,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::ST_UID as usize] = pfd(
+        "ST_UID",
+        "UID",
+        "User ID of the process owner",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PERCENT_CPU as usize] = pfd(
+        "PERCENT_CPU",
+        " CPU%",
+        "Percentage of the CPU time the process used in the last sampling",
+        0,
+        false,
+        true,
+        true,
+        true,
+    );
     t[PF::PERCENT_NORM_CPU as usize] = pfd("PERCENT_NORM_CPU", "NCPU%", "Normalized percentage of the CPU time the process used in the last sampling (normalized by cpu count)", 0, false, true, true, false);
-    t[PF::PERCENT_MEM as usize] = pfd("PERCENT_MEM", "MEM% ", "Percentage of the memory the process is using, based on resident memory size", 0, false, true, false, false);
-    t[PF::USER as usize] = pfd("USER", "USER       ", "Username of the process owner (or user ID if name cannot be determined)", 0, false, false, false, false);
-    t[PF::TIME as usize] = pfd("TIME", "  TIME+  ", "Total time the process has spent in user and system time", 0, false, true, false, false);
-    t[PF::NLWP as usize] = pfd("NLWP", "NLWP ", "Number of threads in the process", 0, false, true, false, false);
-    t[PF::TGID as usize] = pfd("TGID", "TGID", "Thread group ID (i.e. process ID)", 0, true, false, false, false);
+    t[PF::PERCENT_MEM as usize] = pfd(
+        "PERCENT_MEM",
+        "MEM% ",
+        "Percentage of the memory the process is using, based on resident memory size",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::USER as usize] = pfd(
+        "USER",
+        "USER       ",
+        "Username of the process owner (or user ID if name cannot be determined)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::TIME as usize] = pfd(
+        "TIME",
+        "  TIME+  ",
+        "Total time the process has spent in user and system time",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::NLWP as usize] = pfd(
+        "NLWP",
+        "NLWP ",
+        "Number of threads in the process",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::TGID as usize] = pfd(
+        "TGID",
+        "TGID",
+        "Thread group ID (i.e. process ID)",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
     // HAVE_OPENVZ off: CTID/VPID slots stay EMPTY_FIELD.
     // HAVE_VSERVER off: VXID slot stays EMPTY_FIELD.
-    t[PF::RCHAR as usize] = pfd("RCHAR", "RCHAR ", "Number of bytes the process has read", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::WCHAR as usize] = pfd("WCHAR", "WCHAR ", "Number of bytes the process has written", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::SYSCR as usize] = pfd("SYSCR", "  READ_SYSC ", "Number of read(2) syscalls for the process", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::SYSCW as usize] = pfd("SYSCW", " WRITE_SYSC ", "Number of write(2) syscalls for the process", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::RBYTES as usize] = pfd("RBYTES", " IO_R ", "Bytes of read(2) I/O for the process", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::WBYTES as usize] = pfd("WBYTES", " IO_W ", "Bytes of write(2) I/O for the process", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::CNCLWB as usize] = pfd("CNCLWB", " IO_C ", "Bytes of cancelled write(2) I/O", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::IO_READ_RATE as usize] = pfd("IO_READ_RATE", "  DISK READ ", "The I/O rate of read(2) in bytes per second for the process", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::IO_WRITE_RATE as usize] = pfd("IO_WRITE_RATE", " DISK WRITE ", "The I/O rate of write(2) in bytes per second for the process", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::IO_RATE as usize] = pfd("IO_RATE", "   DISK R/W ", "Total I/O rate in bytes per second", PROCESS_FLAG_IO, false, true, false, false);
-    t[PF::CGROUP as usize] = pfd("CGROUP", "CGROUP (raw)", "Which cgroup the process is in", PROCESS_FLAG_LINUX_CGROUP, false, false, true, false);
-    t[PF::CCGROUP as usize] = pfd("CCGROUP", "CGROUP (compressed)", "Which cgroup the process is in (condensed to essentials)", PROCESS_FLAG_LINUX_CGROUP, false, false, true, false);
-    t[PF::CONTAINER as usize] = pfd("CONTAINER", "CONTAINER", "Name of the container the process is in (guessed by heuristics)", PROCESS_FLAG_LINUX_CGROUP, false, false, true, false);
-    t[PF::OOM as usize] = pfd("OOM", " OOM ", "OOM (Out-of-Memory) killer score", PROCESS_FLAG_LINUX_OOM, false, true, false, false);
-    t[PF::IO_PRIORITY as usize] = pfd("IO_PRIORITY", "IO ", "I/O priority", PROCESS_FLAG_LINUX_IOPRIO, false, false, false, false);
+    t[PF::RCHAR as usize] = pfd(
+        "RCHAR",
+        "RCHAR ",
+        "Number of bytes the process has read",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::WCHAR as usize] = pfd(
+        "WCHAR",
+        "WCHAR ",
+        "Number of bytes the process has written",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::SYSCR as usize] = pfd(
+        "SYSCR",
+        "  READ_SYSC ",
+        "Number of read(2) syscalls for the process",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::SYSCW as usize] = pfd(
+        "SYSCW",
+        " WRITE_SYSC ",
+        "Number of write(2) syscalls for the process",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::RBYTES as usize] = pfd(
+        "RBYTES",
+        " IO_R ",
+        "Bytes of read(2) I/O for the process",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::WBYTES as usize] = pfd(
+        "WBYTES",
+        " IO_W ",
+        "Bytes of write(2) I/O for the process",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::CNCLWB as usize] = pfd(
+        "CNCLWB",
+        " IO_C ",
+        "Bytes of cancelled write(2) I/O",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::IO_READ_RATE as usize] = pfd(
+        "IO_READ_RATE",
+        "  DISK READ ",
+        "The I/O rate of read(2) in bytes per second for the process",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::IO_WRITE_RATE as usize] = pfd(
+        "IO_WRITE_RATE",
+        " DISK WRITE ",
+        "The I/O rate of write(2) in bytes per second for the process",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::IO_RATE as usize] = pfd(
+        "IO_RATE",
+        "   DISK R/W ",
+        "Total I/O rate in bytes per second",
+        PROCESS_FLAG_IO,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::CGROUP as usize] = pfd(
+        "CGROUP",
+        "CGROUP (raw)",
+        "Which cgroup the process is in",
+        PROCESS_FLAG_LINUX_CGROUP,
+        false,
+        false,
+        true,
+        false,
+    );
+    t[PF::CCGROUP as usize] = pfd(
+        "CCGROUP",
+        "CGROUP (compressed)",
+        "Which cgroup the process is in (condensed to essentials)",
+        PROCESS_FLAG_LINUX_CGROUP,
+        false,
+        false,
+        true,
+        false,
+    );
+    t[PF::CONTAINER as usize] = pfd(
+        "CONTAINER",
+        "CONTAINER",
+        "Name of the container the process is in (guessed by heuristics)",
+        PROCESS_FLAG_LINUX_CGROUP,
+        false,
+        false,
+        true,
+        false,
+    );
+    t[PF::OOM as usize] = pfd(
+        "OOM",
+        " OOM ",
+        "OOM (Out-of-Memory) killer score",
+        PROCESS_FLAG_LINUX_OOM,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::IO_PRIORITY as usize] = pfd(
+        "IO_PRIORITY",
+        "IO ",
+        "I/O priority",
+        PROCESS_FLAG_LINUX_IOPRIO,
+        false,
+        false,
+        false,
+        false,
+    );
     // HAVE_DELAYACCT on:
-    t[PF::PERCENT_CPU_DELAY as usize] = pfd("PERCENT_CPU_DELAY", "CPUD% ", "CPU delay %", PROCESS_FLAG_LINUX_DELAYACCT, false, true, false, false);
-    t[PF::PERCENT_IO_DELAY as usize] = pfd("PERCENT_IO_DELAY", " IOD% ", "Block I/O delay %", PROCESS_FLAG_LINUX_DELAYACCT, false, true, false, false);
-    t[PF::PERCENT_SWAP_DELAY as usize] = pfd("PERCENT_SWAP_DELAY", "SWPD% ", "Swapin delay %", PROCESS_FLAG_LINUX_DELAYACCT, false, true, false, false);
+    t[PF::PERCENT_CPU_DELAY as usize] = pfd(
+        "PERCENT_CPU_DELAY",
+        "CPUD% ",
+        "CPU delay %",
+        PROCESS_FLAG_LINUX_DELAYACCT,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::PERCENT_IO_DELAY as usize] = pfd(
+        "PERCENT_IO_DELAY",
+        " IOD% ",
+        "Block I/O delay %",
+        PROCESS_FLAG_LINUX_DELAYACCT,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::PERCENT_SWAP_DELAY as usize] = pfd(
+        "PERCENT_SWAP_DELAY",
+        "SWPD% ",
+        "Swapin delay %",
+        PROCESS_FLAG_LINUX_DELAYACCT,
+        false,
+        true,
+        false,
+        false,
+    );
     t[PF::M_PSS as usize] = pfd("M_PSS", "  PSS ", "proportional set size, same as M_RESIDENT but each page is divided by the number of processes sharing it", PROCESS_FLAG_LINUX_SMAPS, false, true, false, false);
-    t[PF::M_SWAP as usize] = pfd("M_SWAP", " SWAP ", "Size of the process's swapped pages", PROCESS_FLAG_LINUX_SMAPS, false, true, false, false);
+    t[PF::M_SWAP as usize] = pfd(
+        "M_SWAP",
+        " SWAP ",
+        "Size of the process's swapped pages",
+        PROCESS_FLAG_LINUX_SMAPS,
+        false,
+        true,
+        false,
+        false,
+    );
     t[PF::M_PSSWP as usize] = pfd("M_PSSWP", " PSSWP ", "shows proportional swap share of this mapping, unlike \"Swap\", this does not take into account swapped out page of underlying shmem objects", PROCESS_FLAG_LINUX_SMAPS, false, true, false, false);
     t[PF::CTXT as usize] = pfd("CTXT", " CTXT ", "Context switches (incremental sum of voluntary_ctxt_switches and nonvoluntary_ctxt_switches)", PROCESS_FLAG_LINUX_CTXT, false, true, false, false);
-    t[PF::SECATTR as usize] = pfd("SECATTR", "Security Attribute", "Security attribute of the process (e.g. SELinux or AppArmor)", PROCESS_FLAG_LINUX_SECATTR, false, false, true, false);
-    t[PF::PROC_COMM as usize] = pfd("COMM", "COMM            ", "comm string of the process from /proc/[pid]/comm", 0, false, false, false, false);
-    t[PF::PROC_EXE as usize] = pfd("EXE", "EXE             ", "Basename of exe of the process from /proc/[pid]/exe", 0, false, false, false, false);
-    t[PF::CWD as usize] = pfd("CWD", "CWD                       ", "The current working directory of the process", PROCESS_FLAG_CWD, false, false, false, false);
-    t[PF::AUTOGROUP_ID as usize] = pfd("AUTOGROUP_ID", "AGRP", "The autogroup identifier of the process", PROCESS_FLAG_LINUX_AUTOGROUP, false, false, false, false);
+    t[PF::SECATTR as usize] = pfd(
+        "SECATTR",
+        "Security Attribute",
+        "Security attribute of the process (e.g. SELinux or AppArmor)",
+        PROCESS_FLAG_LINUX_SECATTR,
+        false,
+        false,
+        true,
+        false,
+    );
+    t[PF::PROC_COMM as usize] = pfd(
+        "COMM",
+        "COMM            ",
+        "comm string of the process from /proc/[pid]/comm",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PROC_EXE as usize] = pfd(
+        "EXE",
+        "EXE             ",
+        "Basename of exe of the process from /proc/[pid]/exe",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::CWD as usize] = pfd(
+        "CWD",
+        "CWD                       ",
+        "The current working directory of the process",
+        PROCESS_FLAG_CWD,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::AUTOGROUP_ID as usize] = pfd(
+        "AUTOGROUP_ID",
+        "AGRP",
+        "The autogroup identifier of the process",
+        PROCESS_FLAG_LINUX_AUTOGROUP,
+        false,
+        false,
+        false,
+        false,
+    );
     t[PF::AUTOGROUP_NICE as usize] = pfd("AUTOGROUP_NICE", " ANI", "Nice value (the higher the value, the more other processes take priority) associated with the process autogroup", PROCESS_FLAG_LINUX_AUTOGROUP, false, false, false, false);
-    t[PF::ISCONTAINER as usize] = pfd("ISCONTAINER", "CONT ", "Whether the process is running inside a child container", PROCESS_FLAG_LINUX_CONTAINER, false, false, false, false);
+    t[PF::ISCONTAINER as usize] = pfd(
+        "ISCONTAINER",
+        "CONT ",
+        "Whether the process is running inside a child container",
+        PROCESS_FLAG_LINUX_CONTAINER,
+        false,
+        false,
+        false,
+        false,
+    );
     // SCHEDULER_SUPPORT on:
-    t[PF::SCHEDULERPOLICY as usize] = pfd("SCHEDULERPOLICY", "SCHED ", "Current scheduling policy of the process", PROCESS_FLAG_SCHEDPOL, false, false, false, false);
-    t[PF::GPU_TIME as usize] = pfd("GPU_TIME", "GPU_TIME ", "Total GPU time", PROCESS_FLAG_LINUX_GPU, false, true, false, false);
-    t[PF::GPU_PERCENT as usize] = pfd("GPU_PERCENT", " GPU% ", "Percentage of the GPU time the process used in the last sampling", PROCESS_FLAG_LINUX_GPU, false, true, false, false);
+    t[PF::SCHEDULERPOLICY as usize] = pfd(
+        "SCHEDULERPOLICY",
+        "SCHED ",
+        "Current scheduling policy of the process",
+        PROCESS_FLAG_SCHEDPOL,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::GPU_TIME as usize] = pfd(
+        "GPU_TIME",
+        "GPU_TIME ",
+        "Total GPU time",
+        PROCESS_FLAG_LINUX_GPU,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::GPU_PERCENT as usize] = pfd(
+        "GPU_PERCENT",
+        " GPU% ",
+        "Percentage of the GPU time the process used in the last sampling",
+        PROCESS_FLAG_LINUX_GPU,
+        false,
+        true,
+        false,
+        false,
+    );
     t
 }
 
@@ -752,7 +1319,11 @@ pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, fie
             return;
         }
         f if f == PF::M_DRS as RowField => {
-            Row_printBytes(str, (this.m_drs as u64).wrapping_mul(lhost.pageSize as u64), coloring);
+            Row_printBytes(
+                str,
+                (this.m_drs as u64).wrapping_mul(lhost.pageSize as u64),
+                coloring,
+            );
             return;
         }
         f if f == PF::M_LRS as RowField => {
@@ -768,7 +1339,11 @@ pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, fie
             buffer = "  N/A ".to_string();
         }
         f if f == PF::M_TRS as RowField => {
-            Row_printBytes(str, (this.m_trs as u64).wrapping_mul(lhost.pageSize as u64), coloring);
+            Row_printBytes(
+                str,
+                (this.m_trs as u64).wrapping_mul(lhost.pageSize as u64),
+                coloring,
+            );
             return;
         }
         f if f == PF::M_SHARE as RowField => {
@@ -999,8 +1574,12 @@ pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: RowField
         k if k == ProcessField::WCHAR as RowField => spaceship_number!(p1.io_wchar, p2.io_wchar),
         k if k == ProcessField::SYSCR as RowField => spaceship_number!(p1.io_syscr, p2.io_syscr),
         k if k == ProcessField::SYSCW as RowField => spaceship_number!(p1.io_syscw, p2.io_syscw),
-        k if k == ProcessField::RBYTES as RowField => spaceship_number!(p1.io_read_bytes, p2.io_read_bytes),
-        k if k == ProcessField::WBYTES as RowField => spaceship_number!(p1.io_write_bytes, p2.io_write_bytes),
+        k if k == ProcessField::RBYTES as RowField => {
+            spaceship_number!(p1.io_read_bytes, p2.io_read_bytes)
+        }
+        k if k == ProcessField::WBYTES as RowField => {
+            spaceship_number!(p1.io_write_bytes, p2.io_write_bytes)
+        }
         k if k == ProcessField::CNCLWB as RowField => {
             spaceship_number!(p1.io_cancelled_write_bytes, p2.io_cancelled_write_bytes)
         }
@@ -1032,9 +1611,10 @@ pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: RowField
         k if k == ProcessField::PERCENT_IO_DELAY as RowField => {
             compareRealNumbers(p1.blkio_delay_percent as f64, p2.blkio_delay_percent as f64)
         }
-        k if k == ProcessField::PERCENT_SWAP_DELAY as RowField => {
-            compareRealNumbers(p1.swapin_delay_percent as f64, p2.swapin_delay_percent as f64)
-        }
+        k if k == ProcessField::PERCENT_SWAP_DELAY as RowField => compareRealNumbers(
+            p1.swapin_delay_percent as f64,
+            p2.swapin_delay_percent as f64,
+        ),
         k if k == ProcessField::IO_PRIORITY as RowField => spaceship_number!(
             LinuxProcess_effectiveIOPriority(p1),
             LinuxProcess_effectiveIOPriority(p2)
@@ -1044,8 +1624,12 @@ pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: RowField
             p1.secattr.as_deref().map(str::as_bytes),
             p2.secattr.as_deref().map(str::as_bytes)
         ),
-        k if k == ProcessField::AUTOGROUP_ID as RowField => spaceship_number!(p1.autogroup_id, p2.autogroup_id),
-        k if k == ProcessField::AUTOGROUP_NICE as RowField => spaceship_number!(p1.autogroup_nice, p2.autogroup_nice),
+        k if k == ProcessField::AUTOGROUP_ID as RowField => {
+            spaceship_number!(p1.autogroup_id, p2.autogroup_id)
+        }
+        k if k == ProcessField::AUTOGROUP_NICE as RowField => {
+            spaceship_number!(p1.autogroup_nice, p2.autogroup_nice)
+        }
         k if k == ProcessField::GPU_PERCENT as RowField => {
             let r = compareRealNumbers(p1.gpu_percent as f64, p2.gpu_percent as f64);
             if r != 0 {
@@ -1193,20 +1777,44 @@ mod tests {
 
         a.utime = 10;
         b.utime = 20;
-        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::UTIME as RowField) < 0);
-        assert!(LinuxProcess_compareByKey(&b as &dyn Object, &a as &dyn Object, ProcessField::UTIME as RowField) > 0);
+        assert!(
+            LinuxProcess_compareByKey(
+                &a as &dyn Object,
+                &b as &dyn Object,
+                ProcessField::UTIME as RowField
+            ) < 0
+        );
+        assert!(
+            LinuxProcess_compareByKey(
+                &b as &dyn Object,
+                &a as &dyn Object,
+                ProcessField::UTIME as RowField
+            ) > 0
+        );
 
         // GPU_PERCENT ties break on gpu_time.
         a.gpu_percent = 5.0;
         b.gpu_percent = 5.0;
         a.gpu_time = 100;
         b.gpu_time = 200;
-        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::GPU_PERCENT as RowField) < 0);
+        assert!(
+            LinuxProcess_compareByKey(
+                &a as &dyn Object,
+                &b as &dyn Object,
+                ProcessField::GPU_PERCENT as RowField
+            ) < 0
+        );
 
         // Reserved key (PID) → base comparison, ordered by Row id.
         a.super_.super_.id = 7;
         b.super_.super_.id = 3;
-        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::PID as RowField) > 0);
+        assert!(
+            LinuxProcess_compareByKey(
+                &a as &dyn Object,
+                &b as &dyn Object,
+                ProcessField::PID as RowField
+            ) > 0
+        );
     }
 
     /// [`LinuxProcess_rowWriteField`] renders Linux platform fields and
@@ -1216,8 +1824,8 @@ mod tests {
     fn row_write_field_renders_linux_and_delegates() {
         use crate::ported::process::ProcessState;
         use crate::ported::richstring::{RichString, RichString_size};
-        use crate::ported::settings::Settings;
         use crate::ported::settings::RowField;
+        use crate::ported::settings::Settings;
 
         let mut machine = Machine::default();
         machine.settings = Some(Settings::default());

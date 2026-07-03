@@ -254,7 +254,10 @@ pub fn AvailableColumnsPanel_addPlatformColumns(this: &mut AvailableColumnsPanel
     for i in 1..LAST_PROCESSFIELD {
         if let Some(desc) = Process_fields[i].description {
             let description = format!("{} - {}", Process_fields[i].name, desc);
-            Panel_add(&mut this.super_, Box::new(ListItem_new(&description, i as i32)));
+            Panel_add(
+                &mut this.super_,
+                Box::new(ListItem_new(&description, i as i32)),
+            );
         }
     }
 }
@@ -293,8 +296,9 @@ pub fn AvailableColumnsPanel_fill(
         AvailableColumnsPanel_addPlatformColumns(this);
         AvailableColumnsPanel_addDynamicColumns(
             this,
-            dynamicColumns
-                .expect("AvailableColumnsPanel_fill: dynamicColumns is NULL in the non-screen branch"),
+            dynamicColumns.expect(
+                "AvailableColumnsPanel_fill: dynamicColumns is NULL in the non-screen branch",
+            ),
         );
     }
 }

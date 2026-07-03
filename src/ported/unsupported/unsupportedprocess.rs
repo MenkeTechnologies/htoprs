@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `Process* UnsupportedProcess_new(const Machine* host` from `UnsupportedProcess.c:47`.
 pub fn UnsupportedProcess_new() {
     todo!("port of UnsupportedProcess.c:47")

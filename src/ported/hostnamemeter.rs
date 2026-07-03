@@ -60,9 +60,7 @@ mod tests {
     fn update_values_fills_txt_buffer() {
         // gethostname yields a non-empty name in CI/dev; assert the meter's
         // txtBuffer is populated and matches the libc reading.
-        let mut m = Meter {
-            ..Meter::empty()
-        };
+        let mut m = Meter { ..Meter::empty() };
         HostnameMeter_updateValues(&mut m);
         assert_eq!(m.txtBuffer, Platform_getHostname());
         assert!(!m.txtBuffer.is_empty());

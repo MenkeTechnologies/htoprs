@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-
 /// TODO: port of `ProcessTable* ProcessTable_new(Machine* host, Hashtable* pidMatchList` from `UnsupportedProcessTable.c:19`.
 pub fn ProcessTable_new() {
     todo!("port of UnsupportedProcessTable.c:19")

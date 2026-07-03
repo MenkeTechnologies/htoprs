@@ -90,8 +90,8 @@ use std::sync::atomic::Ordering;
 
 use crate::ported::crt::{CRT_colorSchemes, CRT_utf8, ColorElements, ColorScheme};
 use crate::ported::functionbar::Ncurses;
-use crate::ported::machine::Machine;
 use crate::ported::listitem::{ListItem, ListItem_new};
+use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
     RichString, RichString_appendChr, RichString_appendWide, RichString_delete,
@@ -585,11 +585,7 @@ impl Object for Meter {
 /// `Drop` reclaims what C's `Meter_delete` frees). `Object_setClass` has no
 /// instance-klass analog here (see [`Meter::klass`]), so the class identity
 /// is carried by the mirrored slots.
-pub fn Meter_new(
-    host: *const Machine,
-    param: u32,
-    type_: &'static MeterClass,
-) -> Meter {
+pub fn Meter_new(host: *const Machine, param: u32, type_: &'static MeterClass) -> Meter {
     let mut this = Meter {
         h: 1,
         param,
@@ -1052,7 +1048,9 @@ pub fn GraphMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y:
     let mut col = 0i32;
     while i < n_values - 1 {
         let pix = pix_per_row * h;
-        let v1 = (values[i] / total * pix as f64).clamp(1.0, pix as f64).round() as i32;
+        let v1 = (values[i] / total * pix as f64)
+            .clamp(1.0, pix as f64)
+            .round() as i32;
         let v2 = (values[i + 1] / total * pix as f64)
             .clamp(1.0, pix as f64)
             .round() as i32;
@@ -1921,7 +1919,11 @@ mod tests {
         use crate::ported::linux::linuxmachine::LinuxMachine;
 
         let host = Box::leak(Box::new(LinuxMachine::default()));
-        let m = Meter_new(&host.super_ as *const crate::ported::machine::Machine, 7, &BlankMeter_class);
+        let m = Meter_new(
+            &host.super_ as *const crate::ported::machine::Machine,
+            7,
+            &BlankMeter_class,
+        );
 
         assert_eq!(m.param, 7);
         assert_eq!(m.h, 1);

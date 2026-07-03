@@ -123,8 +123,8 @@ use crate::ported::incset::{
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    Panel, Panel_delete, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
-    Panel_setHeader, PanelItem,
+    Panel, PanelItem, Panel_delete, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
+    Panel_setHeader,
 };
 use crate::ported::process::Process;
 use crate::ported::vector::{Vector, Vector_add, Vector_delete, Vector_new, Vector_prune};
@@ -806,7 +806,6 @@ mod tests {
         // No filter -> shown in the panel too.
         assert_eq!(Panel_size(&this.display), 1);
     }
-
 
     // ── InfoScreenClass vtable dispatch (InfoScreen.h:35) ─────────────
     //

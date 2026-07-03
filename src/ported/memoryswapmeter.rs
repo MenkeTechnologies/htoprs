@@ -86,7 +86,13 @@ pub fn MemorySwapMeter_draw(out: &mut dyn Write, this: &mut Meter, x: i32, y: i3
         .swapMeter
         .draw
         .expect("MemorySwapMeter_draw: swap sub-meter draw");
-    swap_draw(&mut *out, &mut data.swapMeter, x + colwidth + diff, y, colwidth);
+    swap_draw(
+        &mut *out,
+        &mut data.swapMeter,
+        x + colwidth + diff,
+        y,
+        colwidth,
+    );
 }
 
 /// Port of `static void MemorySwapMeter_init(Meter* this)` from

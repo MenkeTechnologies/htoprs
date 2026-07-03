@@ -53,8 +53,8 @@ use crate::ported::crt::{ColorElements as CE, ColorScheme, TreeStr};
 use crate::ported::dynamiccolumn::DynamicColumn_writeField;
 use crate::ported::hashtable::Hashtable_get;
 use crate::ported::machine::Machine;
-use crate::ported::processtable::ProcessTable;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
+use crate::ported::processtable::ProcessTable;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendWide, RichString_setAttrn, RichString_size,
 };
@@ -985,7 +985,7 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
             let pc = proc_comm_s.unwrap();
             let n = (TASK_COMM_LEN - 1).min(pc.len());
             let from = &cmdline[cmdline_basename_start.min(cmdline.len())..];
-            if from.len() < n || &from[..n] != &pc[..n] {
+            if from.len() < n || from[..n] != pc[..n] {
                 write_highlight!(0, pc.len(), comm_attr, CMDLINE_HIGHLIGHT_FLAG_COMM);
                 buf.extend_from_slice(pc);
                 if !show_merged_command {
@@ -1050,7 +1050,7 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
     if !is_userland_thread || show_thread_names {
         let n = (TASK_COMM_LEN - 1).min(proc_comm_s.len());
         let exe_tail = &proc_exe_s[exe_basename_offset.min(proc_exe_s.len())..];
-        have_comm_in_exe = exe_tail.len() >= n && &exe_tail[..n] == &proc_comm_s[..n];
+        have_comm_in_exe = exe_tail.len() >= n && exe_tail[..n] == proc_comm_s[..n];
     }
     if have_comm_in_exe {
         comm_len = exe_basename_len;
@@ -1909,8 +1909,12 @@ pub fn Process_rowSendSignal(super_: &dyn Object, sgn: Arg) -> bool {
 /// [`Process_compareByKey_Base`]); only the active-key/direction lookup
 /// is missing. Signature matches the two-`Process` C comparator.
 pub fn Process_compare(v1: &dyn Object, v2: &dyn Object) -> i32 {
-    let p1 = v1.as_process().expect("Process_compare: v1 is not a Process");
-    let p2 = v2.as_process().expect("Process_compare: v2 is not a Process");
+    let p1 = v1
+        .as_process()
+        .expect("Process_compare: v1 is not a Process");
+    let p2 = v2
+        .as_process()
+        .expect("Process_compare: v2 is not a Process");
 
     // C `const ScreenSettings* ss = p1->super.host->settings->ss;`
     let host = unsafe { &*(p1.super_.host as *const Machine) };
@@ -3025,7 +3029,9 @@ mod tests {
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(p.starttime_show.len());
-        let shown = std::str::from_utf8(&p.starttime_show[..end]).unwrap().trim();
+        let shown = std::str::from_utf8(&p.starttime_show[..end])
+            .unwrap()
+            .trim();
         // A 4-digit year.
         assert_eq!(shown.len(), 4);
         assert!(shown.chars().all(|c| c.is_ascii_digit()));

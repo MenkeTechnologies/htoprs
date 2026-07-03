@@ -51,8 +51,7 @@ use crate::ported::object::Object;
 use crate::ported::process::{Process_getPid, Process_makeCommandStr, Process_setPid};
 use crate::ported::settings::Settings;
 use crate::ported::table::{
-    Table, Table_add, Table_cleanupRow, Table_compact, Table_done, Table_init,
-    Table_prepareEntries,
+    Table, Table_add, Table_cleanupRow, Table_compact, Table_done, Table_init, Table_prepareEntries,
 };
 
 /// Port of htop's `struct ProcessTable_` (`ProcessTable.h:19`).
@@ -156,7 +155,13 @@ pub fn ProcessTable_getProcess(
     if let Some(&idx) = this.super_.table.get(&pid) {
         // Process* proc = Hashtable_get(...); *preExisting = true.
         debug_assert_eq!(
-            Process_getPid(this.super_.rows[idx].as_ref().unwrap().as_process().unwrap()),
+            Process_getPid(
+                this.super_.rows[idx]
+                    .as_ref()
+                    .unwrap()
+                    .as_process()
+                    .unwrap()
+            ),
             pid
         );
         return (true, idx);
@@ -236,7 +241,8 @@ pub fn ProcessTable_cleanupEntries(this: &mut ProcessTable) {
         (*host)
             .settings
             .as_ref()
-            .expect("ProcessTable_cleanupEntries: host->settings is NULL") as *const Settings
+            .expect("ProcessTable_cleanupEntries: host->settings is NULL")
+            as *const Settings
     };
 
     // Lowest index of the row that is soft-removed. Used to speed up compaction.
@@ -362,8 +368,18 @@ mod tests {
         pt.runningTasks = 3;
         pt.userlandThreads = 5;
         pt.kernelThreads = 4;
-        pt.super_.rows[0].as_mut().unwrap().as_row_mut().unwrap().updated = true;
-        pt.super_.rows[0].as_mut().unwrap().as_row_mut().unwrap().show = false;
+        pt.super_.rows[0]
+            .as_mut()
+            .unwrap()
+            .as_row_mut()
+            .unwrap()
+            .updated = true;
+        pt.super_.rows[0]
+            .as_mut()
+            .unwrap()
+            .as_row_mut()
+            .unwrap()
+            .show = false;
 
         ProcessTable_prepareEntries(&mut pt);
 

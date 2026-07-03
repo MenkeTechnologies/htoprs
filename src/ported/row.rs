@@ -40,16 +40,16 @@ use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::process::ProcessField;
-use crate::ported::settings::{RowField, Settings};
-use crate::ported::table::Table;
-use core::ops::Deref;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendChr, RichString_appendnAscii,
     RichString_appendnWideColumns, RichString_setAttr, RichString_size,
 };
+use crate::ported::settings::{RowField, Settings};
+use crate::ported::table::Table;
 use crate::ported::xutils::countDigits;
 use core::any::Any;
 use core::ffi::c_void;
+use core::ops::Deref;
 use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 /// Port of `#define SPACESHIP_NUMBER(a, b) (((a) > (b)) - ((a) < (b)))`
@@ -424,7 +424,7 @@ pub fn Row_display(cast: &dyn Object, out: &mut RichString) {
     }
 
     // C `Row_isHighlighted(this)` — the `isHighlighted` slot, or false.
-    if rc.isHighlighted.map_or(false, |f| f(cast)) {
+    if rc.isHighlighted.is_some_and(|f| f(cast)) {
         RichString_setAttr(out, PROCESS_SHADOW.packed(scheme));
     }
 
@@ -612,7 +612,9 @@ pub fn RowField_keyAt(settings: &Settings, at: i32) -> RowField {
             break;
         }
         let len = if rem > 0 {
-            RowField_alignedTitle(settings, field).len().min(rem as usize) as i32
+            RowField_alignedTitle(settings, field)
+                .len()
+                .min(rem as usize) as i32
         } else {
             0
         };

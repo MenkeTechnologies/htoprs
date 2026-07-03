@@ -43,9 +43,11 @@ use std::io::{self, Write};
 use crossterm::queue;
 use crossterm::terminal::{Clear, ClearType};
 
-use crate::ported::crt::{CRT_colorScheme, CRT_setColors, ColorScheme, KEY_ENTER, KEY_MOUSE, KEY_RECLICK};
-use crate::ported::panel::{HandlerResult, Panel_getSelectedIndex};
+use crate::ported::crt::{
+    CRT_colorScheme, CRT_setColors, ColorScheme, KEY_ENTER, KEY_MOUSE, KEY_RECLICK,
+};
 use crate::ported::functionbar::FunctionBar_new;
+use crate::ported::panel::{HandlerResult, Panel_getSelectedIndex};
 // `Object` is referenced only by the `#[cfg(test)]` helpers below (via `use
 // super::*`); gate the import so non-test builds don't flag it as unused.
 #[cfg(test)]

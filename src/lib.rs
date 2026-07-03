@@ -29,6 +29,22 @@
 //!   arithmetic (`0 + 0 - scrollV + 1`, `len >= n + 1`) for clarity.
 //! * `doc_lazy_continuation` — ported doc comments carry C-snippet
 //!   bullet lists whose wrapped lines trip the lint.
+//! * `field_reassign_with_default` — htop's `*_init` routines set fields
+//!   one at a time on a freshly `calloc`'d struct; the port mirrors that
+//!   line-for-line rather than collapsing into a struct literal.
+//! * `unnecessary_unwrap` — `if x.is_some() { x.unwrap() }` mirrors the
+//!   C `if (ptr) { ptr->… }` null-check-then-deref shape.
+//! * `manual_c_str_literals` — `b"kern.osrelease\0"` are the literal C
+//!   string constants passed to `sysctlbyname`; `c"…"` hides the NUL the
+//!   source spells out.
+//! * `not_unsafe_ptr_arg_deref` — ported helpers keep htop's raw-pointer
+//!   parameter signatures; marking them `unsafe` would change the API.
+//! * `too_many_arguments` — ported functions keep htop's C parameter
+//!   lists verbatim.
+//! * `erasing_op` — test assertions spell out C arithmetic that folds to
+//!   zero (`(-20 + 20) / 5` = the nice→ioprio mapping) for clarity.
+//! * `needless_late_init` — a `buffer` declared then filled inside a
+//!   `match`/`switch` mirrors htop's `char* buffer; switch(field){…}`.
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::explicit_counter_loop)]
 #![allow(clippy::manual_div_ceil)]
@@ -38,5 +54,12 @@
 #![allow(clippy::identity_op)]
 #![allow(clippy::int_plus_one)]
 #![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::manual_c_str_literals)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::erasing_op)]
+#![allow(clippy::needless_late_init)]
 
 pub mod ported;

@@ -22,40 +22,142 @@ use crate::ported::signalspanel::SignalItem;
 /// verbatim from the C table (leading-space padding is significant for the
 /// menu's fixed-width display).
 pub static Platform_signals: [SignalItem; 34] = [
-    SignalItem { name: " 0 Cancel", number: 0 },
-    SignalItem { name: " 1 SIGHUP", number: 1 },
-    SignalItem { name: " 2 SIGINT", number: 2 },
-    SignalItem { name: " 3 SIGQUIT", number: 3 },
-    SignalItem { name: " 4 SIGILL", number: 4 },
-    SignalItem { name: " 5 SIGTRAP", number: 5 },
-    SignalItem { name: " 6 SIGABRT", number: 6 },
-    SignalItem { name: " 7 SIGEMT", number: 7 },
-    SignalItem { name: " 8 SIGFPE", number: 8 },
-    SignalItem { name: " 9 SIGKILL", number: 9 },
-    SignalItem { name: "10 SIGBUS", number: 10 },
-    SignalItem { name: "11 SIGSEGV", number: 11 },
-    SignalItem { name: "12 SIGSYS", number: 12 },
-    SignalItem { name: "13 SIGPIPE", number: 13 },
-    SignalItem { name: "14 SIGALRM", number: 14 },
-    SignalItem { name: "15 SIGTERM", number: 15 },
-    SignalItem { name: "16 SIGURG", number: 16 },
-    SignalItem { name: "17 SIGSTOP", number: 17 },
-    SignalItem { name: "18 SIGTSTP", number: 18 },
-    SignalItem { name: "19 SIGCONT", number: 19 },
-    SignalItem { name: "20 SIGCHLD", number: 20 },
-    SignalItem { name: "21 SIGTTIN", number: 21 },
-    SignalItem { name: "22 SIGTTOU", number: 22 },
-    SignalItem { name: "23 SIGIO", number: 23 },
-    SignalItem { name: "24 SIGXCPU", number: 24 },
-    SignalItem { name: "25 SIGXFSZ", number: 25 },
-    SignalItem { name: "26 SIGVTALRM", number: 26 },
-    SignalItem { name: "27 SIGPROF", number: 27 },
-    SignalItem { name: "28 SIGWINCH", number: 28 },
-    SignalItem { name: "29 SIGINFO", number: 29 },
-    SignalItem { name: "30 SIGUSR1", number: 30 },
-    SignalItem { name: "31 SIGUSR2", number: 31 },
-    SignalItem { name: "32 SIGTHR", number: 32 },
-    SignalItem { name: "33 SIGLIBRT", number: 33 },
+    SignalItem {
+        name: " 0 Cancel",
+        number: 0,
+    },
+    SignalItem {
+        name: " 1 SIGHUP",
+        number: 1,
+    },
+    SignalItem {
+        name: " 2 SIGINT",
+        number: 2,
+    },
+    SignalItem {
+        name: " 3 SIGQUIT",
+        number: 3,
+    },
+    SignalItem {
+        name: " 4 SIGILL",
+        number: 4,
+    },
+    SignalItem {
+        name: " 5 SIGTRAP",
+        number: 5,
+    },
+    SignalItem {
+        name: " 6 SIGABRT",
+        number: 6,
+    },
+    SignalItem {
+        name: " 7 SIGEMT",
+        number: 7,
+    },
+    SignalItem {
+        name: " 8 SIGFPE",
+        number: 8,
+    },
+    SignalItem {
+        name: " 9 SIGKILL",
+        number: 9,
+    },
+    SignalItem {
+        name: "10 SIGBUS",
+        number: 10,
+    },
+    SignalItem {
+        name: "11 SIGSEGV",
+        number: 11,
+    },
+    SignalItem {
+        name: "12 SIGSYS",
+        number: 12,
+    },
+    SignalItem {
+        name: "13 SIGPIPE",
+        number: 13,
+    },
+    SignalItem {
+        name: "14 SIGALRM",
+        number: 14,
+    },
+    SignalItem {
+        name: "15 SIGTERM",
+        number: 15,
+    },
+    SignalItem {
+        name: "16 SIGURG",
+        number: 16,
+    },
+    SignalItem {
+        name: "17 SIGSTOP",
+        number: 17,
+    },
+    SignalItem {
+        name: "18 SIGTSTP",
+        number: 18,
+    },
+    SignalItem {
+        name: "19 SIGCONT",
+        number: 19,
+    },
+    SignalItem {
+        name: "20 SIGCHLD",
+        number: 20,
+    },
+    SignalItem {
+        name: "21 SIGTTIN",
+        number: 21,
+    },
+    SignalItem {
+        name: "22 SIGTTOU",
+        number: 22,
+    },
+    SignalItem {
+        name: "23 SIGIO",
+        number: 23,
+    },
+    SignalItem {
+        name: "24 SIGXCPU",
+        number: 24,
+    },
+    SignalItem {
+        name: "25 SIGXFSZ",
+        number: 25,
+    },
+    SignalItem {
+        name: "26 SIGVTALRM",
+        number: 26,
+    },
+    SignalItem {
+        name: "27 SIGPROF",
+        number: 27,
+    },
+    SignalItem {
+        name: "28 SIGWINCH",
+        number: 28,
+    },
+    SignalItem {
+        name: "29 SIGINFO",
+        number: 29,
+    },
+    SignalItem {
+        name: "30 SIGUSR1",
+        number: 30,
+    },
+    SignalItem {
+        name: "31 SIGUSR2",
+        number: 31,
+    },
+    SignalItem {
+        name: "32 SIGTHR",
+        number: 32,
+    },
+    SignalItem {
+        name: "33 SIGLIBRT",
+        number: 33,
+    },
 ];
 
 /// Port of `const unsigned int Platform_numberOfSignals =

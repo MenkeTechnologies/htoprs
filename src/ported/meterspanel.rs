@@ -667,7 +667,9 @@ mod tests {
     fn mp(n: usize) -> MetersPanel {
         let mut super_ = Panel_new(1, 1, 1, 1, Some(default_bar()));
         for i in 0..n {
-            super_.items.push(PanelItem::Owned(li(&format!("meter{i}"), false)));
+            super_
+                .items
+                .push(PanelItem::Owned(li(&format!("meter{i}"), false)));
         }
         MetersPanel {
             super_,
@@ -801,7 +803,12 @@ mod tests {
         Vector_add(&mut meters, meter("CPU"));
         Vector_add(&mut meters, meter("Mem"));
 
-        let m = MetersPanel_new(core::ptr::null_mut(), "Meters", meters, core::ptr::null_mut());
+        let m = MetersPanel_new(
+            core::ptr::null_mut(),
+            "Meters",
+            meters,
+            core::ptr::null_mut(),
+        );
 
         assert!(!m.moving);
         // Owns the passed-in meters store.
@@ -829,7 +836,12 @@ mod tests {
     #[test]
     fn new_with_empty_meters_has_no_rows() {
         let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let m = MetersPanel_new(core::ptr::null_mut(), "Empty", empty_meters(), core::ptr::null_mut());
+        let m = MetersPanel_new(
+            core::ptr::null_mut(),
+            "Empty",
+            empty_meters(),
+            core::ptr::null_mut(),
+        );
         assert_eq!(Vector_size(&m.meters), 0);
         assert_eq!(Panel_size(&m.super_), 0);
         *Meters_movingBar.lock().unwrap() = None;
@@ -845,8 +857,14 @@ mod tests {
         // `this` owns one meter "CPU"; `neighbor` starts empty.
         let mut meters = empty_meters();
         Vector_add(&mut meters, meter("CPU"));
-        let mut this = MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
-        let mut neighbor = MetersPanel_new(core::ptr::null_mut(), "Right", empty_meters(), core::ptr::null_mut());
+        let mut this =
+            MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
+        let mut neighbor = MetersPanel_new(
+            core::ptr::null_mut(),
+            "Right",
+            empty_meters(),
+            core::ptr::null_mut(),
+        );
 
         // Enter move mode on `this` with the CPU row selected.
         this.super_.selected = 0;
@@ -875,8 +893,14 @@ mod tests {
         let _guard = BAR_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut meters = empty_meters();
         Vector_add(&mut meters, meter("CPU"));
-        let mut this = MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
-        let mut neighbor = MetersPanel_new(core::ptr::null_mut(), "Right", empty_meters(), core::ptr::null_mut());
+        let mut this =
+            MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
+        let mut neighbor = MetersPanel_new(
+            core::ptr::null_mut(),
+            "Right",
+            empty_meters(),
+            core::ptr::null_mut(),
+        );
 
         // this.moving is false: the guard fails, nothing moves.
         assert!(!moveToNeighbor(&mut this, Some(&mut neighbor), 0));
@@ -893,7 +917,8 @@ mod tests {
 
         let mut meters = empty_meters();
         Vector_add(&mut meters, meter("CPU"));
-        let mut this = MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
+        let mut this =
+            MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
         this.super_.selected = 0;
         MetersPanel_setMoving(&mut this, true);
 
@@ -912,8 +937,14 @@ mod tests {
 
         let mut meters = empty_meters();
         Vector_add(&mut meters, meter("CPU"));
-        let mut this = MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
-        let mut neighbor = MetersPanel_new(core::ptr::null_mut(), "Right", empty_meters(), core::ptr::null_mut());
+        let mut this =
+            MetersPanel_new(core::ptr::null_mut(), "Left", meters, core::ptr::null_mut());
+        let mut neighbor = MetersPanel_new(
+            core::ptr::null_mut(),
+            "Right",
+            empty_meters(),
+            core::ptr::null_mut(),
+        );
         MetersPanel_setMoving(&mut this, true);
 
         // selected == size (1) is not < Vector_size -> false, nothing moves.

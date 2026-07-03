@@ -148,9 +148,19 @@ pub fn HeaderLayout_getColumns(hLayout: HeaderLayout) -> usize {
 const HEADER_LAYOUTS_IN_ORDER: [HeaderLayout; HeaderLayout::LAST_HEADER_LAYOUT as usize] = {
     use HeaderLayout::*;
     [
-        HF_ONE_100, HF_TWO_50_50, HF_TWO_33_67, HF_TWO_67_33, HF_THREE_33_34_33,
-        HF_THREE_25_25_50, HF_THREE_25_50_25, HF_THREE_50_25_25, HF_THREE_40_30_30,
-        HF_THREE_30_40_30, HF_THREE_30_30_40, HF_THREE_40_20_40, HF_FOUR_25_25_25_25,
+        HF_ONE_100,
+        HF_TWO_50_50,
+        HF_TWO_33_67,
+        HF_TWO_67_33,
+        HF_THREE_33_34_33,
+        HF_THREE_25_25_50,
+        HF_THREE_25_50_25,
+        HF_THREE_50_25_25,
+        HF_THREE_40_30_30,
+        HF_THREE_30_40_30,
+        HF_THREE_30_30_40,
+        HF_THREE_40_20_40,
+        HF_FOUR_25_25_25_25,
     ]
 };
 
@@ -190,19 +200,84 @@ pub struct HeaderLayoutDef {
 /// Setup "Header Layout" panel `.description`.
 #[allow(non_upper_case_globals)] // faithful C global name
 pub static HeaderLayout_layouts: [HeaderLayoutDef; HeaderLayout::LAST_HEADER_LAYOUT as usize] = [
-    HeaderLayoutDef { columns: 1, widths: [100, 0, 0, 0], name: "one_100", description: "1 column  - full width" },
-    HeaderLayoutDef { columns: 2, widths: [50, 50, 0, 0], name: "two_50_50", description: "2 columns - 50/50 (default)" },
-    HeaderLayoutDef { columns: 2, widths: [33, 67, 0, 0], name: "two_33_67", description: "2 columns - 33/67" },
-    HeaderLayoutDef { columns: 2, widths: [67, 33, 0, 0], name: "two_67_33", description: "2 columns - 67/33" },
-    HeaderLayoutDef { columns: 3, widths: [33, 34, 33, 0], name: "three_33_34_33", description: "3 columns - 33/34/33" },
-    HeaderLayoutDef { columns: 3, widths: [25, 25, 50, 0], name: "three_25_25_50", description: "3 columns - 25/25/50" },
-    HeaderLayoutDef { columns: 3, widths: [25, 50, 25, 0], name: "three_25_50_25", description: "3 columns - 25/50/25" },
-    HeaderLayoutDef { columns: 3, widths: [50, 25, 25, 0], name: "three_50_25_25", description: "3 columns - 50/25/25" },
-    HeaderLayoutDef { columns: 3, widths: [40, 30, 30, 0], name: "three_40_30_30", description: "3 columns - 40/30/30" },
-    HeaderLayoutDef { columns: 3, widths: [30, 40, 30, 0], name: "three_30_40_30", description: "3 columns - 30/40/30" },
-    HeaderLayoutDef { columns: 3, widths: [30, 30, 40, 0], name: "three_30_30_40", description: "3 columns - 30/30/40" },
-    HeaderLayoutDef { columns: 3, widths: [40, 20, 40, 0], name: "three_40_20_40", description: "3 columns - 40/20/40" },
-    HeaderLayoutDef { columns: 4, widths: [25, 25, 25, 25], name: "four_25_25_25_25", description: "4 columns - 25/25/25/25" },
+    HeaderLayoutDef {
+        columns: 1,
+        widths: [100, 0, 0, 0],
+        name: "one_100",
+        description: "1 column  - full width",
+    },
+    HeaderLayoutDef {
+        columns: 2,
+        widths: [50, 50, 0, 0],
+        name: "two_50_50",
+        description: "2 columns - 50/50 (default)",
+    },
+    HeaderLayoutDef {
+        columns: 2,
+        widths: [33, 67, 0, 0],
+        name: "two_33_67",
+        description: "2 columns - 33/67",
+    },
+    HeaderLayoutDef {
+        columns: 2,
+        widths: [67, 33, 0, 0],
+        name: "two_67_33",
+        description: "2 columns - 67/33",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [33, 34, 33, 0],
+        name: "three_33_34_33",
+        description: "3 columns - 33/34/33",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [25, 25, 50, 0],
+        name: "three_25_25_50",
+        description: "3 columns - 25/25/50",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [25, 50, 25, 0],
+        name: "three_25_50_25",
+        description: "3 columns - 25/50/25",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [50, 25, 25, 0],
+        name: "three_50_25_25",
+        description: "3 columns - 50/25/25",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [40, 30, 30, 0],
+        name: "three_40_30_30",
+        description: "3 columns - 40/30/30",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [30, 40, 30, 0],
+        name: "three_30_40_30",
+        description: "3 columns - 30/40/30",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [30, 30, 40, 0],
+        name: "three_30_30_40",
+        description: "3 columns - 30/30/40",
+    },
+    HeaderLayoutDef {
+        columns: 3,
+        widths: [40, 20, 40, 0],
+        name: "three_40_20_40",
+        description: "3 columns - 40/20/40",
+    },
+    HeaderLayoutDef {
+        columns: 4,
+        widths: [25, 25, 25, 25],
+        name: "four_25_25_25_25",
+        description: "4 columns - 25/25/25/25",
+    },
 ];
 
 /// Port of the `ScreenDefaults` descriptor (`Settings.h:29`). The four C
@@ -574,7 +649,7 @@ pub fn toFieldName<'a>(
     if id as usize >= LAST_PROCESSFIELD {
         let column = DynamicColumn_lookup(columns, id as u32);
         if let Some(e) = enabled {
-            *e = column.map_or(false, |c| c.enabled);
+            *e = column.is_some_and(|c| c.enabled);
         }
         return column.map(|c| c.name.as_str());
     }
@@ -660,7 +735,11 @@ pub fn ScreenSettings_readFields(ss: &mut ScreenSettings, columns: &Hashtable, l
 /// The C dereferences `this->dynamicColumns` unconditionally; here a `None`
 /// borrowed pointer (C `NULL`) is guarded — the field list is left empty
 /// rather than dereferencing null.
-pub fn Settings_initScreenSettings(this: &mut Settings, mut ss: ScreenSettings, columns: &str) -> usize {
+pub fn Settings_initScreenSettings(
+    this: &mut Settings,
+    mut ss: ScreenSettings,
+    columns: &str,
+) -> usize {
     match this.dynamicColumns {
         Some(p) => ScreenSettings_readFields(&mut ss, unsafe { &*p }, columns),
         None => ss.fields.clear(),
@@ -762,7 +841,12 @@ pub fn Settings_defaultScreens(this: &mut Settings) -> usize {
 /// `settings.rs` — and the legacy/no-screen branches call the (blocked)
 /// [`Settings_defaultScreens`]. Left stubbed on `Platform_addDynamicScreen`.
 /// Signature kept so [`Settings_new`] type-checks.
-pub fn Settings_read(this: &mut Settings, fileName: &str, host: &Machine, checkWritability: bool) -> bool {
+pub fn Settings_read(
+    this: &mut Settings,
+    fileName: &str,
+    host: &Machine,
+    checkWritability: bool,
+) -> bool {
     let _ = (this, fileName, host, checkWritability);
     todo!("port of Settings.c:320 — needs Platform_addDynamicScreen (unported)")
 }
@@ -956,8 +1040,7 @@ pub fn Settings_write(this: &Settings, onCrash: bool) -> i32 {
         return 0;
     } else {
         // create tempfile with mode 0600
-        let cur_umask =
-            unsafe { libc::umask(libc::S_IXUSR | libc::S_IRWXG | libc::S_IRWXO) };
+        let cur_umask = unsafe { libc::umask(libc::S_IXUSR | libc::S_IRWXG | libc::S_IRWXO) };
         let template = format!("{}.tmp.XXXXXX", this.filename.as_deref().unwrap_or(""));
         // NUL-terminated, mutable: mkstemp overwrites the trailing "XXXXXX".
         let mut tmpl: Vec<u8> = template.into_bytes();
@@ -990,45 +1073,190 @@ pub fn Settings_write(this: &Settings, onCrash: bool) -> i32 {
         );
         buf.push_str("# The parser is also very primitive, and not human-friendly.\n");
     }
-    printSettingString(&mut buf, separator, "htop_version", env!("CARGO_PKG_VERSION"));
-    printSettingInteger(&mut buf, separator, "config_reader_min_version", CONFIG_READER_MIN_VERSION);
+    printSettingString(
+        &mut buf,
+        separator,
+        "htop_version",
+        env!("CARGO_PKG_VERSION"),
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "config_reader_min_version",
+        CONFIG_READER_MIN_VERSION,
+    );
     buf.push_str("fields=");
     writeFields(&mut buf, &this.screens[0].fields, columns, false, separator);
-    printSettingInteger(&mut buf, separator, "hide_kernel_threads", this.hideKernelThreads as i32);
-    printSettingInteger(&mut buf, separator, "hide_userland_threads", this.hideUserlandThreads as i32);
-    printSettingInteger(&mut buf, separator, "hide_running_in_container", this.hideRunningInContainer as i32);
-    printSettingInteger(&mut buf, separator, "shadow_other_users", this.shadowOtherUsers as i32);
-    printSettingInteger(&mut buf, separator, "show_thread_names", this.showThreadNames as i32);
-    printSettingInteger(&mut buf, separator, "show_program_path", this.showProgramPath as i32);
-    printSettingInteger(&mut buf, separator, "highlight_base_name", this.highlightBaseName as i32);
-    printSettingInteger(&mut buf, separator, "highlight_deleted_exe", this.highlightDeletedExe as i32);
-    printSettingInteger(&mut buf, separator, "shadow_distribution_path_prefix", this.shadowDistPathPrefix as i32);
-    printSettingInteger(&mut buf, separator, "highlight_megabytes", this.highlightMegabytes as i32);
-    printSettingInteger(&mut buf, separator, "highlight_threads", this.highlightThreads as i32);
-    printSettingInteger(&mut buf, separator, "highlight_changes", this.highlightChanges as i32);
-    printSettingInteger(&mut buf, separator, "highlight_changes_delay_secs", this.highlightDelaySecs);
-    printSettingInteger(&mut buf, separator, "find_comm_in_cmdline", this.findCommInCmdline as i32);
-    printSettingInteger(&mut buf, separator, "strip_exe_from_cmdline", this.stripExeFromCmdline as i32);
-    printSettingInteger(&mut buf, separator, "show_merged_command", this.showMergedCommand as i32);
-    printSettingInteger(&mut buf, separator, "header_margin", this.headerMargin as i32);
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "hide_kernel_threads",
+        this.hideKernelThreads as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "hide_userland_threads",
+        this.hideUserlandThreads as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "hide_running_in_container",
+        this.hideRunningInContainer as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "shadow_other_users",
+        this.shadowOtherUsers as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_thread_names",
+        this.showThreadNames as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_program_path",
+        this.showProgramPath as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "highlight_base_name",
+        this.highlightBaseName as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "highlight_deleted_exe",
+        this.highlightDeletedExe as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "shadow_distribution_path_prefix",
+        this.shadowDistPathPrefix as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "highlight_megabytes",
+        this.highlightMegabytes as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "highlight_threads",
+        this.highlightThreads as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "highlight_changes",
+        this.highlightChanges as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "highlight_changes_delay_secs",
+        this.highlightDelaySecs,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "find_comm_in_cmdline",
+        this.findCommInCmdline as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "strip_exe_from_cmdline",
+        this.stripExeFromCmdline as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_merged_command",
+        this.showMergedCommand as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "header_margin",
+        this.headerMargin as i32,
+    );
     printSettingInteger(&mut buf, separator, "screen_tabs", this.screenTabs as i32);
-    printSettingInteger(&mut buf, separator, "detailed_cpu_time", this.detailedCPUTime as i32);
-    printSettingInteger(&mut buf, separator, "cpu_count_from_one", this.countCPUsFromOne as i32);
-    printSettingInteger(&mut buf, separator, "show_cpu_smt_labels", this.showCPUSMTLabels as i32);
-    printSettingInteger(&mut buf, separator, "show_cpu_usage", this.showCPUUsage as i32);
-    printSettingInteger(&mut buf, separator, "show_cpu_frequency", this.showCPUFrequency as i32);
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "detailed_cpu_time",
+        this.detailedCPUTime as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "cpu_count_from_one",
+        this.countCPUsFromOne as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_cpu_smt_labels",
+        this.showCPUSMTLabels as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_cpu_usage",
+        this.showCPUUsage as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_cpu_frequency",
+        this.showCPUFrequency as i32,
+    );
     // BUILD_WITH_CPU_TEMP fields (show_cpu_temperature/degree_fahrenheit) are
     // gated out of this platform build, matching the C `#ifdef`.
-    printSettingInteger(&mut buf, separator, "show_cached_memory", this.showCachedMemory as i32);
-    printSettingInteger(&mut buf, separator, "update_process_names", this.updateProcessNames as i32);
-    printSettingInteger(&mut buf, separator, "account_guest_in_cpu_meter", this.accountGuestInCPUMeter as i32);
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "show_cached_memory",
+        this.showCachedMemory as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "update_process_names",
+        this.updateProcessNames as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "account_guest_in_cpu_meter",
+        this.accountGuestInCPUMeter as i32,
+    );
     printSettingInteger(&mut buf, separator, "color_scheme", this.colorScheme);
     printSettingInteger(&mut buf, separator, "enable_mouse", this.enableMouse as i32);
     printSettingInteger(&mut buf, separator, "delay", this.delay);
-    printSettingInteger(&mut buf, separator, "hide_function_bar", this.hideFunctionBar);
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "hide_function_bar",
+        this.hideFunctionBar,
+    );
     // HAVE_LIBHWLOC field (topology_affinity) is gated out, matching the C `#ifdef`.
 
-    printSettingString(&mut buf, separator, "header_layout", HeaderLayout_getName(this.hLayout));
+    printSettingString(
+        &mut buf,
+        separator,
+        "header_layout",
+        HeaderLayout_getName(this.hLayout),
+    );
     for i in 0..HeaderLayout_getColumns(this.hLayout) {
         buf.push_str(&format!("column_meters_{i}="));
         writeMeters(this, &mut buf, separator, i);
@@ -1044,8 +1272,18 @@ pub fn Settings_write(this: &Settings, onCrash: bool) -> i32 {
     printSettingInteger(&mut buf, separator, "tree_sort_key", s0.treeSortKey - 1);
     printSettingInteger(&mut buf, separator, "sort_direction", s0.direction);
     printSettingInteger(&mut buf, separator, "tree_sort_direction", s0.treeDirection);
-    printSettingInteger(&mut buf, separator, "tree_view_always_by_pid", s0.treeViewAlwaysByPID as i32);
-    printSettingInteger(&mut buf, separator, "all_branches_collapsed", s0.allBranchesCollapsed as i32);
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "tree_view_always_by_pid",
+        s0.treeViewAlwaysByPID as i32,
+    );
+    printSettingInteger(
+        &mut buf,
+        separator,
+        "all_branches_collapsed",
+        s0.allBranchesCollapsed as i32,
+    );
 
     for i in 0..this.screens.len() {
         let ss = &this.screens[i];
@@ -1065,12 +1303,27 @@ pub fn Settings_write(this: &Settings, onCrash: bool) -> i32 {
         } else {
             printSettingString(&mut buf, separator, ".sort_key", sortKey);
             printSettingString(&mut buf, separator, ".tree_sort_key", treeSortKey);
-            printSettingInteger(&mut buf, separator, ".tree_view_always_by_pid", ss.treeViewAlwaysByPID as i32);
+            printSettingInteger(
+                &mut buf,
+                separator,
+                ".tree_view_always_by_pid",
+                ss.treeViewAlwaysByPID as i32,
+            );
         }
         printSettingInteger(&mut buf, separator, ".tree_view", ss.treeView as i32);
         printSettingInteger(&mut buf, separator, ".sort_direction", ss.direction);
-        printSettingInteger(&mut buf, separator, ".tree_sort_direction", ss.treeDirection);
-        printSettingInteger(&mut buf, separator, ".all_branches_collapsed", ss.allBranchesCollapsed as i32);
+        printSettingInteger(
+            &mut buf,
+            separator,
+            ".tree_sort_direction",
+            ss.treeDirection,
+        );
+        printSettingInteger(
+            &mut buf,
+            separator,
+            ".all_branches_collapsed",
+            ss.allBranchesCollapsed as i32,
+        );
     }
 
     if onCrash {
@@ -1178,7 +1431,11 @@ pub fn Settings_new(
                 let pw = libc::getpwuid(libc::getuid());
                 if !pw.is_null() && !(*pw).pw_dir.is_null() {
                     let dir = CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned();
-                    if dir.starts_with('/') { dir } else { String::new() }
+                    if dir.starts_with('/') {
+                        dir
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
                 }
@@ -1400,23 +1657,43 @@ mod tests {
         assert_eq!(HeaderLayout_layouts.len(), LAST_HEADER_LAYOUT as usize);
 
         let all = [
-            HF_ONE_100, HF_TWO_50_50, HF_TWO_33_67, HF_TWO_67_33, HF_THREE_33_34_33,
-            HF_THREE_25_25_50, HF_THREE_25_50_25, HF_THREE_50_25_25, HF_THREE_40_30_30,
-            HF_THREE_30_40_30, HF_THREE_30_30_40, HF_THREE_40_20_40, HF_FOUR_25_25_25_25,
+            HF_ONE_100,
+            HF_TWO_50_50,
+            HF_TWO_33_67,
+            HF_TWO_67_33,
+            HF_THREE_33_34_33,
+            HF_THREE_25_25_50,
+            HF_THREE_25_50_25,
+            HF_THREE_50_25_25,
+            HF_THREE_40_30_30,
+            HF_THREE_30_40_30,
+            HF_THREE_30_30_40,
+            HF_THREE_40_20_40,
+            HF_FOUR_25_25_25_25,
         ];
         for layout in all {
             let def = &HeaderLayout_layouts[layout as usize];
             // `columns` agrees with the independent `HeaderLayout_getColumns`.
-            assert_eq!(def.columns as usize, HeaderLayout_getColumns(layout), "{layout:?}");
+            assert_eq!(
+                def.columns as usize,
+                HeaderLayout_getColumns(layout),
+                "{layout:?}"
+            );
             // The used columns' percentages sum to 100.
-            let sum: u32 = def.widths[..def.columns as usize].iter().map(|&w| w as u32).sum();
+            let sum: u32 = def.widths[..def.columns as usize]
+                .iter()
+                .map(|&w| w as u32)
+                .sum();
             assert_eq!(sum, 100, "{layout:?} widths sum");
             // Unused trailing widths are zero.
             assert!(def.widths[def.columns as usize..].iter().all(|&w| w == 0));
             assert!(!def.name.is_empty() && !def.description.is_empty());
         }
         // Spot-check a couple of specific rows.
-        assert_eq!(HeaderLayout_layouts[HF_TWO_67_33 as usize].widths, [67, 33, 0, 0]);
+        assert_eq!(
+            HeaderLayout_layouts[HF_TWO_67_33 as usize].widths,
+            [67, 33, 0, 0]
+        );
         assert_eq!(HeaderLayout_layouts[HF_ONE_100 as usize].name, "one_100");
     }
 
@@ -1864,7 +2141,10 @@ mod tests {
         use crate::ported::process::ProcessField;
 
         let ht = Hashtable_new(0, false);
-        assert_eq!(toFieldName(&ht, ProcessField::PID as i32, None), Some("PID"));
+        assert_eq!(
+            toFieldName(&ht, ProcessField::PID as i32, None),
+            Some("PID")
+        );
         assert_eq!(toFieldName(&ht, -1, None), None);
         // "0" → atoi 0 + 1 = 1 (PID) in the old zero-based enum form.
         assert_eq!(toFieldIndex(&ht, "0"), ProcessField::PID as i32);
@@ -1888,7 +2168,10 @@ mod tests {
         ScreenSettings_readFields(&mut ss, &ht, "0 1");
         assert_eq!(
             ss.fields,
-            vec![ProcessField::PID as RowField, ProcessField::COMM as RowField]
+            vec![
+                ProcessField::PID as RowField,
+                ProcessField::COMM as RowField
+            ]
         );
         assert_eq!(ss.flags, 0);
 

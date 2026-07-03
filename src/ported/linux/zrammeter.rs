@@ -42,8 +42,7 @@ const ZRAM_METER_UNCOMPRESSED: usize = 1;
 pub fn ZramMeter_updateValues(this: &mut Meter) {
     Platform_setZramValues(this);
 
-    let uncompressed =
-        this.values[ZRAM_METER_COMPRESSED] + this.values[ZRAM_METER_UNCOMPRESSED];
+    let uncompressed = this.values[ZRAM_METER_COMPRESSED] + this.values[ZRAM_METER_UNCOMPRESSED];
     // C: "<comp>(<comp+uncomp>)/<total>", each figure via Meter_humanUnit.
     this.txtBuffer = format!(
         "{}({})/{}",
@@ -111,7 +110,7 @@ mod tests {
         use crate::ported::linux::linuxmachine::{LinuxMachine, ZramStats};
         let host = Box::leak(Box::new(LinuxMachine {
             zram: ZramStats {
-                totalZram: 1024,       // "1.00M"
+                totalZram: 1024,        // "1.00M"
                 usedZramComp: 1024 * 2, // "2.00M"
                 usedZramOrig: 1024 * 3, // orig-comp = 1M uncompressed
             },

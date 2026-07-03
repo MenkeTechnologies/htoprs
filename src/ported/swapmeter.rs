@@ -42,7 +42,7 @@ use crate::ported::darwin::platform::Platform_setSwapValues;
 #[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::Platform_setSwapValues;
 use crate::ported::meter::{
-    Meter, Meter_humanUnit, BAR_METERMODE, METERMODE_DEFAULT_SUPPORTED, MeterClass, Meter_class,
+    Meter, MeterClass, Meter_class, Meter_humanUnit, BAR_METERMODE, METERMODE_DEFAULT_SUPPORTED,
 };
 use crate::ported::object::ObjectClass;
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};

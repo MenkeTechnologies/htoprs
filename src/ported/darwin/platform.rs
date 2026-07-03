@@ -39,19 +39,16 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::ported::crt::{ColorElements, CRT_fatalError};
+use crate::ported::crt::{CRT_fatalError, ColorElements};
 use crate::ported::linux::platform::MemoryClass;
 // Used only by the `#[cfg(target_arch = "x86_64")]` Rosetta workaround below.
+use crate::ported::darwin::darwinmachine::DarwinMachine;
 #[cfg(target_arch = "x86_64")]
 use crate::ported::darwin::platformhelpers::{
     KernelVersion, Platform_CompareKernelVersion, Platform_isRunningTranslated,
 };
-use crate::ported::darwin::darwinmachine::DarwinMachine;
 // `Machine` is named only by the meter-setter tests now (the setters read the
 // typed `mtr.host` and cast to `*DarwinMachine`).
-#[cfg(test)]
-use crate::ported::machine::Machine;
-use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
 use crate::ported::batterymeter::BatteryMeter_class;
 use crate::ported::cpumeter::{
     AllCPUs2Meter_class, AllCPUs4Meter_class, AllCPUs8Meter_class, AllCPUsMeter_class,
@@ -59,15 +56,18 @@ use crate::ported::cpumeter::{
     LeftCPUsMeter_class, RightCPUs2Meter_class, RightCPUs4Meter_class, RightCPUs8Meter_class,
     RightCPUsMeter_class,
 };
+use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
 use crate::ported::hostnamemeter::HostnameMeter_class;
 use crate::ported::loadaveragemeter::{LoadAverageMeter_class, LoadMeter_class};
-use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
+#[cfg(test)]
+use crate::ported::machine::Machine;
 use crate::ported::memorymeter::MemoryMeter_class;
+use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
+use crate::ported::networkiometer::NetworkIOData;
 use crate::ported::swapmeter::SwapMeter_class;
 use crate::ported::sysarchmeter::SysArchMeter_class;
 use crate::ported::tasksmeter::TasksMeter_class;
 use crate::ported::uptimemeter::{SecondsUptimeMeter_class, UptimeMeter_class};
-use crate::ported::networkiometer::NetworkIOData;
 use crate::ported::xutils::saturatingSub;
 
 // `KERN_SUCCESS` (`mach/kern_return.h`).
@@ -366,7 +366,7 @@ pub fn Platform_setGPUValues() {
 ///
 /// Ported entries are listed in their C-array positions relative to each
 /// other; `BlankMeter` is last in the C array too.
-pub static Platform_meterTypes: &[&'static MeterClass] = &[
+pub static Platform_meterTypes: &[&MeterClass] = &[
     &CPUMeter_class,
     &ClockMeter_class,
     &DateMeter_class,
@@ -397,12 +397,42 @@ pub static Platform_meterTypes: &[&'static MeterClass] = &[
 ];
 
 pub static Platform_memoryClasses: [MemoryClass; 6] = [
-    MemoryClass { label: "wired", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_1 },
-    MemoryClass { label: "speculative", countsAsUsed: true, countsAsCache: true, color: ColorElements::MEMORY_2 },
-    MemoryClass { label: "active", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_3 },
-    MemoryClass { label: "purgeable", countsAsUsed: false, countsAsCache: true, color: ColorElements::MEMORY_4 },
-    MemoryClass { label: "compressed", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_5 },
-    MemoryClass { label: "inactive", countsAsUsed: true, countsAsCache: true, color: ColorElements::MEMORY_6 },
+    MemoryClass {
+        label: "wired",
+        countsAsUsed: true,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_1,
+    },
+    MemoryClass {
+        label: "speculative",
+        countsAsUsed: true,
+        countsAsCache: true,
+        color: ColorElements::MEMORY_2,
+    },
+    MemoryClass {
+        label: "active",
+        countsAsUsed: true,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_3,
+    },
+    MemoryClass {
+        label: "purgeable",
+        countsAsUsed: false,
+        countsAsCache: true,
+        color: ColorElements::MEMORY_4,
+    },
+    MemoryClass {
+        label: "compressed",
+        countsAsUsed: true,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_5,
+    },
+    MemoryClass {
+        label: "inactive",
+        countsAsUsed: true,
+        countsAsCache: true,
+        color: ColorElements::MEMORY_6,
+    },
 ];
 
 /// Port of `const unsigned int Platform_numberOfMemoryClasses`
@@ -442,7 +472,7 @@ pub fn Platform_setMemoryValues(mtr: &mut Meter) {
         (*host)
             .settings
             .as_ref()
-            .map_or(false, |s| s.showCachedMemory)
+            .is_some_and(|s| s.showCachedMemory)
     };
 
     mtr.total = (unsafe { (*dhost).host_info.max_mem } / 1024) as f64;
@@ -543,47 +573,46 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
                 0,
             )
         } == 0
+            && bufsz > size_of::<c_int>()
         {
-            if bufsz > size_of::<c_int>() {
-                let endp = bufsz;
-                let mut p = 0usize;
-                let mut argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
-                p += size_of::<c_int>();
+            let endp = bufsz;
+            let mut p = 0usize;
+            let mut argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            p += size_of::<c_int>();
 
-                // skip exe: strchr(p, 0) + 1
+            // skip exe: strchr(p, 0) + 1
+            while p < endp && buf[p] != 0 {
+                p += 1;
+            }
+            if p < endp {
+                p += 1;
+            }
+
+            // skip padding
+            while p < endp && buf[p] == 0 {
+                p += 1;
+            }
+
+            // skip argv
+            while argc > 0 && p < endp {
+                argc -= 1;
                 while p < endp && buf[p] != 0 {
                     p += 1;
                 }
                 if p < endp {
                     p += 1;
                 }
-
-                // skip padding
-                while p < endp && buf[p] == 0 {
-                    p += 1;
-                }
-
-                // skip argv
-                while argc > 0 && p < endp {
-                    argc -= 1;
-                    while p < endp && buf[p] != 0 {
-                        p += 1;
-                    }
-                    if p < endp {
-                        p += 1;
-                    }
-                }
-
-                // skip padding
-                while p < endp && buf[p] == 0 {
-                    p += 1;
-                }
-
-                let mut bytes = buf[p..endp].to_vec();
-                bytes.push(0);
-                bytes.push(0);
-                env = Some(String::from_utf8_lossy(&bytes).into_owned());
             }
+
+            // skip padding
+            while p < endp && buf[p] == 0 {
+                p += 1;
+            }
+
+            let mut bytes = buf[p..endp].to_vec();
+            bytes.push(0);
+            bytes.push(0);
+            env = Some(String::from_utf8_lossy(&bytes).into_owned());
         }
     }
 

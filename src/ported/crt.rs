@@ -2211,7 +2211,6 @@ pub extern "C" fn CRT_handleSIGSEGV(signal: libc::c_int) {
          Please include the generated file in your report.\n",
     );
     // #endif /* PRINT_BACKTRACE */
-
     let err_buf = format!(
         "Running this program with debug symbols or inside a debugger may provide further insights.\n\
          \n\

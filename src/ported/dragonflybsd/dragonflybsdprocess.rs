@@ -33,7 +33,9 @@ use crate::ported::process::{
     Process_rowIsVisible, Process_writeField, PROCESS_FLAG_CWD,
 };
 use crate::ported::richstring::{RichString, RichString_appendWide};
-use crate::ported::row::{spaceship_number, Row, RowClass, Row_display, Row_pidDigits, Row_printLeftAlignedField};
+use crate::ported::row::{
+    spaceship_number, Row, RowClass, Row_display, Row_pidDigits, Row_printLeftAlignedField,
+};
 use crate::ported::settings::RowField;
 
 /// Port of `JID = 100` from `dragonflybsd/ProcessField.h` — the jail prison id
@@ -92,36 +94,279 @@ pub static Process_fields: [ProcessFieldData; LAST_PROCESSFIELD] = build_process
 const fn build_process_fields() -> [ProcessFieldData; LAST_PROCESSFIELD] {
     use ProcessField as PF;
     let mut t = [EMPTY_FIELD; LAST_PROCESSFIELD];
-    t[PF::PID as usize] = pfd("PID", "PID", "Process/thread ID", 0, true, false, false, false);
-    t[PF::COMM as usize] = pfd("Command", "Command ", "Command line (insert as last column only)", 0, false, false, false, false);
+    t[PF::PID as usize] = pfd(
+        "PID",
+        "PID",
+        "Process/thread ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::COMM as usize] = pfd(
+        "Command",
+        "Command ",
+        "Command line (insert as last column only)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     t[PF::STATE as usize] = pfd("STATE", "S ", "Process state (S sleeping (<20s), I Idle, Q Queued for Run, R running, D disk, Z zombie, T traced, W paging, B Blocked, A AskedPage, C Core, J Jailed)", 0, false, false, false, false);
-    t[PF::PPID as usize] = pfd("PPID", "PPID", "Parent process ID", 0, true, false, false, false);
-    t[PF::PGRP as usize] = pfd("PGRP", "PGRP", "Process group ID", 0, true, false, false, false);
-    t[PF::SESSION as usize] = pfd("SESSION", "SID", "Process's session ID", 0, true, false, false, false);
-    t[PF::TTY as usize] = pfd("TTY", "TTY      ", "Controlling terminal", 0, false, false, false, false);
-    t[PF::TPGID as usize] = pfd("TPGID", "TPGID", "Process ID of the fg process group of the controlling terminal", 0, true, false, false, false);
-    t[PF::MINFLT as usize] = pfd("MINFLT", "     MINFLT ", "Number of minor faults which have not required loading a memory page from disk", 0, false, true, false, false);
-    t[PF::MAJFLT as usize] = pfd("MAJFLT", "     MAJFLT ", "Number of major faults which have required loading a memory page from disk", 0, false, true, false, false);
-    t[PF::PRIORITY as usize] = pfd("PRIORITY", "PRI ", "Kernel's internal priority for the process", 0, false, false, false, false);
-    t[PF::NICE as usize] = pfd("NICE", " NI ", "Nice value (the higher the value, the more it lets other processes take priority)", 0, false, false, false, false);
-    t[PF::STARTTIME as usize] = pfd("STARTTIME", "START ", "Time the process was started", 0, false, false, false, false);
-    t[PF::ELAPSED as usize] = pfd("ELAPSED", "ELAPSED  ", "Time since the process was started", 0, false, false, false, false);
-    t[PF::PROCESSOR as usize] = pfd("PROCESSOR", "CPU ", "Id of the CPU the process last executed on", 0, false, false, false, false);
-    t[PF::M_VIRT as usize] = pfd("M_VIRT", " VIRT ", "Total program size in virtual memory", 0, false, true, false, false);
-    t[PF::M_RESIDENT as usize] = pfd("M_RESIDENT", "  RES ", "Resident set size, size of the text and data sections, plus stack usage", 0, false, true, false, false);
-    t[PF::ST_UID as usize] = pfd("ST_UID", "UID", "User ID of the process owner", 0, false, false, false, false);
-    t[PF::PERCENT_CPU as usize] = pfd("PERCENT_CPU", " CPU%", "Percentage of the CPU time the process used in the last sampling", 0, false, true, true, true);
+    t[PF::PPID as usize] = pfd(
+        "PPID",
+        "PPID",
+        "Parent process ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::PGRP as usize] = pfd(
+        "PGRP",
+        "PGRP",
+        "Process group ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::SESSION as usize] = pfd(
+        "SESSION",
+        "SID",
+        "Process's session ID",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::TTY as usize] = pfd(
+        "TTY",
+        "TTY      ",
+        "Controlling terminal",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::TPGID as usize] = pfd(
+        "TPGID",
+        "TPGID",
+        "Process ID of the fg process group of the controlling terminal",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::MINFLT as usize] = pfd(
+        "MINFLT",
+        "     MINFLT ",
+        "Number of minor faults which have not required loading a memory page from disk",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::MAJFLT as usize] = pfd(
+        "MAJFLT",
+        "     MAJFLT ",
+        "Number of major faults which have required loading a memory page from disk",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::PRIORITY as usize] = pfd(
+        "PRIORITY",
+        "PRI ",
+        "Kernel's internal priority for the process",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::NICE as usize] = pfd(
+        "NICE",
+        " NI ",
+        "Nice value (the higher the value, the more it lets other processes take priority)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::STARTTIME as usize] = pfd(
+        "STARTTIME",
+        "START ",
+        "Time the process was started",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::ELAPSED as usize] = pfd(
+        "ELAPSED",
+        "ELAPSED  ",
+        "Time since the process was started",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PROCESSOR as usize] = pfd(
+        "PROCESSOR",
+        "CPU ",
+        "Id of the CPU the process last executed on",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::M_VIRT as usize] = pfd(
+        "M_VIRT",
+        " VIRT ",
+        "Total program size in virtual memory",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::M_RESIDENT as usize] = pfd(
+        "M_RESIDENT",
+        "  RES ",
+        "Resident set size, size of the text and data sections, plus stack usage",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::ST_UID as usize] = pfd(
+        "ST_UID",
+        "UID",
+        "User ID of the process owner",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PERCENT_CPU as usize] = pfd(
+        "PERCENT_CPU",
+        " CPU%",
+        "Percentage of the CPU time the process used in the last sampling",
+        0,
+        false,
+        true,
+        true,
+        true,
+    );
     t[PF::PERCENT_NORM_CPU as usize] = pfd("PERCENT_NORM_CPU", "NCPU%", "Normalized percentage of the CPU time the process used in the last sampling (normalized by cpu count)", 0, false, true, true, false);
-    t[PF::PERCENT_MEM as usize] = pfd("PERCENT_MEM", "MEM% ", "Percentage of the memory the process is using, based on resident memory size", 0, false, true, false, false);
-    t[PF::USER as usize] = pfd("USER", "USER       ", "Username of the process owner (or user ID if name cannot be determined)", 0, false, false, false, false);
-    t[PF::TIME as usize] = pfd("TIME", "  TIME+  ", "Total time the process has spent in user and system time", 0, false, true, false, false);
-    t[PF::NLWP as usize] = pfd("NLWP", "NLWP ", "Number of threads in the process", 0, false, false, false, false);
-    t[PF::TGID as usize] = pfd("TGID", "TGID", "Thread group ID (i.e. process ID)", 0, true, false, false, false);
-    t[PF::PROC_COMM as usize] = pfd("COMM", "COMM            ", "comm string of the process", 0, false, false, false, false);
-    t[PF::PROC_EXE as usize] = pfd("EXE", "EXE             ", "Basename of exe of the process", 0, false, false, false, false);
-    t[PF::CWD as usize] = pfd("CWD", "CWD                       ", "The current working directory of the process", PROCESS_FLAG_CWD, false, false, false, false);
+    t[PF::PERCENT_MEM as usize] = pfd(
+        "PERCENT_MEM",
+        "MEM% ",
+        "Percentage of the memory the process is using, based on resident memory size",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::USER as usize] = pfd(
+        "USER",
+        "USER       ",
+        "Username of the process owner (or user ID if name cannot be determined)",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::TIME as usize] = pfd(
+        "TIME",
+        "  TIME+  ",
+        "Total time the process has spent in user and system time",
+        0,
+        false,
+        true,
+        false,
+        false,
+    );
+    t[PF::NLWP as usize] = pfd(
+        "NLWP",
+        "NLWP ",
+        "Number of threads in the process",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::TGID as usize] = pfd(
+        "TGID",
+        "TGID",
+        "Thread group ID (i.e. process ID)",
+        0,
+        true,
+        false,
+        false,
+        false,
+    );
+    t[PF::PROC_COMM as usize] = pfd(
+        "COMM",
+        "COMM            ",
+        "comm string of the process",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::PROC_EXE as usize] = pfd(
+        "EXE",
+        "EXE             ",
+        "Basename of exe of the process",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
+    t[PF::CWD as usize] = pfd(
+        "CWD",
+        "CWD                       ",
+        "The current working directory of the process",
+        PROCESS_FLAG_CWD,
+        false,
+        false,
+        false,
+        false,
+    );
     t[JID as usize] = pfd("JID", "JID", "Jail prison ID", 0, true, false, false, false);
-    t[JAIL as usize] = pfd("JAIL", "JAIL        ", "Jail prison name", 0, false, false, false, false);
+    t[JAIL as usize] = pfd(
+        "JAIL",
+        "JAIL        ",
+        "Jail prison name",
+        0,
+        false,
+        false,
+        false,
+        false,
+    );
     t
 }
 
@@ -153,7 +398,11 @@ pub fn DragonFlyBSDProcess_new(host: *const Machine) -> DragonFlyBSDProcess {
 /// threads), the `JID`/`JAIL` jail columns, and delegates the rest to the base
 /// [`Process_writeField`]. The C `const Row*` receiver is a `&dyn Object`
 /// downcast to [`DragonFlyBSDProcess`].
-pub fn DragonFlyBSDProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, field: RowField) {
+pub fn DragonFlyBSDProcess_rowWriteField(
+    super_: &dyn Object,
+    str: &mut RichString,
+    field: RowField,
+) {
     let fp = (super_ as &dyn Any)
         .downcast_ref::<DragonFlyBSDProcess>()
         .expect("DragonFlyBSDProcess_rowWriteField: row is not a DragonFlyBSDProcess");
@@ -316,7 +565,10 @@ mod tests {
         assert!(Process_fields[JID as usize].pidColumn);
         assert_eq!(Process_fields[JAIL as usize].name, "JAIL");
         assert_eq!(Process_fields[JAIL as usize].title, Some("JAIL        "));
-        assert_eq!(Process_fields[ProcessField::PID as usize].title, Some("PID"));
+        assert_eq!(
+            Process_fields[ProcessField::PID as usize].title,
+            Some("PID")
+        );
         // Index 0 is the empty sentinel.
         assert_eq!(Process_fields[0].name, "");
     }

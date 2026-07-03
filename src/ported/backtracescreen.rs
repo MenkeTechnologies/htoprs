@@ -66,7 +66,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use crate::ported::crt::{A_BOLD, ColorElements, ColorScheme, KEY_CTRL, KEY_F};
+use crate::ported::crt::{ColorElements, ColorScheme, A_BOLD, KEY_CTRL, KEY_F};
 use crate::ported::functionbar::{FunctionBar_new, FunctionBar_setLabel};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
@@ -74,7 +74,7 @@ use crate::ported::panel::{
     Panel_setHeader, Panel_size,
 };
 use crate::ported::process::{
-    CMDLINE_HIGHLIGHT_FLAG_BASENAME, Process, Process_getPid, Process_isThread,
+    Process, Process_getPid, Process_isThread, CMDLINE_HIGHLIGHT_FLAG_BASENAME,
 };
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendnAscii, RichString_appendnWide,
@@ -545,8 +545,12 @@ pub fn BacktracePanel_new(
     //        (settings->showProgramPath ? SHOW_FULL_PATH_OBJECT : 0) | 0;
     // SAFETY: `settings` is a live, externally-owned Settings (the caller's).
     let showProgramPath = unsafe { &*settings }.showProgramPath;
-    let displayOptions =
-        DEMANGLE_NAME_FUNCTION | if showProgramPath { SHOW_FULL_PATH_OBJECT } else { 0 };
+    let displayOptions = DEMANGLE_NAME_FUNCTION
+        | if showProgramPath {
+            SHOW_FULL_PATH_OBJECT
+        } else {
+            0
+        };
 
     // C: Panel_init(super, 1, 1, 0, 1, Class(BacktracePanelRow), true,
     //        FunctionBar_new(BacktraceScreenFunctions, ...Keys, ...Events));
@@ -724,10 +728,8 @@ pub fn BacktracePanelRow_displayInformation(row: &BacktracePanelRow, out: &mut R
             }
         }
         s
-    } else if let Some(c) = process.cmdline.as_deref() {
-        c
     } else {
-        ""
+        process.cmdline.as_deref().unwrap_or_default()
     };
 
     // C: if (highlightLen == 0) highlightLen = strlen(processName);
@@ -806,15 +808,14 @@ pub fn BacktracePanelRow_displayFrame(row: &BacktracePanelRow, out: &mut RichStr
     // C: const char* functionName = "???";
     //    if ((displayOptions & DEMANGLE_NAME_FUNCTION) && frame->demangleFunctionName) …
     //    else if (frame->functionName) …
-    let functionName: &str = if (displayOptions & DEMANGLE_NAME_FUNCTION) != 0
-        && frame.demangleFunctionName.is_some()
-    {
-        frame.demangleFunctionName.as_deref().unwrap()
-    } else if let Some(f) = frame.functionName.as_deref() {
-        f
-    } else {
-        "???"
-    };
+    let functionName: &str =
+        if (displayOptions & DEMANGLE_NAME_FUNCTION) != 0 && frame.demangleFunctionName.is_some() {
+            frame.demangleFunctionName.as_deref().unwrap()
+        } else if let Some(f) = frame.functionName.as_deref() {
+            f
+        } else {
+            "???"
+        };
 
     // C: xAsprintf(&completeFunctionName, "%s+0x%zx", functionName, frame->offset);
     let completeFunctionName = format!("{}+0x{:x}", functionName, frame.offset);
@@ -907,9 +908,7 @@ pub fn BacktracePanelRow_displayError(row: &BacktracePanelRow, out: &mut RichStr
 pub fn BacktracePanelRow_display(row: &BacktracePanelRow, out: &mut RichString) {
     match row.type_ {
         BACKTRACE_PANEL_ROW_DATA_FRAME => BacktracePanelRow_displayFrame(row, out),
-        BACKTRACE_PANEL_ROW_PROCESS_INFORMATION => {
-            BacktracePanelRow_displayInformation(row, out)
-        }
+        BACKTRACE_PANEL_ROW_PROCESS_INFORMATION => BacktracePanelRow_displayInformation(row, out),
         BACKTRACE_PANEL_ROW_ERROR => BacktracePanelRow_displayError(row, out),
         _ => {}
     }
@@ -1070,14 +1069,14 @@ mod tests {
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
-            panel: std::ptr::null(),
+                panel: std::ptr::null(),
             },
             BacktracePanelRow {
                 type_: BACKTRACE_PANEL_ROW_ERROR,
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
-            panel: std::ptr::null(),
+                panel: std::ptr::null(),
             },
         ];
         let mut h = seeded_helper();
@@ -1107,14 +1106,14 @@ mod tests {
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
-            panel: std::ptr::null(),
+                panel: std::ptr::null(),
             },
             BacktracePanelRow {
                 type_: BACKTRACE_PANEL_ROW_ERROR,
                 frame: None,
                 error: None,
                 process: std::ptr::null(),
-            panel: std::ptr::null(),
+                panel: std::ptr::null(),
             },
         ];
         let mut h = seeded_helper();
@@ -1283,9 +1282,7 @@ mod tests {
 
     // ── displayInformation (reads the sound `process` back-pointer) ───────
 
-    use crate::ported::process::{
-        Process_setPid, Process_setThreadGroup, ProcessCmdlineHighlight,
-    };
+    use crate::ported::process::{ProcessCmdlineHighlight, Process_setPid, Process_setThreadGroup};
 
     /// A PROCESS_INFORMATION row pointing at `p`.
     fn info_row(p: &Process) -> BacktracePanelRow {

@@ -15,9 +15,7 @@
 
 use crate::ported::crt::ColorElements;
 use crate::ported::linux::platform::Platform_getUptime;
-use crate::ported::meter::{
-    Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE,
-};
+use crate::ported::meter::{Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE};
 use crate::ported::object::ObjectClass;
 
 /// Port of `static void UptimeMeter_updateValues(Meter* this)` from

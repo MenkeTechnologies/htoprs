@@ -33,9 +33,6 @@ use std::ffi::{CStr, CString};
 use std::sync::Mutex;
 
 use crate::ported::batterymeter::ACPresence;
-use crate::ported::crt::ColorElements;
-use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
-use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
 use crate::ported::batterymeter::BatteryMeter_class;
 use crate::ported::cpumeter::{
     AllCPUs2Meter_class, AllCPUs4Meter_class, AllCPUs8Meter_class, AllCPUsMeter_class,
@@ -43,17 +40,20 @@ use crate::ported::cpumeter::{
     LeftCPUsMeter_class, RightCPUs2Meter_class, RightCPUs4Meter_class, RightCPUs8Meter_class,
     RightCPUsMeter_class,
 };
+use crate::ported::crt::ColorElements;
+use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
 use crate::ported::hostnamemeter::HostnameMeter_class;
+use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
+use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::loadaveragemeter::{LoadAverageMeter_class, LoadMeter_class};
-use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
 use crate::ported::memorymeter::MemoryMeter_class;
+use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
 use crate::ported::swapmeter::SwapMeter_class;
 use crate::ported::sysarchmeter::SysArchMeter_class;
 use crate::ported::tasksmeter::TasksMeter_class;
 use crate::ported::uptimemeter::{SecondsUptimeMeter_class, UptimeMeter_class};
-use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::xutils::{
-    saturatingSub, String_contains_i, String_eq, String_startsWith, sumPositiveValues,
+    saturatingSub, sumPositiveValues, String_contains_i, String_eq, String_startsWith,
 };
 
 /// Port of `typedef struct MemoryClass_` (`linux/Platform.h`) — one
@@ -84,7 +84,7 @@ pub const MEMORY_CLASS_AVAILABLE: usize = 5;
 /// as `PressureStall*`, `Zram`, `HugePage*`, `SELinux`, `Systemd*` on top of
 /// the shared set; all are pending their `MeterClass` static.)
 #[allow(non_upper_case_globals)] // faithful C global name
-pub static Platform_meterTypes: &[&'static MeterClass] = &[
+pub static Platform_meterTypes: &[&MeterClass] = &[
     &CPUMeter_class,
     &ClockMeter_class,
     &DateMeter_class,
@@ -117,12 +117,42 @@ pub static Platform_meterTypes: &[&'static MeterClass] = &[
 /// (`linux/Platform.c:152`), in `MEMORY_CLASS_*` index order.
 #[allow(non_upper_case_globals)] // faithful C global name
 pub static Platform_memoryClasses: [MemoryClass; 6] = [
-    MemoryClass { label: "used", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_1 },
-    MemoryClass { label: "shared", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_2 },
-    MemoryClass { label: "compressed", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_3 },
-    MemoryClass { label: "buffers", countsAsUsed: false, countsAsCache: true, color: ColorElements::MEMORY_4 },
-    MemoryClass { label: "cache", countsAsUsed: false, countsAsCache: true, color: ColorElements::MEMORY_5 },
-    MemoryClass { label: "available", countsAsUsed: false, countsAsCache: false, color: ColorElements::MEMORY_6 },
+    MemoryClass {
+        label: "used",
+        countsAsUsed: true,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_1,
+    },
+    MemoryClass {
+        label: "shared",
+        countsAsUsed: true,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_2,
+    },
+    MemoryClass {
+        label: "compressed",
+        countsAsUsed: true,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_3,
+    },
+    MemoryClass {
+        label: "buffers",
+        countsAsUsed: false,
+        countsAsCache: true,
+        color: ColorElements::MEMORY_4,
+    },
+    MemoryClass {
+        label: "cache",
+        countsAsUsed: false,
+        countsAsCache: true,
+        color: ColorElements::MEMORY_5,
+    },
+    MemoryClass {
+        label: "available",
+        countsAsUsed: false,
+        countsAsCache: false,
+        color: ColorElements::MEMORY_6,
+    },
 ];
 
 /// Port of `const unsigned int Platform_numberOfMemoryClasses`
@@ -266,7 +296,11 @@ pub fn Platform_getMaxPid() -> libc::pid_t {
 /// ported `Macros.h` helper. On an unchanged sample the out-params are left
 /// as-is (matching the C statics retaining their prior values), then the
 /// value slots are filled from the cached rows.
-pub fn Platform_setGPUValues(this: &mut Meter, total_usage: &mut f64, total_gpu_time_diff: &mut u64) {
+pub fn Platform_setGPUValues(
+    this: &mut Meter,
+    total_usage: &mut f64,
+    total_gpu_time_diff: &mut u64,
+) {
     use crate::ported::gpumeter::GPUMeter_engineData;
 
     // C function-static residue caches: (prevMonotonicMs, residuePercentage,
@@ -299,7 +333,8 @@ pub fn Platform_setGPUValues(this: &mut Meter, total_usage: &mut f64, total_gpu_
             }
         }
 
-        r.1 = 100.0 * saturatingSub(cur_residue_time, r.2) as f64 / (1000.0 * 1000.0)
+        r.1 = 100.0 * saturatingSub(cur_residue_time, r.2) as f64
+            / (1000.0 * 1000.0)
             / monotonic_delta;
 
         *total_gpu_time_diff = saturatingSub(h.curGpuTime, h.prevGpuTime);
@@ -373,7 +408,11 @@ pub fn parseOSRelease() -> String {
             }
         }
         // C: snprintf("%s%s%s", name, name&&version ? " " : "", version)
-        let sep = if !name.is_empty() && !version.is_empty() { " " } else { "" };
+        let sep = if !name.is_empty() && !version.is_empty() {
+            " "
+        } else {
+            ""
+        };
         return format!("{name}{sep}{version}");
     }
     String::new()
@@ -446,11 +485,14 @@ pub fn Platform_getDiskIO(data: &mut crate::ported::diskiometer::DiskIOData) -> 
             continue;
         }
         let diskname = f[2];
-        let (read_tmp, write_tmp, time_spend_tmp) =
-            match (f[5].parse::<u64>(), f[9].parse::<u64>(), f[12].parse::<u64>()) {
-                (Ok(r), Ok(w), Ok(t)) => (r, w, t),
-                _ => continue,
-            };
+        let (read_tmp, write_tmp, time_spend_tmp) = match (
+            f[5].parse::<u64>(),
+            f[9].parse::<u64>(),
+            f[12].parse::<u64>(),
+        ) {
+            (Ok(r), Ok(w), Ok(t)) => (r, w, t),
+            _ => continue,
+        };
 
         if String_startsWith(diskname, "dm-")
             || String_startsWith(diskname, "loop")
@@ -815,8 +857,6 @@ pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
         *max = v3 as f64;
     }
 }
-
-
 
 /// Port of `static double Platform_Battery_getProcBatInfo(void)` from
 /// `Platform.c:764`. Sums "last full capacity" (from each `BAT*/info`) and

@@ -392,7 +392,12 @@ pub fn CPUMeter_display(
     let text = CE::METER_TEXT.packed(scheme);
     let buffer = pct(v[CPU_METER_NORMAL]);
     RichString_appendAscii(out, text, b":");
-    RichString_appendnAscii(out, CE::CPU_NORMAL.packed(scheme), buffer.as_bytes(), buffer.len());
+    RichString_appendnAscii(
+        out,
+        CE::CPU_NORMAL.packed(scheme),
+        buffer.as_bytes(),
+        buffer.len(),
+    );
 
     if detailed {
         for (label, idx, color, gated) in [
@@ -414,14 +419,29 @@ pub fn CPUMeter_display(
     } else {
         let buffer = pct(v[CPU_METER_KERNEL]);
         RichString_appendAscii(out, text, b"sys:");
-        RichString_appendnAscii(out, CE::CPU_SYSTEM.packed(scheme), buffer.as_bytes(), buffer.len());
+        RichString_appendnAscii(
+            out,
+            CE::CPU_SYSTEM.packed(scheme),
+            buffer.as_bytes(),
+            buffer.len(),
+        );
         let buffer = pct(v[CPU_METER_NICE]);
         RichString_appendAscii(out, text, b"low:");
-        RichString_appendnAscii(out, CE::CPU_NICE_TEXT.packed(scheme), buffer.as_bytes(), buffer.len());
+        RichString_appendnAscii(
+            out,
+            CE::CPU_NICE_TEXT.packed(scheme),
+            buffer.as_bytes(),
+            buffer.len(),
+        );
         if v[CPU_METER_IRQ] >= 0.0 {
             let buffer = pct(v[CPU_METER_IRQ]);
             RichString_appendAscii(out, text, b"vir:");
-            RichString_appendnAscii(out, CE::CPU_GUEST.packed(scheme), buffer.as_bytes(), buffer.len());
+            RichString_appendnAscii(
+                out,
+                CE::CPU_GUEST.packed(scheme),
+                buffer.as_bytes(),
+                buffer.len(),
+            );
         }
     }
 
@@ -433,7 +453,12 @@ pub fn CPUMeter_display(
             "N/A     ".to_string()
         };
         RichString_appendAscii(out, text, b"freq: ");
-        RichString_appendnWide(out, CE::METER_VALUE.packed(scheme), buffer.as_bytes(), buffer.len());
+        RichString_appendnWide(
+            out,
+            CE::METER_VALUE.packed(scheme),
+            buffer.as_bytes(),
+            buffer.len(),
+        );
     }
 }
 
@@ -561,7 +586,14 @@ pub fn OctoColCPUsMeter_updateMode(this: &mut Meter, mode: MeterModeId) {
 /// its computed cell. The C `d` term distributes the `w % ncol` remainder as a
 /// one-column spacer across the first `diff` columns. Terminal output goes
 /// through `out` (the crossterm sink the ported `Meter` draw path uses).
-pub fn CPUMeterCommonDraw(out: &mut dyn Write, this: &mut Meter, x: i32, y: i32, w: i32, ncol: i32) {
+pub fn CPUMeterCommonDraw(
+    out: &mut dyn Write,
+    this: &mut Meter,
+    x: i32,
+    y: i32,
+    w: i32,
+    ncol: i32,
+) {
     let (_start, count) = AllCPUsMeter_getRange(this);
     let colwidth = w / ncol;
     let diff = w % ncol;
@@ -652,18 +684,114 @@ macro_rules! all_cpus_meter_class {
 
 // The 12 multi-column CPU classes, in `CPUMeter.c` declaration order. Only
 // `AllCPUs` (all CPUs in one column) is not `isMultiColumn`.
-all_cpus_meter_class!(AllCPUsMeter_class, SingleColCPUsMeter_draw, SingleColCPUsMeter_updateMode, false, "AllCPUs", "CPUs (1/1)", "CPUs (1/1): all CPUs");
-all_cpus_meter_class!(AllCPUs2Meter_class, DualColCPUsMeter_draw, DualColCPUsMeter_updateMode, true, "AllCPUs2", "CPUs (1&2/2)", "CPUs (1&2/2): all CPUs in 2 shorter columns");
-all_cpus_meter_class!(LeftCPUsMeter_class, SingleColCPUsMeter_draw, SingleColCPUsMeter_updateMode, true, "LeftCPUs", "CPUs (1/2)", "CPUs (1/2): first half of list");
-all_cpus_meter_class!(RightCPUsMeter_class, SingleColCPUsMeter_draw, SingleColCPUsMeter_updateMode, true, "RightCPUs", "CPUs (2/2)", "CPUs (2/2): second half of list");
-all_cpus_meter_class!(LeftCPUs2Meter_class, DualColCPUsMeter_draw, DualColCPUsMeter_updateMode, true, "LeftCPUs2", "CPUs (1&2/4)", "CPUs (1&2/4): first half in 2 shorter columns");
-all_cpus_meter_class!(RightCPUs2Meter_class, DualColCPUsMeter_draw, DualColCPUsMeter_updateMode, true, "RightCPUs2", "CPUs (3&4/4)", "CPUs (3&4/4): second half in 2 shorter columns");
-all_cpus_meter_class!(AllCPUs4Meter_class, QuadColCPUsMeter_draw, QuadColCPUsMeter_updateMode, true, "AllCPUs4", "CPUs (1&2&3&4/4)", "CPUs (1&2&3&4/4): all CPUs in 4 shorter columns");
-all_cpus_meter_class!(LeftCPUs4Meter_class, QuadColCPUsMeter_draw, QuadColCPUsMeter_updateMode, true, "LeftCPUs4", "CPUs (1-4/8)", "CPUs (1-4/8): first half in 4 shorter columns");
-all_cpus_meter_class!(RightCPUs4Meter_class, QuadColCPUsMeter_draw, QuadColCPUsMeter_updateMode, true, "RightCPUs4", "CPUs (5-8/8)", "CPUs (5-8/8): second half in 4 shorter columns");
-all_cpus_meter_class!(AllCPUs8Meter_class, OctoColCPUsMeter_draw, OctoColCPUsMeter_updateMode, true, "AllCPUs8", "CPUs (1-8/8)", "CPUs (1-8/8): all CPUs in 8 shorter columns");
-all_cpus_meter_class!(LeftCPUs8Meter_class, OctoColCPUsMeter_draw, OctoColCPUsMeter_updateMode, true, "LeftCPUs8", "CPUs (1-8/16)", "CPUs (1-8/16): first half in 8 shorter columns");
-all_cpus_meter_class!(RightCPUs8Meter_class, OctoColCPUsMeter_draw, OctoColCPUsMeter_updateMode, true, "RightCPUs8", "CPUs (9-16/16)", "CPUs (9-16/16): second half in 8 shorter columns");
+all_cpus_meter_class!(
+    AllCPUsMeter_class,
+    SingleColCPUsMeter_draw,
+    SingleColCPUsMeter_updateMode,
+    false,
+    "AllCPUs",
+    "CPUs (1/1)",
+    "CPUs (1/1): all CPUs"
+);
+all_cpus_meter_class!(
+    AllCPUs2Meter_class,
+    DualColCPUsMeter_draw,
+    DualColCPUsMeter_updateMode,
+    true,
+    "AllCPUs2",
+    "CPUs (1&2/2)",
+    "CPUs (1&2/2): all CPUs in 2 shorter columns"
+);
+all_cpus_meter_class!(
+    LeftCPUsMeter_class,
+    SingleColCPUsMeter_draw,
+    SingleColCPUsMeter_updateMode,
+    true,
+    "LeftCPUs",
+    "CPUs (1/2)",
+    "CPUs (1/2): first half of list"
+);
+all_cpus_meter_class!(
+    RightCPUsMeter_class,
+    SingleColCPUsMeter_draw,
+    SingleColCPUsMeter_updateMode,
+    true,
+    "RightCPUs",
+    "CPUs (2/2)",
+    "CPUs (2/2): second half of list"
+);
+all_cpus_meter_class!(
+    LeftCPUs2Meter_class,
+    DualColCPUsMeter_draw,
+    DualColCPUsMeter_updateMode,
+    true,
+    "LeftCPUs2",
+    "CPUs (1&2/4)",
+    "CPUs (1&2/4): first half in 2 shorter columns"
+);
+all_cpus_meter_class!(
+    RightCPUs2Meter_class,
+    DualColCPUsMeter_draw,
+    DualColCPUsMeter_updateMode,
+    true,
+    "RightCPUs2",
+    "CPUs (3&4/4)",
+    "CPUs (3&4/4): second half in 2 shorter columns"
+);
+all_cpus_meter_class!(
+    AllCPUs4Meter_class,
+    QuadColCPUsMeter_draw,
+    QuadColCPUsMeter_updateMode,
+    true,
+    "AllCPUs4",
+    "CPUs (1&2&3&4/4)",
+    "CPUs (1&2&3&4/4): all CPUs in 4 shorter columns"
+);
+all_cpus_meter_class!(
+    LeftCPUs4Meter_class,
+    QuadColCPUsMeter_draw,
+    QuadColCPUsMeter_updateMode,
+    true,
+    "LeftCPUs4",
+    "CPUs (1-4/8)",
+    "CPUs (1-4/8): first half in 4 shorter columns"
+);
+all_cpus_meter_class!(
+    RightCPUs4Meter_class,
+    QuadColCPUsMeter_draw,
+    QuadColCPUsMeter_updateMode,
+    true,
+    "RightCPUs4",
+    "CPUs (5-8/8)",
+    "CPUs (5-8/8): second half in 4 shorter columns"
+);
+all_cpus_meter_class!(
+    AllCPUs8Meter_class,
+    OctoColCPUsMeter_draw,
+    OctoColCPUsMeter_updateMode,
+    true,
+    "AllCPUs8",
+    "CPUs (1-8/8)",
+    "CPUs (1-8/8): all CPUs in 8 shorter columns"
+);
+all_cpus_meter_class!(
+    LeftCPUs8Meter_class,
+    OctoColCPUsMeter_draw,
+    OctoColCPUsMeter_updateMode,
+    true,
+    "LeftCPUs8",
+    "CPUs (1-8/16)",
+    "CPUs (1-8/16): first half in 8 shorter columns"
+);
+all_cpus_meter_class!(
+    RightCPUs8Meter_class,
+    OctoColCPUsMeter_draw,
+    OctoColCPUsMeter_updateMode,
+    true,
+    "RightCPUs8",
+    "CPUs (9-16/16)",
+    "CPUs (9-16/16): second half in 8 shorter columns"
+);
 
 #[cfg(test)]
 mod tests {
@@ -982,8 +1110,18 @@ mod cpu_data_tests {
 
     #[test]
     fn offline_cpu_renders_offline() {
-        let cpu = CPUData { online: false, ..Default::default() };
-        let mut m = hosted(cpu, Settings { showCPUUsage: true, ..Default::default() }, 8);
+        let cpu = CPUData {
+            online: false,
+            ..Default::default()
+        };
+        let mut m = hosted(
+            cpu,
+            Settings {
+                showCPUUsage: true,
+                ..Default::default()
+            },
+            8,
+        );
         super::CPUMeter_updateValues(&mut m);
         assert_eq!(m.txtBuffer, "offline");
         assert_eq!(m.curItems, 0);
@@ -993,7 +1131,11 @@ mod cpu_data_tests {
     fn absent_cpu_renders_absent() {
         // param (0) > existingCPUs would need existing < 0; instead set the
         // meter param above existing via a fresh meter.
-        let cpu = CPUData { online: true, totalPeriod: 100, ..Default::default() };
+        let cpu = CPUData {
+            online: true,
+            totalPeriod: 100,
+            ..Default::default()
+        };
         let mut m = hosted(cpu, Settings::default(), 0);
         m.param = 5; // 5 > existingCPUs(0)
         super::CPUMeter_updateValues(&mut m);
@@ -1010,12 +1152,15 @@ mod cpu_data_tests {
         let cpu = CPUData {
             online: true,
             totalPeriod: 100,
-            userPeriod: 50,   // normal 50.0
-            nicePeriod: 10,   // nice 10.0
+            userPeriod: 50,      // normal 50.0
+            nicePeriod: 10,      // nice 10.0
             systemAllPeriod: 20, // kernel 20.0 (summary)
             ..Default::default()
         };
-        let settings = Settings { detailedCPUTime: false, ..Default::default() };
+        let settings = Settings {
+            detailedCPUTime: false,
+            ..Default::default()
+        };
         let mut m = hosted(cpu, settings, 8);
         super::CPUMeter_updateValues(&mut m);
         let mut out = crate::ported::richstring::RichString::new();
