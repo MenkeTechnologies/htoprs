@@ -170,7 +170,12 @@ pub fn Platform_setCPUValues(this: &mut Meter, cpu: u32) -> f64 {
     let cpus = unsafe { (*host).existingCPUs };
 
     let idx = if cpus == 1 { 0 } else { cpu as usize };
-    let cpuData = unsafe { &(*shost).cpus[idx] };
+    // Borrow the Vec explicitly before indexing so it does not implicitly
+    // autoref the raw-pointer deref (`&(*shost)`), which the compiler denies.
+    let cpuData = unsafe {
+        let cpus_arr = &(*shost).cpus;
+        &cpus_arr[idx]
+    };
 
     if !cpuData.online {
         this.curItems = 0;
