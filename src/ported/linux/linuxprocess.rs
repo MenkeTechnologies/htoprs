@@ -37,19 +37,27 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use crate::ported::crt::{ColorElements as CE, ColorScheme, A_BOLD};
 use crate::ported::linux::compat::Compat_readfile;
+use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::process::{
     spaceship_nullstr, Process, ProcessField, ProcessFieldData, Process_class, Process_compare,
-    Process_compareByKey_Base, Process_getPid, Process_init, PROCESS_FLAG_CWD, PROCESS_FLAG_IO,
-    PROCESS_FLAG_SCHEDPOL,
+    Process_compareByKey_Base, Process_getPid, Process_init, Process_writeField, Tristate,
+    PROCESS_FLAG_CWD, PROCESS_FLAG_IO, PROCESS_FLAG_SCHEDPOL,
 };
-use crate::ported::row::spaceship_number;
+use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
+use crate::ported::row::{
+    spaceship_number, PercentageAttr, Row_fieldWidths, Row_printBytes, Row_printCount,
+    Row_printKBytes, Row_printNanoseconds, Row_printPercentage, Row_printRate, Row_printTime,
+};
+use crate::ported::settings::RowField;
 use crate::ported::xutils::compareRealNumbers;
 use core::any::Any;
 use core::ffi::c_void;
 use std::ffi::CString;
+use std::sync::atomic::Ordering;
 
 /// Port of `#define PROCDIR "/proc"` from `LinuxMachine.h:105` — the procfs
 /// mount htop was compiled to read. Defined locally (as `platform.rs` also
@@ -644,8 +652,271 @@ fn LinuxProcess_totalIORate(lp: &LinuxProcess) -> f64 {
 /// models only the reserved generic fields — the platform variants are not
 /// enumerated, so the switch arms cannot be written yet. (The `Row_print*`
 /// primitives it calls are already ported; only the field ids are missing.)
-pub fn LinuxProcess_rowWriteField() {
-    todo!("port of LinuxProcess.c:226 — needs Linux ProcessField variants in the shared enum")
+/// Port of `static void LinuxProcess_rowWriteField(const Row* super,
+/// RichString* str, ProcessField field)` from `LinuxProcess.c:226` — the
+/// Linux-specific per-field renderer. Handles the Linux platform fields and
+/// delegates every other key to the base [`Process_writeField`]. Mirrors
+/// [`crate::ported::process::Process_writeField`]'s structure: `return` arms
+/// delegate to a `Row_print*` helper, `break` arms format into a buffer and
+/// pick a color that the shared tail appends. `HAVE_OPENVZ`/`HAVE_VSERVER`
+/// are off (no `CTID`/`VPID`/`VXID` arms); `HAVE_DELAYACCT` is on.
+pub fn LinuxProcess_rowWriteField(this: &LinuxProcess, str: &mut RichString, field: RowField) {
+    use ProcessField as PF;
+
+    let host = unsafe { &*(this.super_.super_.host as *const Machine) };
+    let lhost = unsafe { &*(this.super_.super_.host as *const LinuxMachine) };
+    let coloring = host
+        .settings
+        .as_ref()
+        .expect("LinuxProcess_rowWriteField: host->settings is NULL")
+        .highlightMegabytes;
+    let scheme = ColorScheme::active();
+    let n = 255usize;
+    let mut attr = CE::DEFAULT_COLOR.packed(scheme);
+    let buffer: String;
+
+    // Row_printPercentage returns the text + a PercentageAttr; map it to attr.
+    macro_rules! pct {
+        ($val:expr, $width:expr) => {{
+            let mut pa = PercentageAttr::Unchanged;
+            let s = Row_printPercentage($val, n, $width, &mut pa);
+            match pa {
+                PercentageAttr::Shadow => attr = CE::PROCESS_SHADOW.packed(scheme),
+                PercentageAttr::Megabytes => attr = CE::PROCESS_MEGABYTES.packed(scheme),
+                PercentageAttr::Unchanged => {}
+            }
+            s
+        }};
+    }
+
+    match field {
+        f if f == PF::CMINFLT as RowField => {
+            Row_printCount(str, this.cminflt, coloring);
+            return;
+        }
+        f if f == PF::CMAJFLT as RowField => {
+            Row_printCount(str, this.cmajflt, coloring);
+            return;
+        }
+        f if f == PF::GPU_PERCENT as RowField => {
+            buffer = pct!(this.gpu_percent, 5);
+        }
+        f if f == PF::GPU_TIME as RowField => {
+            Row_printNanoseconds(str, this.gpu_time, coloring);
+            return;
+        }
+        f if f == PF::M_DRS as RowField => {
+            Row_printBytes(str, (this.m_drs as u64).wrapping_mul(lhost.pageSize as u64), coloring);
+            return;
+        }
+        f if f == PF::M_LRS as RowField => {
+            if this.m_lrs != 0 {
+                Row_printBytes(
+                    str,
+                    (this.m_lrs as u64).wrapping_mul(lhost.pageSize as u64),
+                    coloring,
+                );
+                return;
+            }
+            attr = CE::PROCESS_SHADOW.packed(scheme);
+            buffer = "  N/A ".to_string();
+        }
+        f if f == PF::M_TRS as RowField => {
+            Row_printBytes(str, (this.m_trs as u64).wrapping_mul(lhost.pageSize as u64), coloring);
+            return;
+        }
+        f if f == PF::M_SHARE as RowField => {
+            Row_printBytes(
+                str,
+                (this.m_share as u64).wrapping_mul(lhost.pageSize as u64),
+                coloring,
+            );
+            return;
+        }
+        f if f == PF::M_PRIV as RowField => {
+            Row_printKBytes(str, this.m_priv as u64, coloring);
+            return;
+        }
+        f if f == PF::M_PSS as RowField => {
+            Row_printKBytes(str, this.m_pss as u64, coloring);
+            return;
+        }
+        f if f == PF::M_SWAP as RowField => {
+            Row_printKBytes(str, this.m_swap as u64, coloring);
+            return;
+        }
+        f if f == PF::M_PSSWP as RowField => {
+            Row_printKBytes(str, this.m_psswp as u64, coloring);
+            return;
+        }
+        f if f == PF::UTIME as RowField => {
+            Row_printTime(str, this.utime, coloring);
+            return;
+        }
+        f if f == PF::STIME as RowField => {
+            Row_printTime(str, this.stime, coloring);
+            return;
+        }
+        f if f == PF::CUTIME as RowField => {
+            Row_printTime(str, this.cutime, coloring);
+            return;
+        }
+        f if f == PF::CSTIME as RowField => {
+            Row_printTime(str, this.cstime, coloring);
+            return;
+        }
+        f if f == PF::RCHAR as RowField => {
+            Row_printBytes(str, this.io_rchar, coloring);
+            return;
+        }
+        f if f == PF::WCHAR as RowField => {
+            Row_printBytes(str, this.io_wchar, coloring);
+            return;
+        }
+        f if f == PF::SYSCR as RowField => {
+            Row_printCount(str, this.io_syscr, coloring);
+            return;
+        }
+        f if f == PF::SYSCW as RowField => {
+            Row_printCount(str, this.io_syscw, coloring);
+            return;
+        }
+        f if f == PF::RBYTES as RowField => {
+            Row_printBytes(str, this.io_read_bytes, coloring);
+            return;
+        }
+        f if f == PF::WBYTES as RowField => {
+            Row_printBytes(str, this.io_write_bytes, coloring);
+            return;
+        }
+        f if f == PF::CNCLWB as RowField => {
+            Row_printBytes(str, this.io_cancelled_write_bytes, coloring);
+            return;
+        }
+        f if f == PF::IO_READ_RATE as RowField => {
+            Row_printRate(str, this.io_rate_read_bps, coloring);
+            return;
+        }
+        f if f == PF::IO_WRITE_RATE as RowField => {
+            Row_printRate(str, this.io_rate_write_bps, coloring);
+            return;
+        }
+        f if f == PF::IO_RATE as RowField => {
+            Row_printRate(str, LinuxProcess_totalIORate(this), coloring);
+            return;
+        }
+        f if f == PF::CGROUP as RowField => {
+            let w = Row_fieldWidths[PF::CGROUP as usize].load(Ordering::Relaxed) as usize;
+            let s = this.cgroup.as_deref().unwrap_or("N/A");
+            let buf = format!("{s:<w$.w$} ");
+            RichString_appendWide(str, attr, buf.as_bytes());
+            return;
+        }
+        f if f == PF::CCGROUP as RowField => {
+            let w = Row_fieldWidths[PF::CCGROUP as usize].load(Ordering::Relaxed) as usize;
+            let s = this
+                .cgroup_short
+                .as_deref()
+                .or(this.cgroup.as_deref())
+                .unwrap_or("N/A");
+            let buf = format!("{s:<w$.w$} ");
+            RichString_appendWide(str, attr, buf.as_bytes());
+            return;
+        }
+        f if f == PF::CONTAINER as RowField => {
+            let w = Row_fieldWidths[PF::CONTAINER as usize].load(Ordering::Relaxed) as usize;
+            let s = this.container_short.as_deref().unwrap_or("N/A");
+            let buf = format!("{s:<w$.w$} ");
+            RichString_appendWide(str, attr, buf.as_bytes());
+            return;
+        }
+        f if f == PF::OOM as RowField => {
+            if this.oom == u32::MAX {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+                buffer = " N/A ".to_string();
+            } else {
+                buffer = format!("{:>4} ", this.oom);
+            }
+        }
+        f if f == PF::IO_PRIORITY as RowField => {
+            let klass = this.ioPriority >> IOPRIO_CLASS_SHIFT;
+            let data = this.ioPriority & IOPRIO_PRIO_MASK;
+            buffer = if klass == IOPRIO_CLASS_NONE {
+                format!("B{} ", (this.super_.nice + 20) / 5)
+            } else if klass == IOPRIO_CLASS_BE {
+                format!("B{data} ")
+            } else if klass == IOPRIO_CLASS_RT {
+                attr = CE::PROCESS_HIGH_PRIORITY.packed(scheme);
+                format!("R{data} ")
+            } else if klass == IOPRIO_CLASS_IDLE {
+                attr = CE::PROCESS_LOW_PRIORITY.packed(scheme);
+                "id ".to_string()
+            } else {
+                "?? ".to_string()
+            };
+        }
+        f if f == PF::PERCENT_CPU_DELAY as RowField => {
+            buffer = pct!(this.cpu_delay_percent, 5);
+        }
+        f if f == PF::PERCENT_IO_DELAY as RowField => {
+            buffer = pct!(this.blkio_delay_percent, 5);
+        }
+        f if f == PF::PERCENT_SWAP_DELAY as RowField => {
+            buffer = pct!(this.swapin_delay_percent, 5);
+        }
+        f if f == PF::CTXT as RowField => {
+            if this.ctxt_diff > 1000 {
+                attr |= A_BOLD;
+            }
+            buffer = format!("{:>5} ", this.ctxt_diff);
+        }
+        f if f == PF::SECATTR as RowField => {
+            let w = Row_fieldWidths[PF::SECATTR as usize].load(Ordering::Relaxed) as usize;
+            let s = this.secattr.as_deref().unwrap_or("N/A");
+            let buf = format!("{s:<w$.w$} ");
+            RichString_appendWide(str, attr, buf.as_bytes());
+            return;
+        }
+        f if f == PF::AUTOGROUP_ID as RowField => {
+            if this.autogroup_id != -1 {
+                buffer = format!("{:>4} ", this.autogroup_id);
+            } else {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+                buffer = " N/A ".to_string();
+            }
+        }
+        f if f == PF::AUTOGROUP_NICE as RowField => {
+            if this.autogroup_id != -1 {
+                buffer = format!("{:>3} ", this.autogroup_nice);
+                attr = if this.autogroup_nice < 0 {
+                    CE::PROCESS_HIGH_PRIORITY.packed(scheme)
+                } else if this.autogroup_nice > 0 {
+                    CE::PROCESS_LOW_PRIORITY.packed(scheme)
+                } else {
+                    CE::PROCESS_SHADOW.packed(scheme)
+                };
+            } else {
+                attr = CE::PROCESS_SHADOW.packed(scheme);
+                buffer = "N/A ".to_string();
+            }
+        }
+        f if f == PF::ISCONTAINER as RowField => {
+            buffer = match this.super_.isRunningInContainer {
+                Tristate::TRI_ON => "YES  ".to_string(),
+                Tristate::TRI_OFF => "NO   ".to_string(),
+                _ => {
+                    attr = CE::PROCESS_SHADOW.packed(scheme);
+                    "N/A  ".to_string()
+                }
+            };
+        }
+        _ => {
+            Process_writeField(&this.super_, str, field);
+            return;
+        }
+    }
+
+    RichString_appendAscii(str, attr, buffer.as_bytes());
 }
 
 /// Port of `static int LinuxProcess_compareByKey(const Process* v1, const
@@ -886,5 +1157,38 @@ mod tests {
         a.super_.super_.id = 7;
         b.super_.super_.id = 3;
         assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::PID) > 0);
+    }
+
+    /// [`LinuxProcess_rowWriteField`] renders Linux platform fields and
+    /// delegates other keys to the base [`Process_writeField`]. Uses fields
+    /// with fixed widths (no dependence on the pid/uid digit globals).
+    #[test]
+    fn row_write_field_renders_linux_and_delegates() {
+        use crate::ported::process::ProcessState;
+        use crate::ported::richstring::{RichString, RichString_size};
+        use crate::ported::settings::Settings;
+        use crate::ported::settings::RowField;
+
+        let mut machine = Machine::default();
+        machine.settings = Some(Settings::default());
+        let mut lp = LinuxProcess_new(core::ptr::null());
+        lp.super_.super_.host = &machine as *const Machine as *const c_void;
+
+        let render = |lp: &LinuxProcess, field: RowField| -> i32 {
+            let mut rs = RichString::default();
+            LinuxProcess_rowWriteField(lp, &mut rs, field);
+            RichString_size(&rs)
+        };
+
+        // OOM = UINT_MAX → " N/A " (5 cols); a value → "%4u " + space = 5.
+        lp.oom = u32::MAX;
+        assert_eq!(render(&lp, ProcessField::OOM as RowField), 5);
+        lp.oom = 3;
+        assert_eq!(render(&lp, ProcessField::OOM as RowField), 5);
+        // ISCONTAINER default (TRI_INITIAL) → "N/A  " (5).
+        assert_eq!(render(&lp, ProcessField::ISCONTAINER as RowField), 5);
+        // A base field (STATE running) delegates to Process_writeField → "R ".
+        lp.super_.state = ProcessState::RUNNING;
+        assert_eq!(render(&lp, ProcessField::STATE as RowField), 2);
     }
 }
