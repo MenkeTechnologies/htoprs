@@ -60,6 +60,7 @@
 use std::sync::Mutex;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::meter::Meter_humanUnit;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii,
 };
@@ -114,22 +115,134 @@ static DISK_IO_METER_STATE: Mutex<DiskIOMeterState> = Mutex::new(DiskIOMeterStat
     cached_utilisation_norm: 0.0,
 });
 
-/// TODO: port of `static void DiskIOUpdateCache(const Machine* host)` from
-/// `DiskIOMeter.c:47`. Blocked on `Platform_getDiskIO(&data)` (the
-/// platform-specific disk-stat reader; no platform layer ported) and
-/// `host->realtimeMs`. The rate/utilisation arithmetic and
-/// `Meter_humanUnit` (`meter.rs`) are available, but without the platform
-/// source there is nothing to compute over.
-pub fn DiskIOUpdateCache() {
-    todo!("port of DiskIOMeter.c:47")
+/// Port of `typedef struct DiskIOData_` (`DiskIOMeter.h:15`) — the raw disk
+/// counters read by `Platform_getDiskIO`.
+#[derive(Default)]
+pub struct DiskIOData {
+    pub totalBytesRead: u64,
+    pub totalBytesWritten: u64,
+    pub totalMsTimeSpend: u64,
+    pub numDisks: u64,
 }
 
-/// TODO: port of `static void DiskIORateMeter_updateValues(Meter* this)`
-/// from `DiskIOMeter.c:116`. Blocked: calls `DiskIOUpdateCache` (stubbed)
-/// and writes `this->values[0..2]` / `this->txtBuffer`; the partial
-/// `Meter` in `meter.rs` models neither `txtBuffer` nor `host`.
-pub fn DiskIORateMeter_updateValues() {
-    todo!("port of DiskIOMeter.c:116")
+/// C `ONE_K` (`Macros.h`) — 1024, the KiB divisor the rate strings use.
+const ONE_K: f64 = 1024.0;
+
+/// The three `DiskIOUpdateCache` function-`static` running totals:
+/// `(cached_last_update, cached_read_total, cached_write_total,
+/// cached_msTimeSpend_total)`.
+static DISK_IO_UPDATE_CACHE: Mutex<(u64, u64, u64, u64)> = Mutex::new((0, 0, 0, 0));
+
+/// Port of `static void DiskIOUpdateCache(const Machine* host)` from
+/// `DiskIOMeter.c:47`. Throttled to once per >500ms; reads
+/// [`Platform_getDiskIO`](crate::ported::linux::platform::Platform_getDiskIO),
+/// sets the rate `status`, and (past the first sample) computes read/write
+/// B/s and disk utilisation into the shared state. `host` is the concrete
+/// [`LinuxMachine`]; `realtimeMs` lives on its `super_`.
+pub fn DiskIOUpdateCache(host: &crate::ported::linux::linuxmachine::LinuxMachine) {
+    let realtime_ms = host.super_.realtimeMs;
+    let mut c = DISK_IO_UPDATE_CACHE.lock().unwrap();
+    let passed_time_ms = realtime_ms.wrapping_sub(c.0);
+
+    // update only every 500ms to have a sane span for rate calculation
+    if passed_time_ms <= 500 {
+        return;
+    }
+
+    let mut data = DiskIOData::default();
+    let has_new_data = crate::ported::linux::platform::Platform_getDiskIO(&mut data);
+
+    let mut st = DISK_IO_METER_STATE.lock().unwrap();
+    st.status = if !has_new_data {
+        MeterRateStatus::RATESTATUS_NODATA
+    } else if c.0 == 0 {
+        MeterRateStatus::RATESTATUS_INIT
+    } else if passed_time_ms > 30000 {
+        MeterRateStatus::RATESTATUS_STALE
+    } else {
+        MeterRateStatus::RATESTATUS_DATA
+    };
+
+    c.0 = realtime_ms;
+
+    if !has_new_data {
+        return;
+    }
+
+    if st.status != MeterRateStatus::RATESTATUS_INIT {
+        let read_diff = if data.totalBytesRead > c.1 {
+            (1000 * (data.totalBytesRead - c.1)) / passed_time_ms
+        } else {
+            0
+        };
+        st.cached_read_diff = read_diff as f64;
+        st.cached_read_diff_str = Meter_humanUnit(st.cached_read_diff / ONE_K);
+
+        let write_diff = if data.totalBytesWritten > c.2 {
+            (1000 * (data.totalBytesWritten - c.2)) / passed_time_ms
+        } else {
+            0
+        };
+        st.cached_write_diff = write_diff as f64;
+        st.cached_write_diff_str = Meter_humanUnit(st.cached_write_diff / ONE_K);
+
+        st.cached_num_disks = data.numDisks;
+        st.cached_utilisation_diff = 0.0;
+        st.cached_utilisation_norm = 0.0;
+        if data.totalMsTimeSpend > c.3 {
+            let diff = data.totalMsTimeSpend - c.3;
+            st.cached_utilisation_diff = 100.0 * diff as f64 / passed_time_ms as f64;
+            if data.numDisks > 0 {
+                st.cached_utilisation_norm =
+                    (diff as f64 / (passed_time_ms as f64 * data.numDisks as f64)).min(1.0);
+            }
+        }
+    }
+
+    c.1 = data.totalBytesRead;
+    c.2 = data.totalBytesWritten;
+    c.3 = data.totalMsTimeSpend;
+}
+
+/// Port of `static void DiskIORateMeter_updateValues(Meter* this)` from
+/// `DiskIOMeter.c:116`. Refreshes the cache, writes read/write B/s into
+/// `values[0..2]`, and formats `txtBuffer` — a status word
+/// (`no data`/`init`/`stale`) or `r:<x>iB/s w:<y>iB/s`.
+pub fn DiskIORateMeter_updateValues(this: &mut crate::ported::meter::Meter) {
+    {
+        let host = this
+            .host
+            .as_ref()
+            .expect("DiskIORateMeter_updateValues: this->host")
+            .clone();
+        let h = host.borrow();
+        DiskIOUpdateCache(&h);
+    }
+
+    let st = DISK_IO_METER_STATE.lock().unwrap();
+    this.values[0] = st.cached_read_diff;
+    this.values[1] = st.cached_write_diff;
+
+    match st.status {
+        MeterRateStatus::RATESTATUS_NODATA => {
+            this.txtBuffer = "no data".to_string();
+            return;
+        }
+        MeterRateStatus::RATESTATUS_INIT => {
+            this.txtBuffer = "init".to_string();
+            return;
+        }
+        MeterRateStatus::RATESTATUS_STALE => {
+            this.txtBuffer = "stale".to_string();
+            return;
+        }
+        MeterRateStatus::RATESTATUS_DATA => {}
+    }
+
+    this.txtBuffer = format!(
+        "r:{}iB/s w:{}iB/s",
+        st.cached_read_diff_str, st.cached_write_diff_str
+    );
 }
 
 /// Port of `static void DiskIORateMeter_display(ATTR_UNUSED const Object*
@@ -196,12 +309,46 @@ pub fn DiskIORateMeter_display(out: &mut RichString) {
     );
 }
 
-/// TODO: port of `static void DiskIOTimeMeter_updateValues(Meter* this)`
-/// from `DiskIOMeter.c:163`. Blocked: calls `DiskIOUpdateCache` (stubbed)
-/// and writes `this->values[0]` / `this->txtBuffer`; the partial `Meter`
-/// in `meter.rs` models neither field.
-pub fn DiskIOTimeMeter_updateValues() {
-    todo!("port of DiskIOMeter.c:163")
+/// Port of `static void DiskIOTimeMeter_updateValues(Meter* this)` from
+/// `DiskIOMeter.c:163`. Refreshes the cache, writes the normalized
+/// utilisation into `values[0]`, and formats `txtBuffer` — a status word or
+/// `<util>%[ (<n>disks)]`.
+pub fn DiskIOTimeMeter_updateValues(this: &mut crate::ported::meter::Meter) {
+    {
+        let host = this
+            .host
+            .as_ref()
+            .expect("DiskIOTimeMeter_updateValues: this->host")
+            .clone();
+        let h = host.borrow();
+        DiskIOUpdateCache(&h);
+    }
+
+    let st = DISK_IO_METER_STATE.lock().unwrap();
+    this.values[0] = st.cached_utilisation_norm;
+
+    match st.status {
+        MeterRateStatus::RATESTATUS_NODATA => {
+            this.txtBuffer = "no data".to_string();
+            return;
+        }
+        MeterRateStatus::RATESTATUS_INIT => {
+            this.txtBuffer = "init".to_string();
+            return;
+        }
+        MeterRateStatus::RATESTATUS_STALE => {
+            this.txtBuffer = "stale".to_string();
+            return;
+        }
+        MeterRateStatus::RATESTATUS_DATA => {}
+    }
+
+    let num_disks_str = if st.cached_num_disks > 1 && st.cached_num_disks < 1000 {
+        format!(" ({}disks)", st.cached_num_disks)
+    } else {
+        String::new()
+    };
+    this.txtBuffer = format!("{:.1}%{}", st.cached_utilisation_diff, num_disks_str);
 }
 
 /// Port of `static void DiskIOTimeMeter_display(ATTR_UNUSED const Object*
@@ -454,5 +601,33 @@ mod tests {
         let mut out = RichString::new();
         DiskIOMeter_display(&mut out);
         assert_eq!(text(&out), "stale data");
+    }
+
+    #[test]
+    fn rate_meter_update_first_sample_status() {
+        use crate::ported::linux::linuxmachine::LinuxMachine;
+        use crate::ported::machine::Machine;
+        use crate::ported::meter::Meter;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        // First sample (cached_last_update == 0) with a >500ms span forces the
+        // update path. On Linux CI Platform_getDiskIO succeeds → "init"; on a
+        // host without /proc/diskstats it fails → "no data". Assert the meter
+        // produces one of those and populates its value slots without panic.
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            super_: Machine {
+                realtimeMs: 1000,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let mut m = Meter {
+            values: vec![0.0; 2],
+            host: Some(host),
+            ..Meter::empty()
+        };
+        super::DiskIORateMeter_updateValues(&mut m);
+        assert!(m.txtBuffer == "init" || m.txtBuffer == "no data" || m.txtBuffer.starts_with("r:"));
+        assert!(m.values[0] >= 0.0 && m.values[1] >= 0.0);
     }
 }

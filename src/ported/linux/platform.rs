@@ -374,6 +374,62 @@ pub fn Platform_getRelease() -> &'static str {
     Generic_uname()
 }
 
+/// Port of `bool Platform_getDiskIO(DiskIOData* data)` from
+/// `linux/Platform.c:679`. Parses `/proc/diskstats`, summing sectors-read
+/// (×512 → bytes), sectors-written (×512), and ms-spent across top-level
+/// disks — skipping `dm-`/`loop`/`md`/`zram` and partitions (a name
+/// prefixed by the last top disk). Returns `false` if the file cannot be
+/// opened. The `sscanf` field map `%*d %*d %31s %*u %*u %llu %*u %*u %*u
+/// %llu %*u %*u %llu` selects whitespace columns 2/5/9/12.
+pub fn Platform_getDiskIO(data: &mut crate::ported::diskiometer::DiskIOData) -> bool {
+    let content = match std::fs::read_to_string(format!("{PROCDIR}/diskstats")) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let mut last_top_disk = String::new();
+    let (mut read_sum, mut write_sum, mut time_spend_sum, mut num_disks) = (0u64, 0u64, 0u64, 0u64);
+
+    for line in content.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 13 {
+            continue;
+        }
+        let diskname = f[2];
+        let (read_tmp, write_tmp, time_spend_tmp) =
+            match (f[5].parse::<u64>(), f[9].parse::<u64>(), f[12].parse::<u64>()) {
+                (Ok(r), Ok(w), Ok(t)) => (r, w, t),
+                _ => continue,
+            };
+
+        if String_startsWith(diskname, "dm-")
+            || String_startsWith(diskname, "loop")
+            || String_startsWith(diskname, "md")
+            || String_startsWith(diskname, "zram")
+        {
+            continue;
+        }
+
+        // only count root disks (skip partitions of the last top disk)
+        if !last_top_disk.is_empty() && String_startsWith(diskname, &last_top_disk) {
+            continue;
+        }
+        last_top_disk = diskname.to_string();
+
+        read_sum += read_tmp;
+        write_sum += write_tmp;
+        time_spend_sum += time_spend_tmp;
+        num_disks += 1;
+    }
+
+    // multiply with sector size
+    data.totalBytesRead = 512 * read_sum;
+    data.totalBytesWritten = 512 * write_sum;
+    data.totalMsTimeSpend = time_spend_sum;
+    data.numDisks = num_disks;
+    true
+}
+
 // CPUMeter.h `CPU_METER_*` indices into `Meter::values`.
 const CPU_METER_NICE: usize = 0;
 const CPU_METER_NORMAL: usize = 1;
@@ -690,10 +746,6 @@ pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
     }
 }
 
-/// TODO: port of `bool Platform_getDiskIO(DiskIOData* data` from `Platform.c:679`.
-pub fn Platform_getDiskIO() {
-    todo!("port of Platform.c:679")
-}
 
 /// TODO: port of `bool Platform_getNetworkIO(NetworkIOData* data` from `Platform.c:722`.
 pub fn Platform_getNetworkIO() {
