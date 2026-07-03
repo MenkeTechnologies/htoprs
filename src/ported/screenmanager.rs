@@ -75,8 +75,8 @@ use crate::ported::functionbar::Ncurses;
 use crate::ported::header::{Header, Header_draw};
 use crate::ported::machine::Machine;
 use crate::ported::panel::{
-    EVENT_PANEL_LOST_FOCUS, HandlerResult, Panel, PanelClass, Panel_draw, Panel_getCh, Panel_move,
-    Panel_onKey, Panel_resize, Panel_size,
+    HandlerResult, Panel, PanelClass, Panel_draw, Panel_getCh, Panel_move, Panel_onKey,
+    Panel_resize, Panel_size, EVENT_PANEL_LOST_FOCUS,
 };
 use crate::ported::table::Table_rebuildPanel;
 
@@ -378,7 +378,7 @@ pub fn checkRecalculation(
 /// Port of `static inline bool drawTab(const int* y, int* x, int l,
 /// const char* name, bool cur)` from `ScreenManager.c:171`.
 ///
-/// Behavioral crossterm port through the [`Ncurses`] shim: draws
+/// Behavioral crossterm port through the `Ncurses` shim: draws
 /// `[name]` at column `*x` on row `y` (borders in `SCREENS_{CUR,OTH}_BORDER`,
 /// the name in `SCREENS_{CUR,OTH}_TEXT`), advancing `*x` and returning
 /// `false` as soon as the tab would overflow the line width `l`. The `*x`
@@ -504,7 +504,10 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
         // site (the `static inline` is not a ported symbol).
         let hfb = settings.hideFunctionBar;
         let hide_selection = this.state.as_ref().unwrap().hideSelection;
-        (settings.screenTabs, hfb == 2 || (hfb == 1 && hide_selection))
+        (
+            settings.screenTabs,
+            hfb == 2 || (hfb == 1 && hide_selection),
+        )
     };
 
     if screen_tabs {
@@ -879,7 +882,10 @@ mod tests {
         assert_eq!(sm.panels[0].as_panel().w, 10); // explicit positive size kept
                                                    // height = LINES - y1 - header_height + y2 = LINES - 0 - 0 + (-1)
         assert_eq!(sm.panels[0].as_panel().h, Ncurses::lines() - 1);
-        assert_eq!((sm.panels[0].as_panel().x, sm.panels[0].as_panel().y), (0, 0));
+        assert_eq!(
+            (sm.panels[0].as_panel().x, sm.panels[0].as_panel().y),
+            (0, 0)
+        );
         assert!(sm.panels[0].as_panel().needsRedraw);
     }
 
@@ -918,7 +924,10 @@ mod tests {
         // y1_header = 0; first panel keeps width 10, gets full height.
         assert_eq!(sm.panels[0].as_panel().w, 10);
         assert_eq!(sm.panels[0].as_panel().h, lines - 1); // LINES - 0 + (-1)
-        assert_eq!((sm.panels[0].as_panel().x, sm.panels[0].as_panel().y), (0, 0));
+        assert_eq!(
+            (sm.panels[0].as_panel().x, sm.panels[0].as_panel().y),
+            (0, 0)
+        );
         // lastX after first = 0 + 10 + 1 = 11; last panel takes the rest.
         assert_eq!(sm.panels[1].as_panel().x, 11);
         assert_eq!(sm.panels[1].as_panel().w, cols - 11); // COLS - x1 + x2 - lastX

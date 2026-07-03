@@ -97,7 +97,7 @@ pub struct LinuxProcessTable {
     /// C `ProcessTable super` — the embedded base table.
     pub super_: ProcessTable,
     /// C `TtyDriver* ttyDrivers` — NUL-path-terminated, major/minor-sorted
-    /// array; `None` until [`LinuxProcessTable_initTtyDrivers`] runs.
+    /// array; `None` until `LinuxProcessTable_initTtyDrivers` runs.
     pub ttyDrivers: Option<Vec<TtyDriver>>,
     /// C `bool haveSmapsRollup` — `/proc/self/smaps_rollup` available.
     pub haveSmapsRollup: bool,
@@ -385,7 +385,7 @@ fn LinuxProcessTable_initTtyDrivers(this: &mut LinuxProcessTable) {
 /// Port of `LinuxProcessTable.c:261`. Constructs the Linux process table:
 /// initializes the embedded base [`ProcessTable`], loads the tty-driver
 /// table, probes `/proc/self/smaps_rollup` availability, and records htop's
-/// own PID-namespace inode in the [`rootPidNs`] static.
+/// own PID-namespace inode in the `rootPidNs` static.
 ///
 /// Signature mapping: the C `xCalloc` + `Object_setClass` heap allocation is
 /// modeled as an owned [`LinuxProcessTable`] value (the `LinuxProcess_new`

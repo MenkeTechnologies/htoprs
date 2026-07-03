@@ -2,7 +2,7 @@
 //!
 //! Both `updateValues` bodies open with `int totalseconds =
 //! Platform_getUptime();`. The ported
-//! [`Platform_getUptime`](crate::ported::linux::platform::Platform_getUptime)
+//! [`Platform_getUptime`]
 //! now returns an `int` (`i32`), so both functions are portable: on a
 //! non-positive uptime they write `"(unknown)"` into `this->txtBuffer`
 //! (modeled by [`crate::ported::meter::Meter`]); otherwise the seconds are

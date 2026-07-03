@@ -24,9 +24,9 @@
 //!
 //! | C field           | Rust field                    | Notes |
 //! |-------------------|-------------------------------|-------|
-//! | `Vector* rows`    | [`Table::rows`] `Vec<Option<Box<dyn Object>>>` | owns the rows polymorphically — htop's `Vector` of upcast `Row*` (really `Process*`/`DarwinProcess*`) becomes boxed `dyn Object`, recovered as `&Row` via [`Object::as_row`] (the private [`Table::row`]/[`Table::row_mut`] helpers). `Option` models the `NULL` a slot holds after `Vector_softRemove`, reclaimed by [`Table_compact`]. `Vector_size` == `rows.len()` (holes included, exactly like C `items`). |
+//! | `Vector* rows`    | [`Table::rows`] `Vec<Option<Box<dyn Object>>>` | owns the rows polymorphically — htop's `Vector` of upcast `Row*` (really `Process*`/`DarwinProcess*`) becomes boxed `dyn Object`, recovered as `&Row` via [`Object::as_row`] (the private `Table::row`/`Table::row_mut` helpers). `Option` models the `NULL` a slot holds after `Vector_softRemove`, reclaimed by [`Table_compact`]. `Vector_size` == `rows.len()` (holes included, exactly like C `items`). |
 //! | `Vector* displayList` | [`Table::displayList`] `Vec<usize>` | the C list *borrows* `Row*`; here it borrows by index into `rows` (valid because tree building never reorders `rows` after the sort). |
-//! | `Hashtable* table`| [`Table::table`] `HashMap<i32, usize>` | id → index in `rows`. Rebuilt after any reordering ([`Table::rebuild_index`]) — the Rust-model equivalent of C's pointer stability across a `Vector` sort. |
+//! | `Hashtable* table`| [`Table::table`] `HashMap<i32, usize>` | id → index in `rows`. Rebuilt after any reordering (`Table::rebuild_index`) — the Rust-model equivalent of C's pointer stability across a `Vector` sort. |
 //! | `Machine* host`   | [`Table::host`] `*const Machine` | a real back-pointer, exactly like C. The ported fns that dereference it (`Table_add`, `Table_updateDisplayList`, `Table_cleanupRow`) read `host->monotonicMs` / `host->settings` through it; a non-null `host` is their precondition, as in C. |
 //! | `bool needsSort` / `int following` / `Panel* panel` / `incFilter` | modeled directly; `panel` is an opaque `usize` handle (the ncurses `Panel` is not dereferenced by any ported fn). |
 //!
@@ -105,7 +105,7 @@ pub struct Table {
     /// `*mut Panel` mirroring htop's pointer graph; null until wired.
     pub panel: *mut Panel,
     /// The `isDirty` flag of the C `rows` Vector: set by soft-remove in
-    /// [`Table_removeIndex`], cleared by [`Table_compact`].
+    /// `Table_removeIndex`, cleared by [`Table_compact`].
     pub rows_isDirty: bool,
 }
 
@@ -403,7 +403,7 @@ fn compareRowByKnownParentThenNatural(v1: &Row, v2: &Row) -> i32 {
 /// Builds a sorted tree from scratch: marks root rows (self-parented,
 /// parentless, or parent-unknown), sorts `rows` by known parent then id,
 /// then walks each root emitting its subtree into `displayList` via
-/// [`Table_buildTreeBranch`]. Clears `needsSort`.
+/// `Table_buildTreeBranch`. Clears `needsSort`.
 pub fn Table_buildTree(this: &mut Table) {
     // Vector_prune(displayList)
     this.displayList.clear();

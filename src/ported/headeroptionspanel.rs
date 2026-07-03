@@ -1,5 +1,5 @@
 //! Partial port of `HeaderOptionsPanel.c` — the Setup-screen "Header Layout"
-//! chooser (the panel of radio-style [`CheckItem`](crate::ported::optionitem::CheckItem)
+//! chooser (the panel of radio-style [`CheckItem`]
 //! rows that pick how many meter columns the header shows and their widths).
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
@@ -21,7 +21,7 @@
 //! # Ported
 //!
 //! - [`HeaderOptionsPanel_eventHandler`] (`HeaderOptionsPanel.c:33`) — the
-//!   Enter/Space/click arm clears every [`CheckItem`](crate::ported::optionitem::CheckItem)
+//!   Enter/Space/click arm clears every [`CheckItem`]
 //!   and sets the marked one, then applies the chosen layout through the
 //!   `scr`/`settings` back-pointers (`Header_setLayout`, `settings->changed`/
 //!   `lastUpdate`, `ScreenManager_resize` — all ported).
@@ -35,7 +35,7 @@
 //! - [`HeaderOptionsPanel_new`] — blocked on the `HeaderLayout_layouts[]`
 //!   description table. `_new` labels each `CheckItem` row with
 //!   `HeaderLayout_layouts[i].description` (`HeaderLayout.h:40`), but only the
-//!   [`HeaderLayout`](crate::ported::settings::HeaderLayout) enum and
+//!   [`HeaderLayout`] enum and
 //!   `HeaderLayout_getColumns` are ported (in `settings.rs`); the
 //!   `HeaderLayout_layouts` table itself — with its `name`/`description`/`widths`
 //!   columns — has no ported analog (see the note at `header.rs`, which defers
@@ -53,7 +53,8 @@ use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::header::Header_setLayout;
 use crate::ported::optionitem::{CheckItem, CheckItem_newByVal, CheckItem_set};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_new, Panel_setHeader,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_new,
+    Panel_setHeader,
 };
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
 use crate::ported::settings::{HeaderLayout, HeaderLayout_layouts, Settings};
@@ -122,7 +123,7 @@ pub fn HeaderOptionsPanel_delete(this: HeaderOptionsPanel) {
 ///
 /// On the Enter/newline/carriage-return/mouse/reclick/space keys the handler
 /// treats the panel as a radio group: it clears every one of the
-/// `LAST_HEADER_LAYOUT` [`CheckItem`](crate::ported::optionitem::CheckItem) rows
+/// `LAST_HEADER_LAYOUT` [`CheckItem`] rows
 /// (via [`CheckItem_set`]`(.., false)`) and sets the selected one, then applies
 /// the picked layout — `Header_setLayout(this->scr->header, mark)` (the C
 /// implicit `int`→`HeaderLayout` cast is spelled out as the [`HeaderLayout`]
@@ -208,7 +209,7 @@ pub fn HeaderOptionsPanel_eventHandler(this: &mut HeaderOptionsPanel, ch: i32) -
 /// Port of `HeaderOptionsPanel* HeaderOptionsPanel_new(Settings* settings,
 /// ScreenManager* scr)` from `HeaderOptionsPanel.c:74`.
 ///
-/// Builds a `1×1` [`Panel`] with the `HeaderOptionsFunctions` [`FunctionBar`],
+/// Builds a `1×1` [`Panel`] with the `HeaderOptionsFunctions` `FunctionBar`,
 /// stores the `scr`/`settings` back-pointers, sets the "Header Layout" header,
 /// then appends one `CheckItem_newByVal(HeaderLayout_layouts[i].description,
 /// false)` for each of the `LAST_HEADER_LAYOUT` layouts and checks the row

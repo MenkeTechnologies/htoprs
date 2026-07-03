@@ -2,7 +2,7 @@
 //!
 //! The module's own `ACPresence` type (from `BatteryMeter.h`) and
 //! `BatteryMeter_updateValues` are ported below. The latter is driven by the
-//! ported [`Platform_getBattery`](crate::ported::linux::platform::Platform_getBattery),
+//! ported [`Platform_getBattery`],
 //! which fills the `percent`/AC-presence out-params.
 #![allow(non_snake_case)]
 #![allow(dead_code)]

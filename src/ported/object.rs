@@ -155,7 +155,7 @@ pub trait Object: core::any::Any {
         None
     }
 
-    /// C `(const Row*)cast` — a view of this object's embedded [`Row`] base,
+    /// C `(const Row*)cast` — a view of this object's embedded `Row` base,
     /// or `None` for objects that are not `Row`s. `Row`-derived types return
     /// their embedded `Row` (`Process` → `super_`, `LinuxProcess` →
     /// `super_.super_`); the shared display path reads `host`/`tag`/tomb/new

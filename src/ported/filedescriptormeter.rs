@@ -38,7 +38,7 @@
 //!   writes a single `METER_TEXT` `unknown` and returns.
 //! - [`FileDescriptorMeter_updateValues`] (`FileDescriptorMeter.c:30`) —
 //!   sources the used/max figures via the now-ported
-//!   [`Platform_getFileDescriptors`](crate::ported::linux::platform::Platform_getFileDescriptors)
+//!   [`Platform_getFileDescriptors`]
 //!   out-param reader, sets `curItems = 1` (only the first value drives the
 //!   bar), scales `this->total` per the C capping ladder, and formats
 //!   `this->txtBuffer` as `used/max` (`unknown/unknown` on a negative/NaN

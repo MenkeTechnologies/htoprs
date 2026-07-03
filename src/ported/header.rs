@@ -24,7 +24,7 @@
 //!
 //! htop's `Header` holds `Vector** columns` where each `Vector` owns
 //! `Meter*`; this ports to `Vec<Vec<Meter>>` — one inner vec per column,
-//! each holding the live [`Meter`](crate::ported::meter::Meter) directly
+//! each holding the live [`Meter`] directly
 //! (its `h`, `columnWidthCount`, `isMultiColumn`, `mode`, `param`, `name`,
 //! and `draw` slot back every function here). The two settings values
 //! `Header_calculateHeight` reads — `headerMargin` and `screenTabs` — live
@@ -85,7 +85,7 @@ pub struct Header {
 /// `Machine* host`, then `Vector_new`s one empty meter column per
 /// `HeaderLayout_getColumns(hLayout)` (`Header_forEachColumn`). The
 /// `Class(Meter)` object-class tag is dropped — column element identity is
-/// the Rust [`HeaderMeter`] type.
+/// the Rust `HeaderMeter` type.
 pub fn Header_new(host: *const Machine, hLayout: HeaderLayout) -> Header {
     let ncol = HeaderLayout_getColumns(hLayout);
     let mut columns = Vec::with_capacity(ncol);
@@ -342,8 +342,8 @@ pub fn Header_reinit(this: &mut Header) {
 /// `width`). The `assert(meter->draw)` is honored by the `Option::expect`.
 ///
 /// The C reads/writes the ncurses global cursor; here the terminal side
-/// effects go through the crossterm [`Ncurses`] shim into `out` (the
-/// `Panel_draw`/`Meter`-draw precedent). `COLS` is [`Ncurses::cols`];
+/// effects go through the crossterm `Ncurses` shim into `out` (the
+/// `Panel_draw`/`Meter`-draw precedent). `COLS` is `Ncurses::cols`;
 /// `floorf` is [`f32::floor`]. `this` is `&mut` because the per-meter
 /// `draw` slot takes `&mut Meter` (it updates `drawData`).
 pub fn Header_draw(this: &mut Header, mut out: &mut dyn Write) {
@@ -490,7 +490,7 @@ fn calcColumnWidthCount(
 /// Computes and stores the header's height. `pad` is 2 when
 /// `headerMargin` is set, else 0. For each column it sums the meter
 /// heights (starting from `pad`) and, as a side effect, records each
-/// meter's `columnWidthCount` via [`calcColumnWidthCount`]. The tallest
+/// meter's `columnWidthCount` via `calcColumnWidthCount`. The tallest
 /// column wins. If no column has any meters (`maxHeight == pad`) the
 /// header collapses to height 0 and `pad` 0; otherwise `pad` is kept. When
 /// `screenTabs` is set one extra row is added. Returns the final height.

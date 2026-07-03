@@ -2,7 +2,7 @@
 //! whether SELinux is enabled and, if so, its enforcing mode.
 //!
 //! SELinux lives entirely on Linux (`/sys/fs/selinux`), so the filesystem
-//! probes in [`hasSELinuxMount`] are `#[cfg(target_os = "linux")]`; on any
+//! probes in `hasSELinuxMount` are `#[cfg(target_os = "linux")]`; on any
 //! other host the mount cannot exist and the probe returns `false` (the C is
 //! only ever built on Linux — see the module port rules on platform-omitted
 //! branches). `statfs`/`statvfs` and `ST_RDONLY` are only referenced inside

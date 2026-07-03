@@ -119,10 +119,10 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert, Panel_new,
-    Panel_onKey, Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar,
-    Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, EVENT_PANEL_LOST_FOCUS,
-    EVENT_SET_SELECTED,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert,
+    Panel_new, Panel_onKey, Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection,
+    Panel_setDefaultBar, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor,
+    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::screenmanager::ScreenManager;
@@ -682,7 +682,7 @@ pub fn ScreenNameListItem_new(value: &str, ss: Option<usize>) -> ScreenNameListI
 /// Port of `ScreenTabsPanel.c:178`. Tears down the process-wide renaming
 /// `FunctionBar` if one was ever built. The C body —
 /// `if (ScreenNames_renamingBar) { FunctionBar_delete(ScreenNames_renamingBar);
-/// ScreenNames_renamingBar = NULL; }` — becomes: if the [`ScreenNames_renamingBar`]
+/// ScreenNames_renamingBar = NULL; }` — becomes: if the `ScreenNames_renamingBar`
 /// `Option` holds a bar, drop it (the `Some` payload's `Drop` is the analog of
 /// `FunctionBar_delete`) and leave `None` (the `= NULL`). Idempotent: calling
 /// it when the bar was never built is a no-op, exactly as the C `NULL` guard.
@@ -878,9 +878,9 @@ pub fn ScreenNamesPanel_eventHandlerRenaming(
 /// `renamingItem` `ListItem*` is the row index ([`ScreenNamesPanel::renamingItem`]);
 /// `this->saved` (which in C steals `item->value` and hands it back on cancel)
 /// is an owned copy of the row's original name. The row value is re-pointed at
-/// the live editor buffer via [`ScreenNamesPanel::set_item_value`], and the C
+/// the live editor buffer via `ScreenNamesPanel::set_item_value`, and the C
 /// `super->currentBar = ScreenNames_renamingBar` — sharing the one file-static
-/// bar pointer — becomes a clone of the [`ScreenNames_renamingBar`] payload
+/// bar pointer — becomes a clone of the `ScreenNames_renamingBar` payload
 /// into the owned `currentBar` (the `Panel_setDefaultBar` clone idiom).
 pub fn startRenaming(this: &mut ScreenNamesPanel) {
     // item = Panel_getSelected(super); if (item == NULL) return;
@@ -1038,7 +1038,7 @@ pub fn ScreenNamesPanel_eventHandler(this: &mut ScreenNamesPanel, ch: i32) -> Ha
 
 /// Port of `ScreenNamesPanel* ScreenNamesPanel_new(Settings* settings)` from
 /// `ScreenTabsPanel.c:366`. Builds the names panel: a `FunctionBar_new` default
-/// bar, the lazily-built process-wide [`ScreenNames_renamingBar`] (C `if
+/// bar, the lazily-built process-wide `ScreenNames_renamingBar` (C `if
 /// (!ScreenNames_renamingBar) ScreenNames_renamingBar = FunctionBar_new(...)`),
 /// then `Panel_init` and the fixed field seeds, and finally one
 /// [`ScreenNameListItem`] per **built-in** screen in `settings->screens[]`

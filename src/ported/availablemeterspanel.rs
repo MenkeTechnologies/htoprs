@@ -53,7 +53,7 @@
 //!   algorithm to port.
 //! - [`AvailableMetersPanel_addDynamicMeter`] (`AvailableMetersPanel.c:122`)
 //!   — a `Hashtable_foreach` callback reading `meter->description` /
-//!   `meter->caption` / `meter->name`; the `dynamicmeter.rs` [`DynamicMeter`]
+//!   `meter->caption` / `meter->name`; the `dynamicmeter.rs` `DynamicMeter`
 //!   model carries only `name` (the `description`/`caption` fields are
 //!   unmodeled and `dynamicmeter.rs` is off-limits to this module).
 //! - [`AvailableMetersPanel_addDynamicMeters`] (`AvailableMetersPanel.c:134`)
@@ -202,7 +202,10 @@ pub fn AvailableMetersPanel_addMeter(
 /// [`crate::ported::meterspanel::MetersPanel_eventHandler`] uses). `header` and
 /// the target `MetersPanel` are distinct objects, so the two `&mut`s that
 /// [`AvailableMetersPanel_addMeter`] takes do not overlap.
-pub fn AvailableMetersPanel_eventHandler(this: &mut AvailableMetersPanel, ch: i32) -> HandlerResult {
+pub fn AvailableMetersPanel_eventHandler(
+    this: &mut AvailableMetersPanel,
+    ch: i32,
+) -> HandlerResult {
     // `KEY_F(n)` is a `const fn`; bind the two matched codes as `const`s.
     const KEY_F5: i32 = KEY_F(5);
     const KEY_F6: i32 = KEY_F(6);
@@ -368,7 +371,7 @@ pub fn AvailableMetersPanel_addPlatformMeter(super_: &mut Panel, type_: &MeterCl
 /// Header* header, size_t columns, MetersPanel** meterPanels,
 /// ScreenManager* scr)` from `AvailableMetersPanel.c:147`.
 ///
-/// Builds a `1×1` [`Panel`] with the `AvailableMetersFunctions` [`FunctionBar`],
+/// Builds a `1×1` [`Panel`] with the `AvailableMetersFunctions` `FunctionBar`,
 /// stores the `host`/`header`/`columns`/`meterPanels`/`scr` back-pointers, sets
 /// the "Available meters" header, then walks [`Platform_meterTypes`] from index
 /// 1 (index 0 is `&CPUMeter_class`, handled separately) adding each entry via
@@ -582,7 +585,7 @@ mod tests {
         );
 
         let platform_rows = Platform_meterTypes.len() - 1; // skip index 0 (CPU)
-        // uniprocessor => addCPUMeters adds exactly one row.
+                                                           // uniprocessor => addCPUMeters adds exactly one row.
         assert_eq!(Panel_size(&panel.super_), platform_rows as i32 + 1);
 
         // Row 0 is the first non-CPU platform meter (Platform_meterTypes[1]),

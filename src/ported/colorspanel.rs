@@ -17,8 +17,8 @@
 //! # Ported (self-contained, no unported substrate)
 //!
 //! - [`ColorsPanel_new`] (`ColorsPanel.c:92`) — builds the panel: a `1×1`
-//!   [`Panel`] with the `ColorsFunctions` ("Done  ") [`FunctionBar`], one
-//!   [`CheckItem`] per entry of [`ColorSchemeNames`], the "Colors" header,
+//!   [`Panel`] with the `ColorsFunctions` ("Done  ") `FunctionBar`, one
+//!   [`CheckItem`] per entry of `ColorSchemeNames`, the "Colors" header,
 //!   and the initial check on the row matching the active scheme
 //!   (`CRT_colorScheme`).
 //!
@@ -192,10 +192,10 @@ pub fn ColorsPanel_eventHandler(this: &mut ColorsPanel, ch: i32) -> HandlerResul
 /// Port of `ColorsPanel* ColorsPanel_new(Settings* settings)` from
 /// `ColorsPanel.c:92`.
 ///
-/// Builds a `1×1` [`Panel`] with the `ColorsFunctions` [`FunctionBar`]
+/// Builds a `1×1` [`Panel`] with the `ColorsFunctions` `FunctionBar`
 /// (`FunctionBar_new(ColorsFunctions, NULL, NULL)` → the static F-key
 /// tables), stores the `settings` back-pointer, then for each entry of
-/// [`ColorSchemeNames`] appends a `CheckItem_newByVal(name, false)`.
+/// `ColorSchemeNames` appends a `CheckItem_newByVal(name, false)`.
 /// Finishes with `Panel_setHeader("Colors")` and checks the row whose
 /// index equals the active scheme (`CRT_colorScheme`).
 ///

@@ -350,9 +350,9 @@ pub fn CategoriesPanel_eventHandler(this: &mut CategoriesPanel, ch: i32) -> Hand
 /// Port of `CategoriesPanel* CategoriesPanel_new(ScreenManager* scr,
 /// Header* header, Machine* host)` from `CategoriesPanel.c:172`.
 ///
-/// Builds a `1×1` [`Panel`] with the `CategoriesFunctions` [`FunctionBar`],
+/// Builds a `1×1` [`Panel`] with the `CategoriesFunctions` `FunctionBar`,
 /// stores the `scr`/`host`/`header` back-pointers, sets the "Categories"
-/// header, appends one [`ListItem_new`] row per [`categoriesPanelPages`] entry,
+/// header, appends one [`ListItem_new`] row per `categoriesPanelPages` entry,
 /// then self-registers into `scr` (`ScreenManager_add(scr, super, 16)`) and
 /// builds the first page (`categoriesPanelPages[0].ctor(this)`).
 ///

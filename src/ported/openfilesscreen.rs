@@ -444,7 +444,7 @@ pub fn OpenFilesScreen_draw(this: &mut InfoScreen) {
 /// a `pipe`, `fork`; in the child `dup2` the write end onto stdout, redirect
 /// stderr to `/dev/null`, then `execvp` `lsof` (`_exit(127)` if it is not on
 /// `$PATH`, `_exit(1)` if `/dev/null` cannot be opened); in the parent read
-/// the child's `-F` output line by line via [`OpenFiles_ProcessData::parseLsofFields`],
+/// the child's `-F` output line by line via `OpenFiles_ProcessData::parseLsofFields`,
 /// `waitpid` for it (the `xWaitpid(child, &wstatus, 0, false)` case: options
 /// 0, retry only on `EINTR`), record the exit status as `error`, and — when
 /// `lsof -o -F` omitted SIZE (Linux; `!lsofIncludesFileSize`) — backfill each

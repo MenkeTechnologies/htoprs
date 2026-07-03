@@ -8,7 +8,7 @@
 //!
 //! # Ported (platform-independent)
 //!
-//! - [`Machine_addTable`] (`Machine.c:63`) — dedup-append a table.
+//! - `Machine_addTable` (`Machine.c:63`) — dedup-append a table.
 //! - [`Machine_populateTablesFromSettings`] (`Machine.c:76`) — default
 //!   each screen's table to the process table, record the first as
 //!   active, and register each.
@@ -60,6 +60,7 @@
 #![allow(dead_code)]
 
 use crate::ported::panel::Panel;
+#[cfg(target_os = "macos")]
 use crate::ported::row::Row_setPidColumnWidth;
 use crate::ported::table::{Table, Table_setPanel};
 
@@ -210,7 +211,7 @@ fn Machine_addTable(this: &mut Machine, table: TableHandle) {
 /// Stores `settings`/`processTable` on the machine, then for each
 /// screen: if the screen has no table, default it to `processTable`;
 /// record the first screen's table as `activeTable`; and register the
-/// table via [`Machine_addTable`]. The C mutates `ss->table` through the
+/// table via `Machine_addTable`. The C mutates `ss->table` through the
 /// stored `Settings*`, so `settings` is moved into `this.settings` and
 /// the defaulting mutation is applied there — mirroring the in-place
 /// `ss->table = processTable`.

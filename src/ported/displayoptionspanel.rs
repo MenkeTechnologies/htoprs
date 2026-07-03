@@ -56,12 +56,15 @@ use crate::ported::crt::{
     KEY_NPAGE, KEY_PPAGE, KEY_RECLICK, KEY_RIGHTCLICK, KEY_UP,
 };
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
-use crate::ported::header::{Header_calculateHeight, Header_draw, Header_reinit, Header_updateData};
+use crate::ported::header::{
+    Header_calculateHeight, Header_draw, Header_reinit, Header_updateData,
+};
 use crate::ported::optionitem::{
     CheckItem, CheckItem_newByRef, CheckItem_set, CheckItem_toggle, NumberItem, NumberItem_addChar,
     NumberItem_applyEditing, NumberItem_cancelEditing, NumberItem_decrease, NumberItem_deleteChar,
     NumberItem_increase, NumberItem_newByRef, NumberItem_startEditing,
-    NumberItem_startEditingFromValue, NumberItem_toggle, OptionItem_kind, OptionItemType, TextItem_new,
+    NumberItem_startEditingFromValue, NumberItem_toggle, OptionItemType, OptionItem_kind,
+    TextItem_new,
 };
 use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_get, Panel_getSelectedIndex,
@@ -430,10 +433,8 @@ pub fn DisplayOptionsPanel_eventHandler(this: &mut DisplayOptionsPanel, ch: i32)
             }
         }
         EVENT_PANEL_LOST_FOCUS => {
-            if is_number && this.number_editing(selected) {
-                if this.number_apply(selected) {
-                    settings_changed = true;
-                }
+            if is_number && this.number_editing(selected) && this.number_apply(selected) {
+                settings_changed = true;
             }
             this.super_.cursorOn = false;
             Panel_setDefaultBar(&mut this.super_);
@@ -521,7 +522,10 @@ pub fn DisplayOptionsPanel_eventHandler(this: &mut DisplayOptionsPanel, ch: i32)
 /// the `*_newByRef` rows store raw pointers into its fields (and into the
 /// active-screen `ScreenSettings`), which must not be reallocated while the
 /// panel lives.
-pub fn DisplayOptionsPanel_new(settings: *mut Settings, scr: *mut ScreenManager) -> DisplayOptionsPanel {
+pub fn DisplayOptionsPanel_new(
+    settings: *mut Settings,
+    scr: *mut ScreenManager,
+) -> DisplayOptionsPanel {
     let fu_bar = FunctionBar_new(Some(&DisplayOptionsFunctions[..]), None, None);
     let super_ = Panel_new(1, 1, 1, 1, Some(fu_bar));
 
@@ -560,9 +564,7 @@ pub fn DisplayOptionsPanel_new(settings: *mut Settings, scr: *mut ScreenManager)
         let s = &mut *settings;
         &mut s.screens[ss_index] as *mut ScreenSettings
     };
-    this.add_check("Tree view", unsafe {
-        &mut (*ss_ptr).treeView as *mut bool
-    });
+    this.add_check("Tree view", unsafe { &mut (*ss_ptr).treeView as *mut bool });
     this.add_check(
         "- Tree view is always sorted by PID (htop 2 behavior)",
         unsafe { &mut (*ss_ptr).treeViewAlwaysByPID as *mut bool },
@@ -654,15 +656,23 @@ pub fn DisplayOptionsPanel_new(settings: *mut Settings, scr: *mut ScreenManager)
     });
     // #ifdef HAVE_GETMOUSE: "Enable the mouse" — omitted (this is the
     // `#ifndef HAVE_GETMOUSE` build; `enableMouse` field exists).
-    this.add_number("Update interval (in seconds)", unsafe {
-        &mut (*settings).delay as *mut c_int
-    }, -1, 1, 255);
+    this.add_number(
+        "Update interval (in seconds)",
+        unsafe { &mut (*settings).delay as *mut c_int },
+        -1,
+        1,
+        255,
+    );
     this.add_check("Highlight new and old processes", unsafe {
         &mut (*settings).highlightChanges as *mut bool
     });
-    this.add_number("- Highlight time (in seconds)", unsafe {
-        &mut (*settings).highlightDelaySecs as *mut c_int
-    }, 0, 1, 24 * 60 * 60);
+    this.add_number(
+        "- Highlight time (in seconds)",
+        unsafe { &mut (*settings).highlightDelaySecs as *mut c_int },
+        0,
+        1,
+        24 * 60 * 60,
+    );
     this.add_number(
         "Hide main function bar (0 - off, 1 - on ESC until next input, 2 - permanently)",
         unsafe { &mut (*settings).hideFunctionBar as *mut c_int },
@@ -710,14 +720,19 @@ mod tests {
         // Find the "Tree view" CheckItem (row 1) and flip it through the panel;
         // the change must land in the active screen's ScreenSettings.
         let any: &dyn Any = panel.super_.items[1].object();
-        let tree = any.downcast_ref::<CheckItem>().expect("row 1 is a CheckItem");
+        let tree = any
+            .downcast_ref::<CheckItem>()
+            .expect("row 1 is a CheckItem");
         assert_eq!(tree.text, "Tree view");
         // The ref binds into settings.screens[0].treeView (false initially).
         assert!(!CheckItem_get(tree));
         s.screens[0].treeView = true;
         let any2: &dyn Any = panel.super_.items[1].object();
         let tree2 = any2.downcast_ref::<CheckItem>().unwrap();
-        assert!(CheckItem_get(tree2), "the CheckItem reads the external cell");
+        assert!(
+            CheckItem_get(tree2),
+            "the CheckItem reads the external cell"
+        );
     }
 
     #[test]

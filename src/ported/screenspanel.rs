@@ -48,7 +48,7 @@
 //!   (`this->ss`). Returns an owned value, mirroring the `ListItem_new`
 //!   owned-return idiom.
 //! - [`ScreensPanel_cleanup`] (`ScreensPanel.c:57`) — tears down the
-//!   process-wide renaming `FunctionBar` ([`Screens_renamingBar`], a
+//!   process-wide renaming `FunctionBar` (`Screens_renamingBar`, a
 //!   `Mutex<Option<FunctionBar>>` file-static), the same body the
 //!   `MetersPanel`/`ScreenTabsPanel` cleanups use.
 //! - [`ScreensPanel_cancelMoving`] (`ScreensPanel.c:64`) — clears every
@@ -130,10 +130,10 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_delete, Panel_get, Panel_getSelectedIndex, Panel_insert,
-    Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_onKey, Panel_remove, Panel_selectByTyping,
-    Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelected, Panel_setSelectionColor,
-    Panel_size, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
+    HandlerResult, Panel, PanelClass, Panel_delete, Panel_get, Panel_getSelectedIndex,
+    Panel_insert, Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_onKey, Panel_remove,
+    Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelected,
+    Panel_setSelectionColor, Panel_size, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::settings::{ScreenDefaults, ScreenSettings, Settings, Settings_newScreen};
@@ -275,7 +275,7 @@ pub fn ScreenListItem_new(value: &str, ssIndex: usize) -> ScreenListItem {
 /// }
 /// ```
 ///
-/// Tears down the process-wide renaming [`Screens_renamingBar`] if one was
+/// Tears down the process-wide renaming `Screens_renamingBar` if one was
 /// ever built: dropping the `Some` payload is the analog of `FunctionBar_delete`
 /// and leaving `None` is the `= NULL`. Idempotent (the C `NULL` guard) — the
 /// same body as `MetersPanel_cleanup` / `ScreenTabsPanel_cleanup`.

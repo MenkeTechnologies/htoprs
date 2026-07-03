@@ -16,7 +16,7 @@
 //!   [`FunctionBar_append`] — behavioral ports on crossterm. htop drives
 //!   these through ncurses (`attrset`/`mvhline`/`mvaddstr`/`curs_set`
 //!   against `CRT_colors`, `LINES`, `COLS`); crossterm is htoprs's
-//!   terminal backend, so the emit is reproduced through the [`Ncurses`]
+//!   terminal backend, so the emit is reproduced through the `Ncurses`
 //!   shim below (which resolves `CRT_colors` packed attrs via the ported
 //!   `crt::ResolvedColor`). The pure column/cursor arithmetic each fn
 //!   computes is factored into gate-skipped helper methods and unit
@@ -208,7 +208,7 @@ pub fn FunctionBar_draw(this: &FunctionBar) -> i32 {
 /// returns `cursorX` (the column after the function keys, or after the
 /// buffer when one is drawn) — exactly as the C computes it. The pure
 /// `cursorX`/`currentLen` arithmetic is factored into
-/// [`FunctionBar::extra_layout`] and unit tested.
+/// `FunctionBar::extra_layout` and unit tested.
 pub fn FunctionBar_drawExtra(
     this: &FunctionBar,
     buffer: Option<&str>,

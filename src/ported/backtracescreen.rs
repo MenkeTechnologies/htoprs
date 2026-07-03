@@ -496,7 +496,7 @@ pub fn BacktracePanel_populateFrames(this: &mut BacktracePanel) {
 /// (the same choice the ported [`BacktracePanel_makeBacktrace`] makes for
 /// `!HAVE_LIBUNWIND_PTRACE`), so `HAVE_DEMANGLING` is treated as undefined.
 /// The `'p'` / `KEY_F(3)` (full-path toggle) arm is fully ported: it flips
-/// [`SHOW_FULL_PATH_OBJECT`], relabels the function bar via the ported
+/// `SHOW_FULL_PATH_OBJECT`, relabels the function bar via the ported
 /// [`FunctionBar_setLabel`], marks the panel dirty, and rebuilds the header
 /// via [`BacktracePanel_displayHeader`]. The `KEY_CTRL('L')` / `KEY_F(5)`
 /// refresh arm prunes the panel (ported [`Panel_prune`]) and then rebuilds it

@@ -397,7 +397,7 @@ fn insert(this: &mut Hashtable, mut key: u32, mut value: Box<dyn Object>) {
 /// Port of `void Hashtable_setSize(Hashtable* this, size_t size)` from
 /// `Hashtable.c:195`. Grows (or, from `Hashtable_remove`, shrinks) the
 /// bucket array to the next prime `>= size` and rehashes every live entry
-/// into it via [`insert`]. No-ops when `size <= items` (would not fit) or
+/// into it via `insert`. No-ops when `size <= items` (would not fit) or
 /// when the prime target equals the current `size`. The old buckets are
 /// swapped out (C `oldBuckets = this->buckets`), the new empty array
 /// installed and `items` reset, then each old filled bucket is
@@ -437,7 +437,7 @@ pub fn Hashtable_setSize(this: &mut Hashtable, size: usize) {
 /// load factor would exceed 0.7 (the C `10 * items > 7 * size`),
 /// doubling `size` — with a `usize::MAX / 2 < size` overflow guard
 /// (C `SIZE_MAX / 2 < size` → `CRT_fatalError`, here `panic!`) — then
-/// delegates to [`insert`]. The trailing consistency / `size > items`
+/// delegates to `insert`. The trailing consistency / `size > items`
 /// asserts are omitted (debug-only).
 pub fn Hashtable_put(this: &mut Hashtable, key: u32, value: Box<dyn Object>) {
     /* grow on load-factor > 0.7 */

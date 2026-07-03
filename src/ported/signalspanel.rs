@@ -13,8 +13,8 @@
 //! - [`SIGNALSPANEL_INITSELECTEDSIGNAL`] — the `#define ... SIGTERM`
 //!   (`SignalsPanel.h:22`), the default pre-selected signal.
 //! - [`SignalsPanel_new`] (`SignalsPanel.c:23`) — builds the panel: a
-//!   1×1 [`Panel`] with an Enter/Esc [`FunctionBar`] ("Send   "/"Cancel "),
-//!   one [`ListItem`] per signal (name + number), a `defaultPosition`
+//!   1×1 [`Panel`] with an Enter/Esc `FunctionBar` ("Send   "/"Cancel "),
+//!   one `ListItem` per signal (name + number), a `defaultPosition`
 //!   tracking the pre-selected signal, the optional Linux real-time-signal
 //!   rows, the "Send signal:" header, and the initial selection.
 //!
@@ -35,7 +35,7 @@
 //!
 //! The C `Panel_set(this, i, ...)` writes sequential indices `0, 1, 2, …`
 //! into a fresh (empty) panel; htop's `Vector_set` grows the vector when
-//! `i == size`, so that is an append. The ported [`Panel_set`] indexes and
+//! `i == size`, so that is an append. The ported `Panel_set` indexes and
 //! panics out of range, so the faithful observable equivalent here is
 //! [`Panel_add`] (append), which reproduces the same resulting item order.
 //!

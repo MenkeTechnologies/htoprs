@@ -41,7 +41,7 @@
 //!   them, so the arms are structurally faithful but presently unreachable.
 //!
 //! Drawing ([`Panel_draw`]) is a behavioral crossterm port through the
-//! [`Ncurses`] emit shim: htop's `attrset`/`mvhline`/`RichString_printoffnVal`
+//! `Ncurses` emit shim: htop's `attrset`/`mvhline`/`RichString_printoffnVal`
 //! against `CRT_colors`/`LINES`/`COLS` become crossterm writes resolving
 //! `CRT_colors` via the ported `crt::ResolvedColor`. Its pure scroll-clamp
 //! logic ("scroll follows selection") is factored into gate-skipped helper
@@ -316,7 +316,7 @@ impl Panel {
 /// The three behavioural slots default to the C base-class behaviour: the
 /// base `Panel_class` sets `eventHandler`/`drawFunctionBar`/`printHeader` to
 /// `NULL`, and C guards every call with `if (Panel_..Fn(this))`, so a NULL
-/// slot is a no-op. The default [`PanelClass::eventHandler`] returns
+/// slot is a no-op. The default `PanelClass::eventHandler` returns
 /// [`HandlerResult::IGNORED`] (the base panel handles no keys); the default
 /// `draw_function_bar`/`print_header` do nothing (NULL slot skipped).
 pub trait PanelClass {
@@ -641,9 +641,9 @@ pub fn Panel_splice(this: &mut Panel, from: &Vector) {
 ///
 /// Behavioral crossterm port. Reproduces htop's header line, the scroll
 /// clamp ("scroll follows selection", factored into
-/// [`Panel::ensure_scroll`]), the per-row `Object_display` → `RichString`
+/// `Panel::ensure_scroll`), the per-row `Object_display` → `RichString`
 /// → blit with selection highlight, the trailing blank fill, and the
-/// focused function-bar draw — emitting through the [`Ncurses`] shim.
+/// focused function-bar draw — emitting through the `Ncurses` shim.
 /// The base-class vtable branches are taken for `printHeader`/
 /// `drawFunctionBar` (both NULL on `Panel_class`); subclass overrides need
 /// the unmodeled vtable.

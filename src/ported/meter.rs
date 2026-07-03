@@ -52,7 +52,7 @@
 //!   the `Object` display slot (`display` field) or writes `txtBuffer` in
 //!   `CRT_colors[Meter_attributes(this)[0]]`.
 //! - `TextMeterMode_draw` (`Meter.c:62`) — caption + `displayBuffer`, blitted
-//!   through the crossterm [`Ncurses`] shim.
+//!   through the crossterm `Ncurses` shim.
 //! - `BarMeterMode_draw` (`Meter.c:90`) — the bar renderer: caption,
 //!   brackets, per-item colored fill from `values`/`total`/`curAttributes`,
 //!   right-aligned `txtBuffer`. The C fill math is reproduced line-for-line.
@@ -70,7 +70,7 @@
 //!   (`Meter.c:357`) — the seven-segment LED renderer: caption in `LED_COLOR`,
 //!   then each `Meter_displayBuffer` char blitted either as a 3-row / 4-col
 //!   digit cell (`0`–`9`) or a single character, through the crossterm
-//!   [`Ncurses`] shim. The `#ifdef HAVE_LIBNCURSESW` UTF-8 digit table + the
+//!   `Ncurses` shim. The `#ifdef HAVE_LIBNCURSESW` UTF-8 digit table + the
 //!   `mvadd_wch` branch collapse onto the unicode-native crossterm sink (the
 //!   same runtime-`CRT_utf8` selection `CRT.c`'s `CRT_degreeSign` uses), so the
 //!   ascii/utf8 split is a runtime table pick and both add-char branches map to
@@ -210,7 +210,7 @@ pub struct GraphData {
 /// C `Meter_Draw` (`Meter.h:55`): `void (*)(Meter*, int, int, int)`. The
 /// ported renderers take an explicit terminal sink (`out: &mut dyn Write`)
 /// as their first argument — htop's ncurses draw writes to the implicit
-/// `stdscr`, which the crossterm [`Ncurses`] shim replaces with an explicit
+/// `stdscr`, which the crossterm `Ncurses` shim replaces with an explicit
 /// writer (the `Panel_draw` precedent) so the blit is unit-testable. The
 /// remaining `(Meter*, x, y, w)` arguments match C.
 pub type MeterDraw = fn(&mut dyn Write, &mut Meter, i32, i32, i32);
@@ -695,7 +695,7 @@ pub fn Meter_displayBuffer(this: &Meter, out: &mut RichString) {
 /// Port of `static void TextMeterMode_draw(Meter* this, int x, int y,
 /// int w)` from `Meter.c:62`. Draws the caption in `METER_TEXT`, then the
 /// `Meter_displayBuffer` text in the remaining width, blitting through the
-/// crossterm [`Ncurses`] shim (the `Panel_draw` terminal-side-effect
+/// crossterm `Ncurses` shim (the `Panel_draw` terminal-side-effect
 /// precedent). `Meter_getCaption(this)` falls back to `this->caption`
 /// because no class `getCaption` slot is modeled here.
 ///
@@ -738,7 +738,7 @@ const BarMeterMode_characters: &[u8] = b"|#*@$%&.";
 /// borders, the per-item colored fill (each item's block sized
 /// `ceil(value/total * w)` and clamped to the remaining width), and the
 /// right-aligned `txtBuffer` over the top, blitting through the crossterm
-/// [`Ncurses`] shim. The fill math (space-padded bar, `startPos`
+/// `Ncurses` shim. The fill math (space-padded bar, `startPos`
 /// truncation-at-a-space, monochrome vs. `'|'` glyph selection, per-item
 /// `RichString_setAttrn` + `RichString_printoffnVal`, trailing `BAR_SHADOW`)
 /// is reproduced line-for-line from the C.
@@ -932,7 +932,7 @@ static GraphMeterMode_dotsUtf8: [&str; 25] = [
 /// per-`delay` deadline has passed, then renders the ring as a braille/ASCII
 /// bar graph — two ring entries per terminal column, scaled either to the
 /// `total` (percent charts) or to the visible window's peak. Terminal output
-/// goes through the crossterm [`Ncurses`] shim.
+/// goes through the crossterm `Ncurses` shim.
 ///
 /// Substrate mapping: the C reads `host->realtime` (a `struct timeval`) and
 /// stores the next deadline in `data->time` (also a `timeval`), using

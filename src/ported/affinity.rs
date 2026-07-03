@@ -169,14 +169,13 @@ pub fn Affinity_set(p: &Process, arg: Arg) -> bool {
     for i in 0..this.used {
         unsafe { libc::CPU_SET(this.cpus[i as usize] as usize, &mut cpuset) };
     }
-    let ok = unsafe {
+    unsafe {
         libc::sched_setaffinity(
             Process_getPid(p),
             core::mem::size_of::<core::ffi::c_ulong>(),
             &cpuset,
-        )
-    } == 0;
-    ok
+        ) == 0
+    }
 }
 
 /// Port of `bool Affinity_rowSet(Row* row, Arg arg)` from `Affinity.c:120`

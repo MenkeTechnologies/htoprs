@@ -73,7 +73,7 @@
 //! (`RichString.h:28`, `HAVE_LIBNCURSESW` variant) — `mvadd_wchnstr(y, x,
 //! chptr + off, n)` — a pure ncurses blit that paints `n` styled cells to
 //! the screen. It has no locale/string logic to port; it is a behavioral
-//! crossterm port through the crate's [`Ncurses`] emit shim, per-cell
+//! crossterm port through the crate's `Ncurses` emit shim, per-cell
 //! `attrset` + `mvaddch`, exactly mirroring the established
 //! `Panel::print_offset` blit (`Panel.c` draw path). The companion
 //! whole-string macro `RichString_printVal` (`RichString.h:27`,
@@ -568,7 +568,7 @@ pub fn RichString_writeAscii(this: &mut RichString, attrs: i32, data: &[u8]) -> 
 /// (invoked in `Meter.c` and `Panel.c`).
 ///
 /// Behavioral crossterm port: the ncurses blit has no locale/string logic,
-/// so it is reproduced through the crate's [`Ncurses`] emit shim exactly as
+/// so it is reproduced through the crate's `Ncurses` emit shim exactly as
 /// the `Panel::print_offset` draw helper does — set each cell's own
 /// attribute, then print its character. `out` is the crossterm draw target
 /// standing in for ncurses' implicit `stdscr`. Cells past the end of the

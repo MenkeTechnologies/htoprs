@@ -45,9 +45,9 @@
 //!   immediately overwrites; the vtable install has no analog (the ported
 //!   `InfoScreen` carries no `Object super` vtable — see `infoscreen.rs`).
 //! - **`LINES`.** C passes the ncurses `LINES` global; the ported analog is
-//!   [`Ncurses::lines`], the terminal row count (the same source
+//!   `Ncurses::lines`, the terminal row count (the same source
 //!   `Panel_draw` reads), matching how `InfoScreen_init` maps `COLS` to
-//!   [`Ncurses::cols`].
+//!   `Ncurses::cols`.
 //! - **`const Process*` return.** C returns a `ProcessLocksScreen*` (the
 //!   `InfoScreen_init` identity chain-return, cast back). The port returns
 //!   the owned struct by value.
@@ -56,7 +56,7 @@
 //!
 //! - [`ProcessLocksScreen_delete`] (`ProcessLocksScreen.c:34`) —
 //!   `free(InfoScreen_done((InfoScreen*)this))`, i.e. heap-free only.
-//!   [`InfoScreen_done`](crate::ported::infoscreen::InfoScreen_done) is
+//!   [`InfoScreen_done`] is
 //!   itself a `todo!()` (heap-free with no safe-Rust analog: an owned
 //!   `InfoScreen`/`ProcessLocksScreen` releases its fields via `Drop`), so
 //!   there is no algorithm to port (same class as `InfoScreen_done` /
@@ -117,7 +117,7 @@ pub struct ProcessLocksScreen {
 ///
 /// Resolves `pid` to the thread-group id when `process` is a thread
 /// (C `Process_isThread`), else its own pid, then chains through
-/// [`InfoScreen_init`] with height `LINES - 2` ([`Ncurses::lines`]) and the
+/// [`InfoScreen_init`] with height `LINES - 2` (`Ncurses::lines`) and the
 /// fixed column header. The `xMalloc` + `Object_setClass` allocation maps to
 /// a throwaway zeroed `super_` that `InfoScreen_init` overwrites (see the
 /// module docs). Returns the owned struct (C returns the `InfoScreen_init`

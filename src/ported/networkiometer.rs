@@ -11,7 +11,7 @@
 //!
 //! The file-scope static block (`NetworkIOMeter.c:30`-`36`) — the
 //! `MeterRateStatus status` plus the `cached_*` rate caches — is modeled as
-//! one `Mutex`-guarded [`NetworkIOMeterState`]. C reads/writes these as
+//! one `Mutex`-guarded `NetworkIOMeterState`. C reads/writes these as
 //! unsynchronized single-threaded file statics; the `Mutex` is the safe-Rust
 //! analog for module-private mutable state (the same idiom `crt.rs` uses for
 //! `CRT_degreeSign`, and `diskiometer.rs` for its cache). The cache is

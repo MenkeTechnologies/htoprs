@@ -9,13 +9,13 @@
 //!   arithmetic over `this->host->existingCPUs` and the first character
 //!   of the meter's class name (`Meter_name(this)[0]`), writing the
 //!   `start`/`count` out-params. The two inputs it reads are modeled as
-//!   small plain structs ([`Meter`] / [`Machine`], below).
+//!   small plain structs ([`Meter`] / `Machine`, below).
 //! - [`CPUMeter_getUiName`] (`CPUMeter.c:78`) — builds the header
 //!   setup-menu label. It reads only `Meter_uiName(this)` (the meter
 //!   class's `uiName` vtable string, modeled as a [`Meter`] field),
 //!   `this->param`, and `Settings_cpuId(settings, cpu)` — the latter a
 //!   pure macro (`Settings.h:119`, `countCPUsFromOne ? cpu+1 : cpu`)
-//!   inlined here over the modeled [`Settings::countCPUsFromOne`]. No
+//!   inlined here over the modeled `Settings::countCPUsFromOne`. No
 //!   curses/platform substrate is involved, so it ports faithfully.
 //!
 //! Not ported (and why) — every remaining function in `CPUMeter.c` needs
@@ -501,7 +501,7 @@ pub fn AllCPUsMeter_updateValues(this: &mut Meter) {
 }
 
 /// Port of `static void CPUMeterCommonInit(Meter* this)` from `CPUMeter.c:264`.
-/// Allocates the [`CPUMeterData`] on first use (recording `existingCPUs`),
+/// Allocates the `CPUMeterData` on first use (recording `existingCPUs`),
 /// then ensures one sub-`Meter` of class [`CPUMeter_class`] exists per CPU in
 /// the range (`param = start + i + 1`) and runs its `init`. `Meter_new`
 /// already runs the class `init` + default `Meter_setMode`, so freshly-created

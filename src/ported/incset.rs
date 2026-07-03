@@ -13,16 +13,16 @@
 //! `Panel_setDefaultBar`, [`History`], `String_contains_i`, `crt::{ERR, KEY_F}`):
 //!
 //! - the `IncType` enum and the [`IncMode`]/[`IncSet`] structs,
-//! - [`IncMode_reset`], [`IncSet_reset`], [`IncSet_setFilter`],
-//! - [`IncMode_initSearch`] / [`IncMode_initFilter`] (the exact
+//! - `IncMode_reset`, [`IncSet_reset`], [`IncSet_setFilter`],
+//! - `IncMode_initSearch` / `IncMode_initFilter` (the exact
 //!   function-bar label/key/event tables) and [`IncSet_new`],
 //! - [`IncSet_setHistoryFile`], [`IncSet_saveHistory`],
 //! - [`IncSet_getListItemValue`] — the concrete `IncMode_GetPanelValue`
 //!   callback (downcasts each `Panel` item to [`ListItem`] and returns its
 //!   `value`, `""` for a non-`ListItem`, exactly like the C ternary),
-//! - the match core: [`search`] (`:124`) and [`IncMode_find`] (`:154`),
+//! - the match core: `search` (`:124`) and `IncMode_find` (`:154`),
 //!   now that `LineEditor_getText` reads the active editor text,
-//! - [`IncSet_deactivate`] (`:147`) — `Panel_setDefaultBar` + hide cursor +
+//! - `IncSet_deactivate` (`:147`) — `Panel_setDefaultBar` + hide cursor +
 //!   `FunctionBar_draw`, all ported,
 //! - the draw/activate pair now that `LineEditor_draw`/`LineEditor_updateScroll`
 //!   and `FunctionBar_drawExtra` are ported: [`IncSet_drawBar`] (`:302`) and
@@ -31,16 +31,16 @@
 //!   mapping); `IncSet_drawBar` also takes `&mut IncSet` because
 //!   `LineEditor_updateScroll` mutates the active editor,
 //! - [`IncSet_filter`] (`IncSet.h:40`) — the filter-text accessor,
-//! - [`updateWeakPanel`] (`:96`) and [`IncSet_handleKey`] (`:177`) — the
+//! - `updateWeakPanel` (`:96`) and [`IncSet_handleKey`] (`:177`) — the
 //!   "weak panel" filter/key path. htop shares one `Object*` between the
 //!   `Vector* lines` and the panel (`Panel_add(panel, (Object*)line)` aliases a
 //!   `Vector`-owned pointer, `selected == line` is a raw-pointer identity test).
 //!   This is modeled faithfully with [`PanelItem::Borrowed`] raw pointers into
 //!   the `lines`-owned `Box`es (the same weak-panel idiom `infoscreen.rs` uses)
-//!   and a data-pointer identity compare — see [`updateWeakPanel`]'s SAFETY
+//!   and a data-pointer identity compare — see `updateWeakPanel`'s SAFETY
 //!   note. `IncSet_handleKey` threads `lines: &mut Vector` through to it.
 //!
-//! [`IncSet_delete`] (`:77`) and [`IncMode_done`] (`:61`) are now ported: the
+//! [`IncSet_delete`] (`:77`) and `IncMode_done` (`:61`) are now ported: the
 //! C `free` chain maps to the by-value drop idiom [`FunctionBar_delete`] uses
 //! (each mode's owned `FunctionBar` is handed to `FunctionBar_delete`; the
 //! `Option<History>`/`defaultBar` drop with the struct).
@@ -209,7 +209,7 @@ fn IncMode_done(mode: IncMode) {
     FunctionBar_delete(mode.bar);
 }
 
-/// Port of `IncSet.c:65`. Builds both modes (zeroed [`IncMode::empty`] then
+/// Port of `IncSet.c:65`. Builds both modes (zeroed `IncMode::empty` then
 /// `IncMode_initSearch`/`IncMode_initFilter`), stores the panel's default
 /// bar, and clears `active`/`filtering`/`found`/`history` (C `history = NULL`
 /// → `None`).
@@ -232,7 +232,7 @@ pub fn IncSet_new(bar: Option<FunctionBar>) -> IncSet {
 /// History_delete(history); free(this);`.
 ///
 /// Taking `this` by value reproduces `free(this)`. The `modes` array is moved
-/// out and each [`IncMode`] handed to [`IncMode_done`] (mirroring the C call
+/// out and each [`IncMode`] handed to `IncMode_done` (mirroring the C call
 /// graph, which frees each mode's `FunctionBar`). The `Option<History>`
 /// `history` and the owned `Option<FunctionBar>` `defaultBar` drop with the
 /// remaining fields — the faithful analog of `History_delete(history)` (a
@@ -441,14 +441,14 @@ fn IncMode_find(
 /// The key dispatcher: F3/Shift-F3 next/prev, history up/down, Enter/Esc
 /// confirm/abort, mouse bar-click cursor placement, and the line-editor
 /// char/backspace path; it then runs the search (when `doSearch`), refreshes the
-/// weak panel (when `filterChanged`) via [`updateWeakPanel`], and redraws the
+/// weak panel (when `filterChanged`) via `updateWeakPanel`, and redraws the
 /// bar. Returns whether the filter changed (C `bool`).
 ///
 /// The C `IncMode* mode = this->active` (a pointer into `modes[]`) resolves
 /// through `active: Option<IncType>` — the caller only dispatches keys with an
 /// active mode, so `active` is non-`None` here; the mode is reached as
 /// `this.modes[active as usize]`. `Vector* lines` is threaded as `&mut Vector`
-/// so [`updateWeakPanel`] can alias its boxes into the panel (see its note).
+/// so `updateWeakPanel` can alias its boxes into the panel (see its note).
 pub fn IncSet_handleKey(
     this: &mut IncSet,
     ch: i32,

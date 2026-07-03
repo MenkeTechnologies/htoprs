@@ -11,14 +11,14 @@
 //!   `LinuxProcess.h:33`, embedding [`Process`] as its `super_` base (the
 //!   substrate `LinuxProcessTable`/`GPU`/`LibNl` consume).
 //! - [`LinuxProcess_new`] (`LinuxProcess.c:112`) — constructor.
-//! - [`LinuxProcess_effectiveIOPriority`] (`LinuxProcess.c:137`) — pure.
+//! - `LinuxProcess_effectiveIOPriority` (`LinuxProcess.c:137`) — pure.
 //! - [`LinuxProcess_updateIOPriority`] (`LinuxProcess.c:153`) and
-//!   [`LinuxProcess_setIOPriority`] (`LinuxProcess.c:164`) — the
+//!   `LinuxProcess_setIOPriority` (`LinuxProcess.c:164`) — the
 //!   `ioprio_get`/`ioprio_set` syscalls (Linux-only, exactly as the C
 //!   `#ifdef SYS_ioprio_*` guards them), plus
 //!   [`LinuxProcess_rowSetIOPriority`] (`LinuxProcess.c:172`).
-//! - [`LinuxProcess_totalIORate`] (`LinuxProcess.c:213`) — pure.
-//! - [`LinuxProcess_changeAutogroupPriorityBy`] (`LinuxProcess.c:185`) and
+//! - `LinuxProcess_totalIORate` (`LinuxProcess.c:213`) — pure.
+//! - `LinuxProcess_changeAutogroupPriorityBy` (`LinuxProcess.c:185`) and
 //!   [`LinuxProcess_rowChangeAutogroupPriorityBy`] (`LinuxProcess.c:207`).
 //! - [`LinuxProcess_isAutogroupEnabled`] (`LinuxProcess.c:178`) — reads
 //!   `sched_autogroup_enabled` via the now-ported `Compat_readfile`.
@@ -1118,7 +1118,7 @@ fn LinuxProcess_setIOPriority(this: &mut LinuxProcess, ioprio: Arg) -> bool {
 /// `LinuxProcess.c:172`. Casts the `Row*` to a `Process*` (here a
 /// [`LinuxProcess`], the concrete object), asserts it really is a
 /// [`Process`] via [`Object_isA`], and delegates to
-/// [`LinuxProcess_setIOPriority`]. The C `(Process*) super` cast validated
+/// `LinuxProcess_setIOPriority`. The C `(Process*) super` cast validated
 /// by `assert(Object_isA(..., &Process_class))` becomes the `Object_isA`
 /// guard plus a mutable `Any` downcast (the `Affinity_rowSet` idiom).
 pub fn LinuxProcess_rowSetIOPriority(super_: &mut dyn Object, ioprio: Arg) -> bool {
@@ -1133,7 +1133,7 @@ pub fn LinuxProcess_rowSetIOPriority(super_: &mut dyn Object, ioprio: Arg) -> bo
 /// `LinuxProcess.c:178`. Reads `PROCDIR "/sys/kernel/sched_autogroup_enabled"`
 /// into a 16-byte buffer via [`Compat_readfile`]; returns `false` on any read
 /// error (`< 0`), else `true` iff the first byte is `'1'`. The C string-literal
-/// concatenation `PROCDIR "/sys/..."` is rebuilt from the [`PROCDIR`] const and
+/// concatenation `PROCDIR "/sys/..."` is rebuilt from the `PROCDIR` const and
 /// passed as a NUL-terminated [`CString`], matching `Compat_readfile`'s
 /// `const char*` parameter.
 pub fn LinuxProcess_isAutogroupEnabled() -> bool {
@@ -1220,7 +1220,7 @@ fn LinuxProcess_changeAutogroupPriorityBy(p: &Process, delta: Arg) -> bool {
 /// delta)` from `LinuxProcess.c:207`. Casts the `Row*` to a `Process*`
 /// (here a [`LinuxProcess`]), asserts it really is a [`Process`] via
 /// [`Object_isA`], and delegates to
-/// [`LinuxProcess_changeAutogroupPriorityBy`] on the embedded base. Same
+/// `LinuxProcess_changeAutogroupPriorityBy` on the embedded base. Same
 /// `Row*`→`Process*` mapping as [`LinuxProcess_rowSetIOPriority`]; a shared
 /// `&Process` suffices since the callee only reads the pid.
 pub fn LinuxProcess_rowChangeAutogroupPriorityBy(super_: &dyn Object, delta: Arg) -> bool {
@@ -1254,7 +1254,7 @@ fn LinuxProcess_totalIORate(lp: &LinuxProcess) -> f64 {
 /// Blocked: the `switch (field)` dispatches on the Linux platform
 /// [`ProcessField`] ids (`M_DRS`, `M_LRS`, `RCHAR`, `OOM`, `IO_PRIORITY`,
 /// `CGROUP`, …) defined in `linux/ProcessField.h`, but the shared
-/// [`ProcessField`](crate::ported::process::ProcessField) enum intentionally
+/// [`ProcessField`] enum intentionally
 /// models only the reserved generic fields — the platform variants are not
 /// enumerated, so the switch arms cannot be written yet. (The `Row_print*`
 /// primitives it calls are already ported; only the field ids are missing.)

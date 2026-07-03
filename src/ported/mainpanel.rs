@@ -38,7 +38,7 @@
 //!   `((Panel*)this)->defaultBar`; the `Vec`-model's `defaultBar` is an
 //!   `Option<FunctionBar>`, so the guard `if let Some(bar)` replaces the
 //!   C null-deref-if-unset (the bar is always set in practice).
-//! - [`MainPanel_idSearch`] (`MainPanel.c:38`, `static`) — the digit-key
+//! - `MainPanel_idSearch` (`MainPanel.c:38`, `static`) — the digit-key
 //!   incremental PID search: builds a running id from typed digits,
 //!   selects the first row whose `id` matches, and rolls the accumulator
 //!   over at 10000000. Uses the ported `Panel_size`/`Panel_get`/

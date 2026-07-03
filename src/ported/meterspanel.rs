@@ -32,7 +32,7 @@
 //! Ported:
 //! - `MetersPanel_cleanup` (`MetersPanel.c:38`) — frees the file-static
 //!   moving-mode `FunctionBar` (`Meters_movingBar`) and nulls it. Modeled
-//!   against the [`Meters_movingBar`] static below: `FunctionBar_delete`
+//!   against the `Meters_movingBar` static below: `FunctionBar_delete`
 //!   has no safe-Rust analog (the owned `FunctionBar` is released by
 //!   `Drop`), so freeing the bar is setting the `Option` to `None`, and
 //!   nulling the pointer is the same assignment — exactly the C guard +
@@ -253,7 +253,7 @@ impl PanelClass for MetersPanel {
 /// the selected item, to the non-empty check that `Panel_getSelected`
 /// itself makes). `super->currentBar = Meters_movingBar` aliases the shared
 /// `FunctionBar*` in C; the owned `Option<FunctionBar>` model takes a clone
-/// of the [`Meters_movingBar`] static — the exact owned-clone-of-a-shared-bar
+/// of the `Meters_movingBar` static — the exact owned-clone-of-a-shared-bar
 /// idiom [`Panel_setDefaultBar`] already uses (a `None` static ⇒ a `None`
 /// `currentBar`, matching a `NULL` bar).
 pub fn MetersPanel_setMoving(this: &mut MetersPanel, moving: bool) {

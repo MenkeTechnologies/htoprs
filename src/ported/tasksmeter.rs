@@ -4,7 +4,7 @@
 //! ports. `display` drives the now-ported `RichString` / `CRT_colors`
 //! substrate; the two `Settings` flags it reads
 //! (`hideUserlandThreads`, `hideKernelThreads`) are modelled inline on the
-//! local minimal [`Settings`], the same minimal-model approach this module
+//! local minimal `Settings`, the same minimal-model approach this module
 //! already takes for `ProcessTable`/`Machine`/`Meter`.
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake` for
@@ -28,7 +28,7 @@ use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_a
 ///
 /// Fills the four meter values and the text buffer. The C reads
 /// `pt = (const ProcessTable*) host->processTable`; here `processTable`
-/// is modelled inline on [`Machine`]. `MINIMUM(a, b)` (`Macros.h:17`)
+/// is modelled inline on `Machine`. `MINIMUM(a, b)` (`Macros.h:17`)
 /// maps to `u32::min`. The `values[2]` subtraction is `unsigned int`
 /// arithmetic in C, which wraps modulo 2^32, so `wrapping_sub` preserves
 /// the exact result before the widening to `double`.

@@ -12,7 +12,7 @@
 //!
 //! The file-scope static block (`DiskIOMeter.c:38`-`45`) — the
 //! `MeterRateStatus status` plus the `cached_*` rate/utilisation caches —
-//! is modeled as one `Mutex`-guarded [`DiskIOMeterState`]. C reads/writes
+//! is modeled as one `Mutex`-guarded `DiskIOMeterState`. C reads/writes
 //! these as unsynchronized single-threaded file statics; the `Mutex` is
 //! the safe-Rust analog for module-private mutable state (the same idiom
 //! `crt.rs` uses for `CRT_degreeSign`). The cache is written by
@@ -132,7 +132,7 @@ static DISK_IO_UPDATE_CACHE: Mutex<(u64, u64, u64, u64)> = Mutex::new((0, 0, 0, 
 /// [`Platform_getDiskIO`](crate::ported::linux::platform::Platform_getDiskIO),
 /// sets the rate `status`, and (past the first sample) computes read/write
 /// B/s and disk utilisation into the shared state. `host` is the concrete
-/// [`LinuxMachine`]; `realtimeMs` lives on its `super_`.
+/// `LinuxMachine`; `realtimeMs` lives on its `super_`.
 pub fn DiskIOUpdateCache(host: &crate::ported::linux::linuxmachine::LinuxMachine) {
     let realtime_ms = host.super_.realtimeMs;
     let mut c = DISK_IO_UPDATE_CACHE.lock().unwrap();
@@ -610,7 +610,7 @@ pub fn DiskIOMeter_draw(out: &mut dyn Write, this: &mut Meter, x: i32, y: i32, w
 }
 
 /// Port of `static void DiskIOMeter_init(Meter* this)` from `DiskIOMeter.c:265`.
-/// Allocates the [`DiskIOMeterData`] on first use, constructing the rate and
+/// Allocates the `DiskIOMeterData` on first use, constructing the rate and
 /// time sub-meters via `Meter_new(this->host, 0, Class(...))`. `Meter_new`
 /// already runs each class `init` slot + the default `Meter_setMode`, and
 /// neither [`DiskIORateMeter_class`] nor [`DiskIOTimeMeter_class`] defines an

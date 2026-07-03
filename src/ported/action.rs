@@ -178,7 +178,7 @@ pub struct State {
 }
 
 /// TODO: port of `Object* Action_pickFromVector(State* st, Panel* list, int x,
-/// bool follow)` from `Action.c:59`. Builds a two-panel [`ScreenManager`],
+/// bool follow)` from `Action.c:59`. Builds a two-panel `ScreenManager`,
 /// runs its modal loop, and returns the picked row. Blocked on the
 /// `screenmanager.rs` ownership model: `ScreenManager_new(header, host, state,
 /// owner)` takes the `Machine`/`State` **by value** (owned `Option<T>` fields),
@@ -192,7 +192,7 @@ pub fn Action_pickFromVector() {
 }
 
 /// TODO: port of `static void Action_runSetup(State* st)` from `Action.c:101`.
-/// Builds a setup [`ScreenManager`] via `ScreenManager_new(st->header, st->host,
+/// Builds a setup `ScreenManager` via `ScreenManager_new(st->header, st->host,
 /// st, true)` and `CategoriesPanel_new`, runs it, then writes settings back.
 /// Blocked on the same `ScreenManager_new` by-value ownership mismatch as
 /// [`Action_pickFromVector`] (cannot move `*st.host`/`*st` from the raw
@@ -203,7 +203,7 @@ pub fn Action_runSetup(_st: &State) {
 
 /// TODO: port of `static bool changePriority(MainPanel* panel, int delta)` from
 /// `Action.c:113`. Applies `Process_rowChangePriorityBy` to every selected/tagged
-/// row via [`MainPanel_foreachRow`], beeps on partial failure, and reports
+/// row via `MainPanel_foreachRow`, beeps on partial failure, and reports
 /// whether any row was tagged. Blocked on a callback-type mismatch: the ported
 /// [`MainPanel_foreachRowFn`](crate::ported::mainpanel::MainPanel_foreachRowFn)
 /// is `fn(&mut Row, &Arg) -> bool`, but `process.rs` ports
@@ -215,12 +215,12 @@ pub fn changePriority(_panel: &mut MainPanel, _delta: i32) -> bool {
 }
 
 /// Port of `static void addUserToVector(ht_key_t key, void* userCast,
-/// void* panelCast)` from `Action.c:121`. Appends a [`ListItem`] carrying the
+/// void* panelCast)` from `Action.c:121`. Appends a `ListItem` carrying the
 /// user name (`user`) and its uid (`key`) to `panel`. The C `void*` casts are
 /// the `UsersTable_foreach` callback ABI (`ht_key_t key`, the `char*` value,
 /// the `Panel*` accumulator); the ported analog takes those already-resolved
 /// types directly, since the (unported) `UsersTable_foreach` has no
-/// `void*`-callback consumer here. `ListItem_new` returns an owned [`ListItem`]
+/// `void*`-callback consumer here. `ListItem_new` returns an owned `ListItem`
 /// (not a pointer), boxed into the `Box<dyn Object>` the ported
 /// [`Panel_add`] expects.
 pub fn addUserToVector(key: i32, user: &str, panel: &mut Panel) {
@@ -900,8 +900,8 @@ pub fn actionPrevScreen(st: &State) -> Htop_Reaction {
 
 /// Port of `Htop_Reaction Action_setScreenTab(State* st, int x)` from
 /// `Action.c:411`. Hit-tests the click column `x` against the drawn screen-tab
-/// row (`[heading]` cells separated by [`SCREEN_TAB_COLUMN_GAP`], after
-/// [`SCREEN_TAB_MARGIN_LEFT`]); on a hit it selects that screen via
+/// row (`[heading]` cells separated by `SCREEN_TAB_COLUMN_GAP`, after
+/// `SCREEN_TAB_MARGIN_LEFT`); on a hit it selects that screen via
 /// [`setActiveScreen`], else returns `HTOP_OK` (C `0`).
 ///
 /// `settings->nScreens` maps to `screens.len()`; `screens[i]->heading` is an
@@ -1004,7 +1004,7 @@ pub fn actionSetSchedPolicy() {
 /// TODO: port of `static Htop_Reaction actionKill(State* st)` from
 /// `Action.c:524`. Presents the `SignalsPanel` picker via
 /// [`Action_pickFromVector`], then delivers the chosen signal to every
-/// tagged/selected row through [`MainPanel_foreachRow`]. Blocked on multiple
+/// tagged/selected row through `MainPanel_foreachRow`. Blocked on multiple
 /// pieces: [`Action_pickFromVector`] (`ScreenManager` by-value mismatch); the
 /// `Process_rowSendSignal` callback is `fn(&dyn Object, Arg) -> bool`,
 /// incompatible with the ported `MainPanel_foreachRowFn` (`fn(&mut Row, &Arg)`);
@@ -1061,7 +1061,7 @@ pub fn actionSetup(st: &State) -> Htop_Reaction {
 
 /// TODO: port of `static Htop_Reaction actionLsof(State* st)` from
 /// `Action.c:579`. Opens the selected process's `OpenFilesScreen` as a modal
-/// [`InfoScreen`]. Blocked on ncurses: the epilogue calls `clear()` (unported
+/// `InfoScreen`. Blocked on ncurses: the epilogue calls `clear()` (unported
 /// in `crt.rs`), and `InfoScreen_run` takes `&mut dyn InfoScreenClass` while
 /// `OpenFilesScreen` does not implement that trait, so it cannot be driven yet.
 pub fn actionLsof() {
@@ -1081,7 +1081,7 @@ pub fn actionShowLocks() {
 /// TODO: port of `static Htop_Reaction actionBacktrace(State *st)` from
 /// `Action.c:616`. The whole function is `#if defined(HAVE_BACKTRACE_SCREEN)`
 /// (Linux-only, not compiled on the darwin-first target). Its body builds a
-/// `BacktracePanel` inside a [`ScreenManager`], blocked on the same
+/// `BacktracePanel` inside a `ScreenManager`, blocked on the same
 /// `ScreenManager_new` by-value ownership mismatch as [`Action_pickFromVector`]
 /// (plus `Vector`/`BacktracePanel_new`).
 pub fn actionBacktrace() {

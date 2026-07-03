@@ -90,7 +90,7 @@
 //!   algorithm to port (same precedent as `IncSet_delete` /
 //!   `History_delete` / `Panel_delete`).
 //! - [`InfoScreen_drawTitled`] (`InfoScreen.c:50`) — the title-row draw
-//!   (`attrset`/`mvhline`/`mvaddstr` -> [`Ncurses`], `CRT_colors[X]` ->
+//!   (`attrset`/`mvhline`/`mvaddstr` -> `Ncurses`, `CRT_colors[X]` ->
 //!   `ColorElements::X.packed`), `Panel_draw`, and [`IncSet_drawBar`] (now
 //!   ported). C's variadic `fmt, ...` becomes a pre-formatted `title: &str`
 //!   (caller-side `format!`, the `vsnprintf` idiom) with the `COLS`-truncate +
@@ -199,7 +199,7 @@ impl InfoScreen {
 /// Backtrace) embed an `InfoScreen super` and install this vtable; the
 /// `As_InfoScreen(this)->scan(...)` macros (`InfoScreen.h:44`) dispatch
 /// through it. The faithful safe-Rust analog is a **trait** — the same
-/// vtable-as-trait mapping [`Object`](crate::ported::object::Object) uses for
+/// vtable-as-trait mapping [`Object`] uses for
 /// `ObjectClass` (`display`/`compare` slots become trait methods). Each C
 /// function-pointer slot becomes one trait method:
 ///
@@ -359,7 +359,7 @@ pub fn InfoScreen_done(this: InfoScreen) {
 ///   buffer, replacing C0/DEL and C1 controls with `?`.
 ///
 /// `CRT_colors[X]` map to `ColorElements::X.packed(ColorScheme::active())`,
-/// `COLS` to [`Ncurses::cols`], and `IncSet_drawBar` is threaded the panel
+/// `COLS` to `Ncurses::cols`, and `IncSet_drawBar` is threaded the panel
 /// (the `Panel*` IncSet back-pointer is not modeled — see [`IncSet_drawBar`]).
 pub fn InfoScreen_drawTitled(this: &mut InfoScreen, title: &str) {
     let cols = Ncurses::cols();
@@ -506,7 +506,7 @@ pub fn InfoScreen_appendLine() {
 /// method calls, and the `NULL`-slot guards become the `has_scan`/`has_onErr`/
 /// `has_onKey` predicates. `this->display`/`inc`/`lines` are reached through
 /// [`InfoScreenClass::super_InfoScreen`] (C's `(InfoScreen*)this`). `COLS`/
-/// `LINES` map to [`Ncurses::cols`]/[`Ncurses::lines`], and `clear()` to the
+/// `LINES` map to `Ncurses::cols`/`Ncurses::lines`, and `clear()` to the
 /// crossterm full-screen clear (a local closure, kept off module scope so the
 /// port-purity gate — which has no `clear` C entry — does not flag it).
 ///

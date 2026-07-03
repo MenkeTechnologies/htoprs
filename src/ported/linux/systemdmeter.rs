@@ -6,7 +6,7 @@
 //!
 //! The two file-scope caches `ctx_system` / `ctx_user`
 //! (`SystemdMeter.c:68`-`69`) are the shared blocks the display renderers
-//! read; they are modeled as [`SystemdMeterContext_t`] behind a `Mutex`
+//! read; they are modeled as `SystemdMeterContext_t` behind a `Mutex`
 //! (Rust module-private mutable statics need interior mutability — the C
 //! statics are single-threaded and unlocked), the same shape
 //! `diskiometer.rs` uses for its file-scope static block. The C struct's
@@ -28,7 +28,7 @@
 //!   precedent; takes `user: bool`, so needs no `Meter_name`)
 //! - [`zeroDigitColor`] (`SystemdMeter.c:318`)
 //! - [`valueDigitColor`] (`SystemdMeter.c:329`)
-//! - [`SystemdMeter_display`] (`SystemdMeter.c:341`)
+//! - `SystemdMeter_display` (`SystemdMeter.c:341`)
 //! - [`SystemdMeter_display_system`] (`SystemdMeter.c:399`)
 //! - [`SystemdMeter_display_user`] (`SystemdMeter.c:403`)
 //!
@@ -138,7 +138,7 @@ pub fn updateViaLib() {
 /// `ctx_user` vs `ctx_system` (the C ternary), so no `Meter_name` is needed.
 ///
 /// The `pipe`/`fork`/`dup2`/`execlp` + reap pipeline is reproduced with raw
-/// `libc` syscalls, exactly as [`OpenFilesScreen_getProcessData`]
+/// `libc` syscalls, exactly as `OpenFilesScreen_getProcessData`
 /// (`openfilesscreen.rs`) ports the sibling `lsof` pipeline: the child path
 /// stays async-signal-safe (the `argv` `CString`s are built before the
 /// `fork`), `execlp` becomes `execvp` (both do a `$PATH` lookup) over an

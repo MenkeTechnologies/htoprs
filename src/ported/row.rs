@@ -247,7 +247,7 @@ pub type Row_CompareByParent = fn(&dyn Object, &dyn Object) -> i32;
 /// embeds [`ObjectClass`] (`super_`, the first field, so [`Deref`] and the
 /// class-identity pointers coincide) and adds the Row-level virtual slots.
 /// `Deref<Target = ObjectClass>` lets a `&RowClass` coerce to `&ObjectClass`
-/// wherever the class-identity API ([`Object_isA`]) expects one, so the C
+/// wherever the class-identity API (`Object_isA`) expects one, so the C
 /// `As_Row`/`(ObjectClass*)` casts need no call-site changes.
 pub struct RowClass {
     pub super_: ObjectClass,

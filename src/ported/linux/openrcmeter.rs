@@ -6,9 +6,9 @@
 //! OpenRCMeterContext_t ctx_system` / `ctx_user`, shared between the
 //! `updateValues` (writer) and `display` (reader) vtable slots. Those
 //! globals are reproduced as [`Mutex`]-wrapped [`OpenRCMeterContext`]
-//! statics ([`CTX_SYSTEM`] / [`CTX_USER`]); the meters run single-threaded,
+//! statics (`CTX_SYSTEM` / `CTX_USER`); the meters run single-threaded,
 //! but the `Mutex` gives the interior mutability the C `static` had for
-//! free. `#define INVALID_VALUE ((size_t)-1)` is [`INVALID_VALUE`] =
+//! free. `#define INVALID_VALUE ((size_t)-1)` is `INVALID_VALUE` =
 //! `usize::MAX`.
 //!
 //! `CRT_colors[X]` is `ColorElements::X.packed(ColorScheme::active())` and

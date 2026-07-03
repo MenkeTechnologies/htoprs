@@ -48,8 +48,9 @@ use crate::ported::hashtable::{Hashtable, Hashtable_foreach};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelected, Panel_getSelectedIndex,
-    Panel_insert, Panel_new, Panel_prune, Panel_selectByTyping, Panel_setHeader, Panel_setSelected,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelected,
+    Panel_getSelectedIndex, Panel_insert, Panel_new, Panel_prune, Panel_selectByTyping,
+    Panel_setHeader, Panel_setSelected,
 };
 
 /// Port of `#define ROW_DYNAMIC_FIELDS LAST_RESERVED_FIELD` (`RowField.h:53`).

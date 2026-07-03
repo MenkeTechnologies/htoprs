@@ -290,7 +290,7 @@ fn Platform_setCPUAverageValues(mtr: &mut Meter) -> f64 {
 
 /// Port of `double Platform_setCPUValues(Meter* mtr, unsigned int cpu)` from
 /// `Platform.c:323`. For `cpu == 0` delegates to
-/// [`Platform_setCPUAverageValues`]; otherwise computes the nice/normal/
+/// `Platform_setCPUAverageValues`; otherwise computes the nice/normal/
 /// kernel percentages for CPU `cpu` from the `curr_load - prev_load`
 /// cpu-tick deltas, sets frequency/temperature to `NAN`, and returns the
 /// clamped total usage. `host` is the bridge param (see the average fn).

@@ -96,7 +96,7 @@ pub fn MemorySwapMeter_draw(out: &mut dyn Write, this: &mut Meter, x: i32, y: i3
 }
 
 /// Port of `static void MemorySwapMeter_init(Meter* this)` from
-/// `MemorySwapMeter.c:49`. Allocates the [`MemorySwapMeterData`] on first use,
+/// `MemorySwapMeter.c:49`. Allocates the `MemorySwapMeterData` on first use,
 /// constructing the Memory and Swap sub-meters via
 /// `Meter_new(this->host, 0, Class(...))`. `Meter_new` already runs each class
 /// `init` slot + the default `Meter_setMode`; neither [`MemoryMeter_class`] nor

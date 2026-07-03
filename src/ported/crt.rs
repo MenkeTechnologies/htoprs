@@ -1634,7 +1634,7 @@ fn full_write_str(fd: libc::c_int, s: &str) -> libc::ssize_t {
 /// `ATTR_NORETURN` in the C: both branches end in `_exit(0)`. Registered by
 /// [`CRT_installSignalHandlers`] for SIGINT/SIGTERM/SIGQUIT, so it carries
 /// the C-ABI `extern "C" fn(c_int)` signature the kernel calls it with.
-/// Reads [`CRT_settings`]`->changed`; with the pointer unwired (see its doc)
+/// Reads `CRT_settings``->changed`; with the pointer unwired (see its doc)
 /// the null guard makes the `!changed` early `_exit(0)` the taken path.
 pub extern "C" fn CRT_handleSIGTERM(sgn: libc::c_int) {
     CRT_done();
@@ -1803,7 +1803,7 @@ macro_rules! old_sig_slot {
 /// Port of `static void CRT_installSignalHandlers(void)` from `CRT.c:1078`.
 ///
 /// Installs [`CRT_handleSIGSEGV`] on the fault signals (saving the prior
-/// dispositions into [`OLD_SIG_HANDLER`]) with `SA_RESETHAND | SA_NODEFER`,
+/// dispositions into `OLD_SIG_HANDLER`) with `SA_RESETHAND | SA_NODEFER`,
 /// and [`CRT_handleSIGTERM`] on INT/TERM/QUIT. `HTOP_PCP` is undefined, so
 /// SIGPIPE goes through `sigaction` like the other fault signals.
 pub fn CRT_installSignalHandlers() {
@@ -1833,7 +1833,7 @@ pub fn CRT_installSignalHandlers() {
 /// Port of `void CRT_resetSignalHandlers(void)` from `CRT.c:1103`.
 ///
 /// Restores the dispositions [`CRT_installSignalHandlers`] saved into
-/// [`OLD_SIG_HANDLER`] and returns INT/TERM/QUIT/USR1/USR2 to `SIG_DFL`.
+/// `OLD_SIG_HANDLER` and returns INT/TERM/QUIT/USR1/USR2 to `SIG_DFL`.
 pub fn CRT_resetSignalHandlers() {
     unsafe {
         libc::sigaction(
@@ -2109,7 +2109,7 @@ pub fn print_backtrace() {
 /// report to `STDERR_FILENO` (version, signal name, the persisted settings via
 /// [`Settings_write`]`(CRT_settings, true)`, and a backtrace via
 /// [`print_backtrace`]), then chains to the previously-installed disposition
-/// saved in [`OLD_SIG_HANDLER`] and re-raises the signal, forcing an exit if
+/// saved in `OLD_SIG_HANDLER` and re-raises the signal, forcing an exit if
 /// the chain does not terminate.
 ///
 /// Substrate mapping: the `program` global is [`crate::ported::htop::program`]

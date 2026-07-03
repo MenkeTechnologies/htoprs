@@ -986,7 +986,7 @@ fn full_write(fd: libc::c_int, mut buf: &[u8]) -> libc::ssize_t {
 /// ported meter/field writers accumulate their output into a `&mut String`
 /// (see [`writeFields`]/[`writeList`]), so here the caller ([`Settings_write`])
 /// hands the already-formatted text and a raw fd; this signal-safe-writes it
-/// via [`full_write`]. The per-call 2048-byte truncation is not modeled — the
+/// via `full_write`. The per-call 2048-byte truncation is not modeled — the
 /// batched `String` is written whole. The result is clamped to `INT_MAX`
 /// (C `MINIMUM(INT_MAX, ret)`).
 pub fn signal_safe_fprintf(fd: libc::c_int, s: &str) -> i32 {
