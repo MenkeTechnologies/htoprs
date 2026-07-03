@@ -242,11 +242,12 @@ pub fn Table_done(this: &mut Table) {
     this.rows.clear();
 }
 
-/// TODO: port of `static void Table_delete(Object* cast)` from
-/// `Table.c:42`. `Table_done` + `free(this)` — `Drop` handles the
-/// release; no algorithm to port.
-pub fn Table_delete() {
-    todo!("port of Table.c:42 — Object teardown handled by Drop")
+/// Port of `static void Table_delete(Object* cast)` from `Table.c:42`:
+/// `Table_done(this); free(this);`. Taking `this` by value reproduces
+/// `free(this)`; [`Table_done`] runs the C teardown (mirroring the call
+/// graph), then the consumed struct drops with its remaining owned fields.
+pub fn Table_delete(mut this: Table) {
+    Table_done(&mut this);
 }
 
 /// Port of `void Table_setPanel(Table* this, Panel* panel)` from

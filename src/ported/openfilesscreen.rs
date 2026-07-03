@@ -91,7 +91,7 @@ use std::os::unix::io::FromRawFd;
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_addLine, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
@@ -400,14 +400,16 @@ pub fn OpenFilesScreen_new(process: &Process) -> OpenFilesScreen {
     this
 }
 
-/// TODO: port of `void OpenFilesScreen_delete(Object* this)` from
-/// `OpenFilesScreen.c:91`. `free(InfoScreen_done((InfoScreen*)this))` —
-/// heap-free only. `InfoScreen_done` is itself a stub (an owned
-/// `InfoScreen` releases its fields via `Drop`), and the owned
-/// `OpenFilesScreen` frees itself the same way, so there is no algorithm to
-/// port (the `InfoScreen_done` / `Vector_delete` precedent).
-pub fn OpenFilesScreen_delete() {
-    todo!("port of OpenFilesScreen.c:91 — Drop releases owned fields (InfoScreen_done is itself a Drop stub)")
+/// Port of `void OpenFilesScreen_delete(Object* this)` from
+/// `OpenFilesScreen.c:91`: `free(InfoScreen_done((InfoScreen*)this))`.
+/// Taking `this` by value consumes the screen; the embedded `super_`
+/// [`InfoScreen`] is handed to [`InfoScreen_done`] (mirroring the C call
+/// graph), whose by-value consume folds in the outer `free`. The `pid`
+/// scalar drops with it.
+pub fn OpenFilesScreen_delete(this: OpenFilesScreen) {
+    let OpenFilesScreen { super_, pid } = this;
+    InfoScreen_done(super_);
+    let _ = pid;
 }
 
 /// Port of `static void OpenFilesScreen_draw(InfoScreen* this)` from
@@ -584,15 +586,15 @@ pub fn OpenFilesScreen_getProcessData(pid: i32) -> OpenFiles_ProcessData {
     pdata
 }
 
-/// TODO: port of `static void OpenFiles_Data_clear(OpenFiles_Data* data)`
-/// from `OpenFilesScreen.c:259`. Frees every `data->data[i]` string — a
-/// heap-free-only routine. [`OpenFiles_Data`] owns its `[Option<String>; 8]`
-/// and frees the strings via `Drop`, so there is no algorithm to port (the
-/// `Vector_delete` / `History_delete` precedent). Its C callers
-/// ([`OpenFilesScreen_getProcessData`] / [`OpenFilesScreen_scan`]) drop the
-/// owning value instead.
-pub fn OpenFiles_Data_clear() {
-    todo!("port of OpenFilesScreen.c:259 — Drop frees the owned column strings")
+/// Port of `static void OpenFiles_Data_clear(OpenFiles_Data* data)` from
+/// `OpenFilesScreen.c:259`: `for (i in data->data) free(data->data[i]);`.
+/// Takes `&mut OpenFiles_Data` (a reset, not a struct free — the C keeps the
+/// struct) and sets every cell to `None`; assigning `None` drops the owned
+/// `String`, reproducing each `free(data->data[i])`.
+pub fn OpenFiles_Data_clear(data: &mut OpenFiles_Data) {
+    for cell in data.data.iter_mut() {
+        *cell = None;
+    }
 }
 
 /// Port of `static void OpenFilesScreen_scan(InfoScreen* super)` from

@@ -72,7 +72,7 @@
 
 use crate::ported::crt::{A_BOLD, ColorElements, ColorScheme, KEY_CTRL, KEY_F};
 use crate::ported::functionbar::FunctionBar_setLabel;
-use crate::ported::panel::{HandlerResult, Panel, Panel_prune, Panel_setHeader};
+use crate::ported::panel::{HandlerResult, Panel, Panel_delete, Panel_prune, Panel_setHeader};
 use crate::ported::process::{
     CMDLINE_HIGHLIGHT_FLAG_BASENAME, Process, Process_getPid, Process_isThread,
 };
@@ -255,13 +255,13 @@ pub fn BacktracePanel_makePrintingHelper(
     printingHelper.maxAddrLen = countDigits(longestAddress, 16).max(printingHelper.maxAddrLen);
 }
 
-/// TODO: port of `void BacktraceFrameData_delete(Object* object)` from
-/// `BacktraceScreen.c:82`. Pure `free()` chain (the three `char*` fields +
-/// the struct); `BacktraceFrameData` owns its `Option<String>` fields and
-/// frees them via `Drop`, so there is no body to port (same as
-/// `History_delete`).
-pub fn BacktraceFrameData_delete() {
-    todo!("port of BacktraceScreen.c:82")
+/// Port of `void BacktraceFrameData_delete(Object* object)` from
+/// `BacktraceScreen.c:82`: `free(functionName); free(demangleFunctionName);
+/// free(objectPath); free(this);`. Taking `this` by value consumes the
+/// frame; the three owned `Option<String>` fields and the struct drop
+/// together — the whole C free chain.
+pub fn BacktraceFrameData_delete(this: BacktraceFrameData) {
+    let _ = this;
 }
 
 /// Port of `static void BacktracePanel_displayHeader(BacktracePanel* this)`
@@ -404,12 +404,22 @@ pub fn BacktracePanel_new() {
     todo!("port of BacktraceScreen.c:248")
 }
 
-/// TODO: port of `void BacktracePanel_delete(Object* object)` from
-/// `BacktraceScreen.c:277`. Pure `Vector_delete(processes)` + `Panel_delete`
-/// free chain; the owned Rust fields are released by `Drop`, so there is no
-/// body to port.
-pub fn BacktracePanel_delete() {
-    todo!("port of BacktraceScreen.c:277")
+/// Port of `void BacktracePanel_delete(Object* object)` from
+/// `BacktraceScreen.c:277`: `Vector_delete(this->processes);
+/// Panel_delete(object);`. Taking `this` by value consumes the panel. The
+/// `processes` list is a `Vec<*const Process>` of non-owning aliases (C's
+/// non-owner `Vector`), so dropping it frees only the array, not the
+/// pointees — matching C's `Vector_delete`; the embedded `super_` [`Panel`]
+/// is handed to [`Panel_delete`] (mirroring the C call graph), and the
+/// remaining scalar/back-pointer fields drop with it.
+pub fn BacktracePanel_delete(this: BacktracePanel) {
+    let BacktracePanel {
+        super_, processes, ..
+    } = this;
+    // C: Vector_delete(this->processes) — non-owning aliases; the Vec drop
+    // reclaims the array only.
+    let _ = processes;
+    Panel_delete(super_);
 }
 
 /// Port of `static void BacktracePanelRow_highlightBasename(const
@@ -639,12 +649,41 @@ pub fn BacktracePanelRow_new() {
     todo!("port of BacktraceScreen.c:444")
 }
 
-/// TODO: port of `void BacktracePanelRow_delete(Object* object)` from
-/// `BacktraceScreen.c:450`. Pure free chain (`BacktraceFrameData_delete` for
-/// a frame row, `free(error)` for an error row, then `free(this)`); the
-/// owned Rust fields are released by `Drop`, so there is no body to port.
-pub fn BacktracePanelRow_delete() {
-    todo!("port of BacktraceScreen.c:450")
+/// Port of `void BacktracePanelRow_delete(Object* object)` from
+/// `BacktraceScreen.c:450`: `switch (this->type) { case
+/// BACKTRACE_PANEL_ROW_DATA_FRAME: BacktraceFrameData_delete(data.frame);
+/// case BACKTRACE_PANEL_ROW_ERROR: free(data.error); } free(this);`.
+///
+/// Taking `this` by value consumes the row. The C `data` union is modeled
+/// as separate `frame`/`error` `Option` fields; the switch on `type_`
+/// mirrors the C: a frame row hands its owned [`BacktraceFrameData`] to
+/// [`BacktraceFrameData_delete`], an error row drops its owned `error`
+/// `String`. The inactive-arm field is `None` (union invariant), so it drops
+/// as a no-op; the `process` back-pointer is a non-owning raw pointer.
+pub fn BacktracePanelRow_delete(this: BacktracePanelRow) {
+    let BacktracePanelRow {
+        type_,
+        frame,
+        error,
+        process,
+    } = this;
+    match type_ {
+        BACKTRACE_PANEL_ROW_DATA_FRAME => {
+            if let Some(frame) = frame {
+                BacktraceFrameData_delete(frame);
+            }
+            let _ = error;
+        }
+        BACKTRACE_PANEL_ROW_ERROR => {
+            let _ = error;
+            let _ = frame;
+        }
+        _ => {
+            let _ = frame;
+            let _ = error;
+        }
+    }
+    let _ = process;
 }
 
 #[cfg(test)]

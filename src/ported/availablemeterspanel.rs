@@ -64,10 +64,14 @@ use crate::ported::meterspanel::MetersPanel;
 use crate::ported::panel::{Panel, Panel_add, Panel_setSelected, Panel_size};
 
 /// TODO: port of `static void AvailableMetersPanel_delete(Object* object)`
-/// from `AvailableMetersPanel.c:34`. `free(meterPanels)` + `Panel_done` +
-/// `free(this)` — released by `Drop` in Rust, so there is no algorithm.
+/// from `AvailableMetersPanel.c:34`: `free(this->meterPanels);
+/// Panel_done(&this->super); free(this);`. Blocked on missing substrate: the
+/// `AvailableMetersPanel` struct (`MetersPanel** meterPanels` + the
+/// `header`/`host`/`scr` back-pointer aliasing) is not modeled in this port,
+/// so there is no `this` type to consume by value. Left a stub rather than
+/// inventing an unused struct.
 pub fn AvailableMetersPanel_delete() {
-    todo!("port of AvailableMetersPanel.c:34 — Drop releases the owned fields")
+    todo!("port of AvailableMetersPanel.c:34 — AvailableMetersPanel struct is not modeled; no Rust type to consume")
 }
 
 /// Port of `static inline void AvailableMetersPanel_addMeter(Header* header,

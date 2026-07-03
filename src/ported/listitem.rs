@@ -41,9 +41,12 @@ pub struct ListItem {
     pub moving: bool,
 }
 
-/// TODO: port of `void ListItem_delete(Object* cast` from `ListItem.c:21`.
-pub fn ListItem_delete() {
-    todo!("port of ListItem.c:21")
+/// Port of `void ListItem_delete(Object* cast)` from `ListItem.c:21`:
+/// `free(this->value); free(this);`. Taking `this` by value consumes the
+/// item; the owned `value` `String` and the struct drop together — the
+/// whole C free routine.
+pub fn ListItem_delete(this: ListItem) {
+    let _ = this;
 }
 
 /// Port of `ListItem.c:27`. Writes the item into `out`: when `moving`, the

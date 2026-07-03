@@ -142,10 +142,14 @@ pub fn ScreenManager_new(header: Option<Header>, host: Machine, state: State) ->
     }
 }
 
-/// TODO: port of `void ScreenManager_delete(ScreenManager* this)` from
-/// `ScreenManager.c:47`. `Vector_delete` + `free` — released by `Drop`.
-pub fn ScreenManager_delete() {
-    todo!("port of ScreenManager.c:47 — Drop releases the panels")
+/// Port of `void ScreenManager_delete(ScreenManager* this)` from
+/// `ScreenManager.c:47`: `Vector_delete(this->panels); free(this);`. Taking
+/// `this` by value consumes the manager; the `panels` `Vec<Panel>` owns its
+/// [`Panel`]s (the C owner-`Vector_delete`), so dropping it runs each
+/// panel's teardown, and the owned `name`/`header`/`host`/`state` fields
+/// drop with the struct free.
+pub fn ScreenManager_delete(this: ScreenManager) {
+    let _ = this;
 }
 
 /// Port of `inline int ScreenManager_size(const ScreenManager* this)` from

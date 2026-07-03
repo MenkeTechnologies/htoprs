@@ -1640,14 +1640,15 @@ pub fn Process_writeField(this: &Process, str: &mut RichString, field: RowField)
     RichString_appendAscii(str, attr, buffer.as_bytes());
 }
 
-/// Deliberate non-port (rule 3): `void Process_done(Process* this)` from
-/// `Process.c:818` is a pure `free()` teardown (`cmdline`, `procComm`,
-/// `procExe`, `procCwd`, `mergedCommand.str`, `tty_name`). Every one of
-/// those C `char*`s is an owned `Option<String>` on [`Process`], so Rust
-/// `Drop` reclaims them automatically — there is no faithful body to
-/// port. Kept as a `todo!()`.
-pub fn Process_done() {
-    todo!("deliberate non-port: pure free() teardown, handled by Drop (Process.c:818)")
+/// Port of `void Process_done(Process* this)` from `Process.c:818`: a pure
+/// `free()` teardown of `cmdline`, `procComm`, `procExe`, `procCwd`,
+/// `mergedCommand.str`, and `tty_name`. Every one of those C `char*`s is an
+/// owned `Option<String>` on [`Process`], so taking `this` by value and
+/// dropping it reclaims them all — the whole C free routine, with no
+/// separate struct free (C's caller does `free(this)` after `Process_done`;
+/// the by-value consume folds both together).
+pub fn Process_done(this: Process) {
+    let _ = this;
 }
 
 /// TODO: port of `const char* Process_getCommand(const Process* this)`

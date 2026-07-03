@@ -115,9 +115,17 @@ pub fn DynamicScreens_delete() {
     todo!("port of DynamicScreen.c:26: needs Platform_dynamicScreensDone (unported Platform layer); Hashtable_delete is itself a Drop-based stub")
 }
 
-/// TODO: port of `void DynamicScreen_done(DynamicScreen* this` from `DynamicScreen.c:33`.
-pub fn DynamicScreen_done() {
-    todo!("port of DynamicScreen.c:33")
+/// Port of `void DynamicScreen_done(DynamicScreen* this)` from
+/// `DynamicScreen.c:33`: `free(caption); free(fields); free(heading);
+/// free(sortKey); free(columnKeys);`. A pure heap-free teardown. Taking
+/// `this` by value consumes the screen; the owned `heading` `Option<String>`
+/// (the C `char* heading`) drops, freeing it. The other four C heap fields
+/// (`caption`/`fields`/`sortKey`/`columnKeys`) are not carried by the
+/// reduced [`DynamicScreen`] struct, so they have no drop analog here; the
+/// inline `name` (C `char name[32]`, freed with the struct in C) drops with
+/// the consume.
+pub fn DynamicScreen_done(this: DynamicScreen) {
+    let _ = this;
 }
 
 /// Port of `bool DynamicScreen_search(Hashtable* screens, const char*

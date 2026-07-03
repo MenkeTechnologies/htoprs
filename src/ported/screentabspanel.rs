@@ -113,9 +113,9 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_new, Panel_onKey, Panel_prune,
-    Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setHeader,
-    Panel_setSelectionColor, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
+    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_new, Panel_onKey,
+    Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar,
+    Panel_setHeader, Panel_setSelectionColor, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::screenmanager::ScreenManager;
@@ -383,11 +383,15 @@ pub fn ScreenNamesPanel_fill(this: &mut ScreenNamesPanel, ds: Option<&DynamicScr
     });
 }
 
-/// TODO: port of `static void ScreenTabsPanel_delete(Object* object` from `ScreenTabsPanel.c:62`.
-/// `Panel_done` + `free` — the owned fields are released by `Drop` in Rust,
-/// so there is no algorithm to port (as with the `Panel_delete` stub).
-pub fn ScreenTabsPanel_delete() {
-    todo!("port of ScreenTabsPanel.c:62 — Drop releases the panel")
+/// Port of `static void ScreenTabsPanel_delete(Object* object)` from
+/// `ScreenTabsPanel.c:62`: `Panel_done(&this->super); free(this);`. Taking
+/// `this` by value consumes the panel; the embedded `super_` [`Panel`] is
+/// handed to [`Panel_done`] (mirroring the C call graph), and the non-owning
+/// `scr`/`settings`/`names` back-pointers plus the `cursor` scalar drop with
+/// the struct free.
+pub fn ScreenTabsPanel_delete(this: ScreenTabsPanel) {
+    let ScreenTabsPanel { super_, .. } = this;
+    Panel_done(super_);
 }
 
 /// Port of `static HandlerResult ScreenTabsPanel_eventHandler(Panel* super,
@@ -573,13 +577,25 @@ pub fn ScreenTabsPanel_cleanup() {
     }
 }
 
-/// TODO: port of `static void ScreenNamesPanel_delete(Object* object` from `ScreenTabsPanel.c:185`.
-/// Blocked: walks the item vector clearing each `ScreenNameListItem.ss`
-/// back-pointer and restores `renamingItem->value = this->saved` — bookkeeping
-/// that only matters for the C manual-free protocol; the trailing `Panel_done`
-/// + `free` is released by `Drop`.
-pub fn ScreenNamesPanel_delete() {
-    todo!("port of ScreenTabsPanel.c:185")
+/// Port of `static void ScreenNamesPanel_delete(Object* object)` from
+/// `ScreenTabsPanel.c:185`. The C destructor (a) nulls every
+/// `ScreenNameListItem.ss` so the settings array keeps ownership; (b) if
+/// renaming, restores `this->renamingItem->value = this->saved` (the item's
+/// value points at the editor buffer during rename); then (c)
+/// `Panel_done(super); free(this)`.
+///
+/// Taking `this` by value consumes the panel and hands the embedded `super_`
+/// [`Panel`] to [`Panel_done`] (mirroring the C call graph, step c). Steps
+/// (a) and (b) are C manual-memory bookkeeping with no analog in the owned
+/// model: each [`ScreenNameListItem`] holds only an `ss` index into the
+/// settings-owned screens `Vec` (never a screen it could free), and item
+/// values are owned `String`s never aliased to the editor buffer — so the
+/// null-out loop and the value restore are moot. The `editor`/`saved`/
+/// `renamingItem` and `scr`/`settings`/`ds` back-pointers drop with the
+/// struct free.
+pub fn ScreenNamesPanel_delete(this: ScreenNamesPanel) {
+    let ScreenNamesPanel { super_, .. } = this;
+    Panel_done(super_);
 }
 
 /// Port of `static void renameScreenSettings(ScreenNamesPanel* this, const

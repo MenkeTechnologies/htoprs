@@ -98,9 +98,10 @@ use crate::ported::header::Header_calculateHeight;
 use crate::ported::listitem::ListItem;
 use crate::ported::meter::{Meter, Meter_nextSupportedMode, Meter_setMode, Meter_toListItem};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_insert, Panel_moveSelectedDown,
-    Panel_moveSelectedUp, Panel_new, Panel_remove, Panel_set, Panel_setDefaultBar, Panel_setHeader,
-    Panel_setSelected, Panel_setSelectionColor, Panel_size, EVENT_PANEL_LOST_FOCUS,
+    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert,
+    Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_new, Panel_remove, Panel_set,
+    Panel_setDefaultBar, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
+    EVENT_PANEL_LOST_FOCUS,
 };
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
 use crate::ported::settings::Settings;
@@ -160,12 +161,17 @@ pub fn MetersPanel_cleanup() {
     }
 }
 
-/// TODO: port of `static void MetersPanel_delete(Object* object)` from
-/// `MetersPanel.c:45`. `Panel_done(&this->super); free(this);` — both the
-/// `Panel_done` free-chain and the struct free are released by `Drop` in
-/// Rust, so there is no algorithm to port. Left as a stub.
-pub fn MetersPanel_delete() {
-    todo!("port of MetersPanel.c:45 — Drop releases the panel")
+/// Port of `static void MetersPanel_delete(Object* object)` from
+/// `MetersPanel.c:45`: `Panel_done(&this->super); free(this);`. Taking
+/// `this` by value consumes the panel; the embedded `super_` [`Panel`] is
+/// handed to [`Panel_done`] (mirroring the C call graph). The remaining
+/// fields drop with the struct free: the non-owning `settings`/`scr`/
+/// neighbor back-pointers and `moving` flag, plus the `meters` [`Vector`]
+/// (owned in this port — the C `Vector` is freed by its external owner, not
+/// here — so its `Drop` reclaims the Rust-owned copy).
+pub fn MetersPanel_delete(this: MetersPanel) {
+    let MetersPanel { super_, .. } = this;
+    Panel_done(super_);
 }
 
 /// Model of the C `MetersPanel` struct (`MetersPanel.h:21`). `super_` is the

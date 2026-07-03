@@ -10,15 +10,15 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-/// Deliberate non-port of `static void DisplayOptionsPanel_delete(Object*
-/// object)` from `DisplayOptionsPanel.c:29`. The C body is a pure teardown
-/// — `FunctionBar_delete(this->decIncBar); Panel_done(&this->super);
-/// free(this)` — with no faithful safe-Rust analog: Rust's `Drop` frees the
-/// owned `decIncBar`/`super` and the struct itself automatically. Kept
-/// stubbed, matching the `Affinity_delete`/`History_delete` precedent for
-/// `*_delete` free-teardowns.
+/// TODO: port of `static void DisplayOptionsPanel_delete(Object* object)`
+/// from `DisplayOptionsPanel.c:29`: `FunctionBar_delete(this->decIncBar);
+/// Panel_done(&this->super); free(this);`. Blocked on missing substrate: the
+/// `DisplayOptionsPanel` struct (`super` panel + the owned `decIncBar`
+/// `FunctionBar` + the `settings`/`scr`/`host` back-pointers) is not modeled
+/// in this port, so there is no `this` type to consume by value. Left a stub
+/// rather than inventing an unused struct.
 pub fn DisplayOptionsPanel_delete() {
-    todo!("port of DisplayOptionsPanel.c:29")
+    todo!("port of DisplayOptionsPanel.c:29 — DisplayOptionsPanel struct is not modeled; no Rust type to consume")
 }
 
 /// TODO: port of `static HandlerResult DisplayOptionsPanel_eventHandler(Panel*

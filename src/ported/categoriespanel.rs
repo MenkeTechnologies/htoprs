@@ -104,11 +104,13 @@ const CTRL_P: i32 = KEY_CTRL(b'P' as i32);
 const CTRL_N: i32 = KEY_CTRL(b'N' as i32);
 
 /// TODO: port of `static void CategoriesPanel_delete(Object* object)` from
-/// `CategoriesPanel.c:37`. Body is `Panel_done(&this->super); free(this);` —
-/// released by `Drop` in Rust (same rationale as `Panel_delete`/`Panel_done`),
-/// so there is no algorithm to port.
+/// `CategoriesPanel.c:37`: `Panel_done(&this->super); free(this);`. Blocked
+/// on missing substrate: the `CategoriesPanel` struct (`super` panel plus the
+/// `scr`/`host`/`header` back-pointers) is not modeled in this port, so there
+/// is no `this` type to consume by value. Left a stub rather than inventing
+/// an unused struct.
 pub fn CategoriesPanel_delete() {
-    todo!("port of CategoriesPanel.c:37 — Drop releases the panel")
+    todo!("port of CategoriesPanel.c:37 — CategoriesPanel struct is not modeled; no Rust type to consume")
 }
 
 /// TODO: port of `static void CategoriesPanel_makeMetersPage(CategoriesPanel* this)`

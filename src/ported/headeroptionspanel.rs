@@ -53,7 +53,7 @@ use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::header::Header_setLayout;
 use crate::ported::optionitem::{CheckItem, CheckItem_newByVal, CheckItem_set};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_new, Panel_setHeader,
+    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_new, Panel_setHeader,
 };
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
 use crate::ported::settings::{HeaderLayout, HeaderLayout_layouts, Settings};
@@ -85,12 +85,20 @@ pub struct HeaderOptionsPanel {
     pub settings: *mut Settings,
 }
 
-/// TODO: port of `static void HeaderOptionsPanel_delete(Object* object)` from
-/// `HeaderOptionsPanel.c:27`. Body is `Panel_done(&this->super); free(this);` —
-/// released by `Drop` in Rust (same rationale as `Panel_delete`/`Panel_done`),
-/// so there is no algorithm to port.
-pub fn HeaderOptionsPanel_delete() {
-    todo!("port of HeaderOptionsPanel.c:27 — Drop releases the panel")
+/// Port of `static void HeaderOptionsPanel_delete(Object* object)` from
+/// `HeaderOptionsPanel.c:27`: `Panel_done(&this->super); free(this);`.
+/// Taking `this` by value consumes the panel; the embedded `super_`
+/// [`Panel`] is handed to [`Panel_done`] (mirroring the C call graph), and
+/// the non-owning `scr`/`settings` back-pointers drop with the struct free.
+pub fn HeaderOptionsPanel_delete(this: HeaderOptionsPanel) {
+    let HeaderOptionsPanel {
+        super_,
+        scr,
+        settings,
+    } = this;
+    Panel_done(super_);
+    let _ = scr;
+    let _ = settings;
 }
 
 /// Port of `static HandlerResult HeaderOptionsPanel_eventHandler(Panel* super,

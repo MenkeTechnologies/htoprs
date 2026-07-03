@@ -92,9 +92,15 @@ pub struct NumberItem {
     pub text: String,
 }
 
-/// TODO: port of `static void OptionItem_delete(Object* cast` from `OptionItem.c:23`.
-pub fn OptionItem_delete() {
-    todo!("port of OptionItem.c:23")
+/// Port of `static void OptionItem_delete(Object* cast)` from
+/// `OptionItem.c:23`: `free(this->text); free(this);`. This is the shared
+/// `.delete` vtable slot for all three subtypes (`TextItem`/`CheckItem`/
+/// `NumberItem` — each `impl Object` here). Taking the object by its boxed
+/// `dyn Object` cast (the safe-Rust analog of the C `Object*`) consumes it;
+/// dropping the box runs the concrete subtype's `Drop`, freeing its owned
+/// `text` `String` and the struct — the whole C free routine.
+pub fn OptionItem_delete(this: Box<dyn Object>) {
+    let _ = this;
 }
 
 /// Port of `OptionItem.c:31` (`static void TextItem_display`). Appends the

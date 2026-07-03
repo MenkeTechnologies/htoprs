@@ -48,8 +48,8 @@ use crate::ported::hashtable::{Hashtable, Hashtable_foreach};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_getSelected, Panel_getSelectedIndex, Panel_insert,
-    Panel_new, Panel_prune, Panel_selectByTyping, Panel_setHeader, Panel_setSelected,
+    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelected, Panel_getSelectedIndex,
+    Panel_insert, Panel_new, Panel_prune, Panel_selectByTyping, Panel_setHeader, Panel_setSelected,
 };
 
 /// Port of `#define ROW_DYNAMIC_FIELDS LAST_RESERVED_FIELD` (`RowField.h:53`).
@@ -82,13 +82,15 @@ pub struct AvailableColumnsPanel {
     pub columns: *mut Panel,
 }
 
-/// TODO: port of `static void AvailableColumnsPanel_delete(Object* object)`
-/// from `AvailableColumnsPanel.c:32`. Pure teardown (`Panel_done(&this->super);
-/// free(this);`) — the Rust struct would own its fields and free them via
-/// `Drop`, so there is no algorithm to port (same class as `Panel_delete` /
-/// `ListItem_delete`, both left as stubs).
-pub fn AvailableColumnsPanel_delete() {
-    todo!("port of AvailableColumnsPanel.c:32 — Drop releases the panel")
+/// Port of `static void AvailableColumnsPanel_delete(Object* object)` from
+/// `AvailableColumnsPanel.c:32`: `Panel_done(&this->super); free(this);`.
+/// Taking `this` by value consumes the panel; the embedded `super_`
+/// [`Panel`] is handed to [`Panel_done`] (mirroring the C call graph), and
+/// the non-owning `columns` back-pointer drops with the struct free.
+pub fn AvailableColumnsPanel_delete(this: AvailableColumnsPanel) {
+    let AvailableColumnsPanel { super_, columns } = this;
+    Panel_done(super_);
+    let _ = columns;
 }
 
 /// Port of `static void AvailableColumnsPanel_insert(AvailableColumnsPanel* this,

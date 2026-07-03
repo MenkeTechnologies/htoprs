@@ -121,10 +121,12 @@ use crate::ported::lineeditor::{
     LineEditor, LineEditor_getCursor, LineEditor_getText, LineEditor_handleKey,
     LineEditor_initWithMax, LineEditor_setText,
 };
-use crate::ported::listitem::{ListItem, ListItem_compare, ListItem_display, ListItem_new};
+use crate::ported::listitem::{
+    ListItem, ListItem_compare, ListItem_delete, ListItem_display, ListItem_new,
+};
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_get, Panel_getSelectedIndex, Panel_moveSelectedDown,
+    HandlerResult, Panel, Panel_delete, Panel_get, Panel_getSelectedIndex, Panel_moveSelectedDown,
     Panel_moveSelectedUp, Panel_onKey, Panel_remove, Panel_selectByTyping,
     Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
@@ -231,14 +233,18 @@ impl Object for ScreenListItem {
     }
 }
 
-/// TODO: port of `static void ScreenListItem_delete(Object* cast)` from
-/// `ScreensPanel.c:28`. Frees `this->ss` (when set) then `ListItem_delete`;
-/// in the reduced model the row only holds an index (`ssIndex`, a plain
-/// scalar) into the settings-owned `Vec`, not the screen itself, so there
-/// is nothing to free — the `ListItem` releases via `Drop` (same precedent
-/// as `ListItem_delete`).
-pub fn ScreenListItem_delete() {
-    todo!("port of ScreensPanel.c:28 — Drop releases the ListItem; the screen is owned by Settings.screens")
+/// Port of `static void ScreenListItem_delete(Object* cast)` from
+/// `ScreensPanel.c:28`: `if (this->ss) ScreenSettings_delete(this->ss);
+/// ListItem_delete(cast);`. Taking `this` by value consumes the row; the
+/// embedded `super_` [`ListItem`] is handed to [`ListItem_delete`]
+/// (mirroring the C call graph). The C `if (this->ss)` free has no analog:
+/// the reduced model holds `ssIndex` (a plain index into the
+/// settings-owned [`Settings::screens`] `Vec`), not the screen itself, so
+/// the row owns nothing to free — ownership stays with `Settings`.
+pub fn ScreenListItem_delete(this: ScreenListItem) {
+    let ScreenListItem { super_, ssIndex } = this;
+    let _ = ssIndex;
+    ListItem_delete(super_);
 }
 
 /// Port of `ScreenListItem* ScreenListItem_new(const char* value,
@@ -303,16 +309,24 @@ pub fn ScreensPanel_cancelMoving(this: &mut ScreensPanel) {
     Panel_setSelectionColor(&mut this.super_, ColorElements::PANEL_SELECTION_FOCUS);
 }
 
-/// TODO: port of `static void ScreensPanel_delete(Object* object)` from
-/// `ScreensPanel.c:75`. The destructor: cancel any pending edit (restore
-/// `item->value = this->saved`, clear `renamingItem`/`cursorOn`, restore
-/// the focus color), then null every `item->ss` so the settings array
-/// keeps ownership, then `Panel_delete`. That bookkeeping only matters for
-/// the C manual-free protocol; the owned model destructs via `Drop`, so
-/// there is no algorithm to port (same precedent as every sibling
-/// `_delete`).
-pub fn ScreensPanel_delete() {
-    todo!("port of ScreensPanel.c:75 — Drop releases the panel")
+/// Port of `static void ScreensPanel_delete(Object* object)` from
+/// `ScreensPanel.c:75`. The C destructor (a) cancels any pending edit —
+/// restore `item->value = this->saved`, clear `renamingItem`/`cursorOn`,
+/// reset the focus color; (b) nulls every `item->ss` so the settings array
+/// keeps ownership; then (c) `Panel_delete(object)`.
+///
+/// Taking `this` by value consumes the panel and hands the embedded `super_`
+/// [`Panel`] to [`Panel_delete`] (mirroring the C call graph, step c). Steps
+/// (a) and (b) are C manual-memory bookkeeping with no analog in the owned
+/// model: item values are owned `String`s (never aliased to the editor
+/// buffer, so no restore is needed to avoid a double free), and each
+/// [`ScreenListItem`] holds only an `ssIndex` into the settings-owned
+/// screens `Vec` (never a screen it could free), so the null-out loop is
+/// moot — see [`ScreenListItem_delete`]. The `editor`/`saved`/`renamingItem`
+/// and `settings` back-pointer fields drop with the struct free.
+pub fn ScreensPanel_delete(this: ScreensPanel) {
+    let ScreensPanel { super_, .. } = this;
+    Panel_delete(super_);
 }
 
 /// Port of `static HandlerResult ScreensPanel_eventHandlerRenaming(Panel*

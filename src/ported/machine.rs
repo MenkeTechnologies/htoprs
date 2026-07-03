@@ -170,10 +170,19 @@ pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) 
 }
 
 /// TODO: port of `void Machine_done(Machine* this)` from `Machine.c:53`.
-/// Needs `hwloc_topology_destroy` / `Object_delete` / `free` (Rust `Drop`
-/// releases the owned fields).
+/// The C body is `Object_delete(this->processTable); free(this->tables);`
+/// (the `hwloc_topology_destroy` block is `#ifdef HAVE_LIBHWLOC`, not built
+/// here). `free(this->tables)` maps to the `Vec<TableHandle>` drop, but
+/// `Object_delete(this->processTable)` frees the process `Table` *through*
+/// the pointer, and the Rust model holds `processTable` as a non-owning
+/// `Option<*mut Table>` (the module invariant: "Machine borrows tables it
+/// does not own"). No owned field's `Drop` frees the pointee, and calling
+/// `Table_delete` would require reconstructing a `Box` from a raw pointer
+/// whose allocation origin the model does not own — an ownership
+/// fabrication. Blocked on the process-table ownership substrate; left a
+/// stub rather than faked.
 pub fn Machine_done() {
-    todo!("port of Machine.c:53 — teardown handled by Drop")
+    todo!("port of Machine.c:53 — Object_delete(processTable) needs owned Table; model holds a non-owning *mut Table")
 }
 
 /// Port of `static void Machine_addTable(Machine* this, Table* table)`

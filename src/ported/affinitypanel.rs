@@ -85,7 +85,7 @@ use crate::ported::affinity::{Affinity, Affinity_add, Affinity_new};
 use crate::ported::crt::{ColorElements, ColorScheme};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::Panel;
+use crate::ported::panel::{Panel, Panel_done};
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
 
 /// Model of the C `MaskItem` struct (`AffinityPanel.c:33`), non-hwloc
@@ -123,13 +123,16 @@ impl Object for MaskItem {
     }
 }
 
-/// TODO: port of `static void MaskItem_delete(Object* cast)` from
-/// `AffinityPanel.c:48`. Pure teardown (`free(text)`/`free(indent)`/
-/// `Vector_delete(children)`/`free`); in Rust the owned `String`/`Vec`
-/// fields are released by `Drop`, so there is no algorithm to port
-/// (the `History_delete`/`Panel_delete` precedent).
-pub fn MaskItem_delete() {
-    todo!("port of AffinityPanel.c:48 — Drop releases the owned fields")
+/// Port of `static void MaskItem_delete(Object* cast)` from
+/// `AffinityPanel.c:48`: `free(text); free(indent);
+/// Vector_delete(children); free(this);` (the `hwloc_bitmap_free` block is
+/// `#ifdef HAVE_LIBHWLOC`, not built here). Taking `this` by value consumes
+/// the item; the owned `text` `String`, `indent` `Option<String>`, and the
+/// `children` `Vec<MaskItem>` (whose drop recursively runs each child's
+/// teardown — the C's owner-`Vector_delete` recursion) all drop with the
+/// struct free.
+pub fn MaskItem_delete(this: MaskItem) {
+    let _ = this;
 }
 
 /// Port of `static void MaskItem_display(const Object* cast, RichString* out)`
@@ -220,12 +223,21 @@ pub struct AffinityPanel {
     pub width: u32,
 }
 
-/// TODO: port of `static void AffinityPanel_delete(Object* cast)` from
-/// `AffinityPanel.c:141`. Pure teardown (`Vector_delete(cpuids)`/
-/// `Panel_done`/`free`, plus the hwloc bitmap frees); in Rust the owned
-/// fields are released by `Drop`, so there is no algorithm to port.
-pub fn AffinityPanel_delete() {
-    todo!("port of AffinityPanel.c:141 — Drop releases the owned fields")
+/// Port of `static void AffinityPanel_delete(Object* cast)` from
+/// `AffinityPanel.c:141`: `Vector_delete(this->cpuids); Panel_done(&this->super);
+/// free(this);` (the `hwloc_bitmap_free`/`MaskItem_delete(topoRoot)` block is
+/// `#ifdef HAVE_LIBHWLOC`, not built here). Taking `this` by value consumes
+/// the panel; the owned `cpuids` `Vec<MaskItem>` (C's `Vector_delete`, its
+/// drop recursively running each `MaskItem` teardown) and the non-owning
+/// `host`/`topoView`/`width` fields drop, and the embedded `super_` [`Panel`]
+/// is handed to [`Panel_done`] (mirroring the C call graph).
+pub fn AffinityPanel_delete(this: AffinityPanel) {
+    let AffinityPanel {
+        super_, cpuids, ..
+    } = this;
+    // C: Vector_delete(this->cpuids) — the owned Vec drop recurses per item.
+    let _ = cpuids;
+    Panel_done(super_);
 }
 
 /// TODO: port of `static void AffinityPanel_updateItem(AffinityPanel* this,

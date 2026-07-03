@@ -57,7 +57,7 @@ use core::ffi::c_int;
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_addLine, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
 };
 use crate::ported::linux::platform::Platform_getProcessEnv;
 use crate::ported::listitem::ListItem_new;
@@ -123,14 +123,14 @@ pub fn EnvScreen_new(process: &Process) -> EnvScreen {
     this
 }
 
-/// TODO: port of `void EnvScreen_delete(Object* this)` from `EnvScreen.c:31`:
-/// `free(InfoScreen_done((InfoScreen*)this))`. Blocked on `InfoScreen_done`
-/// (`infoscreen.rs`, `todo!()`) — heap-free only; an owned `EnvScreen`
-/// releases its fields via `Drop`, so there is no free-everything algorithm
-/// to port (the `InfoScreen_done` / `History_delete` / `Panel_delete`
-/// precedent).
-pub fn EnvScreen_delete() {
-    todo!("port of EnvScreen.c:31 — InfoScreen_done is heap-free only (Drop releases owned fields)")
+/// Port of `void EnvScreen_delete(Object* this)` from `EnvScreen.c:31`:
+/// `free(InfoScreen_done((InfoScreen*)this))`. Taking `this` by value
+/// consumes the screen; the embedded `super_` [`InfoScreen`] is handed to
+/// [`InfoScreen_done`] (mirroring the C call graph), whose by-value consume
+/// folds in the outer `free`.
+pub fn EnvScreen_delete(this: EnvScreen) {
+    let EnvScreen { super_ } = this;
+    InfoScreen_done(super_);
 }
 
 /// TODO: port of `static void EnvScreen_draw(InfoScreen* this)` from

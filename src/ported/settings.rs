@@ -26,35 +26,49 @@
 //! `ProcessFieldData` table (`.name`/`.flags`/`.defaultSortDesc`) and resolve
 //! dynamic columns through `DynamicColumn_lookup`/`DynamicColumn_search`.
 //!
-//! Stubbed (cannot be ported faithfully yet — the specific blocker is
-//! named on each stub below):
+//! Now ported (with the borrowed `Hashtable*` and `filename` fields added
+//! to `Settings`):
 //!
-//! * The screen constructors `Settings_newScreen` /
-//!   `Settings_newDynamicScreen` / `Settings_initScreenSettings` /
-//!   `Settings_defaultScreens` remain stubbed. The `Settings.screens`
-//!   array and `ScreenSettings` (including its `table` handle) are modeled,
-//!   and the field family they call is now ported, so the remaining blocker
-//!   is `Settings_defaultScreens`, which needs the unported
-//!   `Platform_defaultScreens` / `Platform_defaultDynamicScreens` tables.
-//! * `Settings_read` / `Settings_write` / `Settings_new` /
-//!   `signal_safe_fprintf` are the file-I/O layer (`open`/`fstat`/
-//!   `mkstemp`/`rename`/`realpath`, env reads, `Platform_*`) sitting on
-//!   top of the above.
-//! * The heap-free `Settings_deleteColumns` / `Settings_deleteScreens` /
-//!   `Settings_delete` / `ScreenSettings_delete` free the owned arrays and
-//!   the struct; `Settings`/`ScreenSettings`/`MeterColumnSetting` own
-//!   their fields, so `Drop` frees them and there is no faithful body to
-//!   port (same call as `History_delete` in `history.rs`).
+//! * The screen constructors `Settings_initScreenSettings` /
+//!   `Settings_newScreen` (drive `ScreenSettings_readFields` / `toFieldIndex`
+//!   through the borrowed `dynamicColumns` pointer and append to
+//!   `Settings.screens`).
+//! * The heap-free destructors `Settings_deleteColumns` /
+//!   `Settings_deleteScreens` / `Settings_delete` / `ScreenSettings_delete`
+//!   (modeled as by-value consume / `Vec::clear`, mirroring the C free order;
+//!   the borrowed `Hashtable*` are not freed — owned by the `Machine`).
+//! * `signal_safe_fprintf` (a signal-safe `full_write` to a raw fd) and
+//!   `Settings_write` (builds the config text via `writeFields`/`writeMeters`,
+//!   `mkstemp`s a `0600` tempfile, then `rename`s into place; the crash path
+//!   writes to `stderr`).
+//! * `Settings_new` — the top-level constructor (env/`getpwuid`/`realpath`
+//!   config-path resolution, `mkdir`, defaults). Its body is a faithful
+//!   standalone port; it chain-calls the still-stubbed `Settings_read` /
+//!   `Settings_defaultScreens` (below), which it reaches at runtime.
 //!
-//! `HeaderLayout` and `HeaderLayout_getColumns` are ports of the pure
-//! `HeaderLayout.h` `static inline` helpers, inlined here because the
-//! meter functions above fundamentally need the per-layout column count
-//! and `HeaderLayout.c` has no ported module yet.
+//! Still stubbed (the specific blocker is named on each stub below):
+//!
+//! * `Settings_defaultScreens` — needs the unported `Platform_defaultScreens`
+//!   / `Platform_numberOfDefaultScreens` / `Platform_defaultDynamicScreens`.
+//! * `Settings_read` — every branch is portable except the `.dynamic` config
+//!   branch, which calls the unported `Platform_addDynamicScreen` (no
+//!   platform module defines it), plus the legacy branches that call the
+//!   blocked `Settings_defaultScreens`.
+//! * `Settings_newDynamicScreen` — the ported `DynamicScreen` models only
+//!   `name`/`heading`, but the C reads `columnKeys`/`direction`.
+//!
+//! `HeaderLayout` and `HeaderLayout_getColumns` / `HeaderLayout_getName` /
+//! `HeaderLayout_fromName` are ports of the pure `HeaderLayout.h` `static
+//! inline` helpers, inlined here because the meter/config functions above
+//! fundamentally need the per-layout column count and name and `HeaderLayout.c`
+//! has no ported module yet.
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 #![allow(clippy::needless_range_loop)]
 
+use std::ffi::CStr;
+use std::os::unix::fs::DirBuilderExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ported::dynamiccolumn::{DynamicColumn_lookup, DynamicColumn_search};
@@ -62,7 +76,25 @@ use crate::ported::hashtable::Hashtable;
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::machine::{Machine, TableHandle};
 use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
-use crate::ported::xutils::{String_split, String_trim};
+use crate::ported::process::{ProcessField, DEFAULT_HIGHLIGHT_SECS};
+use crate::ported::xutils::{String_eq, String_split, String_trim};
+
+/// Port of `#define DEFAULT_DELAY 15` (`Settings.h:21`).
+const DEFAULT_DELAY: i32 = 15;
+
+/// Port of `#define CONFIG_READER_MIN_VERSION 3` (`Settings.h:23`).
+const CONFIG_READER_MIN_VERSION: i32 = 3;
+
+/// Port of the autoconf `CONFIGDIR` macro — `with_config` defaults to
+/// `"/.config"` (`configure.ac:1477`), the per-`$HOME` config subdir.
+const CONFIGDIR: &str = "/.config";
+
+/// Port of the autoconf `SYSCONFDIR` macro — the system config dir
+/// (`Makefile.am:27`; conventionally `/etc`).
+const SYSCONFDIR: &str = "/etc";
+
+/// Port of `PID` (`RowField.h:14`) — the hardcoded process-id field id `1`.
+const PID: RowField = ProcessField::PID as RowField;
 
 /// Port of `MeterMode.h:20` — `typedef unsigned int MeterModeId`.
 pub type MeterModeId = u32;
@@ -109,6 +141,39 @@ pub fn HeaderLayout_getColumns(hLayout: HeaderLayout) -> usize {
     }
 }
 
+/// The [`HeaderLayout`] variants in `HeaderLayout_layouts[]` index order
+/// (`HF_ONE_100 == 0` .. `HF_FOUR_25_25_25_25`), used to map a table index
+/// back to its enum value in [`HeaderLayout_fromName`]. Not a C symbol —
+/// C indexes the enum arithmetically (`(HeaderLayout) i`).
+const HEADER_LAYOUTS_IN_ORDER: [HeaderLayout; HeaderLayout::LAST_HEADER_LAYOUT as usize] = {
+    use HeaderLayout::*;
+    [
+        HF_ONE_100, HF_TWO_50_50, HF_TWO_33_67, HF_TWO_67_33, HF_THREE_33_34_33,
+        HF_THREE_25_25_50, HF_THREE_25_50_25, HF_THREE_50_25_25, HF_THREE_40_30_30,
+        HF_THREE_30_40_30, HF_THREE_30_30_40, HF_THREE_40_20_40, HF_FOUR_25_25_25_25,
+    ]
+};
+
+/// Port of `HeaderLayout_getName` (`HeaderLayout.h:66`, a pure `static
+/// inline`). Returns the layout's config-file `name` from
+/// `HeaderLayout_layouts[]`.
+pub fn HeaderLayout_getName(hLayout: HeaderLayout) -> &'static str {
+    HeaderLayout_layouts[hLayout as usize].name
+}
+
+/// Port of `HeaderLayout_fromName` (`HeaderLayout.h:75`, a pure `static
+/// inline`). Scans `HeaderLayout_layouts[]` for the row whose `name` equals
+/// `name` and returns that layout, else `LAST_HEADER_LAYOUT` (the C "not
+/// found" sentinel).
+pub fn HeaderLayout_fromName(name: &str) -> HeaderLayout {
+    for i in 0..HeaderLayout::LAST_HEADER_LAYOUT as usize {
+        if String_eq(HeaderLayout_layouts[i].name, name) {
+            return HEADER_LAYOUTS_IN_ORDER[i];
+        }
+    }
+    HeaderLayout::LAST_HEADER_LAYOUT
+}
+
 /// Port of the anonymous `HeaderLayout_layouts[]` row struct
 /// (`HeaderLayout.h:36`): a layout's column count, per-column percentage
 /// widths, config-file name, and setup-menu description.
@@ -139,6 +204,22 @@ pub static HeaderLayout_layouts: [HeaderLayoutDef; HeaderLayout::LAST_HEADER_LAY
     HeaderLayoutDef { columns: 3, widths: [40, 20, 40, 0], name: "three_40_20_40", description: "3 columns - 40/20/40" },
     HeaderLayoutDef { columns: 4, widths: [25, 25, 25, 25], name: "four_25_25_25_25", description: "4 columns - 25/25/25/25" },
 ];
+
+/// Port of the `ScreenDefaults` descriptor (`Settings.h:29`). The four C
+/// `const char*` members (any of which may be `NULL`) become
+/// `Option<&str>`, matching both the `&'static` Platform default-screen
+/// tables and the transient descriptor `Settings_read` builds inline from
+/// a parsed `screen:` config line. Consumed by [`Settings_newScreen`].
+pub struct ScreenDefaults<'a> {
+    /// C `const char* name` — the screen's readable heading.
+    pub name: Option<&'a str>,
+    /// C `const char* columns` — the space-separated field list.
+    pub columns: Option<&'a str>,
+    /// C `const char* sortKey` — flat-view sort field name (`NULL` ⇒ `PID`).
+    pub sortKey: Option<&'a str>,
+    /// C `const char* treeSortKey` — tree-view sort field name (`NULL` ⇒ `PID`).
+    pub treeSortKey: Option<&'a str>,
+}
 
 /// A subset of htop's `MeterColumnSetting` (`Settings.h:36`). The C
 /// `char** names` is a NUL-terminated array; here it is an owned
@@ -174,6 +255,24 @@ pub struct MeterColumnSetting {
 /// reader touches them yet).
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// C `char* filename` — the resolved (realpath'd) config file path
+    /// (`NULL` ⇒ `None`).
+    pub filename: Option<String>,
+    /// C `char* initialFilename` — the pre-realpath config path (`NULL` ⇒
+    /// `None`).
+    pub initialFilename: Option<String>,
+
+    /// C `Hashtable* dynamicColumns` — runtime-discovered columns. A
+    /// *borrowed* pointer owned by the `Machine`/`Platform` (passed into
+    /// [`Settings_new`]); `None` = C `NULL`. Not freed by `Settings`.
+    pub dynamicColumns: Option<*mut Hashtable>,
+    /// C `Hashtable* dynamicMeters` — runtime-discovered meters (borrowed;
+    /// `None` = `NULL`).
+    pub dynamicMeters: Option<*mut Hashtable>,
+    /// C `Hashtable* dynamicScreens` — runtime-discovered screens (borrowed;
+    /// `None` = `NULL`).
+    pub dynamicScreens: Option<*mut Hashtable>,
+
     pub hLayout: HeaderLayout,
     pub hColumns: Vec<MeterColumnSetting>,
     pub screens: Vec<ScreenSettings>,
@@ -336,30 +435,36 @@ pub fn Settings_validateMeters(this: &Settings) -> bool {
     anyMeter
 }
 
-/// TODO: port of `static void Settings_deleteColumns(Settings* this` from
-/// `Settings.c:35`. Heap-free only (frees each column's `names` array +
-/// `modes`, then the `hColumns` array); `MeterColumnSetting` owns its
-/// `Vec`s, so `Drop` frees them and there is no faithful body to port.
-/// Left as a stub.
-pub fn Settings_deleteColumns() {
-    todo!("port of Settings.c:35")
+/// Port of `static void Settings_deleteColumns(Settings* this)` from
+/// `Settings.c:35`. The C frees each header column's `names` string array
+/// and `modes` array, then the `hColumns` array itself. Here each
+/// [`MeterColumnSetting`] owns its `Vec`s, so clearing `hColumns` runs
+/// their `Drop` — the faithful analog of the C `free` loop + `free`.
+pub fn Settings_deleteColumns(this: &mut Settings) {
+    this.hColumns.clear();
 }
 
-/// TODO: port of `static void Settings_deleteScreens(Settings* this` from
-/// `Settings.c:43`. Heap-free only (`ScreenSettings_delete` each screen,
-/// then free the `screens` array); the owned screen model frees via
-/// `Drop`, so there is no faithful body to port. Left as a stub.
-pub fn Settings_deleteScreens() {
-    todo!("port of Settings.c:43")
+/// Port of `static void Settings_deleteScreens(Settings* this)` from
+/// `Settings.c:43`. The C `ScreenSettings_delete`s each screen (guarded on
+/// the `NULL`-terminated array) then frees the array. Here the owned
+/// `Vec<ScreenSettings>` drops each element on `clear`, the faithful analog.
+pub fn Settings_deleteScreens(this: &mut Settings) {
+    this.screens.clear();
 }
 
-/// TODO: port of `void Settings_delete(Settings* this` from
-/// `Settings.c:51`. Heap-free only (frees `filename`/`initialFilename`,
-/// the columns, the screens, and the struct); `Settings` owns its fields
-/// and frees them via `Drop`, so there is no faithful body to port. Left
-/// as a stub (same call as `History_delete`).
-pub fn Settings_delete() {
-    todo!("port of Settings.c:51")
+/// Port of `void Settings_delete(Settings* this)` from `Settings.c:51`.
+/// The C frees `filename`/`initialFilename`, then the columns
+/// ([`Settings_deleteColumns`]), the screens ([`Settings_deleteScreens`]),
+/// and finally the struct. Modeled as by-value consume (the `FunctionBar_delete`
+/// precedent): the `Option<String>` paths drop with `this`, the borrowed
+/// `dynamicColumns`/`dynamicMeters`/`dynamicScreens` raw pointers are *not*
+/// freed (owned by the `Machine`), and the struct drops at scope end.
+pub fn Settings_delete(mut this: Settings) {
+    // free(this->filename); free(this->initialFilename): owned Strings drop
+    // with `this` below.
+    Settings_deleteColumns(&mut this);
+    Settings_deleteScreens(&mut this);
+    // free(this): the struct drops here.
 }
 
 /// Port of `Settings.c:120`. Installs the built-in two-column
@@ -543,57 +648,123 @@ pub fn ScreenSettings_readFields(ss: &mut ScreenSettings, columns: &Hashtable, l
     }
 }
 
-/// TODO: port of `static ScreenSettings* Settings_initScreenSettings(ScreenSettings* ss, Settings* this, const char* columns` from `Settings.c:254`.
-/// The `screens[]` array management (append `ss`, bump `nScreens`, keep the
-/// `NULL` terminator) is now modelable against `Settings.screens`, but the
-/// function's *first* statement is `ScreenSettings_readFields(ss,
-/// this->dynamicColumns, columns)`, which is stubbed on the platform
-/// `Process_fields[]` table and `DynamicColumn` hashtable. Porting only the
-/// array append would drop the field-parse the function exists to perform,
-/// so it stays an honest stub blocked on `ScreenSettings_readFields`.
-pub fn Settings_initScreenSettings() {
-    todo!("port of Settings.c:254")
+/// Port of `static ScreenSettings* Settings_initScreenSettings(ScreenSettings*
+/// ss, Settings* this, const char* columns)` from `Settings.c:254`. Parses
+/// the `columns` field list into `ss` via [`ScreenSettings_readFields`],
+/// then appends `ss` to the screen array (the C `screens[nScreens] = ss;
+/// nScreens++; xRealloc; screens[nScreens] = NULL` — the owned `Vec` push
+/// subsumes the realloc + `NULL` terminator). Returns the new screen's index
+/// (the Rust analog of the C `ScreenSettings*` return; the pointer-graph
+/// model addresses screens by index).
+///
+/// The C dereferences `this->dynamicColumns` unconditionally; here a `None`
+/// borrowed pointer (C `NULL`) is guarded — the field list is left empty
+/// rather than dereferencing null.
+pub fn Settings_initScreenSettings(this: &mut Settings, mut ss: ScreenSettings, columns: &str) -> usize {
+    match this.dynamicColumns {
+        Some(p) => ScreenSettings_readFields(&mut ss, unsafe { &*p }, columns),
+        None => ss.fields.clear(),
+    }
+    this.screens.push(ss);
+    this.screens.len() - 1
 }
 
-/// TODO: port of `ScreenSettings* Settings_newScreen(Settings* this, const ScreenDefaults* defaults` from `Settings.c:263`.
-/// Needs `toFieldIndex`, `Process_fields[sortKey].defaultSortDesc`, the
-/// full `ScreenSettings`/`screens[]` model, and `Settings_initScreenSettings`
-/// — all stubbed/unported. Left stubbed.
-pub fn Settings_newScreen() {
-    todo!("port of Settings.c:263")
+/// Port of `ScreenSettings* Settings_newScreen(Settings* this, const
+/// ScreenDefaults* defaults)` from `Settings.c:263`. Resolves the flat/tree
+/// sort-key field names to ids ([`toFieldIndex`], `PID` when the descriptor
+/// leaves them `NULL`), derives the default direction from
+/// `Process_fields[sortKey].defaultSortDesc`, builds the `ScreenSettings`,
+/// and appends it via [`Settings_initScreenSettings`]. Returns the new
+/// screen's index. The C `xCalloc(LAST_PROCESSFIELD, ...)` for `fields`
+/// becomes an empty `Vec` ([`Settings_initScreenSettings`] fills it).
+pub fn Settings_newScreen(this: &mut Settings, defaults: &ScreenDefaults) -> usize {
+    // int sortKey = defaults->sortKey ? toFieldIndex(this->dynamicColumns, defaults->sortKey) : PID;
+    let resolve = |name: &str| -> RowField {
+        match this.dynamicColumns {
+            Some(p) => toFieldIndex(unsafe { &*p }, name),
+            None => -1,
+        }
+    };
+    let sortKey = match defaults.sortKey {
+        Some(sk) => resolve(sk),
+        None => PID,
+    };
+    let treeSortKey = match defaults.treeSortKey {
+        Some(tsk) => resolve(tsk),
+        None => PID,
+    };
+    let sortDesc = if sortKey >= 0 && (sortKey as usize) < LAST_PROCESSFIELD {
+        Process_fields[sortKey as usize].defaultSortDesc
+    } else {
+        true // C: `: 1`
+    };
+
+    let ss = ScreenSettings {
+        heading: defaults.name.map(|s| s.to_string()),
+        dynamic: None,
+        table: None,
+        fields: Vec::new(),
+        flags: 0,
+        direction: if sortDesc { -1 } else { 1 },
+        treeDirection: 1,
+        sortKey,
+        treeSortKey,
+        treeView: false,
+        treeViewAlwaysByPID: false,
+        allBranchesCollapsed: false,
+        ..Default::default()
+    };
+    Settings_initScreenSettings(this, ss, defaults.columns.unwrap_or(""))
 }
 
-/// TODO: port of `ScreenSettings* Settings_newDynamicScreen(Settings* this, const char* tab, const DynamicScreen* screen, Table* table` from `Settings.c:286`.
-/// Needs `toFieldIndex`, the `DynamicScreen`/`Table` substrate, and the
-/// `screens[]` model — left stubbed.
+/// TODO: port of `ScreenSettings* Settings_newDynamicScreen(Settings* this,
+/// const char* tab, const DynamicScreen* screen, Table* table)` from
+/// `Settings.c:286`. Blocked: the C reads `screen->columnKeys` and
+/// `screen->direction`, but the ported [`crate::ported::dynamicscreen::DynamicScreen`]
+/// models only `name`/`heading` (the other members are omitted because no
+/// ported path read them), and the `Table*` parameter has no owned model
+/// beyond the [`TableHandle`] raw pointer. Left stubbed until `DynamicScreen`
+/// gains `columnKeys`/`direction`.
 pub fn Settings_newDynamicScreen() {
-    todo!("port of Settings.c:286")
+    todo!("port of Settings.c:286 — needs DynamicScreen.columnKeys/.direction")
 }
 
-/// TODO: port of `void ScreenSettings_delete(ScreenSettings* this` from
-/// `Settings.c:302`. Heap-free only (frees `heading`/`dynamic`/`fields`
-/// and the struct); the owned `ScreenSettings` model frees via `Drop`, so
-/// there is no faithful body to port. Left as a stub.
-pub fn ScreenSettings_delete() {
-    todo!("port of Settings.c:302")
+/// Port of `void ScreenSettings_delete(ScreenSettings* this)` from
+/// `Settings.c:302`. The C frees `heading`/`dynamic`/`fields` and the
+/// struct; modeled as by-value consume (the `FunctionBar_delete`
+/// precedent) — the owned `Option<String>`/`Vec` fields drop with `this`.
+pub fn ScreenSettings_delete(this: ScreenSettings) {
+    // free(heading); free(dynamic); free(fields); free(this): owned fields
+    // drop with `this`.
+    let _ = this;
 }
 
-/// TODO: port of `static ScreenSettings* Settings_defaultScreens(Settings* this` from `Settings.c:309`.
-/// Needs `Platform_numberOfDefaultScreens`/`Platform_defaultScreens`/
-/// `Platform_defaultDynamicScreens` and the stubbed `Settings_newScreen`
-/// — left stubbed.
-pub fn Settings_defaultScreens() {
-    todo!("port of Settings.c:309")
+/// TODO: port of `static ScreenSettings* Settings_defaultScreens(Settings*
+/// this)` from `Settings.c:309`. Blocked: needs the unported platform
+/// tables `Platform_numberOfDefaultScreens` / `Platform_defaultScreens`
+/// (iterated into [`Settings_newScreen`]) and `Platform_defaultDynamicScreens`
+/// — none of which exist in any ported platform module. Signature kept so
+/// the (chain-stubbed) callers [`Settings_read`]/[`Settings_new`] type-check;
+/// returns the index of `screens[0]`.
+pub fn Settings_defaultScreens(this: &mut Settings) -> usize {
+    let _ = this;
+    todo!("port of Settings.c:309 — needs Platform_defaultScreens/Platform_numberOfDefaultScreens/Platform_defaultDynamicScreens (unported)")
 }
 
-/// TODO: port of `static bool Settings_read(Settings* this, const char* fileName, const Machine* host, bool checkWritability` from `Settings.c:320`.
-/// The config-file reader: `open`/`fstat` writability probe, line
-/// parsing, then dispatch into `ScreenSettings_readFields` /
-/// `Settings_newScreen` / `toFieldIndex` (all stubbed) and the full
-/// `Settings` field set (display toggles, screens) not modeled here.
-/// Left stubbed.
-pub fn Settings_read() {
-    todo!("port of Settings.c:320")
+/// TODO: port of `static bool Settings_read(Settings* this, const char*
+/// fileName, const Machine* host, bool checkWritability)` from
+/// `Settings.c:320`. The `open`/`fstat` writability probe, per-line
+/// `key=value` parse, and dispatch into [`toFieldIndex`] /
+/// [`ScreenSettings_readFields`] / [`Settings_newScreen`] /
+/// [`Settings_readMeters`] are all portable, but the `.dynamic` config
+/// branch (`Settings.c:560`) calls `Platform_addDynamicScreen(screen)`,
+/// which is unported in every platform module and cannot be referenced from
+/// `settings.rs` — and the legacy/no-screen branches call the (blocked)
+/// [`Settings_defaultScreens`]. Left stubbed on `Platform_addDynamicScreen`.
+/// Signature kept so [`Settings_new`] type-checks.
+pub fn Settings_read(this: &mut Settings, fileName: &str, host: &Machine, checkWritability: bool) -> bool {
+    let _ = (this, fileName, host, checkWritability);
+    todo!("port of Settings.c:320 — needs Platform_addDynamicScreen (unported)")
 }
 
 /// Port of `static void writeFields(OutputFunc of, FILE* fp, const
@@ -701,31 +872,385 @@ pub fn writeMeterModes(this: &Settings, out: &mut String, separator: char, colum
     out.push(separator);
 }
 
-/// TODO: port of `static int signal_safe_fprintf(FILE* stream, const char* fmt, ...` from `Settings.c:632`.
-/// The signal-safe `vsnprintf` + `full_write_str(fileno(stream), buf)`
-/// crash-path writer. The ported meter/field writers model their sink as
-/// a `&mut String`, not a `FILE*`/fd; there is no fd-write substrate to
-/// port this against. Left stubbed.
-pub fn signal_safe_fprintf() {
-    todo!("port of Settings.c:632")
+/// Port of `full_write` (`XUtils.c:344`) — the retry-on-`EINTR` write loop
+/// draining `buf` to `fd`. Returns the byte count written, or the negative
+/// `write(2)` return on a non-`EINTR` error. Private (as in C's `XUtils`);
+/// used by [`signal_safe_fprintf`] and [`Settings_write`].
+fn full_write(fd: libc::c_int, mut buf: &[u8]) -> libc::ssize_t {
+    let mut written: libc::ssize_t = 0;
+    while !buf.is_empty() {
+        let r = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+        if r < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return r;
+        }
+        if r == 0 {
+            break;
+        }
+        written += r;
+        buf = &buf[r as usize..];
+    }
+    written
 }
 
-/// TODO: port of `int Settings_write(const Settings* this, bool onCrash` from `Settings.c:647`.
-/// Needs `writeFields` (`Process_fields[]` / `DynamicColumn`), the
-/// screens array, `HeaderLayout_getName`, and `mkstemp`/`rename` file
-/// I/O — left stubbed.
-pub fn Settings_write() {
-    todo!("port of Settings.c:647")
+/// Port of `static int signal_safe_fprintf(FILE* stream, const char* fmt,
+/// ...)` from `Settings.c:632`. The C `vsnprintf`s the varargs into a
+/// 2048-byte stack buffer then `full_write_str(fileno(stream), buf)`s it —
+/// the async-signal-safe writer used on the crash path (`stderr`). The
+/// ported meter/field writers accumulate their output into a `&mut String`
+/// (see [`writeFields`]/[`writeList`]), so here the caller ([`Settings_write`])
+/// hands the already-formatted text and a raw fd; this signal-safe-writes it
+/// via [`full_write`]. The per-call 2048-byte truncation is not modeled — the
+/// batched `String` is written whole. The result is clamped to `INT_MAX`
+/// (C `MINIMUM(INT_MAX, ret)`).
+pub fn signal_safe_fprintf(fd: libc::c_int, s: &str) -> i32 {
+    let ret = full_write(fd, s.as_bytes());
+    ret.min(i32::MAX as libc::ssize_t) as i32
 }
 
-/// TODO: port of `Settings* Settings_new(const Machine* host, Hashtable* dynamicMeters, Hashtable* dynamicColumns, Hashtable* dynamicScreens` from `Settings.c:794`.
-/// The top-level constructor: reads `HTOPRC`/`HOME`/`XDG_CONFIG_HOME`
-/// from the environment, `mkdir`s the config dir, `realpath`s the
-/// filename, then drives `Settings_read`/`Settings_defaultScreens`/
-/// `Settings_write` (all stubbed) over the full `Settings` field set not
-/// modeled here. Left stubbed.
-pub fn Settings_new() {
-    todo!("port of Settings.c:794")
+/// Port of the C `printSettingInteger` macro (`Settings.c:678`) —
+/// `of(fp, "<setting>=%d%c", value, separator)`. Private helper (the C
+/// form is a `#define`); the `OutputFunc`/`FILE*` sink is the accumulating
+/// `&mut String` buffer.
+fn printSettingInteger(out: &mut String, separator: char, setting: &str, value: i32) {
+    out.push_str(setting);
+    out.push('=');
+    out.push_str(&value.to_string());
+    out.push(separator);
+}
+
+/// Port of the C `printSettingString` macro (`Settings.c:680`) —
+/// `of(fp, "<setting>=%s%c", value, separator)`. Private helper.
+fn printSettingString(out: &mut String, separator: char, setting: &str, value: &str) {
+    out.push_str(setting);
+    out.push('=');
+    out.push_str(value);
+    out.push(separator);
+}
+
+/// Port of `int Settings_write(const Settings* this, bool onCrash)` from
+/// `Settings.c:647`. Serializes the full settings to the config text and
+/// commits it: on the crash path (`onCrash`) it writes to `stderr` with a
+/// `;` separator via [`signal_safe_fprintf`]; otherwise (when `writeConfig`)
+/// it `mkstemp`s `<filename>.tmp.XXXXXX` (mode `0600`), writes with a `\n`
+/// separator, then atomically `rename`s over `filename`. The C `OutputFunc`
+/// / `FILE*` sink is modeled by building the text into a single `String`
+/// buffer and flushing it once (equivalent output; see the sibling
+/// [`writeFields`]/[`writeMeters`] ports). Returns `0` on success or a
+/// negative `errno` on failure, as in C.
+///
+/// The borrowed `dynamicColumns` pointer (owned by the `Machine`) must be
+/// set — the field writers resolve dynamic-column names through it; a `None`
+/// (C `NULL`) is a programming error (`Settings_new` always sets it) and
+/// panics rather than dereferencing null.
+pub fn Settings_write(this: &Settings, onCrash: bool) -> i32 {
+    let separator: char;
+    let mut tmpFilename: Option<String> = None;
+    let mut fdtmp: libc::c_int = -1;
+
+    if onCrash {
+        separator = ';';
+    } else if !this.writeConfig {
+        return 0;
+    } else {
+        // create tempfile with mode 0600
+        let cur_umask =
+            unsafe { libc::umask(libc::S_IXUSR | libc::S_IRWXG | libc::S_IRWXO) };
+        let template = format!("{}.tmp.XXXXXX", this.filename.as_deref().unwrap_or(""));
+        // NUL-terminated, mutable: mkstemp overwrites the trailing "XXXXXX".
+        let mut tmpl: Vec<u8> = template.into_bytes();
+        tmpl.push(0);
+        fdtmp = unsafe { libc::mkstemp(tmpl.as_mut_ptr() as *mut libc::c_char) };
+        unsafe { libc::umask(cur_umask) };
+        if fdtmp == -1 {
+            return -std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        }
+        // Recover the concrete temp path mkstemp filled in.
+        let name = CStr::from_bytes_with_nul(&tmpl[..])
+            .ok()
+            .and_then(|c| c.to_str().ok())
+            .map(str::to_string);
+        tmpFilename = name;
+        separator = '\n';
+    }
+
+    let columns: &Hashtable = unsafe {
+        &*this
+            .dynamicColumns
+            .expect("Settings.dynamicColumns must be set (owned by Machine)")
+    };
+
+    let mut buf = String::new();
+
+    if !onCrash {
+        buf.push_str(
+            "# Beware! This file is rewritten by htop when settings are changed in the interface.\n",
+        );
+        buf.push_str("# The parser is also very primitive, and not human-friendly.\n");
+    }
+    printSettingString(&mut buf, separator, "htop_version", env!("CARGO_PKG_VERSION"));
+    printSettingInteger(&mut buf, separator, "config_reader_min_version", CONFIG_READER_MIN_VERSION);
+    buf.push_str("fields=");
+    writeFields(&mut buf, &this.screens[0].fields, columns, false, separator);
+    printSettingInteger(&mut buf, separator, "hide_kernel_threads", this.hideKernelThreads as i32);
+    printSettingInteger(&mut buf, separator, "hide_userland_threads", this.hideUserlandThreads as i32);
+    printSettingInteger(&mut buf, separator, "hide_running_in_container", this.hideRunningInContainer as i32);
+    printSettingInteger(&mut buf, separator, "shadow_other_users", this.shadowOtherUsers as i32);
+    printSettingInteger(&mut buf, separator, "show_thread_names", this.showThreadNames as i32);
+    printSettingInteger(&mut buf, separator, "show_program_path", this.showProgramPath as i32);
+    printSettingInteger(&mut buf, separator, "highlight_base_name", this.highlightBaseName as i32);
+    printSettingInteger(&mut buf, separator, "highlight_deleted_exe", this.highlightDeletedExe as i32);
+    printSettingInteger(&mut buf, separator, "shadow_distribution_path_prefix", this.shadowDistPathPrefix as i32);
+    printSettingInteger(&mut buf, separator, "highlight_megabytes", this.highlightMegabytes as i32);
+    printSettingInteger(&mut buf, separator, "highlight_threads", this.highlightThreads as i32);
+    printSettingInteger(&mut buf, separator, "highlight_changes", this.highlightChanges as i32);
+    printSettingInteger(&mut buf, separator, "highlight_changes_delay_secs", this.highlightDelaySecs);
+    printSettingInteger(&mut buf, separator, "find_comm_in_cmdline", this.findCommInCmdline as i32);
+    printSettingInteger(&mut buf, separator, "strip_exe_from_cmdline", this.stripExeFromCmdline as i32);
+    printSettingInteger(&mut buf, separator, "show_merged_command", this.showMergedCommand as i32);
+    printSettingInteger(&mut buf, separator, "header_margin", this.headerMargin as i32);
+    printSettingInteger(&mut buf, separator, "screen_tabs", this.screenTabs as i32);
+    printSettingInteger(&mut buf, separator, "detailed_cpu_time", this.detailedCPUTime as i32);
+    printSettingInteger(&mut buf, separator, "cpu_count_from_one", this.countCPUsFromOne as i32);
+    printSettingInteger(&mut buf, separator, "show_cpu_smt_labels", this.showCPUSMTLabels as i32);
+    printSettingInteger(&mut buf, separator, "show_cpu_usage", this.showCPUUsage as i32);
+    printSettingInteger(&mut buf, separator, "show_cpu_frequency", this.showCPUFrequency as i32);
+    // BUILD_WITH_CPU_TEMP fields (show_cpu_temperature/degree_fahrenheit) are
+    // gated out of this platform build, matching the C `#ifdef`.
+    printSettingInteger(&mut buf, separator, "show_cached_memory", this.showCachedMemory as i32);
+    printSettingInteger(&mut buf, separator, "update_process_names", this.updateProcessNames as i32);
+    printSettingInteger(&mut buf, separator, "account_guest_in_cpu_meter", this.accountGuestInCPUMeter as i32);
+    printSettingInteger(&mut buf, separator, "color_scheme", this.colorScheme);
+    printSettingInteger(&mut buf, separator, "enable_mouse", this.enableMouse as i32);
+    printSettingInteger(&mut buf, separator, "delay", this.delay);
+    printSettingInteger(&mut buf, separator, "hide_function_bar", this.hideFunctionBar);
+    // HAVE_LIBHWLOC field (topology_affinity) is gated out, matching the C `#ifdef`.
+
+    printSettingString(&mut buf, separator, "header_layout", HeaderLayout_getName(this.hLayout));
+    for i in 0..HeaderLayout_getColumns(this.hLayout) {
+        buf.push_str(&format!("column_meters_{i}="));
+        writeMeters(this, &mut buf, separator, i);
+        buf.push_str(&format!("column_meter_modes_{i}="));
+        writeMeterModes(this, &mut buf, separator, i);
+    }
+
+    // Legacy compatibility with older versions of htop
+    let s0 = &this.screens[0];
+    printSettingInteger(&mut buf, separator, "tree_view", s0.treeView as i32);
+    // This "-1" is for compatibility with the older enum format.
+    printSettingInteger(&mut buf, separator, "sort_key", s0.sortKey - 1);
+    printSettingInteger(&mut buf, separator, "tree_sort_key", s0.treeSortKey - 1);
+    printSettingInteger(&mut buf, separator, "sort_direction", s0.direction);
+    printSettingInteger(&mut buf, separator, "tree_sort_direction", s0.treeDirection);
+    printSettingInteger(&mut buf, separator, "tree_view_always_by_pid", s0.treeViewAlwaysByPID as i32);
+    printSettingInteger(&mut buf, separator, "all_branches_collapsed", s0.allBranchesCollapsed as i32);
+
+    for i in 0..this.screens.len() {
+        let ss = &this.screens[i];
+        let sortKey = toFieldName(columns, ss.sortKey, None).unwrap_or("");
+        let treeSortKey = toFieldName(columns, ss.treeSortKey, None).unwrap_or("");
+
+        buf.push_str(&format!("screen:{}=", ss.heading.as_deref().unwrap_or("")));
+        writeFields(&mut buf, &ss.fields, columns, true, separator);
+        if let Some(dynamic) = ss.dynamic.as_deref() {
+            printSettingString(&mut buf, separator, ".dynamic", dynamic);
+            if ss.sortKey != 0 && ss.sortKey != PID {
+                buf.push_str(&format!(".sort_key=Dynamic({sortKey}){separator}"));
+            }
+            if ss.treeSortKey != 0 && ss.treeSortKey != PID {
+                buf.push_str(&format!(".tree_sort_key=Dynamic({treeSortKey}){separator}"));
+            }
+        } else {
+            printSettingString(&mut buf, separator, ".sort_key", sortKey);
+            printSettingString(&mut buf, separator, ".tree_sort_key", treeSortKey);
+            printSettingInteger(&mut buf, separator, ".tree_view_always_by_pid", ss.treeViewAlwaysByPID as i32);
+        }
+        printSettingInteger(&mut buf, separator, ".tree_view", ss.treeView as i32);
+        printSettingInteger(&mut buf, separator, ".sort_direction", ss.direction);
+        printSettingInteger(&mut buf, separator, ".tree_sort_direction", ss.treeDirection);
+        printSettingInteger(&mut buf, separator, ".all_branches_collapsed", ss.allBranchesCollapsed as i32);
+    }
+
+    if onCrash {
+        signal_safe_fprintf(libc::STDERR_FILENO, &buf);
+        return 0;
+    }
+
+    // Flush the buffer to the temp file, then atomically rename into place.
+    let mut r: i32 = 0;
+    let written = full_write(fdtmp, buf.as_bytes());
+    if written < 0 || (written as usize) != buf.len() {
+        let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        r = if e != 0 { -e } else { -libc::EBADF };
+    }
+    if unsafe { libc::close(fdtmp) } != 0 && r == 0 {
+        r = -std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    }
+    let tmp = tmpFilename.as_deref().unwrap_or("");
+    if r == 0 {
+        r = match std::fs::rename(tmp, this.filename.as_deref().unwrap_or("")) {
+            Ok(()) => 0,
+            Err(e) => -e.raw_os_error().unwrap_or(libc::EIO),
+        };
+    }
+    r
+}
+
+/// Port of `Settings* Settings_new(const Machine* host, Hashtable*
+/// dynamicMeters, Hashtable* dynamicColumns, Hashtable* dynamicScreens)`
+/// from `Settings.c:794`. The top-level constructor: installs the built-in
+/// defaults, resolves the config path from `HTOPRC` / `HOME` /
+/// `XDG_CONFIG_HOME` (falling back to `getpwuid` for a missing `HOME`),
+/// `mkdir`s the config dir, `realpath`s the filename, then drives
+/// [`Settings_read`] over the user / legacy-dotfile / `SYSCONFDIR` configs
+/// and falls back to [`Settings_defaultMeters`] / [`Settings_defaultScreens`].
+///
+/// The C `Settings* this = xCalloc(...)` heap struct becomes an owned
+/// `Settings` returned by value. The borrowed `dynamic*` `Hashtable`
+/// pointers are stored as-is (not owned). The C `ss` back-pointer is not
+/// modeled (the index `ssIndex` suffices).
+///
+/// This calls the (currently chain-stubbed) [`Settings_read`] /
+/// [`Settings_defaultScreens`]; both are blocked on unported platform
+/// substrate (see their docs), so invoking `Settings_new` reaches those
+/// `todo!` sites at runtime. The env/path-resolution body itself is a
+/// faithful, standalone port.
+pub fn Settings_new(
+    host: &Machine,
+    dynamicMeters: Option<*mut Hashtable>,
+    dynamicColumns: Option<*mut Hashtable>,
+    dynamicScreens: Option<*mut Hashtable>,
+) -> Settings {
+    let mut this = Settings {
+        writeConfig: true,
+        dynamicScreens,
+        dynamicColumns,
+        dynamicMeters,
+        hLayout: HeaderLayout::HF_TWO_50_50,
+        ..Default::default()
+    };
+    this.hColumns = vec![MeterColumnSetting::default(); HeaderLayout_getColumns(this.hLayout)];
+
+    this.shadowOtherUsers = false;
+    this.showThreadNames = false;
+    this.hideKernelThreads = true;
+    this.hideUserlandThreads = false;
+    this.hideRunningInContainer = false;
+    this.highlightBaseName = false;
+    this.highlightDeletedExe = true;
+    this.shadowDistPathPrefix = false;
+    this.highlightMegabytes = true;
+    this.detailedCPUTime = false;
+    this.countCPUsFromOne = false;
+    this.showCPUSMTLabels = false;
+    this.showCPUUsage = true;
+    this.showCPUFrequency = false;
+    // BUILD_WITH_CPU_TEMP (showCPUTemperature/degreeFahrenheit) gated out.
+    this.showCachedMemory = true;
+    this.updateProcessNames = false;
+    this.showProgramPath = true;
+    this.highlightThreads = true;
+    this.highlightChanges = false;
+    this.highlightDelaySecs = DEFAULT_HIGHLIGHT_SECS;
+    this.findCommInCmdline = true;
+    this.stripExeFromCmdline = true;
+    this.showMergedCommand = false;
+    this.hideFunctionBar = 0;
+    this.headerMargin = true;
+    // HAVE_LIBHWLOC (topologyAffinity) gated out.
+
+    // this->screens = xCalloc(Platform_numberOfDefaultScreens, ...); nScreens = 0;
+    // The owned `Vec` grows on demand, so the pre-sizing is unnecessary.
+    this.screens = Vec::new();
+
+    let mut legacyDotfile: Option<String> = None;
+    if let Ok(rcfile) = std::env::var("HTOPRC") {
+        this.initialFilename = Some(rcfile);
+    } else {
+        // HOME must be an absolute path; else fall back to getpwuid(getuid()).
+        let mut home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() || !home.starts_with('/') {
+            // const struct passwd* pw = getpwuid(getuid());
+            // home = (pw && pw->pw_dir && pw->pw_dir[0] == '/') ? pw->pw_dir : "";
+            home = unsafe {
+                let pw = libc::getpwuid(libc::getuid());
+                if !pw.is_null() && !(*pw).pw_dir.is_null() {
+                    let dir = CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned();
+                    if dir.starts_with('/') { dir } else { String::new() }
+                } else {
+                    String::new()
+                }
+            };
+        }
+        let xdg = std::env::var("XDG_CONFIG_HOME").unwrap_or_default();
+        let (initialFilename, configDir, htopDir);
+        if !xdg.is_empty() && xdg.starts_with('/') {
+            initialFilename = format!("{xdg}/htop/htoprc");
+            configDir = xdg.clone();
+            htopDir = format!("{xdg}/htop");
+        } else {
+            initialFilename = format!("{home}{CONFIGDIR}/htop/htoprc");
+            configDir = format!("{home}{CONFIGDIR}");
+            htopDir = format!("{home}{CONFIGDIR}/htop");
+        }
+        this.initialFilename = Some(initialFilename);
+        // (void) mkdir(dir, 0700): errors ignored.
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&configDir);
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&htopDir);
+
+        legacyDotfile = Some(format!("{home}/.htoprc"));
+    }
+
+    // realpath(initialFilename, buf); on failure keep initialFilename.
+    let initial = this.initialFilename.clone().unwrap_or_default();
+    this.filename = match std::fs::canonicalize(&initial) {
+        Ok(p) => Some(p.to_string_lossy().into_owned()),
+        Err(_) => Some(initial),
+    };
+
+    this.colorScheme = 0;
+    this.enableMouse = true; // HAVE_GETMOUSE
+    this.changed = false;
+    this.delay = DEFAULT_DELAY;
+
+    let filename = this.filename.clone().unwrap_or_default();
+    let mut ok = Settings_read(&mut this, &filename, host, /*checkWritability*/ true);
+    if !ok {
+        if let Some(legacy) = legacyDotfile.clone() {
+            let writeConfig = this.writeConfig;
+            ok = Settings_read(&mut this, &legacy, host, writeConfig);
+            if ok && this.writeConfig {
+                // Transition to new location and delete old configuration file.
+                if Settings_write(&this, false) == 0 {
+                    let _ = std::fs::remove_file(&legacy);
+                }
+            }
+        }
+    }
+    if !ok {
+        this.screenTabs = true;
+        this.changed = true;
+
+        ok = Settings_read(
+            &mut this,
+            &format!("{SYSCONFDIR}/htoprc"),
+            host,
+            /*checkWritability*/ false,
+        );
+    }
+    if !ok {
+        Settings_defaultMeters(&mut this, host);
+        Settings_defaultScreens(&mut this);
+    }
+
+    this.ssIndex = 0;
+    // this->ss = this->screens[this->ssIndex]: the back-pointer is not modeled.
+
+    this.lastUpdate = 1;
+
+    this
 }
 
 /// Port of `RowField` (`RowField.h:60` — `typedef int32_t RowField`). The

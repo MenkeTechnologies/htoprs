@@ -86,7 +86,7 @@ use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_moveSelectedDown,
+    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_moveSelectedDown,
     Panel_moveSelectedUp, Panel_remove, Panel_selectByTyping, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS,
 };
@@ -119,12 +119,15 @@ pub struct ColumnsPanel {
     pub moving: bool,
 }
 
-/// TODO: port of `static void ColumnsPanel_delete(Object* object)` from
-/// `ColumnsPanel.c:31`. `Panel_done(&this->super)` + `free(this)` — the
-/// owned fields are released by `Drop`, so there is no algorithm to port
-/// (same precedent as `Panel_delete`/`ListItem_delete`). Left as a stub.
-pub fn ColumnsPanel_delete() {
-    todo!("port of ColumnsPanel.c:31 — Drop releases the panel")
+/// Port of `static void ColumnsPanel_delete(Object* object)` from
+/// `ColumnsPanel.c:31`: `Panel_done(&this->super); free(this);`. Taking
+/// `this` by value consumes the panel; the embedded `super_` [`Panel`] is
+/// handed to [`Panel_done`] (mirroring the C call graph), and the `moving`
+/// flag drops with the struct free.
+pub fn ColumnsPanel_delete(this: ColumnsPanel) {
+    let ColumnsPanel { super_, moving } = this;
+    Panel_done(super_);
+    let _ = moving;
 }
 
 /// Port of `static void ColumnsPanel_cancelMoving(ColumnsPanel* this)`

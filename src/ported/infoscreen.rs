@@ -127,16 +127,17 @@ use crossterm::terminal::{Clear, ClearType};
 use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F, KEY_RESIZE};
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new, FunctionBar_setLabel, Ncurses};
 use crate::ported::incset::{
-    IncSet, IncSet_activate, IncSet_drawBar, IncSet_filter, IncSet_handleKey, IncSet_new, IncType,
+    IncSet, IncSet_activate, IncSet_delete, IncSet_drawBar, IncSet_filter, IncSet_handleKey,
+    IncSet_new, IncType,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    Panel, Panel_add, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
+    Panel, Panel_add, Panel_delete, Panel_draw, Panel_getCh, Panel_new, Panel_onKey, Panel_resize,
     Panel_setHeader,
 };
 use crate::ported::process::Process;
-use crate::ported::vector::{Vector, Vector_add, Vector_new, Vector_prune};
+use crate::ported::vector::{Vector, Vector_add, Vector_delete, Vector_new, Vector_prune};
 use crate::ported::xutils::String_contains_i;
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the
@@ -325,13 +326,27 @@ pub fn InfoScreen_init<'a>(
     this
 }
 
-/// TODO: port of `InfoScreen* InfoScreen_done(InfoScreen* this)` from
-/// `InfoScreen.c:43`. `Panel_delete` + `IncSet_delete` + `Vector_delete` +
-/// `free` — heap-free only. An owned `InfoScreen` releases its fields via
-/// `Drop`, so there is no algorithm to port (same as `IncSet_delete` /
-/// `History_delete`).
-pub fn InfoScreen_done() {
-    todo!("port of InfoScreen.c:43 — Drop releases owned fields")
+/// Port of `InfoScreen* InfoScreen_done(InfoScreen* this)` from
+/// `InfoScreen.c:43`: `Panel_delete((Object*)this->display);
+/// IncSet_delete(this->inc); Vector_delete(this->lines); return this;`.
+///
+/// Taking `this` by value consumes the screen. The owned `display`
+/// [`Panel`], `inc` [`IncSet`], and `lines` [`Vector`] are handed to their
+/// ported `_delete`s (mirroring the C call graph); the non-owning `process`
+/// raw pointer drops without a free (C never frees it either). The C return
+/// of `this` only lets a subclass `free(this)` afterward — here the by-value
+/// consume folds that free in, so nothing is returned.
+pub fn InfoScreen_done(this: InfoScreen) {
+    let InfoScreen {
+        display,
+        inc,
+        lines,
+        process,
+    } = this;
+    Panel_delete(display);
+    IncSet_delete(inc);
+    Vector_delete(lines);
+    let _ = process;
 }
 
 /// Port of `void InfoScreen_drawTitled(InfoScreen* this, const char* fmt,

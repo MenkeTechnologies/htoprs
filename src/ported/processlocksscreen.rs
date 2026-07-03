@@ -85,7 +85,7 @@
 
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
-use crate::ported::infoscreen::{InfoScreen, InfoScreen_drawTitled, InfoScreen_init};
+use crate::ported::infoscreen::{InfoScreen, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init};
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::Panel_new;
@@ -157,15 +157,16 @@ pub fn ProcessLocksScreen_new(process: &Process) -> ProcessLocksScreen {
     this
 }
 
-/// TODO: port of `void ProcessLocksScreen_delete(Object* this)` from
-/// `ProcessLocksScreen.c:34`. `free(InfoScreen_done((InfoScreen*)this))` —
-/// heap-free only; `InfoScreen_done` is itself a `todo!()` (owned fields free
-/// via `Drop`, no algorithm to port). Same class as `InfoScreen_done` /
-/// `History_delete`.
-pub fn ProcessLocksScreen_delete() {
-    todo!(
-        "port of ProcessLocksScreen.c:34 — free(InfoScreen_done(...)); Drop releases owned fields"
-    )
+/// Port of `void ProcessLocksScreen_delete(Object* this)` from
+/// `ProcessLocksScreen.c:34`: `free(InfoScreen_done((InfoScreen*)this))`.
+/// Taking `this` by value consumes the screen; the embedded `super_`
+/// [`InfoScreen`] is handed to [`InfoScreen_done`] (mirroring the C call
+/// graph), whose by-value consume folds in the outer `free`. The `pid`
+/// scalar drops with it.
+pub fn ProcessLocksScreen_delete(this: ProcessLocksScreen) {
+    let ProcessLocksScreen { super_, pid } = this;
+    InfoScreen_done(super_);
+    let _ = pid;
 }
 
 /// Port of `static void ProcessLocksScreen_draw(InfoScreen* this)` from
@@ -195,13 +196,15 @@ pub fn ProcessLocksScreen_draw(this: &mut ProcessLocksScreen) {
 }
 
 /// TODO: port of `static inline void FileLocks_Data_clear(FileLocks_Data*
-/// data)` from `ProcessLocksScreen.c:42`. Frees the four `char*` fields —
-/// heap-free only; modeled with owned `String`s they free via `Drop`, so
-/// there is no body to port. The `FileLocks_*` structs are not modeled here
-/// (their only consumers — this helper and the blocked scan below — do not
-/// need them yet).
+/// data)` from `ProcessLocksScreen.c:42`. Frees the four `char*` fields
+/// (`locktype`/`exclusive`/`readwrite`/`filename`). Blocked on the missing
+/// substrate: the `FileLocks_Data` struct (`FileLocks.h`) is not modeled in
+/// this port — there is no Rust type to take as a parameter and clear. Its
+/// only consumers are this helper and [`ProcessLocksScreen_scan`], which is
+/// itself blocked on the unported `Platform_getProcessLocks`. Left a stub
+/// rather than inventing an unused struct.
 pub fn FileLocks_Data_clear() {
-    todo!("port of ProcessLocksScreen.c:42 — heap-free of 4 char* fields; owned String frees via Drop")
+    todo!("port of ProcessLocksScreen.c:42 — FileLocks_Data struct is not modeled; no Rust type to clear")
 }
 
 /// TODO: port of `static void ProcessLocksScreen_scan(InfoScreen* this)` from

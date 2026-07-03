@@ -61,7 +61,7 @@
 use crate::ported::functionbar::Ncurses;
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_addLine, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled, InfoScreen_init,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::Object;
@@ -227,13 +227,14 @@ pub fn CommandScreen_new(process: *const Process) -> CommandScreen {
     this
 }
 
-/// TODO: port of `void CommandScreen_delete(Object* this)` from
-/// `CommandScreen.c:86`: `free(InfoScreen_done((InfoScreen*)this))`.
-/// Blocked on `InfoScreen_done` (`infoscreen.rs`, `todo!()`) — heap-free
-/// only; an owned `CommandScreen` releases its fields via `Drop`, so there
-/// is no free-everything algorithm to port.
-pub fn CommandScreen_delete() {
-    todo!("port of CommandScreen.c:86 — InfoScreen_done is heap-free only (Drop releases owned fields)")
+/// Port of `void CommandScreen_delete(Object* this)` from
+/// `CommandScreen.c:86`: `free(InfoScreen_done((InfoScreen*)this))`. Taking
+/// `this` by value consumes the screen; the embedded `super_` [`InfoScreen`]
+/// is handed to [`InfoScreen_done`] (mirroring the C call graph), whose
+/// by-value consume folds in the outer `free`.
+pub fn CommandScreen_delete(this: CommandScreen) {
+    let CommandScreen { super_ } = this;
+    InfoScreen_done(super_);
 }
 
 #[cfg(test)]

@@ -51,7 +51,7 @@ use crate::ported::functionbar::FunctionBar_new;
 #[cfg(test)]
 use crate::ported::object::Object;
 use crate::ported::optionitem::{CheckItem, CheckItem_newByVal, CheckItem_set};
-use crate::ported::panel::{Panel, Panel_add, Panel_new, Panel_setHeader};
+use crate::ported::panel::{Panel, Panel_add, Panel_done, Panel_new, Panel_setHeader};
 use crate::ported::settings::Settings;
 
 /// Port of the file-scope
@@ -91,12 +91,15 @@ pub struct ColorsPanel {
     pub settings: *mut Settings,
 }
 
-/// TODO: port of `static void ColorsPanel_delete(Object* object)` from
-/// `ColorsPanel.c:44`. `Panel_done(&this->super)` + `free(this)` — the
-/// owned fields are released by `Drop`, so there is no algorithm to port
-/// (same precedent as `Panel_delete`/`ListItem_delete`). Left as a stub.
-pub fn ColorsPanel_delete() {
-    todo!("port of ColorsPanel.c:44 — Drop releases the panel")
+/// Port of `static void ColorsPanel_delete(Object* object)` from
+/// `ColorsPanel.c:44`: `Panel_done(&this->super); free(this);`. Taking
+/// `this` by value consumes the panel; the embedded `super_` [`Panel`] is
+/// handed to [`Panel_done`] (mirroring the C call graph), and the non-owning
+/// `settings` back-pointer drops with the struct free.
+pub fn ColorsPanel_delete(this: ColorsPanel) {
+    let ColorsPanel { super_, settings } = this;
+    Panel_done(super_);
+    let _ = settings;
 }
 
 /// Port of `static HandlerResult ColorsPanel_eventHandler(Panel* super,

@@ -54,7 +54,7 @@ use crate::ported::crt::{
     self, ColorElements, ColorScheme, ERR, KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT,
     KEY_MAX, KEY_NPAGE, KEY_PPAGE, KEY_RIGHT, KEY_UP, KEY_WHEELDOWN, KEY_WHEELUP,
 };
-use crate::ported::functionbar::{FunctionBar, FunctionBar_draw, Ncurses};
+use crate::ported::functionbar::{FunctionBar, FunctionBar_delete, FunctionBar_draw, Ncurses};
 use crate::ported::listitem::ListItem;
 use crate::ported::object::Object;
 use crate::ported::richstring::{
@@ -315,10 +315,12 @@ pub fn Panel_new(x: i32, y: i32, w: i32, h: i32, fuBar: Option<FunctionBar>) -> 
     this
 }
 
-/// TODO: port of `void Panel_delete(Object* cast)` from `Panel.c:43`.
-/// `Panel_done` + `free` — released by `Drop` in Rust, no algorithm.
-pub fn Panel_delete() {
-    todo!("port of Panel.c:43 — Drop releases the panel")
+/// Port of `void Panel_delete(Object* cast)` from `Panel.c:43`:
+/// `Panel_done(this); free(this);`. Taking `this` by value reproduces
+/// `free(this)`; [`Panel_done`] releases the owned fields (mirroring the C
+/// call graph). No `PanelClass` vtable dispatch is modeled.
+pub fn Panel_delete(this: Panel) {
+    Panel_done(this);
 }
 
 /// Port of `void Panel_init(Panel* this, int x, int y, int w, int h,
@@ -365,11 +367,30 @@ pub fn Panel_setDefaultBar(this: &mut Panel) {
     this.currentBar = this.defaultBar.clone();
 }
 
-/// TODO: port of `void Panel_done(Panel* this)` from `Panel.c:74`.
-/// Frees `eventHandlerState`/`items`/`defaultBar`/`header` — all released
-/// by `Drop` in Rust, so there is no algorithm to port.
-pub fn Panel_done() {
-    todo!("port of Panel.c:74 — Drop releases the owned fields")
+/// Port of `void Panel_done(Panel* this)` from `Panel.c:74`:
+/// `free(eventHandlerState); Vector_delete(items);
+/// FunctionBar_delete(defaultBar); RichString_delete(&header);`.
+///
+/// Taking `this` by value consumes the panel. The owned `defaultBar` is
+/// handed to [`FunctionBar_delete`] (mirroring the C call graph); the
+/// `eventHandlerState` scratch buffer, the `items` list (each `Owned`
+/// [`PanelItem`] — the C `Vector_delete`, since a non-owning panel keeps
+/// `Borrowed` raw pointers it must not free), the `header` `RichString`,
+/// and the cloned `currentBar` alias all drop with the remaining fields.
+pub fn Panel_done(this: Panel) {
+    let Panel {
+        defaultBar,
+        items,
+        eventHandlerState,
+        header,
+        ..
+    } = this;
+    if let Some(bar) = defaultBar {
+        FunctionBar_delete(bar);
+    }
+    let _ = items;
+    let _ = eventHandlerState;
+    let _ = header;
 }
 
 /// Port of `Panel.c:83`.

@@ -271,13 +271,18 @@ pub fn Vector_new(type_: &'static ObjectClass, owner: bool, size: c_int) -> Vect
     }
 }
 
-/// TODO: port of `void Vector_delete(Vector* this)` from `Vector.c:36`.
-/// Frees each owned element then the array and struct. The `Vec<Box>`
-/// owns its allocation and (when `owner`) its elements, so `Drop` runs
-/// the whole free routine — there is no body to port (the
-/// `History_delete` precedent). Left as a stub.
-pub fn Vector_delete() {
-    todo!("port of Vector.c:36 — Drop frees the array and (owned) elements")
+/// Port of `void Vector_delete(Vector* this)` from `Vector.c:36`.
+/// Frees each owned element then the array and struct. Taking `this` by
+/// value consumes the `Vector`; the `Vec<Option<Box<dyn Object>>>` owns
+/// its allocation and (when `owner`) its elements, so dropping it runs
+/// the whole free routine. When `!owner`, the C code leaves the elements
+/// alone — the ported types stored in a non-owning `Vector` are aliases
+/// whose real owner frees them, matching the `Box` slots being dropped
+/// here without a double free because a non-owning `Vector` never holds
+/// the sole owner (the `Vector_splice`/`!owner` aliasing is the remaining
+/// stub). The array and struct free is the `Vec`/`Vector` drop.
+pub fn Vector_delete(this: Vector) {
+    let _ = this;
 }
 
 /// Port of `static bool Vector_isConsistent(const Vector* this)` from
