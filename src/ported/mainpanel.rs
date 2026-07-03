@@ -19,10 +19,10 @@
 //! Rust `super` keyword, matching the `columnspanel.rs`/`process.rs`
 //! convention.
 //!
-//! The C `Htop_Action* keys` action table is **omitted**: the only
-//! functions that read/allocate it — [`MainPanel_new`] and
-//! [`MainPanel_eventHandler`] — are both stubbed on other blockers (see
-//! below), so no ported function needs it. The `state` back-pointer is an
+//! The C `Htop_Action* keys` action table is modeled as the `keys` field
+//! (`Vec<Option<Htop_Action>>`, length `KEY_MAX`): [`MainPanel_new`] allocates
+//! and fills it via [`Action_setBindings`], and [`MainPanel_eventHandler`]
+//! dispatches `keys[ch](state)` through it. The `state` back-pointer is an
 //! owning-elsewhere `*mut State` (the C field is a `State*` that `htop.c`
 //! owns and shares), so [`MainPanel_setState`] stores it verbatim;
 //! [`MainPanel_drawFunctionBar`]/[`MainPanel_printHeader`] now read through it
@@ -81,21 +81,18 @@
 //!   [`Table_printHeader`]; `host`/`settings` are reached through the raw
 //!   `*mut State` back-pointer (`action::State` now models `host`).
 //!
-//! # Stubbed (cannot be ported faithfully yet)
+//! [`MainPanel_eventHandler`] (`MainPanel.c:59`) and [`MainPanel_new`]
+//! (`MainPanel.c:229`) are now ported: the `keys` [`Htop_Action`] table is
+//! modeled (see above), [`Action_setBindings`] and [`IncSet_handleKey`] are
+//! ported, and the constructor fills the table via `Action_setBindings` +
+//! [`Platform_setBindings`]. One divergence is surfaced on
+//! [`MainPanel_eventHandler`]: C passes `NULL` for `IncSet_handleKey`'s `lines`
+//! argument (guarded by `filterChanged && lines`), but the ported
+//! `IncSet_handleKey` takes a non-optional `&mut Vector` and dropped that NULL
+//! guard, so an empty placeholder `Vector` is passed — restoring the optional
+//! guard belongs in `incset.rs`.
 //!
-//! - [`MainPanel_eventHandler`] (`MainPanel.c:59`, `static`) — the panel's
-//!   key dispatcher. Blocked on the omitted `keys[]` `Htop_Action` table
-//!   (`this->keys[ch](this->state)` has no field to dispatch through) and on
-//!   `IncSet_handleKey` still being a zero-argument `incset.rs` stub (calling
-//!   it with the C's five arguments would not compile). Also needs
-//!   `Settings.ss`/`enableMouse` and the `host->activeTable` follow-mode
-//!   mutations that the minimal substrate does not yet wire.
-//! - [`MainPanel_new`] (`MainPanel.c:229`) — allocates the panel and calls
-//!   `Action_setBindings` (`action.rs` stub) + `Platform_setBindings`
-//!   (`Platform.c` unported) to fill the omitted `keys` table. The binding
-//!   setup is essential and cannot run against those stubs.
-//!
-//! [`MainPanel_delete`] (`MainPanel.c:253`) is now ported: its `free` chain
+//! [`MainPanel_delete`] (`MainPanel.c:253`) is ported: its `free` chain
 //! maps to the by-value drop idiom (`processBar`/`readonlyBar` handed to
 //! `FunctionBar_delete`, `inc` to `IncSet_delete`, `super_` dropped in place
 //! of `Panel_done`).
@@ -109,21 +106,60 @@
 
 use core::any::Any;
 
-use crate::ported::action::State;
-use crate::ported::crt::{ColorElements, ColorScheme, KEY_F};
+use crate::ported::action::{
+    Action_setBindings, Action_setScreenTab, Action_setSortKey, Htop_Action, Htop_Reaction, State,
+    HTOP_KEEP_FOLLOWING, HTOP_OK, HTOP_QUIT, HTOP_RECALCULATE, HTOP_REDRAW_BAR, HTOP_REFRESH,
+    HTOP_RESIZE, HTOP_SAVE_SETTINGS, HTOP_UPDATE_PANELHDR,
+};
+use crate::ported::crt::{
+    ColorElements, ColorScheme, KEY_F, KEY_LEFT, KEY_MAX, KEY_MOUSE, KEY_RESIZE, KEY_RIGHT, ERR,
+};
 use crate::ported::functionbar::{
-    FunctionBar, FunctionBar_append, FunctionBar_delete, FunctionBar_setLabel,
+    FunctionBar, FunctionBar_append, FunctionBar_delete, FunctionBar_new, FunctionBar_setLabel,
 };
-use crate::ported::incset::{IncSet, IncSet_delete, IncSet_drawBar};
-use crate::ported::object::{Arg, Object};
+use crate::ported::incset::{
+    IncSet, IncSet_delete, IncSet_drawBar, IncSet_filter, IncSet_handleKey, IncSet_new,
+};
+use crate::ported::object::{Arg, Object, Object_class};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size,
+    HandlerResult, Panel, PanelClass, Panel_get, Panel_getSelected, Panel_new, Panel_setSelected,
+    Panel_setSelectionColor, Panel_size,
 };
-use crate::ported::row::Row;
+use crate::ported::row::{Row, RowField_keyAt};
+use crate::ported::settings::{
+    ScreenSettings_getActiveSortKey, ScreenSettings_invertSortOrder, Settings_isReadonly,
+};
 use crate::ported::table::Table_printHeader;
+use crate::ported::vector::Vector_new;
+
+// The platform-specific key bindings come from the compiled platform's
+// `Platform.c` (htop links exactly one). On the darwin-first target that is
+// darwin/Platform.c, whose `Platform_setBindings` is a no-op ((void) keys).
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_setBindings;
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::Platform_setBindings;
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::Platform_setBindings;
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::Platform_setBindings;
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::Platform_setBindings;
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::Platform_setBindings;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos"
+)))]
+use crate::ported::unsupported::platform::Platform_setBindings;
 
 /// Reduced model of the C `MainPanel` struct (`MainPanel.h:21`). See the
-/// module docs for the omitted `Htop_Action* keys` field and the `state`
+/// module docs for the `Htop_Action* keys` table and the `state`
 /// back-pointer mapping. `super_` avoids the Rust `super` keyword.
 pub struct MainPanel {
     /// C `Panel super` — the embedded panel base.
@@ -139,6 +175,14 @@ pub struct MainPanel {
     pub processBar: FunctionBar,
     /// C `FunctionBar* readonlyBar` — owned bar without process actions.
     pub readonlyBar: FunctionBar,
+    /// C `Htop_Action* keys` — the keypress → handler dispatch table
+    /// (`xCalloc(KEY_MAX, sizeof(Htop_Action))`). Modeled as a
+    /// `Vec<Option<Htop_Action>>` of length `KEY_MAX`: index `ch` yields the
+    /// bound handler (`Some`) or `None` (the C `NULL` slot).
+    /// [`MainPanel_eventHandler`] dispatches `keys[ch](state)`;
+    /// [`MainPanel_new`] fills it via [`Action_setBindings`] +
+    /// [`Platform_setBindings`].
+    pub keys: Vec<Option<Htop_Action>>,
     /// C `unsigned int idSearch` — accumulator for digit-key PID search.
     pub idSearch: u32,
 }
@@ -146,13 +190,10 @@ pub struct MainPanel {
 /// Port of `MainPanel.c`'s `const PanelClass MainPanel_class` vtable
 /// (`MainPanel.c:209`). C sets `.eventHandler = MainPanel_eventHandler`,
 /// `.drawFunctionBar = MainPanel_drawFunctionBar`, and
-/// `.printHeader = MainPanel_printHeader`. This wires `draw_function_bar` and
-/// `print_header` to the ported [`MainPanel_drawFunctionBar`] /
-/// [`MainPanel_printHeader`]. The `.eventHandler` slot is left inherited: the
-/// ported [`MainPanel_eventHandler`] is still a no-argument `todo!` stub
-/// (`fn()`), whose signature is incompatible with the trait's
-/// `(&mut self, i32) -> HandlerResult`, so it cannot be wired without
-/// fabricating a return value — wire it once the stub takes the real signature.
+/// `.printHeader = MainPanel_printHeader`. This wires `event_handler`,
+/// `draw_function_bar` and `print_header` to the ported
+/// [`MainPanel_eventHandler`] / [`MainPanel_drawFunctionBar`] /
+/// [`MainPanel_printHeader`].
 impl PanelClass for MainPanel {
     fn as_panel(&self) -> &Panel {
         &self.super_
@@ -177,6 +218,39 @@ impl PanelClass for MainPanel {
 /// reference (`&Arg`); callbacks only read it, so this matches the C
 /// by-value semantics observationally.
 pub type MainPanel_foreachRowFn = fn(&mut Row, &Arg) -> bool;
+
+/// Port of `static const char* const MainFunctions[]` (`MainPanel.c:28`) — the
+/// process-mode function-bar labels (F1..F10). The C trailing `NULL`
+/// terminator is dropped in the slice model (the ported [`FunctionBar_new`]
+/// takes a plain slice, matching `incset.rs`'s `searchFunctions` mapping).
+const MainFunctions: [&str; 10] = [
+    "Help  ", "Setup ", "Search", "Filter", "Tree  ", "SortBy", "Nice -", "Nice +", "Kill  ",
+    "Quit  ",
+];
+
+/// Port of `static const char* const MainFunctions_ro[]` (`MainPanel.c:29`) —
+/// the read-only function-bar labels (the Nice/Kill slots blanked).
+const MainFunctions_ro: [&str; 10] = [
+    "Help  ", "Setup ", "Search", "Filter", "Tree  ", "SortBy", "      ", "      ", "      ",
+    "Quit  ",
+];
+
+/// Port of `#define EVENT_IS_HEADER_CLICK(ev_)` (`Panel.h:38`).
+fn EVENT_IS_HEADER_CLICK(ev: i32) -> bool {
+    (-10000..=-9000).contains(&ev)
+}
+/// Port of `#define EVENT_HEADER_CLICK_GET_X(ev_)` (`Panel.h:39`).
+fn EVENT_HEADER_CLICK_GET_X(ev: i32) -> i32 {
+    ev + 10000
+}
+/// Port of `#define EVENT_IS_SCREEN_TAB_CLICK(ev_)` (`Panel.h:42`).
+fn EVENT_IS_SCREEN_TAB_CLICK(ev: i32) -> bool {
+    (-20000..-10000).contains(&ev)
+}
+/// Port of `#define EVENT_SCREEN_TAB_GET_X(ev_)` (`Panel.h:43`).
+fn EVENT_SCREEN_TAB_GET_X(ev: i32) -> i32 {
+    ev + 20000
+}
 
 /// Port of `void MainPanel_updateLabels(MainPanel* this, bool list, bool filter)`
 /// from `MainPanel.c:32`. Sets the F5 label to `"List  "`/`"Tree  "` and
@@ -251,17 +325,253 @@ pub fn MainPanel_getValue(this: &Panel, i: i32) -> &str {
     }
 }
 
-/// TODO: port of `static HandlerResult MainPanel_eventHandler(Panel* super,
-/// int ch)` from `MainPanel.c:59`. The panel key dispatcher. Blocked on the
-/// omitted `keys[]` `Htop_Action` table (the `this->keys[ch](this->state)`
-/// branch has no struct field to dispatch through) and on `IncSet_handleKey`
-/// still being a zero-argument `incset.rs` stub — calling it with the C's five
-/// arguments (`this->inc, ch, super, MainPanel_getValue, NULL`) would not
-/// compile. Also needs `Settings.ss`/`enableMouse` and the `host->activeTable`
-/// follow-mode mutations that the minimal substrate does not wire.
+/// Port of `static HandlerResult MainPanel_eventHandler(Panel* super, int ch)`
+/// from `MainPanel.c:59`. The panel key dispatcher: it resolves header-tab /
+/// screen-tab clicks, feeds the incremental search/filter, handles ESC, then
+/// dispatches the keypress through the `keys[]` [`Htop_Action`] table, falling
+/// back to digit id-search / arrow follow-mode; finally it maps the accumulated
+/// [`Htop_Reaction`] bits to the [`HandlerResult`] flags the `ScreenManager`
+/// consumes.
+///
+/// The C `Panel* super` upcast to `MainPanel*` is the reduced-struct receiver
+/// `this: &mut MainPanel`. `Machine* host = this->state->host` and the
+/// `settings`/`ss`/`activeTable` it reaches are threaded through the raw
+/// `*mut State` back-pointer stored by [`MainPanel_setState`] (as in C, valid
+/// for the main loop's lifetime). The `keys[ch](this->state)` dispatch copies
+/// the `fn` pointer out of `keys` (fn pointers are `Copy`) and calls it with
+/// `&mut *state` — the handler may reach back into `*this` via
+/// `state->mainPanel` exactly as the C raw-pointer aliasing does.
+///
+/// # Divergence (surfaced for the coordinator)
+///
+/// C passes `NULL` for the `Vector* lines` argument of `IncSet_handleKey`
+/// (the weak-panel backing is an `InfoScreen`-only concept; the main panel has
+/// none), and `IncSet.c` guards `if (filterChanged && lines)` before touching
+/// the weak panel. The ported [`IncSet_handleKey`] takes `lines: &mut Vector`
+/// (non-optional) and dropped that `&& lines` NULL guard, so it would run
+/// `updateWeakPanel` (which `Panel_prune`s the panel) against the main panel.
+/// An empty placeholder [`Vector`] is passed here as the closest analog to
+/// `NULL`; restoring the optional-`lines` guard belongs in `incset.rs`.
 pub fn MainPanel_eventHandler(this: &mut MainPanel, ch: i32) -> HandlerResult {
-    let _ = (this, ch);
-    todo!("port of MainPanel.c:59 — needs the keys[] Htop_Action table field + a real IncSet_handleKey signature")
+    // C: MainPanel* this = (MainPanel*) super;
+    //    Machine* host = this->state->host;
+    let state = this.state;
+    // SAFETY: `state`/`host` are the non-owning back-pointers wired at startup
+    // (C precondition: `this->state->host` is dereferenced unconditionally).
+    let host = unsafe { (*state).host };
+    let mut reaction: Htop_Reaction = HTOP_OK;
+    let mut result: HandlerResult = HandlerResult::IGNORED;
+
+    // C: /* Let supervising ScreenManager handle resize */
+    //    if (ch == KEY_RESIZE) return IGNORED;
+    if ch == KEY_RESIZE {
+        return HandlerResult::IGNORED;
+    }
+
+    // C: /* reset on every normal key */  bool needReset = ch != ERR;
+    let mut needReset = ch != ERR;
+    // C: #ifdef HAVE_GETMOUSE
+    //    /* except mouse events while mouse support is disabled */
+    //    if (!(ch != KEY_MOUSE || host->settings->enableMouse)) needReset = false;
+    // SAFETY: host is a valid Machine* (C precondition).
+    let enableMouse = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .expect("MainPanel_eventHandler: host->settings is NULL")
+            .enableMouse
+    };
+    if !(ch != KEY_MOUSE || enableMouse) {
+        needReset = false;
+    }
+    // C: if (needReset) this->state->hideSelection = false;
+    if needReset {
+        // SAFETY: state is a valid State* (C precondition).
+        unsafe {
+            (*state).hideSelection = false;
+        }
+    }
+
+    // C: Settings* settings = host->settings;  ScreenSettings* ss = settings->ss;
+    // (modeled as host->settings and settings.screens[ssIndex] — reached per
+    // branch through the raw host pointer to keep borrows non-overlapping.)
+
+    if EVENT_IS_HEADER_CLICK(ch) {
+        // C: int x = EVENT_HEADER_CLICK_GET_X(ch);
+        //    int hx = super->scrollH + x + 1;
+        //    RowField field = RowField_keyAt(settings, hx);
+        let x = EVENT_HEADER_CLICK_GET_X(ch);
+        let hx = this.super_.scrollH + x + 1;
+        // SAFETY: host valid (C precondition).
+        let ssidx = unsafe { (*host).settings.as_ref().unwrap().ssIndex as usize };
+        let field = unsafe { RowField_keyAt((*host).settings.as_ref().unwrap(), hx) };
+        let (treeView, alwaysByPID) = unsafe {
+            let s = &(*host).settings.as_ref().unwrap().screens[ssidx];
+            (s.treeView, s.treeViewAlwaysByPID)
+        };
+        if treeView && alwaysByPID {
+            // C: ss->treeView = false; ss->direction = 1;
+            //    reaction |= Action_setSortKey(settings, field);
+            unsafe {
+                let s = &mut (*host).settings.as_mut().unwrap().screens[ssidx];
+                s.treeView = false;
+                s.direction = 1;
+            }
+            reaction |= unsafe { Action_setSortKey((*host).settings.as_mut().unwrap(), field) };
+        } else if field
+            == unsafe {
+                ScreenSettings_getActiveSortKey(&(*host).settings.as_ref().unwrap().screens[ssidx])
+            }
+        {
+            // C: ScreenSettings_invertSortOrder(ss);
+            unsafe {
+                ScreenSettings_invertSortOrder(&mut (*host).settings.as_mut().unwrap().screens[ssidx]);
+            }
+        } else {
+            // C: reaction |= Action_setSortKey(settings, field);
+            reaction |= unsafe { Action_setSortKey((*host).settings.as_mut().unwrap(), field) };
+        }
+        // C: reaction |= HTOP_RECALCULATE | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR | HTOP_SAVE_SETTINGS;
+        reaction |= HTOP_RECALCULATE | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR | HTOP_SAVE_SETTINGS;
+        result = HandlerResult::HANDLED;
+    } else if EVENT_IS_SCREEN_TAB_CLICK(ch) {
+        // C: int x = EVENT_SCREEN_TAB_GET_X(ch);
+        //    reaction |= Action_setScreenTab(this->state, x);
+        let x = EVENT_SCREEN_TAB_GET_X(ch);
+        // SAFETY: state valid (C precondition).
+        reaction |= Action_setScreenTab(unsafe { &*state }, x);
+        result = HandlerResult::HANDLED;
+    } else if ch != ERR && this.inc.active.is_some() {
+        // C: bool filterChanged = IncSet_handleKey(this->inc, ch, super, MainPanel_getValue, NULL);
+        // See the divergence note: NULL lines -> empty placeholder Vector.
+        let mut lines = Vector_new(&Object_class, false, 10);
+        let filterChanged =
+            IncSet_handleKey(&mut this.inc, ch, &mut this.super_, MainPanel_getValue, &mut lines);
+        if filterChanged {
+            // C: host->activeTable->incFilter = IncSet_filter(this->inc);
+            let filter = IncSet_filter(&this.inc).map(|s| s.to_string());
+            // SAFETY: host valid; activeTable is the non-null back-pointer.
+            let at = unsafe {
+                (*host)
+                    .activeTable
+                    .expect("MainPanel_eventHandler: host->activeTable is NULL")
+            };
+            unsafe {
+                (*at).incFilter = filter;
+            }
+            // C: reaction = HTOP_REFRESH | HTOP_REDRAW_BAR;
+            reaction = HTOP_REFRESH | HTOP_REDRAW_BAR;
+        }
+        // C: if (this->inc->found && this->inc->active && !this->inc->active->isFilter)
+        let followFound = this.inc.found
+            && this
+                .inc
+                .active
+                .is_some_and(|a| !this.inc.modes[a as usize].isFilter);
+        if followFound {
+            // C: host->activeTable->following = MainPanel_selectedRow(this);
+            let sel = MainPanel_selectedRow(this);
+            let at = unsafe {
+                (*host)
+                    .activeTable
+                    .expect("MainPanel_eventHandler: host->activeTable is NULL")
+            };
+            unsafe {
+                (*at).following = sel;
+            }
+            // C: Panel_setSelectionColor(super, PANEL_SELECTION_FOLLOW);
+            Panel_setSelectionColor(&mut this.super_, ColorElements::PANEL_SELECTION_FOLLOW);
+            // C: reaction |= HTOP_KEEP_FOLLOWING;
+            reaction |= HTOP_KEEP_FOLLOWING;
+        }
+        result = HandlerResult::HANDLED;
+    } else if ch == 27 {
+        // C: this->state->hideSelection = true; return HANDLED;
+        unsafe {
+            (*state).hideSelection = true;
+        }
+        return HandlerResult::HANDLED;
+    } else if ch != ERR && ch > 0 && ch < KEY_MAX && this.keys[ch as usize].is_some() {
+        // C: reaction |= (this->keys[ch])(this->state);
+        let handler = this.keys[ch as usize].unwrap();
+        // SAFETY: state valid (C precondition); the handler may alias *this via
+        // state->mainPanel, matching the C raw-pointer dispatch.
+        reaction |= handler(unsafe { &mut *state });
+        result = HandlerResult::HANDLED;
+    } else if 0 < ch && ch < 255 && (ch as u8).is_ascii_digit() {
+        // C: MainPanel_idSearch(this, ch);
+        MainPanel_idSearch(this, ch);
+    } else if ch == KEY_LEFT || ch == KEY_RIGHT {
+        // C: reaction |= HTOP_KEEP_FOLLOWING;
+        reaction |= HTOP_KEEP_FOLLOWING;
+    } else {
+        // C: if (ch != ERR) this->idSearch = 0; else reaction |= HTOP_KEEP_FOLLOWING;
+        if ch != ERR {
+            this.idSearch = 0;
+        } else {
+            reaction |= HTOP_KEEP_FOLLOWING;
+        }
+    }
+
+    // C: if ((reaction & HTOP_REDRAW_BAR) == HTOP_REDRAW_BAR)
+    //       MainPanel_updateLabels(this, settings->ss->treeView, host->activeTable->incFilter);
+    if reaction & HTOP_REDRAW_BAR == HTOP_REDRAW_BAR {
+        // SAFETY: host valid (C precondition).
+        let treeView = unsafe {
+            let s = (*host).settings.as_ref().unwrap();
+            s.screens[s.ssIndex as usize].treeView
+        };
+        let filter = unsafe {
+            let at = (*host)
+                .activeTable
+                .expect("MainPanel_eventHandler: host->activeTable is NULL");
+            (*at).incFilter.is_some()
+        };
+        MainPanel_updateLabels(this, treeView, filter);
+    }
+    // C: if ((reaction & HTOP_RESIZE) == HTOP_RESIZE) result |= RESIZE;
+    if reaction & HTOP_RESIZE == HTOP_RESIZE {
+        result |= HandlerResult::RESIZE;
+    }
+    // C: if ((reaction & HTOP_UPDATE_PANELHDR) == HTOP_UPDATE_PANELHDR) result |= REDRAW;
+    if reaction & HTOP_UPDATE_PANELHDR == HTOP_UPDATE_PANELHDR {
+        result |= HandlerResult::REDRAW;
+    }
+    // C: if ((reaction & HTOP_REFRESH) == HTOP_REFRESH) result |= REFRESH;
+    if reaction & HTOP_REFRESH == HTOP_REFRESH {
+        result |= HandlerResult::REFRESH;
+    }
+    // C: if ((reaction & HTOP_RECALCULATE) == HTOP_RECALCULATE) result |= RESCAN;
+    if reaction & HTOP_RECALCULATE == HTOP_RECALCULATE {
+        result |= HandlerResult::RESCAN;
+    }
+    // C: if ((reaction & HTOP_SAVE_SETTINGS) == HTOP_SAVE_SETTINGS) host->settings->changed = true;
+    if reaction & HTOP_SAVE_SETTINGS == HTOP_SAVE_SETTINGS {
+        unsafe {
+            (*host).settings.as_mut().unwrap().changed = true;
+        }
+    }
+    // C: if ((reaction & HTOP_QUIT) == HTOP_QUIT) return BREAK_LOOP;
+    if reaction & HTOP_QUIT == HTOP_QUIT {
+        return HandlerResult::BREAK_LOOP;
+    }
+    // C: if ((reaction & HTOP_KEEP_FOLLOWING) != HTOP_KEEP_FOLLOWING) {
+    //       host->activeTable->following = -1;
+    //       Panel_setSelectionColor(super, PANEL_SELECTION_FOCUS);
+    //    }
+    if reaction & HTOP_KEEP_FOLLOWING != HTOP_KEEP_FOLLOWING {
+        let at = unsafe {
+            (*host)
+                .activeTable
+                .expect("MainPanel_eventHandler: host->activeTable is NULL")
+        };
+        unsafe {
+            (*at).following = -1;
+        }
+        Panel_setSelectionColor(&mut this.super_, ColorElements::PANEL_SELECTION_FOCUS);
+    }
+    // C: return result;
+    result
 }
 
 /// Port of `int MainPanel_selectedRow(MainPanel* this)` from
@@ -406,13 +716,54 @@ pub fn MainPanel_printHeader(this: &mut MainPanel) {
     Table_printHeader(settings, &mut this.super_.header);
 }
 
-/// TODO: port of `MainPanel* MainPanel_new(void)` from `MainPanel.c:229`.
-/// Allocates the panel and fills the `keys` action table via
-/// `Action_setBindings` (`action.rs` stub) + `Platform_setBindings`
-/// (`Platform.c` unported). The binding setup is essential to the
-/// constructor and cannot run against those stubs. Left as a stub.
-pub fn MainPanel_new() {
-    todo!("port of MainPanel.c:229 — needs Action_setBindings (stub) + Platform_setBindings (unported)")
+/// Port of `MainPanel* MainPanel_new(void)` from `MainPanel.c:229`. Builds the
+/// process/read-only function bars, initializes the embedded panel with the
+/// active bar, allocates the `keys` [`Htop_Action`] table, creates the
+/// [`IncSet`], and fills the table via [`Action_setBindings`] +
+/// [`Platform_setBindings`].
+///
+/// The C `AllocThis(MainPanel)` (zeroed) + `Panel_init((Panel*)this, …)` maps to
+/// building the struct with an initialized [`Panel_new`]. `FunctionBar_new(…,
+/// NULL, NULL)` becomes `FunctionBar_new(Some(&MainFunctions), None, None)`.
+/// C aliases one `FunctionBar*` as `activeBar` into `Panel_init`/`IncSet_new`;
+/// the `Vec`-owned bar model clones the chosen bar into those slots (the same
+/// clone-reproduces-the-shared-pointer mapping `Panel_init`/`MainPanel_setFunctionBar`
+/// use). `keys = xCalloc(KEY_MAX, sizeof(Htop_Action))` is `vec![None; KEY_MAX]`.
+/// The `state` back-pointer is `NULL` until [`MainPanel_setState`] (as in C,
+/// where `AllocThis` zeroes it).
+pub fn MainPanel_new() -> MainPanel {
+    // C: this->processBar  = FunctionBar_new(MainFunctions, NULL, NULL);
+    //    this->readonlyBar = FunctionBar_new(MainFunctions_ro, NULL, NULL);
+    let processBar = FunctionBar_new(Some(&MainFunctions), None, None);
+    let readonlyBar = FunctionBar_new(Some(&MainFunctions_ro), None, None);
+    // C: FunctionBar* activeBar = Settings_isReadonly() ? this->readonlyBar : this->processBar;
+    let activeBar = if Settings_isReadonly() {
+        readonlyBar.clone()
+    } else {
+        processBar.clone()
+    };
+    // C: Panel_init((Panel*) this, 1, 1, 1, 1, Class(Row), false, activeBar);
+    // (Panel_new = AllocThis + Panel_init; the Class(Row)/owner args have no
+    // analog in the reduced Panel model.)
+    let super_ = Panel_new(1, 1, 1, 1, Some(activeBar.clone()));
+    // C: this->keys = xCalloc(KEY_MAX, sizeof(Htop_Action));
+    let mut keys: Vec<Option<Htop_Action>> = vec![None; KEY_MAX as usize];
+    // C: this->inc = IncSet_new(activeBar);
+    let inc = IncSet_new(Some(activeBar));
+
+    // C: Action_setBindings(this->keys);  Platform_setBindings(this->keys);
+    Action_setBindings(&mut keys);
+    Platform_setBindings();
+
+    MainPanel {
+        super_,
+        state: core::ptr::null_mut(),
+        inc,
+        processBar,
+        readonlyBar,
+        keys,
+        idSearch: 0,
+    }
 }
 
 /// Port of `void MainPanel_setState(MainPanel* this, State* state)` from
@@ -447,8 +798,9 @@ pub fn MainPanel_setFunctionBar(this: &mut MainPanel, readonly: bool) {
 /// Taking `this` by value reproduces `free(this)`. The two owned
 /// [`FunctionBar`]s and the owned [`IncSet`] are handed to
 /// [`FunctionBar_delete`]/[`IncSet_delete`] (mirroring the C call graph); the
-/// `keys` action table is omitted from the struct (`free(keys)` has no analog);
-/// and the embedded `super_` [`Panel`] plus the non-owning `state` pointer drop
+/// `keys` action table (a `Vec` of `fn` pointers) drops in place — the analog
+/// of `free(keys)`, which frees only the array, not the (static) handlers; and
+/// the embedded `super_` [`Panel`] plus the non-owning `state` pointer drop
 /// with the remaining fields — the faithful analog of `Panel_done(&super)` (a
 /// `Drop` no-op, so the panicking `Panel_done` stub is avoided) and the struct
 /// free.
@@ -488,6 +840,7 @@ mod tests {
             inc: IncSet_new(None),
             processBar: FunctionBar_new(None, None, None),
             readonlyBar: FunctionBar_new(None, None, None),
+            keys: vec![None; KEY_MAX as usize],
             idSearch: 0,
         }
     }

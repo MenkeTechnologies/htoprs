@@ -53,23 +53,30 @@
 //! - [`Machine_done`] (`Machine.c:53`) — `hwloc_topology_destroy`,
 //!   `Object_delete`, `free`: teardown of unported machinery (`Drop`
 //!   releases the owned Rust fields).
-//! - [`Machine_scanTables`] (`Machine.c:100`) — blocked on its signature
-//!   being pinned by argument-less `action.rs` callers and on the missing
-//!   `Table` scan vtable (`TableClass`); see the fn's own doc for details.
+//! # Ported (Darwin scan seam)
+//!
+//! - [`Machine_scanTables`] (`Machine.c:100`) — the per-scan clock stamp +
+//!   the table scan loop, dispatching through the ported [`TableClass`] scan
+//!   vtable (`Table.h:55-57`) whose Darwin slots reach the live process scan.
+//!   `macos`-gated (it samples `Platform_gettime_monotonic`).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::panel::Panel;
 #[cfg(target_os = "macos")]
-use crate::ported::row::Row_setPidColumnWidth;
-use crate::ported::table::{Table, Table_setPanel};
+use crate::ported::row::{Row_resetFieldWidths, Row_setPidColumnWidth, Row_setUidColumnWidth};
+use crate::ported::table::{
+    Table, Table_scanCleanup, Table_scanIterate, Table_scanPrepare, Table_setPanel,
+};
 
 // `Machine_init` calls the platform's `Platform_getMaxPid` /
 // `Platform_gettime_realtime`, resolved at link time in the C. htoprs is
 // darwin-first, so the `#[cfg]` selects the Darwin implementations (one
 // platform per build, mirroring htop).
 #[cfg(target_os = "macos")]
-use crate::ported::darwin::platform::{Platform_getMaxPid, Platform_gettime_realtime};
+use crate::ported::darwin::platform::{
+    Platform_getMaxPid, Platform_gettime_monotonic, Platform_gettime_realtime,
+};
 
 /// htop's `Table*` — a raw pointer to a [`Table`]. The crate mirrors
 /// htop's C pointer graph 1:1 (raw-pointer ownership model): `Machine`
@@ -254,28 +261,60 @@ pub fn Machine_setTablesPanel(this: &mut Machine, panel: *mut Panel) {
     }
 }
 
-/// TODO: port of `void Machine_scanTables(Machine* this)` from
-/// `Machine.c:100`. Its scalar substrate is now available
-/// (`Platform_gettime_monotonic`, `Row_resetFieldWidths`,
-/// `Row_set{Uid,Pid}ColumnWidth`), but two blockers remain that this port's
-/// edit scope cannot resolve:
+/// Port of `void Machine_scanTables(Machine* this)` from `Machine.c:100`.
+/// Stamps the scan clocks (first scan seeds `prevMonotonicMs = 0`,
+/// `monotonicMs = 1`; later scans roll `prev = curr` and re-sample the
+/// monotonic clock), early-returns if the clock did not advance, resets
+/// `maxUserId` and the per-field column widths, then walks every registered
+/// table dispatching the scan vtable
+/// (`Table_scanPrepare`/`_scanIterate`/`_scanCleanup`, `Table.h:55-57`),
+/// and finally publishes the observed uid/pid column widths.
 ///
-/// 1. **Signature is pinned by out-of-scope callers.** A faithful port needs
-///    `this: &mut Machine`, but `action.rs:441` and `action.rs:461` call this
-///    stub argument-less (`Machine_scanTables()`, the repo's stub-chain
-///    convention for an unmodeled `this`). Re-signing it to take a `Machine`
-///    breaks `action.rs` — a non-edit-scope file — and thus `cargo build`.
-/// 2. **No `TableClass` scan vtable is modeled.** The C loop dispatches
-///    `Table_scanPrepare`/`_scanIterate`/`_scanCleanup` through
-///    `As_Table(t)->{prepare,iterate,cleanup}` (`Table.h:46-57`). `table.rs`
-///    models no `TableClass` and `Machine::tables` holds bare `*mut Table`,
-///    so the polymorphic scan dispatch (which bottoms at the platform
-///    `ProcessTable_goThroughEntries` seam) has no faithful expression here.
+/// The C `static bool firstScanDone` (function-local, persists across calls)
+/// maps to a function-local [`AtomicBool`]: htop is single-threaded here, so
+/// `Relaxed` matches the C's plain read/write.
 ///
-/// Left a stub pending the coordinator retyping the `action.rs` call sites
-/// and modeling the `Table` scan vtable.
-pub fn Machine_scanTables() {
-    todo!("port of Machine.c:100 — signature pinned by action.rs no-arg callers + no TableClass scan vtable")
+/// The scan loop dispatches through the ported [`Table`] scan vtable — the
+/// concrete Darwin table wires its slots in `ProcessTable_new`, so `iterate`
+/// reaches `ProcessTable_goThroughEntries` (the live process scan).
+#[cfg(target_os = "macos")]
+pub fn Machine_scanTables(this: &mut Machine) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // set scan timestamp
+    static FIRST_SCAN_DONE: AtomicBool = AtomicBool::new(false);
+
+    if FIRST_SCAN_DONE.load(Ordering::Relaxed) {
+        this.prevMonotonicMs = this.monotonicMs;
+        Platform_gettime_monotonic(&mut this.monotonicMs);
+    } else {
+        this.prevMonotonicMs = 0;
+        this.monotonicMs = 1;
+        FIRST_SCAN_DONE.store(true, Ordering::Relaxed);
+    }
+    if this.monotonicMs <= this.prevMonotonicMs {
+        return;
+    }
+
+    this.maxUserId = 0;
+    Row_resetFieldWidths();
+
+    for i in 0..this.tableCount {
+        // Table* table = this->tables[i];
+        let table = this.tables[i];
+
+        // pre-processing of each row
+        Table_scanPrepare(table);
+
+        // scan values for this table
+        Table_scanIterate(table);
+
+        // post-process after scanning
+        Table_scanCleanup(table);
+    }
+
+    Row_setUidColumnWidth(this.maxUserId);
+    Row_setPidColumnWidth(this.maxProcessId);
 }
 
 #[cfg(test)]

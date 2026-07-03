@@ -49,6 +49,8 @@
 //! `settings.rs`, `RowField_alignedTitle`) has landed. This module has no
 //! remaining `todo!()` stubs.
 #![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -107,6 +109,96 @@ pub struct Table {
     /// The `isDirty` flag of the C `rows` Vector: set by soft-remove in
     /// `Table_removeIndex`, cleared by [`Table_compact`].
     pub rows_isDirty: bool,
+    /// The scan vtable this table dispatches through. C stores the class in
+    /// the `Object` base (`this->super.klass`) and the `As_Table(t)` macro
+    /// (`Table.h:52`) casts it to `const TableClass*`; the ported `Table`
+    /// models no `Object` base, so the [`TableClass`] pointer is held
+    /// directly here. Null models a table whose class was never set; the
+    /// scan dispatchers fall back to the base defaults (prepare/cleanup) and
+    /// treat a missing `iterate` as the C's undefined behavior (panic). Set
+    /// by the concrete `*_new` (e.g. the Darwin `ProcessTable_new`), mirroring
+    /// C's `Object_setClass`.
+    pub klass: *const TableClass,
+}
+
+/// Port of `typedef void (*Table_ScanPrepare)(Table* this)` (`Table.h:38`).
+pub type Table_ScanPrepare = fn(*mut Table);
+/// Port of `typedef void (*Table_ScanIterate)(Table* this)` (`Table.h:39`).
+pub type Table_ScanIterate = fn(*mut Table);
+/// Port of `typedef void (*Table_ScanCleanup)(Table* this)` (`Table.h:40`).
+pub type Table_ScanCleanup = fn(*mut Table);
+
+/// Port of `typedef struct TableClass_` (`Table.h:46`). The scan-vtable half
+/// of htop's `TableClass` (the `ObjectClass super` half — `extends`/`delete`
+/// — is class identity in Rust, so it is not modeled). Each slot takes a
+/// `*mut Table` exactly like the C function pointers; a concrete override
+/// downcasts it to its subclass (`(ProcessTable*)super`). `prepare`/`cleanup`
+/// are `Option` because the C macros substitute [`Table_prepareEntries`] /
+/// [`Table_cleanupEntries`] when the slot is NULL; `iterate` is `Option` for
+/// the base class (which sets none) but is mandatory at dispatch time.
+pub struct TableClass {
+    /// C `const Table_ScanPrepare prepare` (`Table.h:48`).
+    pub prepare: Option<Table_ScanPrepare>,
+    /// C `const Table_ScanIterate iterate` (`Table.h:49`) — mandatory.
+    pub iterate: Option<Table_ScanIterate>,
+    /// C `const Table_ScanCleanup cleanup` (`Table.h:50`).
+    pub cleanup: Option<Table_ScanCleanup>,
+}
+
+/// Port of the `Table_scanPrepare(t_)` macro (`Table.h:55`):
+/// `As_Table(t_)->prepare ? As_Table(t_)->prepare(t_) : Table_prepareEntries(t_)`.
+/// Dispatches to the class `prepare` override, or the base
+/// [`Table_prepareEntries`] when the class sets none (the C macro's `:` arm —
+/// inlined here, which is also the fallback for a class-less table).
+///
+/// # Safety precondition
+/// `this` must be a valid non-null `*mut Table` with `klass` either null or a
+/// valid `*const TableClass` (as C dereferences `this->super.klass`).
+pub fn Table_scanPrepare(this: *mut Table) {
+    // SAFETY: `this` is a valid `*mut Table`; `klass.as_ref()` yields `None`
+    // for a null class (falling back to the base default).
+    let klass = unsafe { (*this).klass.as_ref() };
+    match klass.and_then(|k| k.prepare) {
+        Some(f) => f(this),
+        // C `: Table_prepareEntries(t_)`.
+        None => Table_prepareEntries(unsafe { &mut *this }),
+    }
+}
+
+/// Port of the `Table_scanIterate(t_)` macro (`Table.h:56`):
+/// `As_Table(t_)->iterate(t_)` — mandatory, no default. Dispatches to the
+/// class `iterate` override.
+///
+/// # Safety precondition
+/// `this` must be a valid non-null `*mut Table` whose `klass` is non-null and
+/// defines an `iterate` slot (C requires "a custom iterate method").
+pub fn Table_scanIterate(this: *mut Table) {
+    // SAFETY: `this` is a valid `*mut Table` (dispatch precondition).
+    let klass = unsafe { (*this).klass.as_ref() }
+        .expect("Table_scanIterate: table has no class (null klass)");
+    let iterate = klass
+        .iterate
+        .expect("Table_scanIterate: iterate is mandatory but unset");
+    iterate(this);
+}
+
+/// Port of the `Table_scanCleanup(t_)` macro (`Table.h:57`):
+/// `As_Table(t_)->cleanup ? As_Table(t_)->cleanup(t_) : Table_cleanupEntries(t_)`.
+/// Dispatches to the class `cleanup` override, or the base
+/// [`Table_cleanupEntries`] when the class sets none (or has no class).
+///
+/// # Safety precondition
+/// `this` must be a valid non-null `*mut Table` with `klass` either null or a
+/// valid `*const TableClass`.
+pub fn Table_scanCleanup(this: *mut Table) {
+    // SAFETY: `this` is a valid `*mut Table`; `klass.as_ref()` yields `None`
+    // for a null class (falling back to the base default).
+    let klass = unsafe { (*this).klass.as_ref() };
+    match klass.and_then(|k| k.cleanup) {
+        Some(f) => f(this),
+        // C `: Table_cleanupEntries(t_)`.
+        None => Table_cleanupEntries(unsafe { &mut *this }),
+    }
 }
 
 impl Table {
@@ -126,6 +218,7 @@ impl Table {
             stableLastIdx: 0,
             panel: core::ptr::null_mut(),
             rows_isDirty: false,
+            klass: core::ptr::null(),
         }
     }
 

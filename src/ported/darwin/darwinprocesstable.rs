@@ -38,7 +38,11 @@ use crate::ported::darwin::platform::Platform_schedulerTicksToNanoseconds;
 use crate::ported::machine::Machine;
 use crate::ported::object::Object;
 use crate::ported::process::ProcessState;
-use crate::ported::processtable::{ProcessTable, ProcessTable_getProcess, ProcessTable_init};
+use crate::ported::processtable::{
+    ProcessTable, ProcessTable_cleanupEntries, ProcessTable_getProcess, ProcessTable_init,
+    ProcessTable_prepareEntries,
+};
+use crate::ported::table::{Table, TableClass};
 
 // ── The `kinfo_proc` struct family (`sys/sysctl.h`, `sys/proc.h`, `sys/vm.h`).
 //
@@ -244,6 +248,67 @@ pub fn ProcessTable_getKInfoProcs() -> Vec<kinfo_proc> {
     CRT_fatalError("Unable to get kinfo_procs");
 }
 
+/// The `TableClass` scan-vtable slots for the Darwin process table. These are
+/// the `Table*`-downcasting glue the C `ProcessTable_class` (`ProcessTable.c:94`)
+/// stores as `.prepare`/`.iterate`/`.cleanup`: each C slot takes `Table* super`
+/// and casts it to `ProcessTable*` before delegating. They live on the `impl`
+/// (not as free fns) because they are vtable glue with no standalone C symbol
+/// — the same structural pattern as the `RowClass` slot dispatch — and each
+/// simply re-expresses the corresponding `ProcessTable_class` slot against the
+/// `#[repr(C)]` `DarwinProcessTable` layout (`super_: ProcessTable` at offset
+/// 0, whose `super_: Table` is likewise at offset 0, so the `*mut Table` →
+/// `*mut DarwinProcessTable` cast is sound).
+impl DarwinProcessTable {
+    /// C `ProcessTable_class.prepare` (`ProcessTable_prepareEntries(Table*)`):
+    /// downcast then delegate to the base [`ProcessTable_prepareEntries`].
+    ///
+    /// # Safety precondition
+    /// `super_` is the base of a live `DarwinProcessTable`.
+    fn scan_prepare(super_: *mut Table) {
+        let this = super_ as *mut DarwinProcessTable;
+        // SAFETY: `super_` is the base of a live `DarwinProcessTable`.
+        ProcessTable_prepareEntries(unsafe { &mut (*this).super_ });
+    }
+
+    /// C `ProcessTable_class.iterate` (`ProcessTable_iterateEntries(Table*)`,
+    /// which calls `ProcessTable_goThroughEntries`). The common
+    /// `ProcessTable_iterateEntries` port routes to the *stubbed* base
+    /// `ProcessTable_goThroughEntries`, so this dispatches straight to the
+    /// Darwin [`ProcessTable_goThroughEntries`] — the same platform symbol C
+    /// link-resolves.
+    ///
+    /// # Safety precondition
+    /// `super_` is the base of a live `DarwinProcessTable`.
+    fn scan_iterate(super_: *mut Table) {
+        let this = super_ as *mut DarwinProcessTable;
+        // SAFETY: `super_` is the base of a live `DarwinProcessTable`.
+        ProcessTable_goThroughEntries(unsafe { &mut *this });
+    }
+
+    /// C `ProcessTable_class.cleanup` (`ProcessTable_cleanupEntries(Table*)`):
+    /// downcast then delegate to the base [`ProcessTable_cleanupEntries`].
+    ///
+    /// # Safety precondition
+    /// `super_` is the base of a live `DarwinProcessTable`.
+    fn scan_cleanup(super_: *mut Table) {
+        let this = super_ as *mut DarwinProcessTable;
+        // SAFETY: `super_` is the base of a live `DarwinProcessTable`.
+        ProcessTable_cleanupEntries(unsafe { &mut (*this).super_ });
+    }
+}
+
+/// Port of `const TableClass ProcessTable_class` (`ProcessTable.c:94`), the
+/// class the Darwin `DarwinProcessTable` runs under (htop's Darwin table uses
+/// the common `ProcessTable_class`, whose `iterate` link-resolves to the
+/// Darwin `ProcessTable_goThroughEntries`). Only the scan-vtable half is
+/// modeled (see [`TableClass`]); the `ObjectClass super` (`extends Table`,
+/// `delete = ProcessTable_delete`) is class identity in Rust.
+pub static DarwinProcessTable_class: TableClass = TableClass {
+    prepare: Some(DarwinProcessTable::scan_prepare),
+    iterate: Some(DarwinProcessTable::scan_iterate),
+    cleanup: Some(DarwinProcessTable::scan_cleanup),
+};
+
 /// Port of `ProcessTable* ProcessTable_new(Machine* host, Hashtable*
 /// pidMatchList)` from `DarwinProcessTable.c:56`. C `xCalloc`s a
 /// `DarwinProcessTable` (zeroing `global_diff`), sets its class, runs
@@ -253,8 +318,11 @@ pub fn ProcessTable_getKInfoProcs() -> Vec<kinfo_proc> {
 /// The returned `Box<DarwinProcessTable>` is the owner (C's heap
 /// allocation); the caller derives the graph pointers `&mut box.super_`
 /// (`*mut ProcessTable`) and `&mut box.super_.super_` (`*mut Table`). The
-/// `Object_setClass` / `Class(DarwinProcess)` class tags are dropped —
-/// class identity is the Rust type (see [`ProcessTable_init`]).
+/// `Class(DarwinProcess)` row-constructor class tag is dropped (class
+/// identity is the Rust type — see [`ProcessTable_init`]), but the *table's*
+/// scan class is wired here: C's `Object_setClass(this, Class(...))` sets
+/// `super.klass`, which the scan macros dispatch through, so the base
+/// [`Table::klass`] is pointed at [`DarwinProcessTable_class`].
 pub fn ProcessTable_new(
     host: *const Machine,
     pidMatchList: Option<usize>,
@@ -265,6 +333,10 @@ pub fn ProcessTable_new(
     });
 
     ProcessTable_init(&mut this.super_, host, pidMatchList);
+
+    // Object_setClass(this, Class(...)) — wire the scan vtable so
+    // Machine_scanTables can dispatch prepare/iterate/cleanup through it.
+    this.super_.super_.klass = &DarwinProcessTable_class as *const TableClass;
 
     this
 }
