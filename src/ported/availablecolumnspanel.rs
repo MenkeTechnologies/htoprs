@@ -32,10 +32,12 @@
 //!   `Panel_done` + `free`; in Rust the owned fields are released by `Drop`,
 //!   so there is no algorithm to port (same class as `Panel_delete` /
 //!   `ListItem_delete`).
+//!
+//! # Now ported (was stubbed)
+//!
 //! - [`AvailableColumnsPanel_addDynamicScreens`] (`AvailableColumnsPanel.c:116`)
-//!   — delegates to the unported `Platform_addDynamicScreenAvailableColumns`;
-//!   [`AvailableColumnsPanel_fill`] calls it by name (chain-of-stubs), so the
-//!   `dynamicScreen` branch panics through it at runtime.
+//!   — delegates to [`Platform_addDynamicScreenAvailableColumns`], a non-PCP
+//!   `static inline` no-op (`linux/Platform.h:162`), now provided per platform.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -52,6 +54,32 @@ use crate::ported::panel::{
     Panel_getSelectedIndex, Panel_insert, Panel_new, Panel_prune, Panel_selectByTyping,
     Panel_setHeader, Panel_setSelected,
 };
+
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::platform::Platform_addDynamicScreenAvailableColumns;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_os = "dragonfly"
+)))]
+use crate::ported::unsupported::platform::Platform_addDynamicScreenAvailableColumns;
 
 /// Port of `#define ROW_DYNAMIC_FIELDS LAST_RESERVED_FIELD` (`RowField.h:53`).
 /// `LAST_RESERVED_FIELD == LAST_PROCESSFIELD` (`Process.h:229`), the reserved
@@ -280,15 +308,14 @@ pub fn AvailableColumnsPanel_addPlatformColumns(this: &mut AvailableColumnsPanel
     }
 }
 
-/// TODO: port of `static void AvailableColumnsPanel_addDynamicScreens(AvailableColumnsPanel* this,
-/// const char* screen)` from `AvailableColumnsPanel.c:116`. Delegates to
-/// `Platform_addDynamicScreenAvailableColumns(&this->super, screen)`. Blocked
-/// on the unported `Platform` layer (no ported
-/// `Platform_addDynamicScreenAvailableColumns`). Signature matches the
-/// [`AvailableColumnsPanel_fill`] call site.
+/// Port of `static void AvailableColumnsPanel_addDynamicScreens(AvailableColumnsPanel* this,
+/// const char* screen)` from `AvailableColumnsPanel.c:116`. Thin wrapper
+/// delegating to [`Platform_addDynamicScreenAvailableColumns`] (a non-PCP
+/// no-op); C passes `&this->super` (the embedded `Panel`), rendered here as
+/// `&mut this.super_`.
 pub fn AvailableColumnsPanel_addDynamicScreens(this: &mut AvailableColumnsPanel, screen: &str) {
-    let _ = (this, screen);
-    todo!("port of AvailableColumnsPanel.c:116 — needs Platform_addDynamicScreenAvailableColumns")
+    // C: Platform_addDynamicScreenAvailableColumns(&this->super, screen);
+    Platform_addDynamicScreenAvailableColumns(&mut this.super_, screen);
 }
 
 /// Port of `void AvailableColumnsPanel_fill(AvailableColumnsPanel* this,
@@ -296,9 +323,9 @@ pub fn AvailableColumnsPanel_addDynamicScreens(this: &mut AvailableColumnsPanel,
 /// `AvailableColumnsPanel.c:120`.
 ///
 /// [`Panel_prune`]s the panel, then — for a `dynamicScreen` — calls
-/// [`AvailableColumnsPanel_addDynamicScreens`] (still a stub blocked on the
-/// unported `Platform` layer, called by name per the chain-of-stubs rule);
-/// otherwise [`AvailableColumnsPanel_addPlatformColumns`] then
+/// [`AvailableColumnsPanel_addDynamicScreens`] (delegating to the non-PCP
+/// no-op [`Platform_addDynamicScreenAvailableColumns`]); otherwise
+/// [`AvailableColumnsPanel_addPlatformColumns`] then
 /// [`AvailableColumnsPanel_addDynamicColumns`]. `dynamicScreen` /
 /// `dynamicColumns` are `Option<&str>` / `Option<&Hashtable>` (the C
 /// NULL-able `const char*` / non-null-in-the-else-branch `Hashtable*`).

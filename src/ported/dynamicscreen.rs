@@ -31,14 +31,15 @@
 //!   lookup returning the matched screen's `name` (C `const char*`), or
 //!   `None` (C `NULL`) when absent.
 //!
-//! Stubbed (cannot be ported faithfully yet):
+//! Now ported (was stubbed) — thin wrappers over the per-platform
+//! `Platform_dynamicScreens*` hooks, `static inline` no-ops in the non-PCP
+//! build (`linux/Platform.h:154,164`):
 //! - `DynamicScreens_new` (`DynamicScreen.c:22`) — returns
-//!   `Platform_dynamicScreens()`; depends on the unported `Platform`
-//!   layer.
+//!   `Platform_dynamicScreens()` (null `*mut Hashtable` in this build).
 //! - `DynamicScreens_delete` (`DynamicScreen.c:26`) — calls
-//!   `Platform_dynamicScreensDone` then `Hashtable_delete`; depends on
-//!   the unported `Platform` layer (`Hashtable_delete` is itself a
-//!   `Drop`-based stub in `hashtable.rs`).
+//!   `Platform_dynamicScreensDone` then `Hashtable_delete`.
+//!
+//! Still stubbed (cannot be ported faithfully yet):
 //! - `DynamicScreen_done` (`DynamicScreen.c:33`) — `free()`s the struct's
 //!   `caption`/`fields`/`heading`/`sortKey`/`columnKeys` heap strings.
 //!   Rust owns those allocations (`Drop` frees them), so a hand-written
@@ -48,8 +49,58 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get};
+use crate::ported::hashtable::{Hashtable, Hashtable_delete, Hashtable_foreach, Hashtable_get};
 use crate::ported::object::{Object, ObjectClass, Object_class};
+
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_os = "dragonfly"
+)))]
+use crate::ported::unsupported::platform::{
+    Platform_dynamicScreens,
+    Platform_dynamicScreensDone,
+};
 
 /// Model of the C `DynamicScreen` struct (`DynamicScreen.h`). `name` is read
 /// by [`DynamicScreen_compare`] / [`DynamicScreen_lookup`]; `heading` (C
@@ -111,14 +162,34 @@ pub fn DynamicScreen_compare(key: u32, value: &DynamicScreen, iter: &mut Dynamic
     }
 }
 
-/// TODO: port of `Hashtable* DynamicScreens_new(void` from `DynamicScreen.c:22`.
-pub fn DynamicScreens_new() {
-    todo!("port of DynamicScreen.c:22: needs Platform_dynamicScreens (unported Platform layer)")
+/// Port of `Hashtable* DynamicScreens_new(void)` from `DynamicScreen.c:22`.
+/// Thin wrapper returning [`Platform_dynamicScreens`]; the non-PCP build's
+/// `static inline` returns `NULL`, so this yields a null `*mut Hashtable`
+/// (the C `Hashtable*` return maps to a raw pointer, matching
+/// `Settings.dynamicScreens: Option<*mut Hashtable>`).
+pub fn DynamicScreens_new() -> *mut Hashtable {
+    Platform_dynamicScreens()
 }
 
-/// TODO: port of `void DynamicScreens_delete(Hashtable* screens` from `DynamicScreen.c:26`.
-pub fn DynamicScreens_delete() {
-    todo!("port of DynamicScreen.c:26: needs Platform_dynamicScreensDone (unported Platform layer); Hashtable_delete is itself a Drop-based stub")
+/// Port of `void DynamicScreens_delete(Hashtable* screens)` from
+/// `DynamicScreen.c:26`. Null-guards the pointer (C `if (screens)`), runs the
+/// platform teardown ([`Platform_dynamicScreensDone`], a non-PCP no-op), then
+/// frees the table. C's `Hashtable_delete(screens)` owns and frees the heap
+/// `Hashtable*`; the ported [`Hashtable_delete`] consumes a `Hashtable` by
+/// value, so the raw pointer is reclaimed with `Box::from_raw` — the faithful
+/// analog of C's `free(screens)`. In the non-PCP build `screens` is always
+/// null, so the guarded body never runs.
+pub fn DynamicScreens_delete(screens: *mut Hashtable) {
+    // C: if (screens) {
+    if !screens.is_null() {
+        // C: Platform_dynamicScreensDone(screens);
+        Platform_dynamicScreensDone(screens);
+        // C: Hashtable_delete(screens);
+        // SAFETY: a non-null `screens` is a heap table owned by this call
+        // (C's `Hashtable*`); reclaim it and hand it to Hashtable_delete by
+        // value, which drops it (C's `free`).
+        Hashtable_delete(unsafe { *Box::from_raw(screens) });
+    }
 }
 
 /// Port of `void DynamicScreen_done(DynamicScreen* this)` from

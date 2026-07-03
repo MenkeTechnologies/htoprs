@@ -449,3 +449,44 @@ pub fn Platform_getBattery(percent: &mut f64, isOnAC: &mut ACPresence) {
         };
     }
 }
+
+/// Port of `freebsd/Platform.h:104`. Non-PCP build: no dynamic meters, so the
+/// `static inline` returns `NULL`.
+pub fn Platform_dynamicMeters() -> *mut crate::ported::hashtable::Hashtable {
+    std::ptr::null_mut()
+}
+
+/// Port of `freebsd/Platform.h:108`. `ATTR_UNUSED` no-op teardown for the
+/// non-PCP build's (nonexistent) dynamic-meter table.
+pub fn Platform_dynamicMetersDone(_table: *mut crate::ported::hashtable::Hashtable) {}
+
+/// Port of `freebsd/Platform.h:110`. `ATTR_UNUSED` no-op meter init.
+pub fn Platform_dynamicMeterInit(_meter: &mut crate::ported::meter::Meter) {}
+
+/// Port of `freebsd/Platform.h:112`. `ATTR_UNUSED` no-op value update.
+pub fn Platform_dynamicMeterUpdateValues(_meter: &mut crate::ported::meter::Meter) {}
+
+/// Port of `freebsd/Platform.h:114`. `ATTR_UNUSED` no-op display.
+pub fn Platform_dynamicMeterDisplay(
+    _meter: &crate::ported::meter::Meter,
+    _out: &mut crate::ported::richstring::RichString,
+) {
+}
+
+/// Port of `freebsd/Platform.h:130`. Non-PCP build: no dynamic screens, so the
+/// `static inline` returns `NULL`.
+pub fn Platform_dynamicScreens() -> *mut crate::ported::hashtable::Hashtable {
+    std::ptr::null_mut()
+}
+
+/// Port of `freebsd/Platform.h:140`. `ATTR_UNUSED` no-op teardown for the
+/// non-PCP build's (nonexistent) dynamic-screen table.
+pub fn Platform_dynamicScreensDone(_screens: *mut crate::ported::hashtable::Hashtable) {}
+
+/// Port of `freebsd/Platform.h:138`. `ATTR_UNUSED` no-op — non-PCP builds add
+/// no dynamic-screen columns.
+pub fn Platform_addDynamicScreenAvailableColumns(
+    _availableColumns: &mut crate::ported::panel::Panel,
+    _screen: &str,
+) {
+}

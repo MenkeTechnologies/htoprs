@@ -3,8 +3,9 @@
 //! reproduce htop's output exactly (modulo the rebrand), so `version` compares
 //! the two binaries byte-for-byte. `-h`/`--help` is deliberately NOT a parity
 //! surface: `main.rs` routes it to the branded `extensions::help` printer, an
-//! intentional divergence from htop, so those byte-parity checks are ignored
-//! (see the `help` module).
+//! intentional divergence from htop; the `help` module pins that divergence
+//! (branded output present, and it differs from htop) rather than checking
+//! parity.
 
 use super::harness::{assert_stdout_parity, canon, htoprs_bin, ref_available, run};
 
@@ -13,20 +14,38 @@ mod help {
 
     // htoprs `-h`/`--help` is intentionally routed (main.rs) to the branded
     // `extensions::help` printer — an ANSI-Shadow banner + styled sections that
-    // diverge from htop's plain help by design. Byte-parity with htop no longer
-    // applies to this surface, so these two checks are ignored rather than
-    // deleted; the faithful port lives on in `commandline::printHelpFlag` (unit
-    // tested there). `help_short_equals_long` below still holds and runs.
-    #[test]
-    #[ignore = "help is a deliberate branded extension; not a byte-parity surface"]
-    fn help_long() {
-        assert_stdout_parity(&["--help"]);
+    // diverge from htop's plain help by design (and must, since htop's help
+    // carries an upstream-specific copyright line htoprs rebrands). Byte-parity
+    // with htop therefore does NOT apply here. Rather than ignore that fact,
+    // these two tests pin the divergence: the branded help is present and, when
+    // the reference htop is available, deliberately differs from it. The
+    // faithful plain port lives on in `commandline::printHelpFlag`.
+
+    /// The branded help must carry the banner/usage and the monitoring hotkeys,
+    /// and must NOT be htop's plain help.
+    fn assert_branded_help(args: &[&str]) {
+        let out = run(&htoprs_bin(), args).stdout;
+        assert!(out.contains("USAGE:"), "branded help shows a usage line: {out:?}");
+        assert!(out.contains("MONITOR"), "branded help lists the monitoring hotkeys");
+        if let Some(refbin) = ref_available() {
+            let h = run(&refbin, args).stdout;
+            assert_ne!(
+                canon(&h),
+                canon(&out),
+                "htoprs `{}` is branded and must diverge from htop's plain help",
+                args.join(" "),
+            );
+        }
     }
 
     #[test]
-    #[ignore = "help is a deliberate branded extension; not a byte-parity surface"]
+    fn help_long() {
+        assert_branded_help(&["--help"]);
+    }
+
+    #[test]
     fn help_short() {
-        assert_stdout_parity(&["-h"]);
+        assert_branded_help(&["-h"]);
     }
 
     // Both spellings must produce identical output on the htoprs side.
@@ -76,24 +95,23 @@ mod version {
     }
 }
 
-// Not-yet-ported surfaces, pinned as documented gaps (run with `--ignored`).
-// These will go green as the `CommandLine_parseArgs` getopt switch is ported;
-// each is the exact htop behavior htoprs must eventually reproduce.
+// Behaviors driven by the ported `CommandLine.c` `parseArguments` getopt_long
+// switch: an unknown flag exits 1 with empty stdout, and `--sort-key=help`
+// lists the sort columns — both byte-parity-checked against the reference htop.
 mod gaps {
     use super::*;
 
-    // htop treats an unknown flag as a getopt error (usage to stderr, exit 1);
-    // htoprs currently prints a placeholder "being ported" line instead.
+    // htop treats an unknown flag as a getopt error (message to stderr, exit 1,
+    // empty stdout); the ported `parseArguments` getopt_long switch reproduces
+    // the empty stdout and the exit code.
     #[test]
-    #[ignore = "CommandLine_parseArgs getopt_long switch not ported yet"]
     fn unknown_flag_getopt_error() {
         assert_stdout_parity(&["--definitely-not-a-flag"]);
     }
 
-    // `--sort-key=help` prints the available sort columns and exits 0; needs the
-    // ProcessTable/columns port.
+    // `--sort-key=help` prints the available sort columns (from the ported
+    // darwin `Process_fields[]` table) and exits 0.
     #[test]
-    #[ignore = "--sort-key=help column listing not ported yet"]
     fn sort_key_help_listing() {
         assert_stdout_parity(&["--sort-key=help"]);
     }

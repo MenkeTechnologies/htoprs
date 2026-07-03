@@ -29,19 +29,19 @@
 //!   copies the caption (minus a trailing `": "`) or name into the
 //!   caller-provided buffer. Ported now.
 //!
-//! Stubbed (cannot be ported faithfully yet — specific blocker named):
+//! Now ported (was stubbed) — thin wrappers over the per-platform
+//! `Platform_dynamicMeter*` hooks, which are `static inline` no-ops in the
+//! non-PCP build (`linux/Platform.h:128-138`):
 //! - `DynamicMeters_new` (`DynamicMeter.c:39`) — returns
-//!   `Platform_dynamicMeters()`, an unported `Platform_*` fn.
+//!   `Platform_dynamicMeters()` (null `*mut Hashtable` in this build).
 //! - `DynamicMeters_delete` (`DynamicMeter.c:43`) — calls
-//!   `Platform_dynamicMetersDone` then `Hashtable_delete`; `Hashtable_delete`
-//!   is ported now, but the `Platform_*` layer is not, so this stays blocked.
+//!   `Platform_dynamicMetersDone` then `Hashtable_delete`.
 //! - `DynamicMeter_init` (`DynamicMeter.c:79`) — `static` in C; thin
 //!   wrapper over `Platform_dynamicMeterInit(meter)`.
 //! - `DynamicMeter_updateValues` (`DynamicMeter.c:83`) — `static` in C;
 //!   thin wrapper over `Platform_dynamicMeterUpdateValues(meter)`.
 //! - `DynamicMeter_display` (`DynamicMeter.c:87`) — `static` in C; thin
-//!   wrapper over `Platform_dynamicMeterDisplay(meter, out)`; also needs
-//!   the `Object`/`RichString` graph.
+//!   wrapper over `Platform_dynamicMeterDisplay(meter, out)`.
 //!
 //! `DynamicMeter_class` (the `MeterClass` vtable literal,
 //! `DynamicMeter.c:119`) and its `DynamicMeter_attributes[]` colour table
@@ -52,10 +52,85 @@
 #![allow(non_upper_case_globals)] // preserve the C-style class name `DynamicMeter_class`
 #![allow(dead_code)]
 
-use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get};
+use crate::ported::hashtable::{Hashtable, Hashtable_delete, Hashtable_foreach, Hashtable_get};
 use crate::ported::meter::Meter;
 use crate::ported::object::{Object, ObjectClass, Object_class};
+use crate::ported::richstring::RichString;
 use crate::ported::xutils::String_safeStrncpy;
+
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+use crate::ported::solaris::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_os = "dragonfly"
+)))]
+use crate::ported::unsupported::platform::{
+    Platform_dynamicMeters,
+    Platform_dynamicMetersDone,
+    Platform_dynamicMeterInit,
+    Platform_dynamicMeterUpdateValues,
+    Platform_dynamicMeterDisplay,
+};
 
 /// Subset of htop's `DynamicMeter` struct (`DynamicMeter.h:17`).
 ///
@@ -123,19 +198,34 @@ pub fn DynamicMeter_compare(key: u32, meter: &DynamicMeter, iter: &mut DynamicIt
     }
 }
 
-/// TODO: port of `Hashtable* DynamicMeters_new(void)` from
-/// `DynamicMeter.c:39`. Returns `Platform_dynamicMeters()`, an unported
-/// `Platform_*` fn — no faithful body without the platform layer.
-pub fn DynamicMeters_new() {
-    todo!("port of DynamicMeter.c:39 — needs Platform_dynamicMeters()")
+/// Port of `Hashtable* DynamicMeters_new(void)` from `DynamicMeter.c:39`.
+/// Thin wrapper returning [`Platform_dynamicMeters`]; the non-PCP build's
+/// `static inline` returns `NULL`, so this yields a null `*mut Hashtable`
+/// (the C `Hashtable*` return maps to a raw pointer, matching
+/// `Settings.dynamicMeters: Option<*mut Hashtable>`).
+pub fn DynamicMeters_new() -> *mut Hashtable {
+    Platform_dynamicMeters()
 }
 
-/// TODO: port of `void DynamicMeters_delete(Hashtable* dynamics)` from
-/// `DynamicMeter.c:43`. Calls `Platform_dynamicMetersDone(dynamics)` then
-/// `Hashtable_delete(dynamics)`; `Hashtable_delete` is ported now, but the
-/// `Platform_*` layer is unported, so this stays blocked.
-pub fn DynamicMeters_delete() {
-    todo!("port of DynamicMeter.c:43 — needs Platform_dynamicMetersDone")
+/// Port of `void DynamicMeters_delete(Hashtable* dynamics)` from
+/// `DynamicMeter.c:43`. Null-guards the pointer (C `if (dynamics)`), runs the
+/// platform teardown ([`Platform_dynamicMetersDone`], a non-PCP no-op), then
+/// frees the table. C's `Hashtable_delete(dynamics)` takes ownership of the
+/// heap `Hashtable*` and frees it; the ported [`Hashtable_delete`] consumes a
+/// `Hashtable` by value, so the raw pointer is reclaimed with
+/// `Box::from_raw` — the faithful analog of C's `free(dynamics)`. In the
+/// non-PCP build `dynamics` is always null, so the guarded body never runs.
+pub fn DynamicMeters_delete(dynamics: *mut Hashtable) {
+    // C: if (dynamics) {
+    if !dynamics.is_null() {
+        // C: Platform_dynamicMetersDone(dynamics);
+        Platform_dynamicMetersDone(dynamics);
+        // C: Hashtable_delete(dynamics);
+        // SAFETY: a non-null `dynamics` is a heap table owned by this call
+        // (C's `Hashtable*`); reclaim it and hand it to Hashtable_delete by
+        // value, which drops it (C's `free`).
+        Hashtable_delete(unsafe { *Box::from_raw(dynamics) });
+    }
 }
 
 /// Port of `bool DynamicMeter_search(Hashtable* dynamics, const char* name,
@@ -200,26 +290,29 @@ pub fn DynamicMeter_lookup(dynamics: &Hashtable, key: u32) -> Option<&str> {
         .map(|meter| meter.name.as_str())
 }
 
-/// TODO: port of `static void DynamicMeter_init(Meter* meter)` from
-/// `DynamicMeter.c:79`. Thin wrapper over `Platform_dynamicMeterInit(meter)`,
-/// an unported `Platform_*` fn.
-pub fn DynamicMeter_init() {
-    todo!("port of DynamicMeter.c:79 — needs Platform_dynamicMeterInit")
+/// Port of `static void DynamicMeter_init(Meter* meter)` from
+/// `DynamicMeter.c:79`. Thin wrapper over [`Platform_dynamicMeterInit`] (a
+/// non-PCP no-op).
+pub fn DynamicMeter_init(meter: &mut Meter) {
+    Platform_dynamicMeterInit(meter);
 }
 
-/// TODO: port of `static void DynamicMeter_updateValues(Meter* meter)` from
+/// Port of `static void DynamicMeter_updateValues(Meter* meter)` from
 /// `DynamicMeter.c:83`. Thin wrapper over
-/// `Platform_dynamicMeterUpdateValues(meter)`, an unported `Platform_*` fn.
-pub fn DynamicMeter_updateValues() {
-    todo!("port of DynamicMeter.c:83 — needs Platform_dynamicMeterUpdateValues")
+/// [`Platform_dynamicMeterUpdateValues`] (a non-PCP no-op).
+pub fn DynamicMeter_updateValues(meter: &mut Meter) {
+    Platform_dynamicMeterUpdateValues(meter);
 }
 
-/// TODO: port of `static void DynamicMeter_display(const Object* cast, RichString* out)`
-/// from `DynamicMeter.c:87`. Casts `cast` to `Meter*` and calls
-/// `Platform_dynamicMeterDisplay(meter, out)`; needs the unported
-/// `Platform_*` layer plus the `Object`/`RichString` graph.
-pub fn DynamicMeter_display() {
-    todo!("port of DynamicMeter.c:87 — needs Platform_dynamicMeterDisplay + RichString")
+/// Port of `static void DynamicMeter_display(const Object* cast, RichString* out)`
+/// from `DynamicMeter.c:87`. C casts the `Object*` to `const Meter*` and
+/// forwards to [`Platform_dynamicMeterDisplay`] (a non-PCP no-op); the port
+/// takes the already-typed `meter: &Meter` receiver directly — the sibling
+/// panel/meter display-port convention — so the C upcast+downcast collapses
+/// to the concrete reference.
+pub fn DynamicMeter_display(meter: &Meter, out: &mut RichString) {
+    // C: const Meter* meter = (const Meter*)cast;
+    Platform_dynamicMeterDisplay(meter, out);
 }
 
 /// Port of `static const char* DynamicMeter_getCaption(const Meter* this)`

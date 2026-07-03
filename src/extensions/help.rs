@@ -79,6 +79,17 @@ pub fn print_help(name: &str) {
     println!("{}", opt("    --readonly", "Disable all system and process changing features"));
     println!();
 
+    println!("{}", section("MONITOR"));
+    println!("  htoprs-original capabilities — press inside the running TUI:");
+    println!("{}", opt("f", "Fuzzy process finder"));
+    println!("{}", opt("r", "Regex / saved-named filters"));
+    println!("{}", opt("d", "Snapshot + diff the process table"));
+    println!("{}", opt("o", "Export the table to JSON / CSV"));
+    println!("{}", opt("A", "Threshold alerts (recolor firing rows)"));
+    println!("{}", opt("G", "Braille CPU history graph"));
+    println!("{}", opt("v", "Per-PID CPU sparkline column"));
+    println!();
+
     println!("{}", section("INFO"));
     println!("{}", opt("-h, --help", "Print this help screen"));
     println!("{}", opt("-V, --version", "Print version info"));

@@ -23,6 +23,9 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or("htoprs");
 
+    // htoprs routes -h/--help and -V/--version to the branded help/version
+    // screens (an intentional divergence from htop's plain printers), so
+    // short-circuit those before the faithful getopt parse below.
     for arg in &args[1..] {
         match arg.as_str() {
             "-V" | "--version" => {
@@ -35,6 +38,15 @@ fn main() {
             }
             _ => {}
         }
+    }
+
+    // Faithful CommandLine.c getopt_long parse for every other flag: validates
+    // values, handles `--sort-key=help`, and rejects unknown options exactly as
+    // htop does. STATUS_OK_EXIT → exit 0 (already printed), ERROR_EXIT → exit 1.
+    match commandline::parseArguments(name, &args) {
+        (commandline::CommandLineStatus::OkExit, _) => return,
+        (commandline::CommandLineStatus::ErrorExit, _) => std::process::exit(1),
+        (commandline::CommandLineStatus::Ok, _flags) => {}
     }
 
     run_tui();
