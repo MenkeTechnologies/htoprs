@@ -62,6 +62,12 @@ pub struct DynamicScreen {
     pub name: String,
     /// C `char* heading` — user-settable more readable name (`NULL` ⇒ `None`).
     pub heading: Option<String>,
+    /// C `char* columnKeys` — the space-separated field keys the screen shows
+    /// (`NULL` ⇒ `None`); read by [`Settings_newDynamicScreen`] to seed the
+    /// screen's sort key and field list.
+    pub columnKeys: Option<String>,
+    /// C `int direction` — the screen's default sort direction (1 asc / -1 desc).
+    pub direction: i32,
 }
 
 /// Adapter class descriptor that lets a [`DynamicScreen`] be stored in
@@ -188,6 +194,8 @@ mod tests {
         DynamicScreen {
             name: name.to_string(),
             heading: None,
+            columnKeys: None,
+            direction: 1,
         }
     }
 

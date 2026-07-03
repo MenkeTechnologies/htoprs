@@ -1291,6 +1291,8 @@ mod tests {
         let ds = DynamicScreen {
             name: "pods".to_string(),
             heading: None,
+            columnKeys: None,
+            direction: 1,
         };
 
         ScreenNamesPanel_fill(&mut panel, Some(&ds));
@@ -1357,6 +1359,8 @@ mod tests {
         let mut ds = DynamicScreen {
             name: "pods".to_string(),
             heading: None,
+            columnKeys: None,
+            direction: 1,
         };
         let item = ScreenTabListItem_new("Pods", &mut ds as *mut DynamicScreen);
         assert_eq!(item.super_.value, "Pods");
@@ -1674,6 +1678,8 @@ mod tests {
         let mut ds_pods = DynamicScreen {
             name: "pods".to_string(),
             heading: None,
+            columnKeys: None,
+            direction: 1,
         };
         let mut tabs = tabs_panel(&mut names);
         Panel_add(

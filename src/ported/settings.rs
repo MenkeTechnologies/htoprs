@@ -78,6 +78,7 @@ use crate::ported::crt::ColorScheme;
 use crate::ported::dynamiccolumn::{DynamicColumn_lookup, DynamicColumn_search};
 use crate::ported::hashtable::Hashtable;
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+use crate::ported::dynamicscreen::DynamicScreen;
 use crate::ported::machine::{Machine, TableHandle};
 use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
 use crate::ported::process::{ProcessField, DEFAULT_HIGHLIGHT_SECS};
@@ -800,16 +801,44 @@ pub fn Settings_newScreen(this: &mut Settings, defaults: &ScreenDefaults) -> usi
     Settings_initScreenSettings(this, ss, defaults.columns.unwrap_or(""))
 }
 
-/// TODO: port of `ScreenSettings* Settings_newDynamicScreen(Settings* this,
+/// Port of `ScreenSettings* Settings_newDynamicScreen(Settings* this,
 /// const char* tab, const DynamicScreen* screen, Table* table)` from
-/// `Settings.c:286`. Blocked: the C reads `screen->columnKeys` and
-/// `screen->direction`, but the ported [`crate::ported::dynamicscreen::DynamicScreen`]
-/// models only `name`/`heading` (the other members are omitted because no
-/// ported path read them), and the `Table*` parameter has no owned model
-/// beyond the [`TableHandle`] raw pointer. Left stubbed until `DynamicScreen`
-/// gains `columnKeys`/`direction`.
-pub fn Settings_newDynamicScreen() {
-    todo!("port of Settings.c:286 — needs DynamicScreen.columnKeys/.direction")
+/// `Settings.c:286`. Builds a `ScreenSettings` for a runtime-discovered
+/// dynamic screen: resolve the sort key from `screen->columnKeys` against the
+/// borrowed `dynamicColumns` table, seed heading/dynamic-name/table/direction,
+/// and hand off to [`Settings_initScreenSettings`] (which reads the field list
+/// from `columnKeys`). Returns the new screen's index (the C returns the
+/// `ScreenSettings*`; the port models the store as the `screens` `Vec`, so the
+/// index is the stable handle — matching [`Settings_newScreen`]). The C
+/// `Table*` maps to the borrowed [`TableHandle`] raw pointer.
+pub fn Settings_newDynamicScreen(
+    this: &mut Settings,
+    tab: &str,
+    screen: &DynamicScreen,
+    table: Option<TableHandle>,
+) -> usize {
+    let column_keys = screen.columnKeys.as_deref().unwrap_or("");
+    // int sortKey = toFieldIndex(this->dynamicColumns, screen->columnKeys);
+    let sortKey = match this.dynamicColumns {
+        Some(p) => toFieldIndex(unsafe { &*p }, column_keys),
+        None => -1,
+    };
+    // *ss = (ScreenSettings){ .heading = tab, .dynamic = screen->name,
+    //   .table = table, .fields = xCalloc(LAST_PROCESSFIELD),
+    //   .direction = screen->direction, .treeDirection = 1, .sortKey = sortKey };
+    // The `fields` array is filled by Settings_initScreenSettings' readFields.
+    let ss = ScreenSettings {
+        heading: Some(tab.to_string()),
+        dynamic: Some(screen.name.clone()),
+        table,
+        fields: Vec::new(),
+        direction: screen.direction,
+        treeDirection: 1,
+        sortKey,
+        ..Default::default()
+    };
+    // return Settings_initScreenSettings(ss, this, screen->columnKeys);
+    Settings_initScreenSettings(this, ss, column_keys)
 }
 
 /// Port of `void ScreenSettings_delete(ScreenSettings* this)` from
