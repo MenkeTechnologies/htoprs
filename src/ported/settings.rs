@@ -43,17 +43,20 @@
 //!   writes to `stderr`).
 //! * `Settings_new` — the top-level constructor (env/`getpwuid`/`realpath`
 //!   config-path resolution, `mkdir`, defaults). Its body is a faithful
-//!   standalone port; it chain-calls the still-stubbed `Settings_read` /
-//!   `Settings_defaultScreens` (below), which it reaches at runtime.
+//!   standalone port; it chain-calls `Settings_read` / `Settings_defaultScreens`
+//!   (below), both now ported, so it boots without panicking.
+//! * `Settings_defaultScreens` — builds the platform default screens. The
+//!   darwin `Platform_defaultScreens` table (one `Main` entry) is inlined
+//!   (the darwin `Platform` screens array is not separately ported); the
+//!   empty-on-darwin `Platform_defaultDynamicScreens` is skipped.
+//! * `Settings_read` — opens the config file (writability probe + read-only
+//!   fallback), parses each `key=value` line, and dispatches to the ported
+//!   field/meter/screen handlers. The `.dynamic` branch sets `screen->dynamic`
+//!   but skips the unported `Platform_addDynamicScreen`; unknown keys are
+//!   ignored, as in C.
 //!
 //! Still stubbed (the specific blocker is named on each stub below):
 //!
-//! * `Settings_defaultScreens` — needs the unported `Platform_defaultScreens`
-//!   / `Platform_numberOfDefaultScreens` / `Platform_defaultDynamicScreens`.
-//! * `Settings_read` — every branch is portable except the `.dynamic` config
-//!   branch, which calls the unported `Platform_addDynamicScreen` (no
-//!   platform module defines it), plus the legacy branches that call the
-//!   blocked `Settings_defaultScreens`.
 //! * `Settings_newDynamicScreen` — the ported `DynamicScreen` models only
 //!   `name`/`heading`, but the C reads `columnKeys`/`direction`.
 //!
@@ -71,13 +74,14 @@ use std::ffi::CStr;
 use std::os::unix::fs::DirBuilderExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::ported::crt::ColorScheme;
 use crate::ported::dynamiccolumn::{DynamicColumn_lookup, DynamicColumn_search};
 use crate::ported::hashtable::Hashtable;
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::machine::{Machine, TableHandle};
 use crate::ported::meter::{BAR_METERMODE, TEXT_METERMODE};
 use crate::ported::process::{ProcessField, DEFAULT_HIGHLIGHT_SECS};
-use crate::ported::xutils::{String_eq, String_split, String_trim};
+use crate::ported::xutils::{String_eq, String_split, String_startsWith, String_trim};
 
 /// Port of `#define DEFAULT_DELAY 15` (`Settings.h:21`).
 const DEFAULT_DELAY: i32 = 15;
@@ -818,37 +822,401 @@ pub fn ScreenSettings_delete(this: ScreenSettings) {
     let _ = this;
 }
 
-/// TODO: port of `static ScreenSettings* Settings_defaultScreens(Settings*
-/// this)` from `Settings.c:309`. Blocked: needs the unported platform
-/// tables `Platform_numberOfDefaultScreens` / `Platform_defaultScreens`
-/// (iterated into [`Settings_newScreen`]) and `Platform_defaultDynamicScreens`
-/// — none of which exist in any ported platform module. Signature kept so
-/// the (chain-stubbed) callers [`Settings_read`]/[`Settings_new`] type-check;
-/// returns the index of `screens[0]`.
+/// Port of `static ScreenSettings* Settings_defaultScreens(Settings* this)`
+/// from `Settings.c:309`. If any screen already exists it returns the first
+/// (`screens[0]`, index `0`); otherwise it builds the platform default
+/// screens via [`Settings_newScreen`] and returns the first.
+///
+/// The C iterates `Platform_defaultScreens[0..Platform_numberOfDefaultScreens]`.
+/// The darwin table (`darwin/Platform.c:67`) is a single entry
+/// (`{ "Main", "PID USER PRIORITY NICE M_VIRT M_RESIDENT STATE PERCENT_CPU
+/// PERCENT_MEM TIME Command", "PERCENT_CPU" }`); it is inlined here because
+/// the darwin `Platform` screens array is not separately ported. The C
+/// `Platform_defaultDynamicScreens(this)` call is a no-op on stock darwin
+/// (no dynamic screens without PCP) and is skipped — see port note below.
+/// Returns `0` (the index of `screens[0]`), the pointer-graph analog of the
+/// C `ScreenSettings*` return.
 pub fn Settings_defaultScreens(this: &mut Settings) -> usize {
-    let _ = this;
-    todo!("port of Settings.c:309 — needs Platform_defaultScreens/Platform_numberOfDefaultScreens/Platform_defaultDynamicScreens (unported)")
+    // if (this->nScreens) return this->screens[0];
+    if !this.screens.is_empty() {
+        return 0;
+    }
+    // for (i = 0; i < Platform_numberOfDefaultScreens; i++)
+    //    Settings_newScreen(this, &Platform_defaultScreens[i]);
+    // darwin/Platform.c:67 — one entry, inlined (darwin Platform screens
+    // table not separately ported).
+    Settings_newScreen(
+        this,
+        &ScreenDefaults {
+            name: Some("Main"),
+            columns: Some(
+                "PID USER PRIORITY NICE M_VIRT M_RESIDENT STATE PERCENT_CPU PERCENT_MEM TIME Command",
+            ),
+            sortKey: Some("PERCENT_CPU"),
+            treeSortKey: None,
+        },
+    );
+    // Port note: Platform_defaultDynamicScreens(this) is empty on stock
+    // darwin (no dynamic screens without PCP) — skipped.
+    0
 }
 
-/// TODO: port of `static bool Settings_read(Settings* this, const char*
-/// fileName, const Machine* host, bool checkWritability)` from
-/// `Settings.c:320`. The `open`/`fstat` writability probe, per-line
-/// `key=value` parse, and dispatch into [`toFieldIndex`] /
-/// [`ScreenSettings_readFields`] / [`Settings_newScreen`] /
-/// [`Settings_readMeters`] are all portable, but the `.dynamic` config
-/// branch (`Settings.c:560`) calls `Platform_addDynamicScreen(screen)`,
-/// which is unported in every platform module and cannot be referenced from
-/// `settings.rs` — and the legacy/no-screen branches call the (blocked)
-/// [`Settings_defaultScreens`]. Left stubbed on `Platform_addDynamicScreen`.
-/// Signature kept so [`Settings_new`] type-checks.
+/// Port of `static bool Settings_read(Settings* this, const char* fileName,
+/// const Machine* host, bool checkWritability)` from `Settings.c:320`.
+///
+/// Opens `fileName`, determines `writeConfig`, and parses each `key=value`
+/// line, dispatching to the ported field/meter/screen handlers. The C
+/// `open(O_RDWR|O_NOCTTY|O_NOFOLLOW)` writability probe and the read-only
+/// fallback are reproduced via `OpenOptions` with the same `custom_flags`.
+/// The C `String_readLine` loop is a byte-line iteration over the file text;
+/// `String_split(line, '=')` is the ported [`String_split`], so `option[1]`
+/// is the text between the first and second `=` exactly as in C.
+///
+/// The `.dynamic` config branch (`Settings.c:557`) sets `screen->dynamic`
+/// (portable) but its `Platform_addDynamicScreen(screen)` call is skipped —
+/// see the port note — because no platform module ports that symbol. Every
+/// other branch is faithful; the `#ifdef HAVE_LIBHWLOC topology_affinity`
+/// branch is omitted (that build flag is not defined). Unknown option keys
+/// are ignored, matching the C `else`-less if-chain.
 pub fn Settings_read(
     this: &mut Settings,
     fileName: &str,
     host: &Machine,
     checkWritability: bool,
 ) -> bool {
-    let _ = (this, fileName, host, checkWritability);
-    todo!("port of Settings.c:320 — needs Platform_addDynamicScreen (unported)")
+    use std::fs::OpenOptions;
+    use std::io::{ErrorKind, Read};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    // int fd = -1; const char* fopen_mode = "r+";
+    let mut file: Option<std::fs::File> = None;
+
+    if checkWritability {
+        // do { fd = open(fileName, O_RDWR | O_NOCTTY | O_NOFOLLOW); }
+        // while (fd < 0 && errno == EINTR);
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NOFOLLOW)
+            .open(fileName)
+        {
+            Ok(f) => {
+                // this->writeConfig = !err && S_ISREG(sb.st_mode)
+                //   && (sb.st_mode & S_IWUSR) && sb.st_uid == geteuid();
+                this.writeConfig = match f.metadata() {
+                    Ok(sb) => {
+                        sb.file_type().is_file()
+                            && (sb.permissions().mode() & (libc::S_IWUSR as u32)) != 0
+                            && sb.uid() == unsafe { libc::geteuid() }
+                    }
+                    Err(_) => false,
+                };
+                file = Some(f);
+            }
+            Err(e) => {
+                // this->writeConfig = (errno == ENOENT);
+                this.writeConfig = e.kind() == ErrorKind::NotFound;
+                // if (errno != EACCES && errno != EPERM && errno != EROFS)
+                //    return false;
+                match e.raw_os_error() {
+                    Some(code)
+                        if code == libc::EACCES
+                            || code == libc::EPERM
+                            || code == libc::EROFS => {}
+                    _ => return false,
+                }
+            }
+        }
+    }
+
+    // If opening for read & write is not needed or fails, open for read only.
+    // if (fd < 0) { fopen_mode = "r"; fd = open(fileName, O_RDONLY | O_NOCTTY); }
+    if file.is_none() {
+        match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(fileName)
+        {
+            Ok(f) => file = Some(f),
+            // if (fd < 0) return false;
+            Err(_) => return false,
+        }
+    }
+
+    let mut fp = match file {
+        Some(f) => f,
+        None => return false,
+    };
+
+    // Slurp the file; the per-line loop below plays the role of the C
+    // String_readLine(fp) loop.
+    let mut contents = String::new();
+    if fp.read_to_string(&mut contents).is_err() {
+        return false;
+    }
+
+    // ScreenSettings* screen = NULL; — modeled as an index into `this.screens`.
+    let mut screen: Option<usize> = None;
+    let mut didReadMeters = false;
+    let mut didReadAny = false;
+
+    for line in contents.lines() {
+        didReadAny = true;
+
+        // char** option = String_split(line, '=', &nOptions);
+        let option = String_split(line, '=');
+        // if (nOptions < 2) continue;
+        if option.len() < 2 {
+            continue;
+        }
+        let key = option[0].as_str();
+        let val = option[1].as_str();
+
+        if String_eq(key, "config_reader_min_version") {
+            this.config_version = atoi(val);
+            if this.config_version > CONFIG_READER_MIN_VERSION {
+                // the version of the config file on disk is newer than we can read
+                eprintln!("WARNING: {fileName} specifies configuration format");
+                eprintln!(
+                    "         version v{}, but this htop binary only supports up to version v{}.",
+                    this.config_version, CONFIG_READER_MIN_VERSION
+                );
+                eprintln!(
+                    "         The configuration file will be downgraded to v{CONFIG_READER_MIN_VERSION} when htop exits."
+                );
+                return false;
+            }
+        } else if String_eq(key, "fields") && this.config_version <= 2 {
+            // old (no screen) naming, for backwards compatibility
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            if let Some(p) = this.dynamicColumns {
+                ScreenSettings_readFields(&mut this.screens[idx], unsafe { &*p }, val);
+            }
+        } else if String_eq(key, "sort_key") && this.config_version <= 2 {
+            // "+1" is for compatibility with the older enum format.
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].sortKey = atoi(val) + 1;
+        } else if String_eq(key, "tree_sort_key") && this.config_version <= 2 {
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].treeSortKey = atoi(val) + 1;
+        } else if String_eq(key, "sort_direction") && this.config_version <= 2 {
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].direction = atoi(val);
+        } else if String_eq(key, "tree_sort_direction") && this.config_version <= 2 {
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].treeDirection = atoi(val);
+        } else if String_eq(key, "tree_view") && this.config_version <= 2 {
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].treeView = atoi(val) != 0;
+        } else if String_eq(key, "tree_view_always_by_pid") && this.config_version <= 2 {
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].treeViewAlwaysByPID = atoi(val) != 0;
+        } else if String_eq(key, "all_branches_collapsed") && this.config_version <= 2 {
+            let idx = Settings_defaultScreens(this);
+            screen = Some(idx);
+            this.screens[idx].allBranchesCollapsed = atoi(val) != 0;
+        } else if String_eq(key, "hide_kernel_threads") {
+            this.hideKernelThreads = atoi(val) != 0;
+        } else if String_eq(key, "hide_userland_threads") {
+            this.hideUserlandThreads = atoi(val) != 0;
+        } else if String_eq(key, "hide_running_in_container") {
+            this.hideRunningInContainer = atoi(val) != 0;
+        } else if String_eq(key, "shadow_other_users") {
+            this.shadowOtherUsers = atoi(val) != 0;
+        } else if String_eq(key, "show_thread_names") {
+            this.showThreadNames = atoi(val) != 0;
+        } else if String_eq(key, "show_program_path") {
+            this.showProgramPath = atoi(val) != 0;
+        } else if String_eq(key, "highlight_base_name") {
+            this.highlightBaseName = atoi(val) != 0;
+        } else if String_eq(key, "highlight_deleted_exe") {
+            this.highlightDeletedExe = atoi(val) != 0;
+        } else if String_eq(key, "shadow_distribution_path_prefix") {
+            this.shadowDistPathPrefix = atoi(val) != 0;
+        } else if String_eq(key, "highlight_megabytes") {
+            this.highlightMegabytes = atoi(val) != 0;
+        } else if String_eq(key, "highlight_threads") {
+            this.highlightThreads = atoi(val) != 0;
+        } else if String_eq(key, "highlight_changes") {
+            this.highlightChanges = atoi(val) != 0;
+        } else if String_eq(key, "highlight_changes_delay_secs") {
+            this.highlightDelaySecs = atoi(val).clamp(1, 24 * 60 * 60);
+        } else if String_eq(key, "find_comm_in_cmdline") {
+            this.findCommInCmdline = atoi(val) != 0;
+        } else if String_eq(key, "strip_exe_from_cmdline") {
+            this.stripExeFromCmdline = atoi(val) != 0;
+        } else if String_eq(key, "show_merged_command") {
+            this.showMergedCommand = atoi(val) != 0;
+        } else if String_eq(key, "header_margin") {
+            this.headerMargin = atoi(val) != 0;
+        } else if String_eq(key, "screen_tabs") {
+            this.screenTabs = atoi(val) != 0;
+        } else if String_eq(key, "expand_system_time") {
+            // Compatibility option.
+            this.detailedCPUTime = atoi(val) != 0;
+        } else if String_eq(key, "detailed_cpu_time") {
+            this.detailedCPUTime = atoi(val) != 0;
+        } else if String_eq(key, "cpu_count_from_one") {
+            this.countCPUsFromOne = atoi(val) != 0;
+        } else if String_eq(key, "cpu_count_from_zero") {
+            // old (inverted) naming, for backwards compatibility
+            this.countCPUsFromOne = atoi(val) == 0;
+        } else if String_eq(key, "show_cpu_smt_labels") {
+            this.showCPUSMTLabels = atoi(val) != 0;
+        } else if String_eq(key, "show_cpu_usage") {
+            this.showCPUUsage = atoi(val) != 0;
+        } else if String_eq(key, "show_cpu_frequency") {
+            this.showCPUFrequency = atoi(val) != 0;
+        } else if String_eq(key, "show_cached_memory") {
+            this.showCachedMemory = atoi(val) != 0;
+        } else if String_eq(key, "show_cpu_temperature") {
+            // BUILD_WITH_CPU_TEMP
+            this.showCPUTemperature = atoi(val) != 0;
+        } else if String_eq(key, "degree_fahrenheit") {
+            // BUILD_WITH_CPU_TEMP
+            this.degreeFahrenheit = atoi(val) != 0;
+        } else if String_eq(key, "update_process_names") {
+            this.updateProcessNames = atoi(val) != 0;
+        } else if String_eq(key, "account_guest_in_cpu_meter") {
+            this.accountGuestInCPUMeter = atoi(val) != 0;
+        } else if String_eq(key, "delay") {
+            this.delay = atoi(val).clamp(1, 255);
+        } else if String_eq(key, "color_scheme") {
+            this.colorScheme = atoi(val);
+            if this.colorScheme < 0
+                || this.colorScheme >= ColorScheme::LAST_COLORSCHEME as i32
+            {
+                this.colorScheme = 0;
+            }
+        } else if String_eq(key, "enable_mouse") {
+            // HAVE_GETMOUSE
+            this.enableMouse = atoi(val) != 0;
+        } else if String_eq(key, "header_layout") {
+            // isdigit(option[1][0]) ? (HeaderLayout)atoi(option[1])
+            //                       : HeaderLayout_fromName(option[1]);
+            let layout = if val.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+                let n = atoi(val);
+                if n >= 0 && (n as usize) < HeaderLayout::LAST_HEADER_LAYOUT as usize {
+                    HEADER_LAYOUTS_IN_ORDER[n as usize]
+                } else {
+                    // Out of range: falls through to the HF_TWO_50_50 fixup.
+                    HeaderLayout::HF_INVALID
+                }
+            } else {
+                HeaderLayout_fromName(val)
+            };
+            // if (hLayout < 0 || hLayout >= LAST_HEADER_LAYOUT) hLayout = HF_TWO_50_50;
+            this.hLayout = if (layout as i32) < 0
+                || (layout as i32) >= HeaderLayout::LAST_HEADER_LAYOUT as i32
+            {
+                HeaderLayout::HF_TWO_50_50
+            } else {
+                layout
+            };
+            // free(hColumns); hColumns = xCalloc(HeaderLayout_getColumns(hLayout), ...);
+            this.hColumns =
+                vec![MeterColumnSetting::default(); HeaderLayout_getColumns(this.hLayout)];
+        } else if String_eq(key, "left_meters") {
+            Settings_readMeters(this, val, 0);
+            didReadMeters = true;
+        } else if String_eq(key, "right_meters") {
+            Settings_readMeters(this, val, 1);
+            didReadMeters = true;
+        } else if String_eq(key, "left_meter_modes") {
+            Settings_readMeterModes(this, val, 0);
+            didReadMeters = true;
+        } else if String_eq(key, "right_meter_modes") {
+            Settings_readMeterModes(this, val, 1);
+            didReadMeters = true;
+        } else if String_startsWith(key, "column_meters_") {
+            // C passes atoi() into the `unsigned int column` param (negatives
+            // wrap 32-bit); Settings_readMeters then clamps to the last column.
+            let col = atoi(&key["column_meters_".len()..]) as u32 as usize;
+            Settings_readMeters(this, val, col);
+            didReadMeters = true;
+        } else if String_startsWith(key, "column_meter_modes_") {
+            let col = atoi(&key["column_meter_modes_".len()..]) as u32 as usize;
+            Settings_readMeterModes(this, val, col);
+            didReadMeters = true;
+        } else if String_eq(key, "hide_function_bar") {
+            this.hideFunctionBar = atoi(val);
+        } else if String_startsWith(key, "screen:") {
+            // screen = Settings_newScreen(this,
+            //    &(ScreenDefaults){ .name = option[0]+7, .columns = option[1] });
+            let name = &key[7..];
+            let idx = Settings_newScreen(
+                this,
+                &ScreenDefaults {
+                    name: Some(name),
+                    columns: Some(val),
+                    sortKey: None,
+                    treeSortKey: None,
+                },
+            );
+            screen = Some(idx);
+        } else if String_eq(key, ".sort_key") {
+            if let Some(idx) = screen {
+                let k = match this.dynamicColumns {
+                    Some(p) => toFieldIndex(unsafe { &*p }, val),
+                    None => -1,
+                };
+                this.screens[idx].sortKey = if k > 0 { k } else { PID };
+            }
+        } else if String_eq(key, ".tree_sort_key") {
+            if let Some(idx) = screen {
+                let k = match this.dynamicColumns {
+                    Some(p) => toFieldIndex(unsafe { &*p }, val),
+                    None => -1,
+                };
+                this.screens[idx].treeSortKey = if k > 0 { k } else { PID };
+            }
+        } else if String_eq(key, ".sort_direction") {
+            if let Some(idx) = screen {
+                this.screens[idx].direction = atoi(val);
+            }
+        } else if String_eq(key, ".tree_sort_direction") {
+            if let Some(idx) = screen {
+                this.screens[idx].treeDirection = atoi(val);
+            }
+        } else if String_eq(key, ".tree_view") {
+            if let Some(idx) = screen {
+                this.screens[idx].treeView = atoi(val) != 0;
+            }
+        } else if String_eq(key, ".tree_view_always_by_pid") {
+            if let Some(idx) = screen {
+                this.screens[idx].treeViewAlwaysByPID = atoi(val) != 0;
+            }
+        } else if String_eq(key, ".all_branches_collapsed") {
+            if let Some(idx) = screen {
+                this.screens[idx].allBranchesCollapsed = atoi(val) != 0;
+            }
+        } else if String_eq(key, ".dynamic") {
+            if let Some(idx) = screen {
+                // free_and_xStrdup(&screen->dynamic, option[1]);
+                this.screens[idx].dynamic = Some(val.to_string());
+                // Port note: dynamic screens need Platform_addDynamicScreen
+                // (unported) — the Platform_addDynamicScreen(screen) call is
+                // skipped.
+            }
+        }
+        // (unknown option keys are ignored, as in the C else-less if-chain)
+    }
+    // fclose(fp): `fp` drops at scope end.
+
+    if !didReadMeters || !Settings_validateMeters(this) {
+        Settings_defaultMeters(this, host);
+    }
+    if this.screens.is_empty() {
+        Settings_defaultScreens(this);
+    }
+    didReadAny
 }
 
 /// Port of `static void writeFields(OutputFunc of, FILE* fp, const
@@ -2223,5 +2591,40 @@ mod tests {
         let mut out = String::new();
         writeFields(&mut out, &[], &ht, true, ';');
         assert_eq!(out, ";");
+    }
+
+    #[test]
+    fn read_missing_file_returns_false_and_sets_write_config() {
+        // Settings.c:328 — open fails with ENOENT: writeConfig = true and the
+        // function returns false (the common first-run path that Settings_new
+        // falls through to defaults on).
+        let mut s = Settings::default();
+        // A path that cannot exist under a normal filesystem.
+        let path = "/nonexistent/htoprs-test/does-not-exist/htoprc";
+        let host = host_with_cpus(4);
+
+        let ok = Settings_read(&mut s, path, &host, /*checkWritability*/ true);
+
+        assert!(!ok, "missing file must return false");
+        assert!(s.writeConfig, "ENOENT must set writeConfig = true");
+    }
+
+    #[test]
+    fn default_screens_creates_main_screen() {
+        // Settings.c:309 — empty settings: one "Main" screen is created and
+        // index 0 is returned.
+        let mut s = Settings::default();
+        assert!(s.screens.is_empty());
+
+        let idx = Settings_defaultScreens(&mut s);
+
+        assert_eq!(idx, 0);
+        assert_eq!(s.screens.len(), 1);
+        assert_eq!(s.screens[0].heading.as_deref(), Some("Main"));
+
+        // Idempotent: a second call returns the existing screen[0], no new push.
+        let idx2 = Settings_defaultScreens(&mut s);
+        assert_eq!(idx2, 0);
+        assert_eq!(s.screens.len(), 1);
     }
 }

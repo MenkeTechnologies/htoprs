@@ -524,9 +524,8 @@ pub fn MetersPanel_eventHandler(this: &mut MetersPanel, ch: i32) -> HandlerResul
 
         let scr = unsafe { &mut *this.scr };
         {
-            let header = scr
-                .header
-                .as_mut()
+            // SAFETY: scr->header outlives this panel; NULL only before wiring.
+            let header = unsafe { scr.header.as_mut() }
                 .expect("MetersPanel_eventHandler: scr->header is NULL");
             Header_calculateHeight(header);
         }

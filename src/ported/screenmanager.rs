@@ -10,12 +10,15 @@
 //! `Machine*` and `State*` back-pointers. The [`ScreenManager`] struct here
 //! models the layout rectangle, the `panels` as a `Vec<Box<dyn PanelClass>>`,
 //! the count, the focus-change flag, the tab `name`, and the three
-//! back-pointers as owned `Option<T>` fields — the same convention
-//! `machine.rs` uses for C's `Settings*` back-pointer (`settings:
-//! Option<Settings>`). `header` is `Option<Header>` because C null-checks it
-//! (`if (this->header)`); `state` is dereferenced unconditionally in C, so the
-//! layout ops `.unwrap()` it (matching machine.rs's always-present
-//! `settings.as_ref().unwrap()` convention). `host` is stored by
+//! back-pointers as raw pointers (`header: *mut Header`, `host: *mut Machine`,
+//! `state: *mut State`) — matching C's `Header* Machine* State*`. The three
+//! objects are owned by the caller (main.rs / htop.c), which builds the run's
+//! shared object graph (the `DarwinMachine` host, the process `MainPanel`, the
+//! `State` whose `host`/`mainPanel`/`header` point back into the same objects)
+//! and outlives the ScreenManager for the run. `header` is `NULL`-able in C
+//! (`if (this->header)`), so the null-guards become `!this.header.is_null()`;
+//! `state` is dereferenced unconditionally in C, so the layout ops deref it
+//! directly (`unsafe { &*this.state }`). All three are stored by
 //! [`ScreenManager_new`].
 //!
 //! The C `Vector* panels` holds `Panel*` element pointers that are really
@@ -102,8 +105,9 @@ const ESC: i32 = 27;
 const KEY_Q: i32 = b'q' as i32;
 
 /// Model of htop's `struct ScreenManager_` (`ScreenManager.h:19`). The C
-/// `Header*`/`Machine*`/`State*` back-pointers become owned `Option<T>`
-/// fields (see the module docs); `panels` is the `Vec` analog of the C
+/// `Header*`/`Machine*`/`State*` back-pointers stay raw pointers (`*mut Header`,
+/// `*mut Machine`, `*mut State`), aliasing objects the caller owns for the
+/// run (see the module docs); `panels` is the `Vec` analog of the C
 /// `Vector* panels`, each element a `Box<dyn PanelClass>` — the boxed subclass
 /// panel the C `Vector` stored as a `Panel*`.
 pub struct ScreenManager {
@@ -115,9 +119,9 @@ pub struct ScreenManager {
     pub panelCount: u32,
     pub panels: Vec<Box<dyn PanelClass>>,
     pub name: Option<String>,
-    pub header: Option<Header>,
-    pub host: Option<Machine>,
-    pub state: Option<State>,
+    pub header: *mut Header,
+    pub host: *mut Machine,
+    pub state: *mut State,
 }
 
 impl ScreenManager {
@@ -136,9 +140,9 @@ impl ScreenManager {
             panelCount: 0,
             panels: Vec::new(),
             name: None,
-            header: None,
-            host: None,
-            state: None,
+            header: core::ptr::null_mut(),
+            host: core::ptr::null_mut(),
+            state: core::ptr::null_mut(),
         }
     }
 }
@@ -147,13 +151,16 @@ impl ScreenManager {
 /// State* state, bool owner)` from `ScreenManager.c:31`.
 ///
 /// Sets the layout defaults (`x1=y1=x2=0`, `y2=-1`, `allowFocusChange`) and
-/// stores the three back-pointers. The `owner` arg only typed the C
+/// stores the three back-pointers verbatim. The `owner` arg only typed the C
 /// `Vector` (whether it frees its items); a `Vec<Box<dyn PanelClass>>` always
 /// owns, so it is dropped, exactly as [`Panel_new`](crate::ported::panel::Panel_new)
-/// drops its `type`/`owner`. `header` is `NULL`-able (`Option<Header>`);
-/// `host`/`state` are always-present pointers taken by value and wrapped in
-/// `Some`.
-pub fn ScreenManager_new(header: Option<Header>, host: Machine, state: State) -> ScreenManager {
+/// drops its `type`/`owner`. `header`/`host`/`state` are `Header*`/`Machine*`/
+/// `State*` aliasing objects the caller owns for the run (`header` may be NULL).
+pub fn ScreenManager_new(
+    header: *mut Header,
+    host: *mut Machine,
+    state: *mut State,
+) -> ScreenManager {
     ScreenManager {
         x1: 0,
         y1: 0,
@@ -164,8 +171,8 @@ pub fn ScreenManager_new(header: Option<Header>, host: Machine, state: State) ->
         panels: Vec::new(),
         name: None,
         header,
-        host: Some(host),
-        state: Some(state),
+        host,
+        state,
     }
 }
 
@@ -173,8 +180,11 @@ pub fn ScreenManager_new(header: Option<Header>, host: Machine, state: State) ->
 /// `ScreenManager.c:47`: `Vector_delete(this->panels); free(this);`. Taking
 /// `this` by value consumes the manager; the `panels`
 /// `Vec<Box<dyn PanelClass>>` owns its boxed panels (the C owner-`Vector_delete`),
-/// so dropping it runs each panel's teardown, and the owned
-/// `name`/`header`/`host`/`state` fields drop with the struct free.
+/// so dropping it runs each panel's teardown, and the owned `name` drops with
+/// the struct free. `header`/`host`/`state` are borrowed raw pointers aliasing
+/// caller-owned objects (the C `Header*`/`Machine*`/`State*` the caller frees),
+/// so they are not touched here — matching C `ScreenManager_delete`, which
+/// frees only `this->panels` and `this`.
 pub fn ScreenManager_delete(this: ScreenManager) {
     let _ = this;
 }
@@ -197,15 +207,18 @@ pub fn ScreenManager_add(this: &mut ScreenManager, item: Box<dyn PanelClass>, si
 /// Port of `static int header_height(const ScreenManager* this)` from
 /// `ScreenManager.c:60`. Returns `0` when `state->hideMeters` is set, else
 /// `header->height` when a header is present, else `0`. C dereferences
-/// `state` unconditionally, so `state` is `.unwrap()`ed here (matching
-/// `machine.rs`'s always-present `settings.as_ref().unwrap()` convention).
+/// `state` unconditionally, so `state` is dereferenced directly here; `header`
+/// is `NULL`-checked (`if (this->header)`) via `!this.header.is_null()`.
 pub fn header_height(this: &ScreenManager) -> i32 {
-    if this.state.as_ref().unwrap().hideMeters {
+    // SAFETY: `state`/`header` alias objects the caller owns for the run
+    // (see the module docs); `state` is non-null whenever the layout ops run
+    // (C dereferences it unconditionally), and `header` is null-guarded below.
+    if unsafe { &*this.state }.hideMeters {
         return 0;
     }
 
-    if let Some(header) = &this.header {
-        return header.height;
+    if !this.header.is_null() {
+        return unsafe { &*this.header }.height;
     }
 
     0
@@ -354,7 +367,9 @@ pub fn checkRecalculation(
     // if (*redraw) { Table_rebuildPanel(host->activeTable);
     //               if (!this->state->hideMeters) Header_draw(this->header); }
     if *redraw {
-        if let Some(table) = this.host.as_ref().unwrap().activeTable {
+        // SAFETY: `host` aliases the caller-owned `Machine` for the run (see
+        // the module docs); C dereferences `host->activeTable` unconditionally.
+        if let Some(table) = unsafe { &*this.host }.activeTable {
             // C dereferences `host->activeTable` (a `Table*`); the ported
             // `activeTable` is the same raw `*mut Table` handle, and
             // `Table_rebuildPanel` takes `&mut Table`.
@@ -362,12 +377,14 @@ pub fn checkRecalculation(
                 Table_rebuildPanel(&mut *table);
             }
         }
-        if !this.state.as_ref().unwrap().hideMeters {
-            if let Some(header) = this.header.as_mut() {
-                let mut out = io::stdout().lock();
-                Header_draw(header, &mut out);
-                let _ = out.flush();
-            }
+        // SAFETY: `state` aliases the caller-owned `State` for the run.
+        if !unsafe { &*this.state }.hideMeters && !this.header.is_null() {
+            // SAFETY: `header` is non-null (guarded above), aliasing the
+            // caller-owned `Header`.
+            let header = unsafe { &mut *this.header };
+            let mut out = io::stdout().lock();
+            Header_draw(header, &mut out);
+            let _ = out.flush();
         }
     }
 
@@ -448,7 +465,9 @@ pub fn drawTab(y: i32, x: &mut i32, l: i32, name: &str, cur: bool) -> bool {
 /// NULL-terminated `screens[]` walk becomes a `Vec` iteration; a NULL
 /// `heading` (never produced for a real screen) maps to the empty string.
 pub fn ScreenManager_drawScreenTabs(this: &ScreenManager) {
-    let host = this.host.as_ref().unwrap();
+    // SAFETY: `host` aliases the caller-owned `Machine` for the run (see the
+    // module docs); C dereferences `this->host->settings` unconditionally.
+    let host = unsafe { &*this.host };
     let settings = host.settings.as_ref().unwrap();
     let screens = &settings.screens;
     let cur = settings.ssIndex as i32;
@@ -499,11 +518,13 @@ pub fn ScreenManager_drawScreenTabs(this: &ScreenManager) {
 pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_redraw: bool) {
     // Settings* settings = this->host->settings;
     let (screen_tabs, hide_function_bar) = {
-        let settings = this.host.as_ref().unwrap().settings.as_ref().unwrap();
+        // SAFETY: `host`/`state` alias caller-owned objects for the run (see
+        // the module docs); C dereferences both unconditionally here.
+        let settings = unsafe { &*this.host }.settings.as_ref().unwrap();
         // Port of `State_hideFunctionBar` (Action.h:45), inlined at the call
         // site (the `static inline` is not a ported symbol).
         let hfb = settings.hideFunctionBar;
-        let hide_selection = this.state.as_ref().unwrap().hideSelection;
+        let hide_selection = unsafe { &*this.state }.hideSelection;
         (
             settings.screenTabs,
             hfb == 2 || (hfb == 1 && hide_selection),
@@ -514,11 +535,13 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
         ScreenManager_drawScreenTabs(this);
     }
 
-    let hide_selection = this.state.as_ref().unwrap().hideSelection;
+    // SAFETY: `state` aliases the caller-owned `State` for the run.
+    let hide_selection = unsafe { &*this.state }.hideSelection;
     // (Panel*)this->state->mainPanel — the base panel of the MainPanel, or a
     // null pointer when `mainPanel` is NULL.
     let main_panel_base: *const Panel = {
-        let mp = this.state.as_ref().unwrap().mainPanel;
+        // SAFETY: `state` aliases the caller-owned `State` for the run.
+        let mp = unsafe { &*this.state }.mainPanel;
         if mp.is_null() {
             core::ptr::null()
         } else {
@@ -601,7 +624,7 @@ pub fn ScreenManager_run(
     this.name = name.map(|s| s.to_string());
 
     'main: while !quit {
-        if this.header.is_some() {
+        if !this.header.is_null() {
             checkRecalculation(
                 this,
                 &mut oldTime,
@@ -616,8 +639,10 @@ pub fn ScreenManager_run(
         if redraw || force_redraw {
             ScreenManager_drawPanels(this, focus, force_redraw);
             force_redraw = false;
-            if this.host.as_ref().unwrap().iterationsRemaining != -1 {
-                let host = this.host.as_mut().unwrap();
+            // SAFETY: `host` aliases the caller-owned `Machine` for the run
+            // (see the module docs); C dereferences it unconditionally here.
+            if unsafe { &*this.host }.iterationsRemaining != -1 {
+                let host = unsafe { &mut *this.host };
                 host.iterationsRemaining -= 1;
                 if host.iterationsRemaining == 0 {
                     quit = true;
@@ -747,7 +772,9 @@ pub fn ScreenManager_run(
                 }
                 HASH => {
                     {
-                        let st = this.state.as_mut().unwrap();
+                        // SAFETY: `state` aliases the caller-owned `State` for
+                        // the run (see the module docs).
+                        let st = unsafe { &mut *this.state };
                         st.hideMeters = !st.hideMeters;
                     }
                     ScreenManager_resize(this);
@@ -833,40 +860,51 @@ mod tests {
 
     #[test]
     fn new_sets_layout_defaults_and_stores_pointers() {
-        let sm = ScreenManager_new(Some(header(4)), Machine::default(), state(false));
+        // The three pointed-to objects are owned in the test scope and outlive
+        // `sm`, exactly as the caller (main.rs) owns them for the run.
+        let mut hdr = header(4);
+        let mut host = Machine::default();
+        let mut st = state(false);
+        let sm = ScreenManager_new(&mut hdr, &mut host, &mut st);
         assert_eq!((sm.x1, sm.y1, sm.x2, sm.y2), (0, 0, 0, -1));
         assert!(sm.allowFocusChange);
         assert_eq!(sm.panelCount, 0);
         assert!(sm.panels.is_empty());
         assert!(sm.name.is_none());
-        assert!(sm.host.is_some());
-        assert!(sm.state.is_some());
-        assert_eq!(sm.header.as_ref().unwrap().height, 4);
+        assert!(!sm.host.is_null());
+        assert!(!sm.state.is_null());
+        // SAFETY: `sm.header` aliases `hdr`, alive for the test body.
+        assert_eq!(unsafe { &*sm.header }.height, 4);
     }
 
     // ── header_height ─────────────────────────────────────────────────
 
     #[test]
     fn header_height_zero_when_meters_hidden() {
+        let mut st = state(true); // hideMeters
+        let mut hdr = header(7);
         let mut sm = ScreenManager::empty();
-        sm.state = Some(state(true)); // hideMeters
-        sm.header = Some(header(7));
+        sm.state = &mut st;
+        sm.header = &mut hdr;
         assert_eq!(header_height(&sm), 0);
     }
 
     #[test]
     fn header_height_returns_header_height_when_present() {
+        let mut st = state(false);
+        let mut hdr = header(7);
         let mut sm = ScreenManager::empty();
-        sm.state = Some(state(false));
-        sm.header = Some(header(7));
+        sm.state = &mut st;
+        sm.header = &mut hdr;
         assert_eq!(header_height(&sm), 7);
     }
 
     #[test]
     fn header_height_zero_when_no_header() {
+        let mut st = state(false);
         let mut sm = ScreenManager::empty();
-        sm.state = Some(state(false));
-        sm.header = None;
+        sm.state = &mut st;
+        // header stays null (C NULL) — header_height returns 0.
         assert_eq!(header_height(&sm), 0);
     }
 
@@ -874,8 +912,9 @@ mod tests {
 
     #[test]
     fn insert_first_panel_sizes_to_available_height() {
+        let mut st = state(false); // header_height 0 (no header)
         let mut sm = ScreenManager::empty();
-        sm.state = Some(state(false)); // header_height 0 (no header)
+        sm.state = &mut st;
         let p = Panel_new(0, 0, 10, 5, None);
         ScreenManager_insert(&mut sm, Box::new(p), 10, 0);
         assert_eq!(sm.panelCount, 1);
@@ -891,8 +930,9 @@ mod tests {
 
     #[test]
     fn insert_negative_size_fills_remaining_width() {
+        let mut st = state(false);
         let mut sm = ScreenManager::empty();
-        sm.state = Some(state(false));
+        sm.state = &mut st;
         let p = Panel_new(0, 0, 3, 5, None);
         ScreenManager_insert(&mut sm, Box::new(p), 0, 0); // size <= 0 -> COLS - x1 + x2 - lastX
                                                           // lastX 0 (idx 0), so width = COLS.
@@ -901,8 +941,9 @@ mod tests {
 
     #[test]
     fn add_appends_and_places_right_of_predecessor() {
+        let mut st = state(false);
         let mut sm = ScreenManager::empty();
-        sm.state = Some(state(false));
+        sm.state = &mut st;
         ScreenManager_add(&mut sm, Box::new(Panel_new(0, 0, 5, 5, None)), 5);
         // second panel: lastX = panels[0].x + panels[0].w + 1 = 0 + 5 + 1
         ScreenManager_add(&mut sm, Box::new(Panel_new(0, 0, 8, 5, None)), 8);
@@ -916,8 +957,9 @@ mod tests {
 
     #[test]
     fn resize_relays_panels_across_the_width() {
+        let mut st = state(false); // header_height 0
         let mut sm = sm_with_panels(&[10, 20]);
-        sm.state = Some(state(false)); // header_height 0
+        sm.state = &mut st;
         ScreenManager_resize(&mut sm);
         let lines = Ncurses::lines();
         let cols = Ncurses::cols();
@@ -936,8 +978,9 @@ mod tests {
 
     #[test]
     fn resize_single_panel_takes_full_width() {
+        let mut st = state(false);
         let mut sm = sm_with_panels(&[10]);
-        sm.state = Some(state(false));
+        sm.state = &mut st;
         ScreenManager_resize(&mut sm);
         // no non-last panels; lastX stays 0, single panel takes full COLS.
         assert_eq!(sm.panels[0].as_panel().w, Ncurses::cols());

@@ -486,9 +486,9 @@ pub fn DisplayOptionsPanel_eventHandler(this: &mut DisplayOptionsPanel, ch: i32)
         //    Header_reinit(header); Header_updateData(header); Header_draw(header);
         let scr = unsafe { &mut *this.scr };
         {
-            let header = scr
-                .header
-                .as_mut()
+            // SAFETY: scr->header points to the caller-owned Header that
+            // outlives this panel; NULL only before wiring.
+            let header = unsafe { scr.header.as_mut() }
                 .expect("DisplayOptionsPanel_eventHandler: scr->header is NULL");
             Header_calculateHeight(header);
             Header_reinit(header);

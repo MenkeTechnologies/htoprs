@@ -1,17 +1,22 @@
 //! htoprs entry point.
 //!
-//! The interactive TUI, process table, meters, and platform data
-//! collection are not yet ported, so the `-V` / `-h` flags are handled
-//! here directly (via the ported `CommandLine.c` printers) and any
-//! other invocation reports that the interface is not yet available.
-//! The full `CommandLine_parseArgs` getopt_long switch is a later port.
+//! `-V` / `-h` are handled directly via the ported `CommandLine.c` printers.
+//! Any other invocation launches the interactive TUI by assembling the same
+//! runtime object graph htop's `CommandLine_run` builds (`CommandLine.c:339`)
+//! and driving the ported [`ScreenManager_run`] main loop.
+//!
+//! The C run graph is a web of shared pointers (`State` points at the
+//! `Machine`/`MainPanel`/`Header`; the `ScreenManager`, `Header`, and
+//! `ProcessTable` all hold a `Machine*`; etc.). Those objects live until the
+//! process exits, so the long-lived ones are heap-allocated with
+//! [`Box::into_raw`] (leaked for the program's lifetime, exactly as the C heap
+//! allocations live until `exit`) and wired together with raw pointers — the
+//! faithful analog of the C pointer graph.
 
 use htoprs::ported::commandline;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // htop's `printVersionFlag`/`printHelpFlag` take the program name
-    // (argv[0] basename); default to "htoprs" when unavailable.
     let name = args
         .first()
         .and_then(|p| p.rsplit('/').next())
@@ -32,7 +37,129 @@ fn main() {
         }
     }
 
-    eprintln!("htoprs: port in progress — the interactive interface is not yet available");
-    eprintln!("htoprs: run 'htoprs --help' for the command-line options being ported");
+    run_tui();
+}
+
+/// Restore the terminal (leave raw mode / alternate screen / show cursor) on a
+/// panic so a stub hit mid-render does not leave the tty garbled.
+#[cfg(target_os = "macos")]
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use crossterm::{cursor, execute, terminal};
+        let _ = terminal::disable_raw_mode();
+        let mut out = std::io::stdout();
+        let _ = execute!(out, terminal::LeaveAlternateScreen, cursor::Show);
+        default(info);
+    }));
+}
+
+#[cfg(target_os = "macos")]
+fn run_tui() {
+    use htoprs::ported::action::State;
+    use htoprs::ported::crt::{CRT_done, CRT_init};
+    use htoprs::ported::darwin::darwinmachine::{DarwinMachine, Machine_new, Machine_scan};
+    use htoprs::ported::darwin::darwinprocesstable::{DarwinProcessTable, ProcessTable_new};
+    use htoprs::ported::darwin::platform::Platform_init;
+    use htoprs::ported::dynamiccolumn::DynamicColumns_new;
+    use htoprs::ported::hashtable::{Hashtable, Hashtable_new};
+    use htoprs::ported::header::{Header, Header_new, Header_populateFromSettings};
+    use htoprs::ported::machine::{
+        Machine, Machine_populateTablesFromSettings, Machine_scanTables, Machine_setTablesPanel,
+    };
+    use htoprs::ported::mainpanel::{
+        MainPanel, MainPanel_new, MainPanel_setState, MainPanel_updateLabels,
+    };
+    use htoprs::ported::panel::Panel;
+    use htoprs::ported::screenmanager::{ScreenManager_add, ScreenManager_new, ScreenManager_run};
+    use htoprs::ported::settings::Settings_new;
+    use htoprs::ported::table::Table;
+
+    install_panic_hook();
+
+    // Platform_init() — mach-tick / scheduler-tick calibration (darwin).
+    Platform_init();
+
+    // Machine_new(usersTable, userId): userId (uid_t)-1 == "all users".
+    let host_raw: *mut DarwinMachine = Box::into_raw(Machine_new(None, u32::MAX));
+    // SAFETY: host_raw is a fresh leaked allocation; the embedded base Machine
+    // is at offset 0 (`super_`), matching the C `&this->super` upcast.
+    let host_ptr: *mut Machine = unsafe { &mut (*host_raw).super_ };
+
+    // ProcessTable_new(host, pidMatchList).
+    let pt_raw: *mut DarwinProcessTable =
+        Box::into_raw(ProcessTable_new(host_ptr as *const Machine, None));
+    // SAFETY: DarwinProcessTable -> ProcessTable (super_) -> Table (super_).
+    let pt_table: *mut Table = unsafe { &mut (*pt_raw).super_.super_ };
+
+    // Dynamic tables: DynamicColumns_new is ported; dynamic meters/screens are
+    // empty on stock darwin (no PCP), so an empty owner Hashtable is faithful.
+    let dm: *mut Hashtable = Box::into_raw(Box::new(Hashtable_new(7, true)));
+    let dc: *mut Hashtable = Box::into_raw(Box::new(DynamicColumns_new()));
+    let ds: *mut Hashtable = Box::into_raw(Box::new(Hashtable_new(7, true)));
+
+    // Settings_new(host, dm, dc, ds).
+    // SAFETY: host_raw is live; the &Machine borrow ends with this call.
+    let settings = Settings_new(unsafe { &(*host_raw).super_ }, Some(dm), Some(dc), Some(ds));
+    let delay = settings.delay;
+    let color_scheme = settings.colorScheme;
+    let h_layout = settings.hLayout;
+
+    // Machine_populateTablesFromSettings moves `settings` into host->settings.
+    // SAFETY: host_raw is live and unaliased for this &mut.
+    Machine_populateTablesFromSettings(unsafe { &mut (*host_raw).super_ }, settings, pt_table);
+
+    // Header_new(host, hLayout) + Header_populateFromSettings.
+    let header_raw: *mut Header =
+        Box::into_raw(Box::new(Header_new(host_ptr as *const Machine, h_layout)));
+    // SAFETY: header_raw and host->settings are both live.
+    Header_populateFromSettings(unsafe { &mut *header_raw }, unsafe {
+        (*host_raw).super_.settings.as_ref().unwrap()
+    });
+
+    // CRT_init: enters raw mode + alternate screen (crossterm).
+    CRT_init(delay, color_scheme, false, true, false);
+
+    // MainPanel_new() — build the process panel, its bars, and key bindings.
+    let mut panel_box: Box<MainPanel> = Box::new(MainPanel_new());
+    let panel_ptr: *mut MainPanel = &mut *panel_box;
+    // SAFETY: panel_ptr is live; its embedded Panel is at `super_`.
+    Machine_setTablesPanel(unsafe { &mut (*host_raw).super_ }, unsafe {
+        &mut (*panel_ptr).super_ as *mut Panel
+    });
+    MainPanel_updateLabels(&mut panel_box, false, false);
+
+    // State: the shared UI state the handlers and ScreenManager dereference.
+    let state_raw: *mut State = Box::into_raw(Box::new(State {
+        host: host_ptr,
+        mainPanel: panel_ptr,
+        header: header_raw,
+        failedUpdate: None,
+        pauseUpdate: false,
+        hideSelection: false,
+        hideMeters: false,
+    }));
+    MainPanel_setState(&mut panel_box, state_raw);
+
+    // ScreenManager_new(header, host, state); add the MainPanel (moves the box;
+    // panel_ptr stays valid — a Box's pointee address is move-stable).
+    let mut scr = ScreenManager_new(header_raw, host_ptr, state_raw);
+    ScreenManager_add(&mut scr, panel_box, -1);
+
+    // Initial data collection.
+    // SAFETY: host_raw is live and unaliased for these &mut calls.
+    Machine_scan(unsafe { &mut *host_raw });
+    Machine_scanTables(unsafe { &mut (*host_raw).super_ });
+
+    // The main loop.
+    ScreenManager_run(&mut scr, None, None, None);
+
+    CRT_done();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_tui() {
+    eprintln!("htoprs: the interactive TUI is wired for macOS (darwin) in this build");
+    eprintln!("htoprs: run 'htoprs --help' for the command-line options");
     std::process::exit(1);
 }

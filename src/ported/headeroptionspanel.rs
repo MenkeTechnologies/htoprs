@@ -186,9 +186,8 @@ pub fn HeaderOptionsPanel_eventHandler(this: &mut HeaderOptionsPanel, ch: i32) -
             // itself owns). They alias distinct objects, so the two `&mut`s below
             // do not overlap.
             let scr = unsafe { &mut *this.scr };
-            let header = scr
-                .header
-                .as_mut()
+            // SAFETY: scr->header outlives this panel; NULL only before wiring.
+            let header = unsafe { scr.header.as_mut() }
                 .expect("HeaderOptionsPanel_eventHandler: scr->header is NULL");
             Header_setLayout(header, layout);
 
@@ -249,9 +248,8 @@ pub fn HeaderOptionsPanel_new(
     // SAFETY: `scr` is the non-owning back-pointer just stored; the
     // `ScreenManager` it aliases outlives this panel, and its `header` is
     // always present at construction.
-    let headerLayout = unsafe { &*scr }
-        .header
-        .as_ref()
+    // SAFETY: scr and scr->header are caller-owned and outlive this panel.
+    let headerLayout = unsafe { (*scr).header.as_ref() }
         .expect("HeaderOptionsPanel_new: scr->header is NULL")
         .headerLayout as usize;
     let any: &mut dyn Any = this.super_.items[headerLayout].object_mut();
