@@ -9,7 +9,9 @@
 //! `readStatFile`, `readStatusFile`, `readStatmFile`, `readOomData`,
 //! `readAutogroup`, `readCwd`, `readIoFile`, `readCGroupFile`,
 //! `readSecattrData`, `LinuxProcessList_readExe`,
-//! `LinuxProcessTable_readCmdlineFile`, `LinuxProcessList_readComm`.
+//! `LinuxProcessTable_readCmdlineFile`, `LinuxProcessList_readComm`,
+//! `readSmapsFile` (with `skipEndOfLine`), `updateTtyDevice` (with glibc
+//! `major`/`minor`).
 //!
 //! Still stubbed (each fn's doc gives the precise blocker): the scan drivers
 //! `LinuxProcessTable_recurseProcTree` / `ProcessTable_goThroughEntries`
@@ -17,11 +19,10 @@
 //! `processtable.rs`); `updateUser` (opaque `usersTable`); `readMaps` +
 //! `calcLibSize_helper` (`Hashtable` is ported, but `Hashtable_get` is
 //! immutable so the in-place `libdata->size` aggregate can't be updated, and
-//! `LibraryData` isn't modeled as an `Object`); `readSmapsFile`
-//! (`skipEndOfLine` unported); `updateTtyDevice` (`major`/`minor` macros
-//! unported); `ProcessTable_delete` (pure `free()` teardown → `Drop`); and
-//! `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader needing `skipEndOfLine` +
-//! unmodeled `ctid`/`vpid` fields).
+//! `LibraryData` isn't modeled as an `Object`);
+//! `ProcessTable_delete` (pure `free()` teardown → `Drop`); and
+//! `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader needing the unmodeled
+//! `ctid`/`vpid` fields).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -1098,27 +1099,147 @@ fn LinuxProcessTable_readStatmFile(
     r == 7
 }
 
-/// TODO: port of `static bool LinuxProcessTable_readSmapsFile(LinuxProcess*
+/// Port of `static inline bool skipEndOfLine(FILE* fp)` from `XUtils.h:162`
+/// (attributed to `LinuxProcessTable.c` in the C-name snapshot; both consumers
+/// — [`LinuxProcessTable_readSmapsFile`] and the still-stubbed
+/// `LinuxProcessTable_readOpenVZData` — live here). Consumes bytes until a
+/// `\n` is seen, returning `true`; returns `false` at EOF without one. The C
+/// `fgets(buffer, 1024, fp)` + `strchr(buffer, '\n')` chunk loop is a plain
+/// "read until newline", modeled here as a byte pull on the shared reader so
+/// the file position advances exactly as the C `FILE*` would.
+fn skipEndOfLine<R: std::io::Read>(fp: &mut R) -> bool {
+    let mut b = [0u8; 1];
+    loop {
+        match fp.read(&mut b) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) => {
+                if b[0] == b'\n' {
+                    return true;
+                }
+            }
+        }
+    }
+}
+
+/// Port of `static bool LinuxProcessTable_readSmapsFile(LinuxProcess*
 /// process, openat_arg_t procFd, bool haveSmapsRollup)` from
-/// `LinuxProcessTable.c:897`. Blocked: the partial-line handling calls
-/// `skipEndOfLine(FILE*)` (`generic`/`FileUtils`), which is not ported in the
-/// tree, so the `fgets` chunk loop cannot be faithfully reproduced. Stays
-/// stubbed until `skipEndOfLine` lands.
-pub fn LinuxProcessTable_readSmapsFile() {
-    todo!("port of LinuxProcessTable.c:897 — needs skipEndOfLine ported")
+/// `LinuxProcessTable.c:897`. Opens `smaps_rollup` (or `smaps`), zeroes the
+/// three PSS/swap counters, then walks the file `fgets`-chunk by chunk,
+/// summing the `Pss:`/`Swap:`/`SwapPss:` values via `strtol`. The kernel
+/// returns data in `PAGE_SIZE`-or-less chunks, so a `char buffer[256]` that
+/// fills without a `\n` is a partial line whose tail is discarded by
+/// [`skipEndOfLine`].
+///
+/// The C `fgets(buffer, sizeof(buffer), fp)` (≤255 chars, stops after `\n`) is
+/// reproduced by a manual 255-byte window over a shared [`BufReader`] — not
+/// [`BufRead::read_line`], which would swallow the partial-line case — so the
+/// `skipEndOfLine` branch fires exactly as in the C. `strtol(buffer + N, NULL,
+/// 10)` becomes [`strtol10`] on the byte slice after the key prefix.
+pub fn LinuxProcessTable_readSmapsFile(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    haveSmapsRollup: bool,
+) -> bool {
+    use std::io::Read;
+
+    // strtol(s, NULL, 10) on a byte slice: skip leading whitespace, take an
+    // optional sign and the leading decimal run.
+    fn strtol10(s: &[u8]) -> i64 {
+        let mut i = 0;
+        while i < s.len() && (s[i] == b' ' || s[i] == b'\t') {
+            i += 1;
+        }
+        let mut neg = false;
+        if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
+            neg = s[i] == b'-';
+            i += 1;
+        }
+        let mut val: i64 = 0;
+        while i < s.len() && s[i].is_ascii_digit() {
+            val = val * 10 + (s[i] - b'0') as i64;
+            i += 1;
+        }
+        if neg {
+            -val
+        } else {
+            val
+        }
+    }
+
+    //http://elixir.free-electrons.com/linux/v4.10/source/fs/proc/task_mmu.c#L719
+    //kernel will return data in chunks of size PAGE_SIZE or less.
+    let fp = match fopenat(
+        procFd,
+        if haveSmapsRollup {
+            c"smaps_rollup"
+        } else {
+            c"smaps"
+        },
+        "r",
+    ) {
+        Some(f) => f,
+        None => return false,
+    };
+    let mut fp = std::io::BufReader::new(fp);
+
+    process.m_pss = 0;
+    process.m_swap = 0;
+    process.m_psswp = 0;
+
+    // char buffer[256]; while (fgets(buffer, sizeof(buffer), fp)) { ... }
+    // fgets reads at most 255 bytes and stops after a '\n'.
+    let mut byte = [0u8; 1];
+    loop {
+        let mut buffer: Vec<u8> = Vec::with_capacity(256);
+        let mut sawNewline = false;
+        while buffer.len() < 255 {
+            match fp.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    buffer.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        sawNewline = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // fgets returns NULL only when nothing was read (EOF).
+        if buffer.is_empty() {
+            break;
+        }
+
+        if !sawNewline {
+            // Partial line, skip to end of this line
+            if !skipEndOfLine(&mut fp) {
+                return false;
+            }
+        }
+
+        let line = String::from_utf8_lossy(&buffer);
+        if String_startsWith(&line, "Pss:") {
+            process.m_pss += strtol10(&buffer[4..]);
+        } else if String_startsWith(&line, "Swap:") {
+            process.m_swap += strtol10(&buffer[5..]);
+        } else if String_startsWith(&line, "SwapPss:") {
+            process.m_psswp += strtol10(&buffer[8..]);
+        }
+    }
+
+    // fclose(fp) — fp dropped here.
+    true
 }
 
 /// TODO: port of `static void LinuxProcessTable_readOpenVZData(LinuxProcess*
 /// process, openat_arg_t procFd)` from `LinuxProcessTable.c:934` (guarded by
 /// `#ifdef HAVE_OPENVZ`; only reached from the equally-guarded call site in
-/// `recurseProcTree`). Blocked on three counts: (1) the partial-line handling
-/// calls `skipEndOfLine(FILE*)` (`generic`/`FileUtils`), which is not ported;
-/// (2) it reads/writes `process->ctid` (a `char*`) and `process->vpid`, but
-/// neither field is modeled on [`LinuxProcess`] (only `m_lrs` et al. exist);
-/// and (3) this build has not committed to the `HAVE_OPENVZ` variant. Stays
-/// stubbed until those land.
+/// `recurseProcTree`). Blocked on two counts: (1) it reads/writes
+/// `process->ctid` (a `char*`) and `process->vpid`, but neither field is
+/// modeled on [`LinuxProcess`] (only `m_lrs` et al. exist); and (2) this build
+/// has not committed to the `HAVE_OPENVZ` variant. (The partial-line
+/// `skipEndOfLine` dependency is now ported.) Stays stubbed until those land.
 pub fn LinuxProcessTable_readOpenVZData() {
-    todo!("port of LinuxProcessTable.c:934 — needs skipEndOfLine + ctid/vpid fields + HAVE_OPENVZ")
+    todo!("port of LinuxProcessTable.c:934 — needs ctid/vpid fields + HAVE_OPENVZ")
 }
 
 /// Port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess*
@@ -1729,17 +1850,105 @@ fn LinuxProcessList_readComm(process: &mut Process, procFd: openat_arg_t) {
     }
 }
 
-/// TODO: port of `static char* LinuxProcessTable_updateTtyDevice(TtyDriver*
+/// Port of `static char* LinuxProcessTable_updateTtyDevice(TtyDriver*
 /// ttyDrivers, unsigned long int tty_nr)` from `LinuxProcessTable.c:1514`.
-/// Blocked: the body decomposes `tty_nr` and each candidate `st_rdev` with
-/// the `major()`/`minor()` device-number macros (from `sys/sysmacros.h` /
-/// `sys/mkdev.h`), which are not ported anywhere in the tree — and their
-/// glibc bit-layout must match how the kernel encodes `tty_nr` for the
-/// comparisons to be correct. Porting a subtly-wrong `major`/`minor` here
-/// would corrupt every tty-name lookup, so this stays stubbed until those
-/// macros are modeled. (Only consumer is the stubbed `recurseProcTree`.)
-pub fn LinuxProcessTable_updateTtyDevice() {
-    todo!("port of LinuxProcessTable.c:1514 — needs major()/minor() device-number macros")
+/// Splits `tty_nr` into a `major`/`minor` pair, then walks the
+/// major/minor-sorted [`TtyDriver`] table looking for the range that owns the
+/// device. Within the matching driver it probes candidate device nodes
+/// (`<path>/<idx>` then `<path><idx>`, for `idx = min - minorFrom` and then
+/// `idx = min`), returning the first path whose `stat().st_rdev` decodes back
+/// to the same `major`/`minor`. Failing that it stats the bare driver `path`
+/// (matching the whole `tty_nr`), and finally falls back to a synthetic
+/// `"/dev/<maj>:<min>"` string. Always returns an owned string (the C
+/// `xStrdup`/`xAsprintf` never yield `NULL`).
+///
+/// The `major()`/`minor()` device-number macros (`sys/sysmacros.h`) are
+/// replicated as nested fns using glibc's `gnu_dev_major`/`gnu_dev_minor` bit
+/// layout — the same layout `libc::major`/`libc::minor` expose on the Linux
+/// arm (verified in `libc-0.2.176` `.../linux/mod.rs:5959`). Because `tty_nr`
+/// and `st_rdev` are always Linux-kernel-encoded `dev_t`s at runtime, the
+/// glibc layout is used unconditionally so the darwin build (whose
+/// `libc::major` uses a different Darwin `dev_t` layout and returns `i32`)
+/// decodes them identically. `stat(path, &sb)` becomes [`fs::metadata`]
+/// (follows symlinks, like `stat`) + [`MetadataExt::rdev`]; `xAsprintf` /
+/// `xSnprintf` become `format!`.
+pub fn LinuxProcessTable_updateTtyDevice(ttyDrivers: &[TtyDriver], tty_nr: u64) -> String {
+    use std::os::unix::fs::MetadataExt;
+
+    // glibc gnu_dev_major (sys/sysmacros.h).
+    fn major(dev: u64) -> u32 {
+        (((dev & 0x0000_0000_000f_ff00) >> 8) | ((dev & 0xffff_f000_0000_0000) >> 32)) as u32
+    }
+    // glibc gnu_dev_minor (sys/sysmacros.h).
+    fn minor(dev: u64) -> u32 {
+        (((dev & 0x0000_0000_0000_00ff) >> 0) | ((dev & 0x0000_0fff_fff0_0000) >> 12)) as u32
+    }
+
+    let maj = major(tty_nr);
+    let min = minor(tty_nr);
+
+    let mut i: isize = -1;
+    loop {
+        i += 1;
+        let idx_i = i as usize;
+        // if ((!ttyDrivers[i].path) || maj < ttyDrivers[i].major) break;
+        let driver = match ttyDrivers.get(idx_i) {
+            Some(d) if d.path.is_some() => d,
+            // Sentinel terminator entry (NULL path) or out of bounds.
+            _ => break,
+        };
+        if maj < driver.major {
+            break;
+        }
+        if maj > driver.major {
+            continue;
+        }
+        if min < driver.minorFrom {
+            break;
+        }
+        if min > driver.minorTo {
+            continue;
+        }
+
+        let path = driver.path.as_deref().unwrap();
+
+        let mut idx = min - driver.minorFrom;
+
+        loop {
+            // "%s/%d"
+            let mut fullPath = format!("{path}/{idx}");
+            if let Ok(sb) = std::fs::metadata(&fullPath) {
+                let rdev = sb.rdev();
+                if major(rdev) == maj && minor(rdev) == min {
+                    return fullPath;
+                }
+            }
+
+            // "%s%d"
+            fullPath = format!("{path}{idx}");
+            if let Ok(sb) = std::fs::metadata(&fullPath) {
+                let rdev = sb.rdev();
+                if major(rdev) == maj && minor(rdev) == min {
+                    return fullPath;
+                }
+            }
+
+            if idx == min {
+                break;
+            }
+
+            idx = min;
+        }
+
+        // int err = stat(ttyDrivers[i].path, &sb);
+        if let Ok(sb) = std::fs::metadata(path) {
+            if tty_nr == sb.rdev() {
+                return path.to_string();
+            }
+        }
+    }
+
+    format!("/dev/{maj}:{min}")
 }
 
 /// Port of `LinuxProcessTable.c:1466`. True iff `proc` has been alive for
