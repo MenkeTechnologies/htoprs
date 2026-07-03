@@ -33,9 +33,45 @@ use std::ffi::{CStr, CString};
 use std::sync::Mutex;
 
 use crate::ported::batterymeter::ACPresence;
+use crate::ported::crt::ColorElements;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
 use crate::ported::meter::Meter;
 use crate::ported::xutils::{String_eq, String_startsWith};
+
+/// Port of `typedef struct MemoryClass_` (`linux/Platform.h`) — one
+/// memory-meter class: its label, whether it counts toward the "used" or
+/// "cache" totals, and its `CRT_colors` element.
+pub struct MemoryClass {
+    pub label: &'static str,
+    pub countsAsUsed: bool,
+    pub countsAsCache: bool,
+    pub color: ColorElements,
+}
+
+// `MEMORY_CLASS_*` indices (`linux/Platform.h`).
+pub const MEMORY_CLASS_USED: usize = 0;
+pub const MEMORY_CLASS_SHARED: usize = 1;
+pub const MEMORY_CLASS_COMPRESSED: usize = 2;
+pub const MEMORY_CLASS_BUFFERS: usize = 3;
+pub const MEMORY_CLASS_CACHE: usize = 4;
+pub const MEMORY_CLASS_AVAILABLE: usize = 5;
+
+/// Port of `const MemoryClass Platform_memoryClasses[]`
+/// (`linux/Platform.c:152`), in `MEMORY_CLASS_*` index order.
+#[allow(non_upper_case_globals)] // faithful C global name
+pub static Platform_memoryClasses: [MemoryClass; 6] = [
+    MemoryClass { label: "used", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_1 },
+    MemoryClass { label: "shared", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_2 },
+    MemoryClass { label: "compressed", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_3 },
+    MemoryClass { label: "buffers", countsAsUsed: false, countsAsCache: true, color: ColorElements::MEMORY_4 },
+    MemoryClass { label: "cache", countsAsUsed: false, countsAsCache: true, color: ColorElements::MEMORY_5 },
+    MemoryClass { label: "available", countsAsUsed: false, countsAsCache: false, color: ColorElements::MEMORY_6 },
+];
+
+/// Port of `const unsigned int Platform_numberOfMemoryClasses`
+/// (`linux/Platform.c:161`) — `ARRAYSIZE(Platform_memoryClasses)`.
+#[allow(non_upper_case_globals)] // faithful C global name
+pub const Platform_numberOfMemoryClasses: usize = Platform_memoryClasses.len();
 
 /// `PROCDIR` — the procfs mount htop was compiled to read (a `config.h`
 /// macro, default `"/proc"`). Defined locally so this module's `/proc`
@@ -172,9 +208,43 @@ pub fn Platform_setGPUValues() {
     todo!("port of Platform.c:395")
 }
 
-/// TODO: port of `void Platform_setMemoryValues(Meter* this` from `Platform.c:441`.
-pub fn Platform_setMemoryValues() {
-    todo!("port of Platform.c:441")
+/// Port of `void Platform_setMemoryValues(Meter* this)` from
+/// `linux/Platform.c:441`. Fills the six memory classes from the host's
+/// memory counters, then applies the ZFS-ARC shrinkable adjustment (unless
+/// containerized) and the zswap compression adjustment. `this->host` is the
+/// concrete [`LinuxMachine`]; `totalMem` lives on `super_`, the rest on the
+/// `LinuxMachine`.
+pub fn Platform_setMemoryValues(this: &mut Meter) {
+    let host = this
+        .host
+        .as_ref()
+        .expect("Platform_setMemoryValues: this->host (C dereferences it)")
+        .clone();
+    let h = host.borrow();
+
+    this.total = h.super_.totalMem as f64;
+    this.values[MEMORY_CLASS_USED] = h.usedMem as f64;
+    this.values[MEMORY_CLASS_SHARED] = h.sharedMem as f64;
+    this.values[MEMORY_CLASS_COMPRESSED] = 0.0; /* compressed */
+    this.values[MEMORY_CLASS_BUFFERS] = h.buffersMem as f64;
+    this.values[MEMORY_CLASS_CACHE] = h.cachedMem as f64;
+    this.values[MEMORY_CLASS_AVAILABLE] = h.availableMem as f64;
+
+    if h.zfs.enabled != 0 && !Running_containerized.load(Ordering::Relaxed) {
+        // ZFS does not shrink below the value of zfs_arc_min.
+        let mut shrinkable_size: u64 = 0;
+        if h.zfs.size > h.zfs.min {
+            shrinkable_size = h.zfs.size - h.zfs.min;
+        }
+        this.values[MEMORY_CLASS_USED] -= shrinkable_size as f64;
+        this.values[MEMORY_CLASS_CACHE] += shrinkable_size as f64;
+        this.values[MEMORY_CLASS_AVAILABLE] += shrinkable_size as f64;
+    }
+
+    if h.zswap.usedZswapOrig > 0 || h.zswap.usedZswapComp > 0 {
+        this.values[MEMORY_CLASS_USED] -= h.zswap.usedZswapComp as f64;
+        this.values[MEMORY_CLASS_COMPRESSED] += h.zswap.usedZswapComp as f64;
+    }
 }
 
 /// Port of `void Platform_setSwapValues(Meter* this)` from

@@ -90,6 +90,8 @@ pub struct Settings {
     /// C `bool showCPUFrequency` — gates `LinuxMachine_scanCPUFrequency`
     /// in `Machine_scan`.
     pub showCPUFrequency: bool,
+    /// C `bool showCachedMemory` — MemoryMeter shows/masks the cache classes.
+    pub showCachedMemory: bool,
     /// C `ScreenSettings* ss` — the active screen settings.
     pub ss: ScreenSettings,
     /// C `ScreenSettings** screens` (+ `size_t nScreens`).
