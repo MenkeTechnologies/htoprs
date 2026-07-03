@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Instant;
 
 use crate::ported::crt::CRT_fatalError;
-use crate::ported::machine::Machine;
+use crate::ported::machine::{Machine, Machine_init};
 use crate::ported::xutils::String_startsWith;
 
 /// `typedef unsigned long long int memory_t` (`Machine.h:35`).
@@ -1079,17 +1079,97 @@ pub fn Machine_scan(this: &mut LinuxMachine) {
     }
 }
 
-/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t
-/// userId)` from `LinuxMachine.c:823`. Blocked: it calls `Machine_init`
-/// (a documented stub in `machine.rs`, needs `getuid`/`Platform_*`/hwloc)
-/// and depends on `sysconf(_SC_PAGESIZE)` / `sysconf(_SC_CLK_TCK)` plus
-/// `LibSensors_countCCDs` (no-sensors variant → 0). The `/proc/stat`
-/// btime read and the topology-init sequence
-/// (`updateCPUcount`/`fetchCPUTopologyFromCPUinfo`/`assignCCDs`/
-/// `computeThreadIndices`) are ready here, but the constructor cannot run
-/// faithfully until `Machine_init` is ported.
-pub fn Machine_new() {
-    todo!("port of LinuxMachine.c:823 — blocked on Machine_init (machine.rs stub) + sysconf")
+/// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
+/// from `LinuxMachine.c:823`. Allocates a `LinuxMachine` (C `xCalloc`,
+/// mirrored by `Default::default()` zero-init), runs the base
+/// [`Machine_init`], resolves page size / clock ticks via `sysconf`, reads
+/// the kernel boot time (`btime`) from `/proc/stat`, then runs the CPU-count
+/// and CPU-topology init sequence. Returns the owning `Box<LinuxMachine>`
+/// (C returns `&this->super`); the caller derives the `*mut Machine` graph
+/// pointer from `&mut box.super_` (same idiom as [`DarwinMachine_new`] and
+/// [`OpenBSDMachine_new`]).
+///
+/// [`DarwinMachine_new`]: crate::ported::darwin::darwinmachine::Machine_new
+/// [`OpenBSDMachine_new`]: crate::ported::openbsd::openbsdmachine::Machine_new
+///
+/// The C `sscanf(buffer, "btime %lld\n", ...)` is mirrored by taking the
+/// whitespace-delimited token after the `"btime "` prefix and parsing it as
+/// `i64`; for real kernel `/proc/stat` output (`btime <seconds>\n`) this is
+/// identical to `%lld`.
+///
+/// Deviation from the module-level no-sensors note: the C
+/// `#ifdef HAVE_SENSORS_SENSORS_H ccds = LibSensors_countCCDs();` branch is
+/// kept — [`LibSensors_countCCDs`](crate::ported::linux::libsensors::LibSensors_countCCDs)
+/// is a real port (pure-Rust `libmedium` hwmon reader) that returns 0 when
+/// sensors are unavailable, so the AMD per-CCD topology is populated when
+/// present rather than forced to 0.
+pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<LinuxMachine> {
+    // LinuxMachine* this = xCalloc(1, sizeof(LinuxMachine));
+    let mut this = Box::new(LinuxMachine {
+        super_: Machine::default(),
+        ..Default::default()
+    });
+
+    // Machine_init(super, usersTable, userId);
+    Machine_init(&mut this.super_, usersTable, userId);
+
+    // Initialize page size
+    let pageSize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if pageSize <= 0 {
+        CRT_fatalError("Cannot get pagesize by sysconf(_SC_PAGESIZE)");
+    }
+    this.pageSize = pageSize as usize;
+    this.pageSizeKB = this.pageSize / 1024; // ONE_K
+
+    // Initialize clock ticks
+    let jiffies = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    this.jiffies = jiffies as i64;
+    if jiffies == -1 {
+        CRT_fatalError("Cannot get clock ticks by sysconf(_SC_CLK_TCK)");
+    }
+
+    // Read btime (the kernel boot time, as number of seconds since the epoch)
+    let statfile = match File::open(PROCSTATFILE) {
+        Ok(f) => f,
+        Err(_) => CRT_fatalError("Cannot open /proc/stat"),
+    };
+
+    this.boottime = -1;
+
+    for line in BufReader::new(statfile).lines() {
+        let buffer = match line {
+            Ok(b) => b,
+            Err(_) => break, // fgets == NULL
+        };
+        if !String_startsWith(&buffer, "btime ") {
+            continue;
+        }
+        // sscanf(buffer, "btime %lld\n", &this->boottime)
+        match buffer[6..].split_whitespace().next().and_then(|t| t.parse::<i64>().ok()) {
+            Some(v) => {
+                this.boottime = v;
+                break;
+            }
+            None => CRT_fatalError("Failed to parse btime from /proc/stat"),
+        }
+    }
+
+    if this.boottime == -1 {
+        CRT_fatalError("No btime in /proc/stat");
+    }
+
+    // Initialize CPU count
+    LinuxMachine_updateCPUcount(&mut this);
+
+    // Fetch CPU topology
+    //   int ccds = 0;
+    LinuxMachine_fetchCPUTopologyFromCPUinfo(&mut this);
+    //   #ifdef HAVE_SENSORS_SENSORS_H ccds = LibSensors_countCCDs(); #endif
+    let ccds = crate::ported::linux::libsensors::LibSensors_countCCDs();
+    LinuxMachine_assignCCDs(&mut this, ccds);
+    LinuxMachine_computeThreadIndices(&mut this);
+
+    this
 }
 
 /// Deliberate non-port: `void Machine_delete(Machine* super)` from
