@@ -208,6 +208,28 @@ pub fn Platform_setGPUValues() {
     todo!("port of Platform.c:395")
 }
 
+/// Port of `void Generic_hostname(char* buffer, size_t size)` from
+/// `generic/hostname.c:15`. C fills `buffer` via `gethostname(buffer,
+/// size-1)` then NUL-terminates. The port returns the hostname as an owned
+/// `String` (the C `char*` out-param → return value, idiom rule 4); a
+/// 256-byte scratch buffer covers `HOST_NAME_MAX`. Non-UTF-8 bytes are
+/// replaced.
+pub fn Generic_hostname() -> String {
+    let mut buf = [0u8; 256];
+    // C: gethostname(buffer, size - 1); buffer[size - 1] = '\0';
+    unsafe {
+        libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len() - 1);
+    }
+    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..nul]).into_owned()
+}
+
+/// Port of `void Platform_getHostname(char* buffer, size_t size)` from
+/// `linux/Platform.c` — a thin wrapper delegating to [`Generic_hostname`].
+pub fn Platform_getHostname() -> String {
+    Generic_hostname()
+}
+
 /// Port of `void Platform_setMemoryValues(Meter* this)` from
 /// `linux/Platform.c:441`. Fills the six memory classes from the host's
 /// memory counters, then applies the ZFS-ARC shrinkable adjustment (unless

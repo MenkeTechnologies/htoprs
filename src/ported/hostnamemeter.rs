@@ -1,24 +1,35 @@
-//! Stub scaffold for `HostnameMeter.c` — NOT yet ported.
+//! Port of `HostnameMeter.c` — htop's hostname meter.
 //!
-//! Every `pub fn` below is a placeholder (`todo!()`) named after a real
-//! htop C function so the port-purity gate accepts the module and the
-//! port surface is laid out. Replace each stub with a faithful port of
-//! the C body, updating the signature and the doc comment to `Port of
-//! `HostnameMeter.c`:<line>.` as you go. `gen_port_report.py` counts these
-//! `todo!()` bodies as *stubbed*, not *ported*, so scaffolding does not
-//! inflate coverage.
+//! C names are preserved verbatim (htop uses `CamelCase_snake`), so
+//! `non_snake_case` is allowed for the whole module.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-/// TODO: port of `static void HostnameMeter_updateValues(Meter* this)`
-/// from `HostnameMeter.c:21`. Blocked: the entire body is a single call
-/// `Platform_getHostname(this->txtBuffer, sizeof(this->txtBuffer))`, and
-/// `Platform_getHostname` (linux/Platform.h:97, a thin wrapper over
-/// `Generic_hostname`, generic/hostname.c:15) is not ported anywhere in
-/// the crate yet — there is no faithful call target. Reproducing the
-/// hostname read inline would be an adhoc reimplementation, not a
-/// function-for-function port, so this stays stubbed until the platform
-/// hostname reader lands.
-pub fn HostnameMeter_updateValues() {
-    todo!("port of HostnameMeter.c:21: needs Platform_getHostname (linux/Platform.h) / Generic_hostname (generic/hostname.c)")
+use crate::ported::linux::platform::Platform_getHostname;
+use crate::ported::meter::Meter;
+
+/// Port of `static void HostnameMeter_updateValues(Meter* this)` from
+/// `HostnameMeter.c:21`. The whole C body is
+/// `Platform_getHostname(this->txtBuffer, sizeof(this->txtBuffer))`; the
+/// ported [`Platform_getHostname`] returns the hostname as a `String`, which
+/// is stored into the meter's `txtBuffer`.
+pub fn HostnameMeter_updateValues(this: &mut Meter) {
+    this.txtBuffer = Platform_getHostname();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_values_fills_txt_buffer() {
+        // gethostname yields a non-empty name in CI/dev; assert the meter's
+        // txtBuffer is populated and matches the libc reading.
+        let mut m = Meter {
+            ..Meter::empty()
+        };
+        HostnameMeter_updateValues(&mut m);
+        assert_eq!(m.txtBuffer, Platform_getHostname());
+        assert!(!m.txtBuffer.is_empty());
+    }
 }
