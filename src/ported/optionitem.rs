@@ -45,6 +45,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use core::any::Any;
 use core::ffi::c_int;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
@@ -57,6 +58,38 @@ use crate::ported::richstring::{
 /// Maximum number of characters in a [`NumberItem`] edit buffer.
 /// Port of `#define NUMBERITEM_EDIT_MAX 10` from `OptionItem.h:14`.
 pub const NUMBERITEM_EDIT_MAX: usize = 10;
+
+/// Port of `enum OptionItemType` (`OptionItem.h:16`) — the `.kind`
+/// discriminant carried on `OptionItemClass` distinguishing the three
+/// option-row subtypes. The C enumerators are `OPTION_ITEM_TEXT` (0),
+/// `OPTION_ITEM_CHECK` (1), `OPTION_ITEM_NUMBER` (2). Preserved verbatim
+/// (matching the spec name-for-name).
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OptionItemType {
+    OPTION_ITEM_TEXT = 0,
+    OPTION_ITEM_CHECK = 1,
+    OPTION_ITEM_NUMBER = 2,
+}
+
+/// Port of the `OptionItem_kind(this_)` macro (`OptionItem.h:29`):
+/// `As_OptionItem(this_)->kind`. In C the kind is a field on the item's
+/// `OptionItemClass` vtable (`TextItem_class.kind == OPTION_ITEM_TEXT`,
+/// etc.); the ported subtypes are distinct Rust structs, so the vtable-field
+/// read is the `Any` downcast that recovers the concrete type. Panics on a
+/// non-OptionItem object, matching the C hard cast (UB on a wrong type).
+pub fn OptionItem_kind(this: &dyn Object) -> OptionItemType {
+    let any: &dyn Any = this;
+    if any.is::<TextItem>() {
+        OptionItemType::OPTION_ITEM_TEXT
+    } else if any.is::<CheckItem>() {
+        OptionItemType::OPTION_ITEM_CHECK
+    } else if any.is::<NumberItem>() {
+        OptionItemType::OPTION_ITEM_NUMBER
+    } else {
+        panic!("OptionItem_kind: object is not a TextItem/CheckItem/NumberItem");
+    }
+}
 
 /// Model of C `TextItem` (`OptionItem.h:38`). `TextItem_display` renders
 /// `this->super.text`, modeled here as the `text` field (C's own

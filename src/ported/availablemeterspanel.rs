@@ -1,77 +1,160 @@
-//! Port scaffold for `AvailableMetersPanel.c` — htop's "Available meters"
-//! chooser (the left column of the Meters setup screen: pick a meter class
-//! and add it to a header column with F5/F6/Enter).
+//! Port of `AvailableMetersPanel.c` — htop's "Available meters" chooser (the
+//! rightmost column of the Meters setup screen: pick a meter class and add it
+//! to a header column with F5/F6/Enter).
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
 //! `non_snake_case` is allowed for the whole module — matching the spec
 //! name-for-name is the point of the port.
 //!
+//! # Data model
+//!
+//! htop's `AvailableMetersPanel` (`AvailableMetersPanel.h:19`) embeds a
+//! `Panel super` plus the `ScreenManager*`/`Machine*`/`Header*` back-pointers,
+//! the `size_t columns` count, and `MetersPanel** meterPanels` — a *non-owning*
+//! array of pointers to the header-column [`MetersPanel`]s the
+//! [`ScreenManager`] also owns. [`AvailableMetersPanel`] models `super_` (the
+//! `super`-keyword workaround), the three back-pointers as raw `*mut` (the
+//! `MetersPanel`/`HeaderOptionsPanel` idiom — all owned elsewhere, and `scr`
+//! is the self-referential cycle noted in `categoriespanel.rs`), `columns`,
+//! and `meterPanels` as a `Vec<*mut MetersPanel>` (the C `MetersPanel**`
+//! non-owning array).
+//!
 //! # Ported
 //!
 //! - [`AvailableMetersPanel_addPlatformMeter`] (`AvailableMetersPanel.c:142`)
-//!   — appends one platform-meter chooser row. Reads `type->description ?
-//!   type->description : type->uiName` off a `const MeterClass*` (both fields
-//!   are now modeled on [`crate::ported::meter::MeterClass`]) and pushes a
-//!   [`ListItem_new`] keyed `offset << 16` via [`Panel_add`] — a self-contained
-//!   slice with every dependency present.
+//!   — appends one platform-meter chooser row (`type->description ?:
+//!   type->uiName`, keyed `offset << 16`).
 //! - [`AvailableMetersPanel_addMeter`] (`AvailableMetersPanel.c:41`) — adds a
-//!   meter of a given class to a header column via the now-ported
-//!   [`Header_addMeterByClass`], appends its [`Meter_toListItem`] row to the
-//!   `MetersPanel`, and selects it.
+//!   meter of a given class to a header column via [`Header_addMeterByClass`],
+//!   appends its [`Meter_toListItem`] row to the `MetersPanel`, and selects it.
 //! - [`AvailableMetersPanel_addCPUMeters`] (`AvailableMetersPanel.c:103`) —
-//!   adds the `"CPU average"` + per-CPU chooser rows (or a single row on a
-//!   uniprocessor). Reads `type->uiName` and inlines `Settings_cpuId`
-//!   (`countCPUsFromOne ? cpu + 1 : cpu`) against
-//!   [`Machine::settings`]/[`Machine::existingCPUs`], all now modeled.
-//!
-//! # Stubbed (each blocked on specific unported substrate)
-//!
-//! - [`AvailableMetersPanel_delete`] (`AvailableMetersPanel.c:34`) — the C
-//!   body is `free(this->meterPanels)` + `Panel_done` + `free(this)`. In
-//!   Rust the owned fields are released by `Drop`, so — exactly like
-//!   [`crate::ported::panel::Panel_delete`] and
-//!   [`crate::ported::history::History_delete`] — there is no algorithm to
-//!   port.
+//!   the `"CPU average"` + per-CPU chooser rows (or a single row on a
+//!   uniprocessor).
+//! - [`AvailableMetersPanel_new`] (`AvailableMetersPanel.c:147`) — the
+//!   constructor: builds the panel, then walks [`Platform_meterTypes`] adding
+//!   each platform meter and the CPU meters. **The `type == &DynamicMeter_class`
+//!   discrimination is elided**: `DynamicMeter_class` (a `MeterClass` static)
+//!   is not ported *and* does not appear in the ported `Platform_meterTypes`,
+//!   so every entry takes the `addPlatformMeter` path (the branch is dead on
+//!   the ported platform table). When `DynamicMeter_class` +
+//!   [`AvailableMetersPanel_addDynamicMeters`] land, the comparison should be
+//!   restored.
 //! - [`AvailableMetersPanel_eventHandler`] (`AvailableMetersPanel.c:47`) —
-//!   needs the `AvailableMetersPanel` struct (its `header`/`meterPanels`/
-//!   `columns`/`host`/`scr` non-owning back-pointers, not defined anywhere in
-//!   the crate) and the unported `Platform_meterTypes[]` table. (`HandlerResult`,
-//!   `ScreenManager_resize`, `Header_calculateHeight`/`Header_updateData`/
-//!   `Header_draw`, and the `addMeter` helper are now ported.)
+//!   F5/`l`/`L` add the selected meter to column 0; Enter/F6/`r`/`R`/reclick
+//!   add it to the last column (returning the `KEY_LEFT` synth-key). Reaches
+//!   the header/columns/host/scr through the raw back-pointers (the same idiom
+//!   the ported [`crate::ported::meterspanel::MetersPanel_eventHandler`] uses).
+//!
+//! # Stubbed (blocked on specific unported substrate)
+//!
+//! - [`AvailableMetersPanel_delete`] (`AvailableMetersPanel.c:34`) — by-value
+//!   consume; the owned `super_` is handed to `Panel_done` and the non-owning
+//!   `meterPanels` array (`free(this->meterPanels)`) drops, so there is no
+//!   algorithm to port.
 //! - [`AvailableMetersPanel_addDynamicMeter`] (`AvailableMetersPanel.c:122`)
 //!   — a `Hashtable_foreach` callback reading `meter->description` /
-//!   `meter->caption` / `meter->name`; the `dynamicmeter.rs` `DynamicMeter`
-//!   model carries only `name` (the other fields are unmodeled and
-//!   `dynamicmeter.rs` is off-limits to this module).
+//!   `meter->caption` / `meter->name`; the `dynamicmeter.rs` [`DynamicMeter`]
+//!   model carries only `name` (the `description`/`caption` fields are
+//!   unmodeled and `dynamicmeter.rs` is off-limits to this module).
 //! - [`AvailableMetersPanel_addDynamicMeters`] (`AvailableMetersPanel.c:134`)
-//!   — drives `Hashtable_foreach` over `settings->dynamicMeters`;
-//!   `Hashtable_foreach` is not ported (`hashtable.rs` ports only the prime
-//!   math) and the `Settings` model has no `dynamicMeters` field.
-//! - [`AvailableMetersPanel_new`] (`AvailableMetersPanel.c:147`) — the
-//!   constructor. `FunctionBar_new`, `Panel_init`, and `Panel_setHeader` are
-//!   ported, but the body's core is a loop over `Platform_meterTypes[]` (not
-//!   ported) comparing each entry against `&CPUMeter_class` / `&DynamicMeter_class`
-//!   (class-identity comparison with no modeled `MeterClass`), dispatching to
-//!   the blocked `addDynamicMeters`/`addPlatformMeter`/`addCPUMeters` helpers.
+//!   — drives `Hashtable_foreach` over `settings->dynamicMeters` (now a
+//!   modeled field), but transitively needs the blocked
+//!   [`AvailableMetersPanel_addDynamicMeter`] callback
+//!   (`DynamicMeter.description`/`.caption`).
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use crate::ported::header::{Header, Header_addMeterByClass};
-use crate::ported::listitem::ListItem_new;
+use core::any::Any;
+use std::io::{self, Write};
+
+use crate::ported::cpumeter::CPUMeter_class;
+use crate::ported::crt::{KEY_ENTER, KEY_F, KEY_LEFT, KEY_RECLICK};
+use crate::ported::functionbar::FunctionBar_new;
+use crate::ported::header::{
+    Header, Header_addMeterByClass, Header_calculateHeight, Header_draw, Header_updateData,
+};
+use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::machine::Machine;
 use crate::ported::meter::{MeterClass, Meter_toListItem};
 use crate::ported::meterspanel::MetersPanel;
-use crate::ported::panel::{Panel, Panel_add, Panel_setSelected, Panel_size};
+use crate::ported::panel::{
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelected, Panel_new,
+    Panel_setHeader, Panel_setSelected, Panel_size,
+};
+use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
+// Platform dispatch (darwin-first): the available-meter registry comes from
+// this build's platform, mirroring htop linking one platform's `Platform.c`
+// (the same cfg split `header.rs` uses).
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_meterTypes;
+#[cfg(not(target_os = "macos"))]
+use crate::ported::linux::platform::Platform_meterTypes;
 
-/// TODO: port of `static void AvailableMetersPanel_delete(Object* object)`
-/// from `AvailableMetersPanel.c:34`: `free(this->meterPanels);
-/// Panel_done(&this->super); free(this);`. Blocked on missing substrate: the
-/// `AvailableMetersPanel` struct (`MetersPanel** meterPanels` + the
-/// `header`/`host`/`scr` back-pointer aliasing) is not modeled in this port,
-/// so there is no `this` type to consume by value. Left a stub rather than
-/// inventing an unused struct.
-pub fn AvailableMetersPanel_delete() {
-    todo!("port of AvailableMetersPanel.c:34 — AvailableMetersPanel struct is not modeled; no Rust type to consume")
+/// Port of `static const char* const AvailableMetersFunctions[]`
+/// (`AvailableMetersPanel.c:32`): four blank slots, `Add Lt`/`Add Rt`, three
+/// blanks, `Done  `. The trailing `NULL` sentinel is dropped (the ported
+/// `FunctionBar_new` is length-bounded).
+static AvailableMetersFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "      ", "Add Lt", "Add Rt", "      ", "      ", "      ",
+    "Done  ",
+];
+
+/// Reduced model of the C `AvailableMetersPanel` struct
+/// (`AvailableMetersPanel.h:19`): the embedded `Panel super` (`super_`), the
+/// `ScreenManager*`/`Machine*`/`Header*` back-pointers (raw `*mut`), the
+/// `columns` count, and the non-owning `MetersPanel** meterPanels` array
+/// (`Vec<*mut MetersPanel>` — the panels are owned by the `ScreenManager`).
+pub struct AvailableMetersPanel {
+    /// C `Panel super` — the embedded panel base.
+    pub super_: Panel,
+    /// C `ScreenManager* scr` — non-owning back-pointer resized after a change.
+    pub scr: *mut ScreenManager,
+    /// C `Machine* host` — non-owning back-pointer whose `settings` the handler
+    /// marks `changed`.
+    pub host: *mut Machine,
+    /// C `Header* header` — non-owning back-pointer the handler adds meters to.
+    pub header: *mut Header,
+    /// C `size_t columns` — the number of header columns.
+    pub columns: usize,
+    /// C `MetersPanel** meterPanels` — non-owning pointers to the column
+    /// [`MetersPanel`]s (owned by the `ScreenManager`).
+    pub meterPanels: Vec<*mut MetersPanel>,
+}
+
+/// Port of `const PanelClass AvailableMetersPanel_class`
+/// (`AvailableMetersPanel.c:94`): sets only `.eventHandler =
+/// AvailableMetersPanel_eventHandler`; `.drawFunctionBar` / `.printHeader`
+/// are NULL, so those slots inherit the `Panel` defaults.
+impl PanelClass for AvailableMetersPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        AvailableMetersPanel_eventHandler(self, ev)
+    }
+}
+
+/// Port of `static void AvailableMetersPanel_delete(Object* object)` from
+/// `AvailableMetersPanel.c:34`: `free(this->meterPanels);
+/// Panel_done(&this->super); free(this);`. Taking `this` by value consumes
+/// the panel; the non-owning `meterPanels` `Vec` of raw pointers drops here
+/// (the C `free(this->meterPanels)` — the `MetersPanel`s themselves are owned
+/// by the `ScreenManager`), the embedded `super_` [`Panel`] is handed to
+/// [`Panel_done`] (mirroring the C call graph), and the `scr`/`host`/`header`
+/// back-pointers drop with the struct free.
+pub fn AvailableMetersPanel_delete(this: AvailableMetersPanel) {
+    let AvailableMetersPanel {
+        super_,
+        meterPanels,
+        ..
+    } = this;
+    // C: free(this->meterPanels) — the non-owning MetersPanel* array.
+    let _ = meterPanels;
+    Panel_done(super_);
 }
 
 /// Port of `static inline void AvailableMetersPanel_addMeter(Header* header,
@@ -102,19 +185,104 @@ pub fn AvailableMetersPanel_addMeter(
     Panel_setSelected(&mut panel.super_, size - 1);
 }
 
-/// TODO: port of `static HandlerResult AvailableMetersPanel_eventHandler(
-/// Panel* super, int ch)` from `AvailableMetersPanel.c:47`. Blocked: needs the
-/// `AvailableMetersPanel` struct, which is not defined anywhere in the crate.
-/// Its fields are non-owning back-pointers with no safe-Rust model — most
-/// critically `MetersPanel** meterPanels` (an array of pointers aliasing the
-/// header-column panels the setup screen also owns), plus `header`/`host`/
-/// `scr`. Without the struct the handler cannot take `this` to reach
-/// `this->meterPanels[...]`. (`HandlerResult`, `Platform_meterTypes[]`,
-/// `Header_calculateHeight`/`Header_updateData`/`Header_draw`,
-/// `ScreenManager_resize`, `Panel_getSelected`, and the `addMeter` helper are
-/// all now ported.)
-pub fn AvailableMetersPanel_eventHandler() {
-    todo!("port of AvailableMetersPanel.c:47 — needs the AvailableMetersPanel struct (MetersPanel** meterPanels + header/host/scr back-pointer aliasing)")
+/// Port of `static HandlerResult AvailableMetersPanel_eventHandler(Panel*
+/// super, int ch)` from `AvailableMetersPanel.c:47`.
+///
+/// Reads the selected [`ListItem`]'s key (`param = key & 0xffff`,
+/// `type = key >> 16`); F5/`l`/`L` add the meter of class
+/// `Platform_meterTypes[type]` to column 0, and Enter/CR/F6/`r`/`R`/reclick
+/// add it to the last column (returning `(KEY_LEFT << 16) | SYNTH_KEY` so the
+/// manager focuses left). On a change it marks `host->settings` dirty,
+/// recomputes/redraws the header, and resizes the manager.
+///
+/// The C `Panel* super` (upcast to `AvailableMetersPanel*`) becomes the
+/// reduced-struct receiver `this: &mut AvailableMetersPanel`; `this.header` /
+/// `this.meterPanels[i]` / `this.host` / `this.scr` are the raw back-pointers,
+/// dereferenced under `unsafe` (the same idiom the ported
+/// [`crate::ported::meterspanel::MetersPanel_eventHandler`] uses). `header` and
+/// the target `MetersPanel` are distinct objects, so the two `&mut`s that
+/// [`AvailableMetersPanel_addMeter`] takes do not overlap.
+pub fn AvailableMetersPanel_eventHandler(this: &mut AvailableMetersPanel, ch: i32) -> HandlerResult {
+    // `KEY_F(n)` is a `const fn`; bind the two matched codes as `const`s.
+    const KEY_F5: i32 = KEY_F(5);
+    const KEY_F6: i32 = KEY_F(6);
+    const L_LOWER: i32 = b'l' as i32;
+    const L_UPPER: i32 = b'L' as i32;
+    const R_LOWER: i32 = b'r' as i32;
+    const R_UPPER: i32 = b'R' as i32;
+
+    // C: const ListItem* selected = (ListItem*) Panel_getSelected(super);
+    //    if (!selected) return IGNORED;
+    let key = match Panel_getSelected(&this.super_) {
+        None => return HandlerResult::IGNORED,
+        Some(obj) => {
+            let any: &dyn Any = obj;
+            any.downcast_ref::<ListItem>()
+                .expect("AvailableMetersPanel_eventHandler: selected row is not a ListItem")
+                .key
+        }
+    };
+    let param = (key & 0xffff) as u32;
+    let type_idx = (key >> 16) as usize;
+
+    let mut result = HandlerResult::IGNORED;
+    let mut update = false;
+
+    match ch {
+        KEY_F5 | L_LOWER | L_UPPER => {
+            // AvailableMetersPanel_addMeter(header, this->meterPanels[0], Platform_meterTypes[type], param, 0);
+            let type_ = Platform_meterTypes[type_idx];
+            // SAFETY: `header` and `meterPanels[0]` are the raw back-pointers set
+            // at construction; both outlive this panel (owned by the
+            // ScreenManager) and are distinct objects.
+            let header = unsafe { &mut *this.header };
+            let panel = unsafe { &mut *this.meterPanels[0] };
+            AvailableMetersPanel_addMeter(header, panel, type_, param, 0);
+            result = HandlerResult::HANDLED;
+            update = true;
+        }
+        0x0a | 0x0d | KEY_ENTER | KEY_F6 | R_LOWER | R_UPPER | KEY_RECLICK => {
+            let type_ = Platform_meterTypes[type_idx];
+            let column = this.columns - 1;
+            // SAFETY: see above; `meterPanels[columns - 1]` is the last column.
+            let header = unsafe { &mut *this.header };
+            let panel = unsafe { &mut *this.meterPanels[column] };
+            AvailableMetersPanel_addMeter(header, panel, type_, param, column);
+            // C: result = (KEY_LEFT << 16) | SYNTH_KEY;
+            result = HandlerResult(((KEY_LEFT as u32) << 16) | HandlerResult::SYNTH_KEY.0);
+            update = true;
+        }
+        _ => {}
+    }
+
+    if update {
+        // C: Settings* settings = this->host->settings;
+        //    settings->changed = true; settings->lastUpdate++;
+        // SAFETY: `host` is the raw back-pointer set at construction; its
+        // `Settings` is present during Setup.
+        {
+            let settings = unsafe { (*this.host).settings.as_mut() }
+                .expect("AvailableMetersPanel_eventHandler: host->settings is NULL");
+            settings.changed = true;
+            settings.lastUpdate += 1;
+        }
+        // Header_calculateHeight(header); Header_updateData(header); Header_draw(header);
+        // SAFETY: `header` is the raw back-pointer; no other live borrow of it.
+        {
+            let header = unsafe { &mut *this.header };
+            Header_calculateHeight(header);
+            Header_updateData(header);
+            let mut out = io::stdout().lock();
+            Header_draw(header, &mut out);
+            let _ = out.flush();
+        }
+        // ScreenManager_resize(this->scr);
+        // SAFETY: `scr` is the self-referential back-pointer (owns this panel).
+        let scr = unsafe { &mut *this.scr };
+        ScreenManager_resize(scr);
+    }
+
+    result
 }
 
 /// Port of `static void AvailableMetersPanel_addCPUMeters(Panel* super, const
@@ -196,19 +364,70 @@ pub fn AvailableMetersPanel_addPlatformMeter(super_: &mut Panel, type_: &MeterCl
     Panel_add(super_, Box::new(ListItem_new(label, (offset << 16) as i32)));
 }
 
-/// TODO: port of `AvailableMetersPanel* AvailableMetersPanel_new(Machine*
-/// host, Header* header, size_t columns, MetersPanel** meterPanels,
-/// ScreenManager* scr)` from `AvailableMetersPanel.c:147`. Blocked: needs the
-/// `AvailableMetersPanel` struct (not defined anywhere in the crate) to store
-/// the `host`/`header`/`columns`/`meterPanels`/`scr` back-pointers (the same
-/// `MetersPanel**` aliasing as the event handler), and its loop dispatches to
-/// the still-blocked [`AvailableMetersPanel_addDynamicMeters`] (missing
-/// `Settings.dynamicMeters` + `DynamicMeter` description/caption). (`Platform_meterTypes[]`,
-/// the ported [`AvailableMetersPanel_addCPUMeters`]/[`AvailableMetersPanel_addPlatformMeter`]
-/// helpers, `FunctionBar_new`, `Panel_init`, and `Panel_setHeader` are now
-/// available.)
-pub fn AvailableMetersPanel_new() {
-    todo!("port of AvailableMetersPanel.c:147 — needs AvailableMetersPanel struct (meterPanels/scr aliasing) + the blocked addDynamicMeters helper")
+/// Port of `AvailableMetersPanel* AvailableMetersPanel_new(Machine* host,
+/// Header* header, size_t columns, MetersPanel** meterPanels,
+/// ScreenManager* scr)` from `AvailableMetersPanel.c:147`.
+///
+/// Builds a `1×1` [`Panel`] with the `AvailableMetersFunctions` [`FunctionBar`],
+/// stores the `host`/`header`/`columns`/`meterPanels`/`scr` back-pointers, sets
+/// the "Available meters" header, then walks [`Platform_meterTypes`] from index
+/// 1 (index 0 is `&CPUMeter_class`, handled separately) adding each entry via
+/// [`AvailableMetersPanel_addPlatformMeter`], and finally the CPU chooser rows
+/// via [`AvailableMetersPanel_addCPUMeters`].
+///
+/// The C `if (type == &DynamicMeter_class) addDynamicMeters(...) else
+/// addPlatformMeter(...)` discrimination is elided: `DynamicMeter_class` (the
+/// `MeterClass` static) is not ported and does not appear in the ported
+/// `Platform_meterTypes`, so every entry takes the `addPlatformMeter` path
+/// (the branch is dead on this platform table; see the module docs and the
+/// [`AvailableMetersPanel_addDynamicMeters`] stub).
+///
+/// `Panel_init(super, 1, 1, 1, 1, Class(ListItem), true, fuBar)` is
+/// [`Panel_new`] at those coords (dropping the `Vector`-typing args).
+///
+/// # Safety
+///
+/// `host`/`header`/`scr` must point at live objects that outlive the panel
+/// (as in C, where the setup screen owns them), and every pointer in
+/// `meterPanels` must reference a live [`MetersPanel`] (the header columns).
+pub fn AvailableMetersPanel_new(
+    host: *mut Machine,
+    header: *mut Header,
+    columns: usize,
+    meterPanels: Vec<*mut MetersPanel>,
+    scr: *mut ScreenManager,
+) -> AvailableMetersPanel {
+    let fu_bar = FunctionBar_new(Some(&AvailableMetersFunctions[..]), None, None);
+    let super_ = Panel_new(1, 1, 1, 1, Some(fu_bar));
+
+    let mut this = AvailableMetersPanel {
+        super_,
+        scr,
+        host,
+        header,
+        columns,
+        meterPanels,
+    };
+
+    Panel_setHeader(&mut this.super_, "Available meters");
+
+    // C: Platform_meterTypes[0] is always &CPUMeter_class, handled below.
+    // for (unsigned int i = 1; Platform_meterTypes[i]; i++) { ... }
+    for i in 1..Platform_meterTypes.len() {
+        let type_ = Platform_meterTypes[i];
+        // C: assert(type != &CPUMeter_class);
+        // C: if (type == &DynamicMeter_class) addDynamicMeters(...) else
+        //    addPlatformMeter(super, type, i);  — see fn/module docs for the
+        //    elided DynamicMeter branch.
+        AvailableMetersPanel_addPlatformMeter(&mut this.super_, type_, i as u32);
+    }
+
+    // C: AvailableMetersPanel_addCPUMeters(super, &CPUMeter_class, host);
+    // SAFETY: `host` is the raw back-pointer just stored; it outlives the panel.
+    let host_ref = unsafe { &*host };
+    AvailableMetersPanel_addCPUMeters(&mut this.super_, &CPUMeter_class, host_ref);
+
+    this
 }
 
 #[cfg(test)]
@@ -340,5 +559,42 @@ mod tests {
         AvailableMetersPanel_addCPUMeters(&mut panel, &class, &host);
         assert_eq!(row(&panel, 1).value, "CPU 1"); // cpu 0 -> id 1
         assert_eq!(row(&panel, 2).value, "CPU 2"); // cpu 1 -> id 2
+    }
+
+    // ── AvailableMetersPanel_new ──────────────────────────────────────
+
+    #[test]
+    fn new_builds_platform_rows_then_cpu_rows() {
+        // A uniprocessor host: one CPU chooser row, plus one row per
+        // Platform_meterTypes entry after index 0 (CPUMeter).
+        let mut host = Machine {
+            existingCPUs: 1,
+            settings: Some(Settings::default()),
+            ..Default::default()
+        };
+        let hptr: *mut Machine = &mut host;
+        let panel = AvailableMetersPanel_new(
+            hptr,
+            core::ptr::null_mut(),
+            1,
+            Vec::new(),
+            core::ptr::null_mut(),
+        );
+
+        let platform_rows = Platform_meterTypes.len() - 1; // skip index 0 (CPU)
+        // uniprocessor => addCPUMeters adds exactly one row.
+        assert_eq!(Panel_size(&panel.super_), platform_rows as i32 + 1);
+
+        // Row 0 is the first non-CPU platform meter (Platform_meterTypes[1]),
+        // labeled by description ?: uiName, keyed (offset=1) << 16.
+        let first = Platform_meterTypes[1];
+        let expected = first.description.unwrap_or(first.uiName);
+        assert_eq!(row(&panel.super_, 0).value, expected);
+        assert_eq!(row(&panel.super_, 0).key, 1 << 16);
+
+        // Stored back-pointers/fields.
+        assert_eq!(panel.columns, 1);
+        assert!(panel.meterPanels.is_empty());
+        assert_eq!(panel.host, hptr);
     }
 }
