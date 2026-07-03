@@ -62,7 +62,8 @@ use crate::ported::row::{
     Row_printLeftAlignedField, Row_printPercentage, Row_printTime, Row_uidDigits,
 };
 use crate::ported::scheduling::Scheduling_formatPolicy;
-use crate::ported::settings::{RowField, Settings_isReadonly};
+use crate::ported::settings::{RowField, Settings, Settings_isReadonly};
+use crate::ported::table::Table;
 use crate::ported::xutils::{compareRealNumbers, String_startsWith};
 use core::any::Any;
 use core::ffi::c_void;
@@ -479,23 +480,23 @@ impl Deref for ProcessClass {
 }
 
 /// Port of `const ProcessClass Process_class` from `Process.c:1113`. The
-/// `RowClass` vtable wires the slots whose port already matches the slot
-/// signature — `isHighlighted` ([`Process_rowIsHighlighted`]) and
-/// `writeField` ([`Process_rowWriteField`]); `isVisible` / `matchesFilter` /
-/// `sortKeyString` / `compareByParent` / `compareByKey` stay `None` until
-/// those functions are ported to the slot signature. `.compare =
-/// Process_compare` and `.delete` are realized by the [`Object`] impl / `Drop`.
+/// `RowClass` vtable wires `isHighlighted`, `isVisible`, `writeField`,
+/// `sortKeyString`, and `compareByParent`; `matchesFilter` stays `None` (its
+/// port is blocked on the `ProcessTable`/`pidMatchList` substrate) and
+/// `compareByKey` is `None` on the base `Process` (only `LinuxProcess` sets
+/// it). `.compare = Process_compare` and `.delete` are realized by the
+/// [`Object`] impl / `Drop`.
 pub static Process_class: ProcessClass = ProcessClass {
     super_: RowClass {
         super_: ObjectClass {
             extends: Some(&Row_class.super_),
         },
         isHighlighted: Some(Process_rowIsHighlighted),
-        isVisible: None,
+        isVisible: Some(Process_rowIsVisible),
         writeField: Some(Process_rowWriteField),
         matchesFilter: None,
-        sortKeyString: None,
-        compareByParent: None,
+        sortKeyString: Some(Process_rowGetSortKey),
+        compareByParent: Some(Process_compareByParent),
     },
     compareByKey: None,
 };
@@ -1235,8 +1236,8 @@ pub fn Process_getSortKey(this: &Process) -> Option<&[u8]> {
 /// + `assert(Object_isA(...))`) and delegates to [`Process_getSortKey`].
 pub fn Process_rowGetSortKey(super_: &dyn Object) -> Option<&[u8]> {
     debug_assert!(Object_isA(Some(super_), &Process_class));
-    let this = (super_ as &dyn Any)
-        .downcast_ref::<Process>()
+    let this = super_
+        .as_process()
         .expect("Process_rowGetSortKey: row is not a Process");
     Process_getSortKey(this)
 }
@@ -1267,22 +1268,31 @@ pub fn Process_rowIsHighlighted(super_: &dyn Object) -> bool {
     Process_isHighlighted(this)
 }
 
-/// TODO: port of `static bool Process_isVisible(const Process* p, const
-/// Settings* settings)` from `Process.c:865`. The body is pure —
-/// `settings->hideUserlandThreads ? !Process_isThread(p) : true` — but the
-/// ported `Settings` subset (`settings.rs`) carries no
-/// `hideUserlandThreads` field, so there is no faithful `&Settings` read
-/// to port yet.
-pub fn Process_isVisible() {
-    todo!("port of Process.c:865 — Settings subset lacks hideUserlandThreads")
+/// Port of `static bool Process_isVisible(const Process* p, const Settings*
+/// settings)` from `Process.c:865`. Hides userland threads when
+/// `hideUserlandThreads` is set; otherwise every process is visible.
+pub fn Process_isVisible(p: &Process, settings: &Settings) -> bool {
+    if settings.hideUserlandThreads {
+        return !Process_isThread(p);
+    }
+    true
 }
 
-/// TODO: port of `bool Process_rowIsVisible(const Row* super, const
-/// Table* table)` from `Process.c:871`. Blocked on the unported `Table`
-/// substrate: it reads `table->host->settings` to feed
-/// [`Process_isVisible`] (itself blocked). No `Table` type is modeled.
-pub fn Process_rowIsVisible() {
-    todo!("port of Process.c:871 — needs Table substrate")
+/// Port of `bool Process_rowIsVisible(const Row* super, const Table* table)`
+/// from `Process.c:871` — the `isVisible` [`RowClass`] slot for `Process`.
+/// Downcasts and delegates to [`Process_isVisible`] with the table's host
+/// settings.
+pub fn Process_rowIsVisible(super_: &dyn Object, table: &Table) -> bool {
+    debug_assert!(Object_isA(Some(super_), &Process_class));
+    let this = super_
+        .as_process()
+        .expect("Process_rowIsVisible: row is not a Process");
+    let host = unsafe { &*table.host };
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("Process_rowIsVisible: table->host->settings is NULL");
+    Process_isVisible(this, settings)
 }
 
 /// TODO: port of `static bool Process_matchesFilter(const Process* this,
@@ -1413,11 +1423,11 @@ pub fn Process_compare(p1: &Process, p2: &Process) -> i32 {
 pub fn Process_compareByParent(r1: &dyn Object, r2: &dyn Object) -> i32 {
     debug_assert!(Object_isA(Some(r1), &Process_class));
     debug_assert!(Object_isA(Some(r2), &Process_class));
-    let p1 = (r1 as &dyn Any)
-        .downcast_ref::<Process>()
+    let p1 = r1
+        .as_process()
         .expect("Process_compareByParent: row is not a Process");
-    let p2 = (r2 as &dyn Any)
-        .downcast_ref::<Process>()
+    let p2 = r2
+        .as_process()
         .expect("Process_compareByParent: row is not a Process");
 
     let result = spaceship_number!(
@@ -2467,5 +2477,24 @@ mod tests {
         // STATE running → "R " (2).
         p.state = ProcessState::RUNNING;
         assert_eq!(render(&p, ProcessField::STATE as RowField), 2);
+    }
+
+    /// [`Process_isVisible`]: userland threads are hidden only when
+    /// `hideUserlandThreads` is set; everything else is always visible.
+    #[test]
+    fn is_visible_gates_userland_threads() {
+        use crate::ported::settings::Settings;
+
+        let mut p = Process::default();
+        p.isUserlandThread = true;
+
+        let mut s = Settings::default();
+        s.hideUserlandThreads = false;
+        assert!(Process_isVisible(&p, &s)); // not hiding → visible
+
+        s.hideUserlandThreads = true;
+        assert!(!Process_isVisible(&p, &s)); // hiding → thread hidden
+        p.isUserlandThread = false;
+        assert!(Process_isVisible(&p, &s)); // non-thread stays visible
     }
 }

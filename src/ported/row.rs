@@ -249,8 +249,9 @@ pub type Row_IsVisible = fn(&dyn Object, &Table) -> bool;
 /// (`Row.h:83`).
 pub type Row_MatchesFilter = fn(&dyn Object, &Table) -> bool;
 /// Port of `typedef const char* (*Row_SortKeyString)(Row*)` (`Row.h:84`);
-/// the C `const char*` becomes an owned `String`.
-pub type Row_SortKeyString = fn(&dyn Object) -> String;
+/// the C `const char*` becomes a `&[u8]` borrowed from the row (`None` = the
+/// C `NULL`), matching the ported `Process_rowGetSortKey`.
+pub type Row_SortKeyString = fn(&dyn Object) -> Option<&[u8]>;
 /// Port of `typedef int (*Row_CompareByParent)(const Row*, const Row*)`
 /// (`Row.h:85`).
 pub type Row_CompareByParent = fn(&dyn Object, &dyn Object) -> i32;

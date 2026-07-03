@@ -44,9 +44,9 @@ use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, ObjectClass, Object_isA};
 use crate::ported::process::{
     spaceship_nullstr, Process, ProcessClass, ProcessField, ProcessFieldData, Process_class,
-    Process_compare, Process_compareByKey_Base, Process_getPid, Process_init,
-    Process_rowIsHighlighted, Process_writeField, Tristate, PROCESS_FLAG_CWD, PROCESS_FLAG_IO,
-    PROCESS_FLAG_SCHEDPOL,
+    Process_compare, Process_compareByKey_Base, Process_compareByParent, Process_getPid,
+    Process_init, Process_rowGetSortKey, Process_rowIsHighlighted, Process_rowIsVisible,
+    Process_writeField, Tristate, PROCESS_FLAG_CWD, PROCESS_FLAG_IO, PROCESS_FLAG_SCHEDPOL,
 };
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
 use crate::ported::row::{
@@ -383,25 +383,26 @@ pub struct LinuxProcess {
 }
 
 /// Port of `const ProcessClass LinuxProcess_class` from `LinuxProcess.c:459`.
-/// The `RowClass` vtable wires `isHighlighted` ([`Process_rowIsHighlighted`],
-/// inherited) and `writeField` ([`LinuxProcess_rowWriteField`]); the other
-/// slots (`isVisible` / `matchesFilter` / `sortKeyString` / `compareByParent`
-/// / `compareByKey`) stay `None` until those functions are ported to the slot
-/// signature. `.compare = Process_compare` and `.delete` are realized by the
-/// [`Object`] impl / `Drop`.
+/// The `RowClass` vtable wires the inherited `Process` slots (`isHighlighted`,
+/// `isVisible`, `sortKeyString`, `compareByParent`) plus the Linux-specific
+/// `writeField` ([`LinuxProcess_rowWriteField`]) and the `compareByKey`
+/// [`ProcessClass`] slot ([`LinuxProcess_compareByKey`]); `matchesFilter`
+/// stays `None` (blocked on the `ProcessTable`/`pidMatchList` substrate).
+/// `.compare = Process_compare` and `.delete` are realized by the [`Object`]
+/// impl / `Drop`.
 pub static LinuxProcess_class: ProcessClass = ProcessClass {
     super_: RowClass {
         super_: ObjectClass {
             extends: Some(&Process_class.super_.super_),
         },
         isHighlighted: Some(Process_rowIsHighlighted),
-        isVisible: None,
+        isVisible: Some(Process_rowIsVisible),
         writeField: Some(LinuxProcess_rowWriteField),
         matchesFilter: None,
-        sortKeyString: None,
-        compareByParent: None,
+        sortKeyString: Some(Process_rowGetSortKey),
+        compareByParent: Some(Process_compareByParent),
     },
-    compareByKey: None,
+    compareByKey: Some(LinuxProcess_compareByKey),
 };
 
 impl Object for LinuxProcess {
@@ -962,16 +963,20 @@ pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, fie
 /// Port of `static int LinuxProcess_compareByKey(const Process* v1, const
 /// Process* v2, ProcessField key)` from `LinuxProcess.c:366`. Compares two
 /// processes on a Linux platform field, delegating unhandled keys to
-/// [`Process_compareByKey_Base`]. The C body immediately downcasts both
-/// `const Process*` to `const LinuxProcess*`, so the faithful Rust receiver
-/// is `&LinuxProcess` (Rust embedding cannot recover the outer struct from
-/// `&Process`); the base fields (`isRunningInContainer`) and the base
-/// comparison are reached through `super_`. `HAVE_OPENVZ`/`HAVE_VSERVER` are
-/// off (matching [`Process_fields`]), so the `CTID`/`VPID`/`VXID` arms are
-/// absent exactly as the C `#ifdef`s omit them; `HAVE_DELAYACCT` is on.
-pub fn LinuxProcess_compareByKey(v1: &LinuxProcess, v2: &LinuxProcess, key: ProcessField) -> i32 {
-    let p1 = v1;
-    let p2 = v2;
+/// [`Process_compareByKey_Base`]. This is the `compareByKey`
+/// [`ProcessClass`] slot; the C `const Process*` receivers are `&dyn Object`
+/// downcast to `LinuxProcess` (C's `(const LinuxProcess*)`). The base fields
+/// (`isRunningInContainer`) and comparison are reached through `super_`.
+/// `HAVE_OPENVZ`/`HAVE_VSERVER` are off (matching [`Process_fields`]), so the
+/// `CTID`/`VPID`/`VXID` arms are absent exactly as the C `#ifdef`s omit them;
+/// `HAVE_DELAYACCT` is on.
+pub fn LinuxProcess_compareByKey(v1: &dyn Object, v2: &dyn Object, key: ProcessField) -> i32 {
+    let p1 = (v1 as &dyn Any)
+        .downcast_ref::<LinuxProcess>()
+        .expect("LinuxProcess_compareByKey: v1 is not a LinuxProcess");
+    let p2 = (v2 as &dyn Any)
+        .downcast_ref::<LinuxProcess>()
+        .expect("LinuxProcess_compareByKey: v2 is not a LinuxProcess");
     match key {
         ProcessField::M_DRS => spaceship_number!(p1.m_drs, p2.m_drs),
         ProcessField::M_LRS => spaceship_number!(p1.m_lrs, p2.m_lrs),
@@ -1046,10 +1051,10 @@ pub fn LinuxProcess_compareByKey(v1: &LinuxProcess, v2: &LinuxProcess, key: Proc
         }
         ProcessField::GPU_TIME => spaceship_number!(p1.gpu_time, p2.gpu_time),
         ProcessField::ISCONTAINER => spaceship_number!(
-            v1.super_.isRunningInContainer as i32,
-            v2.super_.isRunningInContainer as i32
+            p1.super_.isRunningInContainer as i32,
+            p2.super_.isRunningInContainer as i32
         ),
-        _ => Process_compareByKey_Base(&v1.super_, &v2.super_, key),
+        _ => Process_compareByKey_Base(&p1.super_, &p2.super_, key),
     }
 }
 
@@ -1183,20 +1188,20 @@ mod tests {
 
         a.utime = 10;
         b.utime = 20;
-        assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::UTIME) < 0);
-        assert!(LinuxProcess_compareByKey(&b, &a, ProcessField::UTIME) > 0);
+        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::UTIME) < 0);
+        assert!(LinuxProcess_compareByKey(&b as &dyn Object, &a as &dyn Object, ProcessField::UTIME) > 0);
 
         // GPU_PERCENT ties break on gpu_time.
         a.gpu_percent = 5.0;
         b.gpu_percent = 5.0;
         a.gpu_time = 100;
         b.gpu_time = 200;
-        assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::GPU_PERCENT) < 0);
+        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::GPU_PERCENT) < 0);
 
         // Reserved key (PID) → base comparison, ordered by Row id.
         a.super_.super_.id = 7;
         b.super_.super_.id = 3;
-        assert!(LinuxProcess_compareByKey(&a, &b, ProcessField::PID) > 0);
+        assert!(LinuxProcess_compareByKey(&a as &dyn Object, &b as &dyn Object, ProcessField::PID) > 0);
     }
 
     /// [`LinuxProcess_rowWriteField`] renders Linux platform fields and
