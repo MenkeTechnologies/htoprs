@@ -7,4 +7,5 @@
 //! call `kvm_*`/`sysctl`) are added as they are ported and gate their
 //! BSD-specific syscalls behind `#[cfg(target_os = "dragonfly")]`.
 
+pub mod dragonflybsdmachine;
 pub mod dragonflybsdprocess;
