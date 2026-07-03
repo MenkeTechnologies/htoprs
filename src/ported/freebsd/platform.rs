@@ -162,10 +162,13 @@ pub fn Platform_setCPUValues(mtr: &mut Meter, cpu: u32) -> f64 {
 
     // single CPU box has everything in fhost->cpus[0]
     let cpuData = unsafe {
+        // Borrow the Vec explicitly before indexing so it does not implicitly
+        // autoref the raw-pointer deref (`&(*fhost)`), which the compiler denies.
+        let cpus_arr = &(*fhost).cpus;
         if cpus == 1 {
-            (*fhost).cpus[0]
+            cpus_arr[0]
         } else {
-            (*fhost).cpus[cpu as usize]
+            cpus_arr[cpu as usize]
         }
     };
 
