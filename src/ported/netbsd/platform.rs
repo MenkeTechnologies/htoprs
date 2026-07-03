@@ -235,7 +235,11 @@ pub fn Platform_setCPUValues(this: &mut Meter, cpu: c_int) -> f64 {
     let nhost = host as *const NetBSDMachine;
     // SAFETY: `this.host` is the base of a live `NetBSDMachine` (the same
     // downcast htop performs); `cpuData[cpu]` is in range for the meter.
-    let cpuData = unsafe { (*nhost).cpuData[cpu as usize] };
+    // `CPUData` is `Copy`, so this reads the entry out by value.
+    let cpuData = unsafe {
+        let nh = &*nhost;
+        nh.cpuData[cpu as usize]
+    };
     let total = if cpuData.totalPeriod == 0 {
         1.0
     } else {

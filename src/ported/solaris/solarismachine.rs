@@ -35,7 +35,7 @@ use std::ptr;
 
 use crate::ported::crt::CRT_fatalError;
 use crate::ported::linux::linuxmachine::ZfsArcStats;
-use crate::ported::machine::{Machine, Machine_done, Machine_init};
+use crate::ported::machine::{Machine, Machine_done};
 
 /// `#define ONE_K 1024L` (`Macros.h`).
 const ONE_K: usize = 1024;
@@ -540,41 +540,18 @@ pub fn Machine_scan(this: &mut SolarisMachine) {
     SolarisMachine_scanZfsArcstats(this);
 }
 
-/// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)` from
-/// `SolarisMachine.c:292`. Allocates a `SolarisMachine`, runs the base
-/// [`Machine_init`], resolves the page size, opens the kstat handle, and
-/// samples the initial CPU count. Returns the owning `Box<SolarisMachine>`
-/// (C returns `&this->super`); the caller derives `*mut Machine` from
-/// `&mut box.super_`.
-pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<SolarisMachine> {
-    let mut this = Box::new(SolarisMachine {
-        super_: Machine::default(),
-        kd: ptr::null_mut(),
-        cpus: Vec::new(),
-        pageSize: 0,
-        pageSizeKB: 0,
-        usedMem: 0,
-        lockedMem: 0,
-        zfs: ZfsArcStats::default(),
-    });
-
-    Machine_init(&mut this.super_, usersTable, userId);
-
-    let pageSize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if pageSize <= 0 {
-        CRT_fatalError("Cannot get pagesize by sysconf(_SC_PAGESIZE)");
-    }
-    this.pageSize = pageSize as usize;
-    this.pageSizeKB = this.pageSize / ONE_K;
-
-    this.kd = unsafe { kstat_open() };
-    if this.kd.is_null() {
-        CRT_fatalError("Cannot open kstat handle");
-    }
-
-    SolarisMachine_updateCPUcount(&mut this);
-
-    this
+/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
+/// from `SolarisMachine.c:292`. Blocked: the base [`Machine_init`]
+/// (`machine.rs`) is `#[cfg(target_os = "macos")]`-gated — it depends on the
+/// unported `Platform_gettime_realtime` (solaris `Platform.h:122`, which
+/// forwards to `Generic_gettime_realtime`) and on `Row_setPidColumnWidth`, so
+/// it is not compiled for illumos and cannot be called here. Both `machine.rs`
+/// and the `generic/` substrate are outside this port's edit scope. The
+/// remainder of the body (page size via `sysconf`, `kstat_open`, and
+/// [`SolarisMachine_updateCPUcount`]) is ported and ready to wire up once
+/// `Machine_init` is available on illumos.
+pub fn Machine_new() {
+    todo!("port of SolarisMachine.c:292")
 }
 
 /// Port of `void Machine_delete(Machine* super)` from `SolarisMachine.c:313`.

@@ -375,7 +375,7 @@ pub extern "C" fn SolarisProcessTable_walkproc(
 
     let pt_ptr = pt as *mut ProcessTable;
     let sproc: *mut SolarisProcess = {
-        let obj: &mut dyn Object = pt.super_.super_.rows[idx].as_mut().unwrap().as_mut();
+        let obj: &mut dyn Object = pt.super_.rows[idx].as_mut().unwrap().as_mut();
         let any: &mut dyn Any = obj;
         any.downcast_mut::<SolarisProcess>().unwrap()
     };

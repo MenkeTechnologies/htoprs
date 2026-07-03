@@ -29,7 +29,7 @@
 use core::slice;
 use std::ffi::CStr;
 use std::mem::size_of;
-use std::os::raw::{c_char, c_int, c_long, c_ulong, c_void};
+use std::os::raw::{c_char, c_int, c_ulong, c_void};
 use std::ptr;
 
 use crate::ported::machine::Machine;
@@ -484,8 +484,7 @@ pub fn ProcessTable_goThroughEntries(this: &mut NetBSDProcessTable) {
             ss_flags & PROCESS_FLAG_CWD != 0,
         )
     };
-    let (nhost_fscale, nhost_kd, nhost_page_kb) =
-        unsafe { ((*nhost).fscale, (*nhost).kd, (*nhost).pageSizeKB) };
+    let (nhost_kd, nhost_page_kb) = unsafe { ((*nhost).kd, (*nhost).pageSizeKB) };
 
     let mut count: c_int = 0;
     let kprocs = unsafe {

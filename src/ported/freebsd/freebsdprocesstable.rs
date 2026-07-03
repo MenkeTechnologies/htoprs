@@ -21,6 +21,13 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
+// libc marks PUSER/PZERO/PRI_MIN_* "deprecated: not stable across OS versions";
+// the C reads them directly — this port is faithful to that (versioned by the
+// cached `getosreldate()` reference point).
+#![allow(deprecated)]
+// `fixed_cstr!` wraps its slice read in `unsafe`; when invoked inside an
+// already-`unsafe` block (goThroughEntries) that nests harmlessly.
+#![allow(unused_unsafe)]
 
 use core::any::Any;
 use std::ffi::CStr;

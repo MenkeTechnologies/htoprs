@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T19:28:40Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-03T19:41:09Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">812</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">97</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">841</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">67</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1101</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">73.75%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">76.39%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">118</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -157,7 +157,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>dragonflybsd/Platform.c</code></td><td>15</td><td>0</td><td>15</td><td>100%</td></tr>
           <tr><td><code>freebsd/FreeBSDMachine.c</code></td><td>8</td><td>0</td><td>8</td><td>100%</td></tr>
           <tr><td><code>freebsd/FreeBSDProcess.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
-          <tr><td><code>freebsd/FreeBSDProcessTable.c</code></td><td>2</td><td>5</td><td>7</td><td>29%</td></tr>
+          <tr><td><code>freebsd/FreeBSDProcessTable.c</code></td><td>6</td><td>1</td><td>7</td><td>86%</td></tr>
           <tr><td><code>freebsd/Platform.c</code></td><td>15</td><td>2</td><td>17</td><td>88%</td></tr>
           <tr><td><code>generic/hostname.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>generic/uname.c</code></td><td>2</td><td>0</td><td>3</td><td>67%</td></tr>
@@ -178,14 +178,14 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>linux/SELinuxMeter.c</code></td><td>3</td><td>0</td><td>4</td><td>75%</td></tr>
           <tr><td><code>linux/SystemdMeter.c</code></td><td>6</td><td>3</td><td>9</td><td>67%</td></tr>
           <tr><td><code>linux/ZramMeter.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
-          <tr><td><code>netbsd/NetBSDMachine.c</code></td><td>6</td><td>6</td><td>12</td><td>50%</td></tr>
+          <tr><td><code>netbsd/NetBSDMachine.c</code></td><td>12</td><td>0</td><td>12</td><td>100%</td></tr>
           <tr><td><code>netbsd/NetBSDProcess.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
-          <tr><td><code>netbsd/NetBSDProcessTable.c</code></td><td>2</td><td>6</td><td>8</td><td>25%</td></tr>
+          <tr><td><code>netbsd/NetBSDProcessTable.c</code></td><td>7</td><td>1</td><td>8</td><td>88%</td></tr>
           <tr><td><code>netbsd/Platform.c</code></td><td>15</td><td>0</td><td>15</td><td>100%</td></tr>
-          <tr><td><code>openbsd/OpenBSDMachine.c</code></td><td>6</td><td>5</td><td>11</td><td>55%</td></tr>
-          <tr><td><code>openbsd/OpenBSDProcess.c</code></td><td>0</td><td>4</td><td>4</td><td>0%</td></tr>
-          <tr><td><code>openbsd/OpenBSDProcessTable.c</code></td><td>2</td><td>5</td><td>7</td><td>29%</td></tr>
-          <tr><td><code>openbsd/Platform.c</code></td><td>15</td><td>1</td><td>16</td><td>94%</td></tr>
+          <tr><td><code>openbsd/OpenBSDMachine.c</code></td><td>11</td><td>0</td><td>11</td><td>100%</td></tr>
+          <tr><td><code>openbsd/OpenBSDProcess.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
+          <tr><td><code>openbsd/OpenBSDProcessTable.c</code></td><td>6</td><td>1</td><td>7</td><td>86%</td></tr>
+          <tr><td><code>openbsd/Platform.c</code></td><td>16</td><td>0</td><td>16</td><td>100%</td></tr>
           <tr><td><code>pcp-htop.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
           <tr><td><code>pcp/PCPMachine.c</code></td><td>6</td><td>0</td><td>20</td><td>30%</td></tr>
           <tr><td><code>pcp/PCPProcess.c</code></td><td>0</td><td>1</td><td>6</td><td>0%</td></tr>
@@ -194,7 +194,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>solaris/Platform.c</code></td><td>15</td><td>2</td><td>18</td><td>83%</td></tr>
           <tr><td><code>solaris/SolarisMachine.c</code></td><td>10</td><td>0</td><td>10</td><td>100%</td></tr>
           <tr><td><code>solaris/SolarisProcess.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
-          <tr><td><code>solaris/SolarisProcessTable.c</code></td><td>2</td><td>6</td><td>8</td><td>25%</td></tr>
+          <tr><td><code>solaris/SolarisProcessTable.c</code></td><td>6</td><td>1</td><td>8</td><td>75%</td></tr>
           <tr><td><code>unsupported/Platform.c</code></td><td>17</td><td>0</td><td>17</td><td>100%</td></tr>
           <tr><td><code>unsupported/UnsupportedMachine.c</code></td><td>6</td><td>0</td><td>6</td><td>100%</td></tr>
           <tr><td><code>unsupported/UnsupportedProcess.c</code></td><td>3</td><td>1</td><td>4</td><td>75%</td></tr>
@@ -205,12 +205,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-03T19:28:40Z",
+  "generated": "2026-07-03T19:41:09Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1101,
-  "ported": 812,
-  "stubbed": 97,
-  "coverage_pct": 73.75,
+  "ported": 841,
+  "stubbed": 67,
+  "coverage_pct": 76.39,
   "files_started": 118,
   "per_file": [
     {
@@ -671,8 +671,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "freebsd/FreeBSDProcessTable.c",
-      "ported": 2,
-      "stubbed": 5,
+      "ported": 6,
+      "stubbed": 1,
       "defined": 7
     },
     {
@@ -797,8 +797,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "netbsd/NetBSDMachine.c",
-      "ported": 6,
-      "stubbed": 6,
+      "ported": 12,
+      "stubbed": 0,
       "defined": 12
     },
     {
@@ -809,8 +809,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "netbsd/NetBSDProcessTable.c",
-      "ported": 2,
-      "stubbed": 6,
+      "ported": 7,
+      "stubbed": 1,
       "defined": 8
     },
     {
@@ -821,26 +821,26 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "openbsd/OpenBSDMachine.c",
-      "ported": 6,
-      "stubbed": 5,
+      "ported": 11,
+      "stubbed": 0,
       "defined": 11
     },
     {
       "cfile": "openbsd/OpenBSDProcess.c",
-      "ported": 0,
-      "stubbed": 4,
+      "ported": 3,
+      "stubbed": 1,
       "defined": 4
     },
     {
       "cfile": "openbsd/OpenBSDProcessTable.c",
-      "ported": 2,
-      "stubbed": 5,
+      "ported": 6,
+      "stubbed": 1,
       "defined": 7
     },
     {
       "cfile": "openbsd/Platform.c",
-      "ported": 15,
-      "stubbed": 1,
+      "ported": 16,
+      "stubbed": 0,
       "defined": 16
     },
     {
@@ -893,8 +893,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "solaris/SolarisProcessTable.c",
-      "ported": 2,
-      "stubbed": 6,
+      "ported": 6,
+      "stubbed": 1,
       "defined": 8
     },
     {

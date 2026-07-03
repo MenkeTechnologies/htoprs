@@ -21,6 +21,7 @@
 //! data, not a function, and is deferred until the FreeBSD `ProcessField`
 //! layer is modeled.
 #![allow(non_snake_case)]
+#![allow(non_camel_case_types)] // faithful C enum variant names (SCHEDCLASS_*)
 #![allow(non_upper_case_globals)] // faithful C global name (FreeBSDProcess_class)
 #![allow(dead_code)]
 
