@@ -34,6 +34,7 @@ use std::sync::Mutex;
 
 use crate::ported::batterymeter::ACPresence;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
+use crate::ported::meter::Meter;
 use crate::ported::xutils::{String_eq, String_startsWith};
 
 /// `PROCDIR` — the procfs mount htop was compiled to read (a `config.h`
@@ -176,14 +177,54 @@ pub fn Platform_setMemoryValues() {
     todo!("port of Platform.c:441")
 }
 
-/// TODO: port of `void Platform_setSwapValues(Meter* this` from `Platform.c:469`.
-pub fn Platform_setSwapValues() {
-    todo!("port of Platform.c:469")
+/// Port of `void Platform_setSwapValues(Meter* this)` from
+/// `linux/Platform.c:469`. Fills the swap meter's `total`/`values` from the
+/// host's swap counters, then applies the zswap adjustment: zswapped pages
+/// are subtracted from `USED` (overflow spilling into `CACHE`) and added to
+/// `FRONTSWAP`. `this->host` is the concrete [`LinuxMachine`]; its generic
+/// swap totals live on `super_`, the zswap counters on the `LinuxMachine`.
+/// `SwapMeter.h` indices: `USED=0`, `CACHE=1`, `FRONTSWAP=2`.
+pub fn Platform_setSwapValues(this: &mut Meter) {
+    let host = this
+        .host
+        .as_ref()
+        .expect("Platform_setSwapValues: this->host (C dereferences it)")
+        .clone();
+    let h = host.borrow();
+
+    this.total = h.super_.totalSwap as f64;
+    this.values[0] = h.super_.usedSwap as f64;
+    this.values[1] = h.super_.cachedSwap as f64;
+    this.values[2] = 0.0; // frontswap
+
+    if h.zswap.usedZswapOrig > 0 || h.zswap.usedZswapComp > 0 {
+        this.values[0] -= h.zswap.usedZswapOrig as f64;
+        if this.values[0] < 0.0 {
+            // subtract the overflow from SwapCached
+            this.values[1] += this.values[0];
+            this.values[0] = 0.0;
+        }
+        this.values[2] += h.zswap.usedZswapOrig as f64;
+    }
 }
 
-/// TODO: port of `void Platform_setZramValues(Meter* this` from `Platform.c:499`.
-pub fn Platform_setZramValues() {
-    todo!("port of Platform.c:499")
+/// Port of `void Platform_setZramValues(Meter* this)` from
+/// `linux/Platform.c:499`. `total` is the zram device size; `COMPRESSED=0`
+/// is the compressed pool size and `UNCOMPRESSED=1` is the extra original
+/// bytes (`usedZramOrig - usedZramComp`). The scan clamps
+/// `usedZramComp <= usedZramOrig`, so the subtraction never underflows;
+/// `wrapping_sub` mirrors C's unsigned arithmetic for the impossible case.
+pub fn Platform_setZramValues(this: &mut Meter) {
+    let host = this
+        .host
+        .as_ref()
+        .expect("Platform_setZramValues: this->host (C dereferences it)")
+        .clone();
+    let h = host.borrow();
+
+    this.total = h.zram.totalZram as f64;
+    this.values[0] = h.zram.usedZramComp as f64;
+    this.values[1] = h.zram.usedZramOrig.wrapping_sub(h.zram.usedZramComp) as f64;
 }
 
 /// TODO: port of `void Platform_setZfsArcValues(Meter* this` from `Platform.c:507`.

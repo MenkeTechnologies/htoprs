@@ -94,7 +94,7 @@ use std::sync::atomic::Ordering;
 
 use crate::ported::crt::{CRT_colorSchemes, CRT_utf8, ColorElements, ColorScheme};
 use crate::ported::functionbar::Ncurses;
-use crate::ported::machine::Machine;
+use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
@@ -438,11 +438,14 @@ pub struct Meter {
     /// C `this->draw` — the instance draw pointer set by [`Meter_setMode`].
     pub draw: Option<MeterDraw>,
     /// C `Meter.host` (`Meter.h:114`) — the back-pointer to the owning
-    /// [`Machine`]. `Rc<RefCell<…>>` reproduces htop's shared `Machine*`:
-    /// htop is single-threaded, and the meters, header, and tables all alias
-    /// the one `Machine`. `None` on a meter not yet attached to a host
-    /// (e.g. the setup-menu preview meters).
-    pub host: Option<Rc<RefCell<Machine>>>,
+    /// machine. C types it `Machine*`; the platform code downcasts to the
+    /// concrete `LinuxMachine*`. Rust cannot reinterpret a base reference,
+    /// so `host` holds the concrete [`LinuxMachine`] directly (the only
+    /// platform this port builds); its `super_` is the generic `Machine`
+    /// that cross-platform meters read. `Rc<RefCell<…>>` reproduces htop's
+    /// shared pointer (single-threaded; meters/header/tables all alias the
+    /// one machine). `None` on a meter not yet attached to a host.
+    pub host: Option<Rc<RefCell<LinuxMachine>>>,
 }
 
 impl Meter {

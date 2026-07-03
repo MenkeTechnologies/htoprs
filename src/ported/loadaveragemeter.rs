@@ -33,7 +33,8 @@
 //!   figures via the ported `Platform_getLoadAverage`, clamp `this->total`
 //!   to `this->host->activeCPUs`, and set the OK/Medium/High bar color from
 //!   the 1-minute value against that CPU count. `this->host` is the
-//!   `Rc<RefCell<Machine>>` back-pointer now modeled on `Meter`.
+//!   `Rc<RefCell<LinuxMachine>>` back-pointer modeled on `Meter` (its
+//!   `super_` is the generic `Machine` holding `activeCPUs`).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -52,15 +53,13 @@ static MEDIUM_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_WARN as i32];
 /// (`LoadAverageMeter.c:42`) — load ≥ activeCPUs.
 static HIGH_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_ERROR as i32];
 
-/// TODO: port of `static void LoadAverageMeter_updateValues(Meter* this)`
-/// from `LoadAverageMeter.c:42`. Blocked: the body reads
-/// `this->host->activeCPUs` (for the `total` clamp and the OK/Medium/High
-/// color threshold), but the partial `Meter` in `meter.rs` carries no
-/// `host` back-pointer to dereference. (The load source
-/// `Platform_getLoadAverage(&this->values[0], &this->values[1],
-/// &this->values[2])` is now ported in `linux/platform.rs`, and the other
-/// fields — `total`, `curAttributes`, `curItems`, `txtBuffer` — the `Meter`
-/// struct now models; only `host->activeCPUs` remains missing.)
+/// Port of `static void LoadAverageMeter_updateValues(Meter* this)` from
+/// `LoadAverageMeter.c:42`. Reads the 1/5/15-minute figures via the ported
+/// `Platform_getLoadAverage`, shows only the 1-minute bar (`curItems = 1`),
+/// clamps `this->total` up to `host->activeCPUs`, and picks the OK/Medium/
+/// High bar color from the 1-minute value against that CPU count.
+/// `this->host` is the concrete `LinuxMachine`; `activeCPUs` lives on its
+/// generic `super_` (`Machine`).
 pub fn LoadAverageMeter_updateValues(this: &mut Meter) {
     let (mut one, mut five, mut fifteen) = (0.0f64, 0.0f64, 0.0f64);
     Platform_getLoadAverage(&mut one, &mut five, &mut fifteen);
@@ -77,6 +76,7 @@ pub fn LoadAverageMeter_updateValues(this: &mut Meter) {
         .as_ref()
         .expect("LoadAverageMeter_updateValues: this->host (C dereferences it)")
         .borrow()
+        .super_
         .activeCPUs as f64;
     if this.total < active_cpus {
         this.total = active_cpus;
@@ -128,14 +128,10 @@ pub fn LoadAverageMeter_display(this: &Meter, out: &mut RichString) {
     );
 }
 
-/// TODO: port of `static void LoadMeter_updateValues(Meter* this)` from
-/// `LoadAverageMeter.c:76`. Blocked for the same reason as
-/// [`LoadAverageMeter_updateValues`]: the body reads
-/// `this->host->activeCPUs` (for the `total` clamp and the OK/Medium/High
-/// color threshold), but the partial `Meter` in `meter.rs` carries no
-/// `host` back-pointer. (The load source
-/// `Platform_getLoadAverage(&this->values[0], &five, &fifteen)` is now
-/// ported in `linux/platform.rs`; only `host->activeCPUs` remains missing.)
+/// Port of `static void LoadMeter_updateValues(Meter* this)` from
+/// `LoadAverageMeter.c:76`. Like [`LoadAverageMeter_updateValues`] but keeps
+/// only the 1-minute figure (`five`/`fifteen` are C locals), clamps
+/// `this->total` to `host->activeCPUs`, and sets the OK/Medium/High color.
 pub fn LoadMeter_updateValues(this: &mut Meter) {
     let (mut one, mut five, mut fifteen) = (0.0f64, 0.0f64, 0.0f64);
     Platform_getLoadAverage(&mut one, &mut five, &mut fifteen);
@@ -148,6 +144,7 @@ pub fn LoadMeter_updateValues(this: &mut Meter) {
         .as_ref()
         .expect("LoadMeter_updateValues: this->host (C dereferences it)")
         .borrow()
+        .super_
         .activeCPUs as f64;
     if this.total < active_cpus {
         this.total = active_cpus;
@@ -229,14 +226,18 @@ mod tests {
         assert_eq!(text(&out), "0.42 ");
     }
 
+    use crate::ported::linux::linuxmachine::LinuxMachine;
     use crate::ported::machine::Machine;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     /// A `Meter` with a 3-slot `values` and a host reporting `active_cpus`.
     fn hosted_meter(active_cpus: u32) -> Meter {
-        let host = Rc::new(RefCell::new(Machine {
-            activeCPUs: active_cpus,
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            super_: Machine {
+                activeCPUs: active_cpus,
+                ..Default::default()
+            },
             ..Default::default()
         }));
         Meter {

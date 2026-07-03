@@ -14,21 +14,17 @@
 //! and `Meter_humanUnit(buffer, v, sizeof(buffer))` becomes the owned-`String`
 //! [`Meter_humanUnit`] port.
 //!
-//! Ported (self-contained: `RichString`, `CRT_colors`, and `Meter_humanUnit`
-//! are ported):
+//! Ported:
 //! - [`ZramMeter_display`] (`ZramMeter.c:51`).
-//!
-//! Stubbed (blocked on unported substrate — keeps its `todo!()`):
-//! - `ZramMeter_updateValues` (`ZramMeter.c:28`) — its first statement is
-//!   `Platform_setZramValues(this)`, which populates `this->values[]` /
-//!   `this->total` from the platform. The Linux `Platform_setZramValues`
-//!   ([`crate::ported::linux::platform::Platform_setZramValues`]) is itself an
-//!   unported `todo!()` stub with no `Meter` parameter, so there is no faithful
-//!   data source to drive the `txtBuffer` formatting.
+//! - [`ZramMeter_updateValues`] (`ZramMeter.c:28`) — drives the ported
+//!   [`Platform_setZramValues`], which reads the zram counters from the host
+//!   [`LinuxMachine`](crate::ported::linux::linuxmachine::LinuxMachine) via
+//!   the `Meter::host` back-pointer.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::linux::platform::Platform_setZramValues;
 use crate::ported::meter::{Meter, Meter_humanUnit};
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};
 
@@ -39,15 +35,22 @@ const ZRAM_METER_COMPRESSED: usize = 0;
 /// `Meter::values` for the extra uncompressed size.
 const ZRAM_METER_UNCOMPRESSED: usize = 1;
 
-/// TODO: port of `static void ZramMeter_updateValues(Meter* this)` from
-/// `ZramMeter.c:28`. Blocked: the body opens with `Platform_setZramValues(this)`,
-/// which fills `this->values[]` / `this->total` from the platform before the
-/// `txtBuffer` formatting runs. The Linux
-/// [`crate::ported::linux::platform::Platform_setZramValues`] is still an
-/// unported `todo!()` (no `Meter` parameter), so there is no faithful source to
-/// populate the values here.
-pub fn ZramMeter_updateValues() {
-    todo!("port of ZramMeter.c:28: needs Platform_setZramValues(Meter*)")
+/// Port of `static void ZramMeter_updateValues(Meter* this)` from
+/// `ZramMeter.c:28`. Fills `this->values[]`/`this->total` via the ported
+/// [`Platform_setZramValues`], then formats `txtBuffer` as
+/// `<comp>(<comp+uncomp>)/<total>` through [`Meter_humanUnit`].
+pub fn ZramMeter_updateValues(this: &mut Meter) {
+    Platform_setZramValues(this);
+
+    let uncompressed =
+        this.values[ZRAM_METER_COMPRESSED] + this.values[ZRAM_METER_UNCOMPRESSED];
+    // C: "<comp>(<comp+uncomp>)/<total>", each figure via Meter_humanUnit.
+    this.txtBuffer = format!(
+        "{}({})/{}",
+        Meter_humanUnit(this.values[ZRAM_METER_COMPRESSED]),
+        Meter_humanUnit(uncompressed),
+        Meter_humanUnit(this.total)
+    );
 }
 
 /// Port of `static void ZramMeter_display(const Object* cast, RichString* out)`
@@ -98,6 +101,34 @@ mod tests {
     /// Visible characters of the valid `[0, chlen)` range of `out`.
     fn text(r: &RichString) -> String {
         (0..r.chlen as usize).map(|i| r.chptr[i].chars).collect()
+    }
+
+    /// update_values pulls zram counters from the host: values[0]=comp,
+    /// values[1]=orig-comp, total=device size; txtBuffer is
+    /// `<comp>(<comp+uncomp>)/<total>`.
+    #[test]
+    fn update_values_from_host_zram() {
+        use crate::ported::linux::linuxmachine::{LinuxMachine, ZramStats};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            zram: ZramStats {
+                totalZram: 1024,       // "1.00M"
+                usedZramComp: 1024 * 2, // "2.00M"
+                usedZramOrig: 1024 * 3, // orig-comp = 1M uncompressed
+            },
+            ..Default::default()
+        }));
+        let mut m = Meter {
+            values: vec![0.0; 2],
+            host: Some(host),
+            ..Meter::empty()
+        };
+        ZramMeter_updateValues(&mut m);
+        assert_eq!(m.total, 1024.0);
+        assert_eq!(m.values[0], 2048.0);
+        assert_eq!(m.values[1], 1024.0);
+        assert_eq!(m.txtBuffer, "2.00M(3.00M)/1.00M");
     }
 
     /// Exercises the total prefix, the ` used:` compressed value, and the

@@ -23,32 +23,41 @@
 //! Ported (self-contained: `RichString`, `CRT_colors`, and `Meter_humanUnit`
 //! are ported):
 //! - [`SwapMeter_display`] (`SwapMeter.c:45`).
-//!
-//! Stubbed (blocked on unported substrate — keeps its `todo!()`):
-//! - `SwapMeter_updateValues` (`SwapMeter.c:28`) — after seeding the cache /
-//!   frontswap values with `NAN`, the actual totals come from
-//!   `Platform_setSwapValues(this)`, which is a `todo!()` in
-//!   `linux/platform.rs` whose stub signature takes no out-param, so it cannot
-//!   populate `this->total` / `this->values[SWAP_METER_USED]`. The subsequent
-//!   `this->txtBuffer` formatting is pure, but there is no faithful data
-//!   source to drive it (the same blocker keeps `MemoryMeter_updateValues` /
-//!   `FileDescriptorMeter_updateValues` stubbed).
+//! - [`SwapMeter_updateValues`] (`SwapMeter.c:28`) — seeds the cache /
+//!   frontswap slots with `NAN`, then drives the ported
+//!   [`Platform_setSwapValues`](crate::ported::linux::platform::Platform_setSwapValues),
+//!   which reads the host swap counters (and the zswap adjustment) from the
+//!   [`LinuxMachine`](crate::ported::linux::linuxmachine::LinuxMachine) via
+//!   the `Meter::host` back-pointer.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::linux::platform::Platform_setSwapValues;
 use crate::ported::meter::{Meter, Meter_humanUnit};
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};
 
 /// TODO: port of `static void SwapMeter_updateValues(Meter* this)` from
-/// `SwapMeter.c:28`. Blocked: the cache / frontswap slots are seeded with
-/// `NAN` here, but the real totals (`this->total`,
-/// `this->values[SWAP_METER_USED]`) are filled by `Platform_setSwapValues(this)`
-/// — a `todo!()` in `linux/platform.rs` whose stub signature takes no
-/// out-param, so it cannot populate the meter. The trailing `Meter_humanUnit`
-/// `txtBuffer` formatting is pure, but there is no faithful data source.
-pub fn SwapMeter_updateValues() {
-    todo!("port of SwapMeter.c:28: needs Platform_setSwapValues (todo!() in linux/platform.rs, no out-param)")
+/// Port of `static void SwapMeter_updateValues(Meter* this)` from
+/// `SwapMeter.c:28`. Seeds the cache/frontswap slots with `NAN` (not present
+/// on all platforms), fills the real figures via the ported
+/// [`Platform_setSwapValues`], then formats `txtBuffer` as `used/total`
+/// through [`Meter_humanUnit`]. `SwapMeter.h` indices: `USED=0`, `CACHE=1`,
+/// `FRONTSWAP=2`.
+pub fn SwapMeter_updateValues(this: &mut Meter) {
+    const SWAP_METER_USED: usize = 0;
+    const SWAP_METER_CACHE: usize = 1;
+    const SWAP_METER_FRONTSWAP: usize = 2;
+
+    this.values[SWAP_METER_CACHE] = f64::NAN; // 'cached' not present on all platforms
+    this.values[SWAP_METER_FRONTSWAP] = f64::NAN; // 'frontswap' likewise
+    Platform_setSwapValues(this);
+
+    this.txtBuffer = format!(
+        "{}/{}",
+        Meter_humanUnit(this.values[SWAP_METER_USED]),
+        Meter_humanUnit(this.total)
+    );
 }
 
 /// Port of `static void SwapMeter_display(const Object* cast, RichString* out)`
@@ -144,5 +153,62 @@ mod tests {
         let mut out = RichString::new();
         SwapMeter_display(&m, &mut out);
         assert_eq!(text(&out), ":1.00M used:512K");
+    }
+
+    use crate::ported::linux::linuxmachine::{LinuxMachine, ZswapStats};
+    use crate::ported::machine::Machine;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// update_values pulls the host swap totals; with no zswap the used/cache
+    /// slots are the raw counters and txtBuffer is `used/total`.
+    #[test]
+    fn update_values_no_zswap() {
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            super_: Machine {
+                totalSwap: 2048,
+                usedSwap: 512,
+                cachedSwap: 256,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let mut m = Meter {
+            values: vec![0.0; 3],
+            host: Some(host),
+            ..Meter::empty()
+        };
+        SwapMeter_updateValues(&mut m);
+        assert_eq!(m.total, 2048.0);
+        assert_eq!(m.values[0], 512.0); // USED
+        assert_eq!(m.values[1], 256.0); // CACHE
+        assert_eq!(m.values[2], 0.0); // FRONTSWAP (no zswap)
+        assert_eq!(m.txtBuffer, "512K/2.00M");
+    }
+
+    /// zswap subtracts from USED and adds to FRONTSWAP (C: Platform.c:475).
+    #[test]
+    fn update_values_zswap_moves_used_to_frontswap() {
+        let host = Rc::new(RefCell::new(LinuxMachine {
+            super_: Machine {
+                totalSwap: 2048,
+                usedSwap: 512,
+                cachedSwap: 256,
+                ..Default::default()
+            },
+            zswap: ZswapStats {
+                usedZswapOrig: 100,
+                usedZswapComp: 40,
+            },
+            ..Default::default()
+        }));
+        let mut m = Meter {
+            values: vec![0.0; 3],
+            host: Some(host),
+            ..Meter::empty()
+        };
+        SwapMeter_updateValues(&mut m);
+        assert_eq!(m.values[0], 412.0); // 512 - 100 orig
+        assert_eq!(m.values[2], 100.0); // frontswap += orig
     }
 }
