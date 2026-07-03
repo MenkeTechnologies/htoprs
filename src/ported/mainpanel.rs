@@ -116,7 +116,9 @@ use crate::ported::functionbar::{
 };
 use crate::ported::incset::{IncSet, IncSet_delete, IncSet_drawBar};
 use crate::ported::object::{Arg, Object};
-use crate::ported::panel::{Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size};
+use crate::ported::panel::{
+    HandlerResult, Panel, PanelClass, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size,
+};
 use crate::ported::row::Row;
 use crate::ported::table::Table_printHeader;
 
@@ -139,6 +141,34 @@ pub struct MainPanel {
     pub readonlyBar: FunctionBar,
     /// C `unsigned int idSearch` — accumulator for digit-key PID search.
     pub idSearch: u32,
+}
+
+/// Port of `MainPanel.c`'s `const PanelClass MainPanel_class` vtable
+/// (`MainPanel.c:209`). C sets `.eventHandler = MainPanel_eventHandler`,
+/// `.drawFunctionBar = MainPanel_drawFunctionBar`, and
+/// `.printHeader = MainPanel_printHeader`. This wires `draw_function_bar` and
+/// `print_header` to the ported [`MainPanel_drawFunctionBar`] /
+/// [`MainPanel_printHeader`]. The `.eventHandler` slot is left inherited: the
+/// ported [`MainPanel_eventHandler`] is still a no-argument `todo!` stub
+/// (`fn()`), whose signature is incompatible with the trait's
+/// `(&mut self, i32) -> HandlerResult`, so it cannot be wired without
+/// fabricating a return value — wire it once the stub takes the real signature.
+impl PanelClass for MainPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        MainPanel_eventHandler(self, ev)
+    }
+    fn draw_function_bar(&mut self, hide_function_bar: bool) {
+        MainPanel_drawFunctionBar(self, hide_function_bar)
+    }
+    fn print_header(&mut self) {
+        MainPanel_printHeader(self)
+    }
 }
 
 /// Port of the `MainPanel_foreachRowFn` function-pointer typedef from
@@ -229,7 +259,8 @@ pub fn MainPanel_getValue(this: &Panel, i: i32) -> &str {
 /// arguments (`this->inc, ch, super, MainPanel_getValue, NULL`) would not
 /// compile. Also needs `Settings.ss`/`enableMouse` and the `host->activeTable`
 /// follow-mode mutations that the minimal substrate does not wire.
-pub fn MainPanel_eventHandler() {
+pub fn MainPanel_eventHandler(this: &mut MainPanel, ch: i32) -> HandlerResult {
+    let _ = (this, ch);
     todo!("port of MainPanel.c:59 — needs the keys[] Htop_Action table field + a real IncSet_handleKey signature")
 }
 

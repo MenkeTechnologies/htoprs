@@ -53,7 +53,7 @@ use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::header::Header_setLayout;
 use crate::ported::optionitem::{CheckItem, CheckItem_newByVal, CheckItem_set};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_new, Panel_setHeader,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_new, Panel_setHeader,
 };
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
 use crate::ported::settings::{HeaderLayout, HeaderLayout_layouts, Settings};
@@ -83,6 +83,22 @@ pub struct HeaderOptionsPanel {
     /// C `Settings* settings` — non-owning back-pointer to the settings the
     /// handler marks `changed` / bumps `lastUpdate` on.
     pub settings: *mut Settings,
+}
+
+/// Port of `const PanelClass HeaderOptionsPanel_class`
+/// (`HeaderOptionsPanel.c:66`): sets only `.eventHandler =
+/// HeaderOptionsPanel_eventHandler`; `.drawFunctionBar` / `.printHeader` are
+/// NULL, so those slots inherit the `Panel` defaults.
+impl PanelClass for HeaderOptionsPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        HeaderOptionsPanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of `static void HeaderOptionsPanel_delete(Object* object)` from
@@ -315,7 +331,7 @@ mod tests {
         let mut scr = ScreenManager_new(Some(header()), Machine::default(), state());
         // ScreenManager_resize reads panels[panelCount - 1]; give it one panel.
         scr.panelCount = 1;
-        scr.panels.push(Panel_new(0, 0, 10, 5, None));
+        scr.panels.push(Box::new(Panel_new(0, 0, 10, 5, None)));
         let mut set = settings();
 
         let mut this = HeaderOptionsPanel {
@@ -347,7 +363,7 @@ mod tests {
     fn non_activation_key_is_ignored() {
         let mut scr = ScreenManager_new(Some(header()), Machine::default(), state());
         scr.panelCount = 1;
-        scr.panels.push(Panel_new(0, 0, 10, 5, None));
+        scr.panels.push(Box::new(Panel_new(0, 0, 10, 5, None)));
         let mut set = settings();
 
         let mut this = HeaderOptionsPanel {

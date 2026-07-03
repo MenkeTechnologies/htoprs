@@ -130,7 +130,7 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_delete, Panel_get, Panel_getSelectedIndex, Panel_insert,
+    HandlerResult, Panel, PanelClass, Panel_delete, Panel_get, Panel_getSelectedIndex, Panel_insert,
     Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_onKey, Panel_remove, Panel_selectByTyping,
     Panel_setCursorToSelection, Panel_setDefaultBar, Panel_setSelected, Panel_setSelectionColor,
     Panel_size, EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
@@ -951,6 +951,21 @@ pub struct ScreensPanel {
     pub renamingItem: Option<usize>,
     /// C `bool renamingNewItem` — whether the row under edit was just added.
     pub renamingNewItem: bool,
+}
+
+/// Port of `PanelClass ScreensPanel_class` (`ScreensPanel.c:373`): sets only
+/// `.eventHandler = ScreensPanel_eventHandler`; `.drawFunctionBar` /
+/// `.printHeader` are NULL, so those slots inherit the `Panel` defaults.
+impl PanelClass for ScreensPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        ScreensPanel_eventHandler(self, ev)
+    }
 }
 
 #[cfg(test)]

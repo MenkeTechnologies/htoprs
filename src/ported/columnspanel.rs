@@ -76,7 +76,7 @@ use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_done, Panel_get, Panel_getSelectedIndex,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_get, Panel_getSelectedIndex,
     Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_new, Panel_prune, Panel_remove,
     Panel_selectByTyping, Panel_setHeader, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS,
@@ -130,6 +130,22 @@ pub struct ColumnsPanel {
     pub changed: *mut bool,
     /// C `bool moving` — whether the panel is in row-reorder mode.
     pub moving: bool,
+}
+
+/// Port of `ColumnsPanel.c`'s `const PanelClass ColumnsPanel_class` vtable
+/// (`ColumnsPanel.c:129`). C sets only `.eventHandler = ColumnsPanel_eventHandler`;
+/// `.drawFunctionBar` / `.printHeader` are NULL, so those slots inherit the
+/// trait defaults. Wires `event_handler` to [`ColumnsPanel_eventHandler`].
+impl PanelClass for ColumnsPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        ColumnsPanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of `static void ColumnsPanel_delete(Object* object)` from

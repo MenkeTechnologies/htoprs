@@ -305,6 +305,49 @@ impl Panel {
     }
 }
 
+/// Port of the `PanelClass` vtable (`Panel.h:36`). C dispatches
+/// `Panel_eventHandler`/`Panel_drawFunctionBar`/`Panel_printHeader` through
+/// `As_Panel(this)->klass`; the faithful Rust analog is a trait every panel
+/// subclass implements, so a `Box<dyn PanelClass>` (the `ScreenManager`'s
+/// `Panel*` element) dispatches to the concrete subclass. Each subclass
+/// embeds `super_: Panel` and returns it from [`PanelClass::as_panel`] /
+/// [`PanelClass::as_panel_mut`] (the C `(Panel*)this` upcast).
+///
+/// The three behavioural slots default to the C base-class behaviour: the
+/// base `Panel_class` sets `eventHandler`/`drawFunctionBar`/`printHeader` to
+/// `NULL`, and C guards every call with `if (Panel_..Fn(this))`, so a NULL
+/// slot is a no-op. The default [`PanelClass::eventHandler`] returns
+/// [`HandlerResult::IGNORED`] (the base panel handles no keys); the default
+/// `draw_function_bar`/`print_header` do nothing (NULL slot skipped).
+pub trait PanelClass {
+    /// The C `(Panel*)this` upcast — the embedded base panel.
+    fn as_panel(&self) -> &Panel;
+    /// Mutable form of [`PanelClass::as_panel`].
+    fn as_panel_mut(&mut self) -> &mut Panel;
+    /// C `PanelClass.eventHandler` slot (`Panel_EventHandler`). Default =
+    /// base `Panel_class` NULL slot → [`HandlerResult::IGNORED`].
+    fn event_handler(&mut self, _ev: i32) -> HandlerResult {
+        HandlerResult::IGNORED
+    }
+    /// C `PanelClass.drawFunctionBar` slot. Default = NULL slot (no-op); the
+    /// caller draws `panel->currentBar` itself.
+    fn draw_function_bar(&mut self, _hide_function_bar: bool) {}
+    /// C `PanelClass.printHeader` slot. Default = NULL slot (no-op).
+    fn print_header(&mut self) {}
+}
+
+/// The base `Panel_class` (`Panel.c` `const PanelClass Panel_class`): a plain
+/// panel with no behavioural overrides — every slot NULL, so the trait
+/// defaults apply. Lets a bare [`Panel`] be stored as a `Box<dyn PanelClass>`.
+impl PanelClass for Panel {
+    fn as_panel(&self) -> &Panel {
+        self
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        self
+    }
+}
+
 /// Port of `Panel* Panel_new(int x, int y, int w, int h, const ObjectClass* type,
 /// bool owner, FunctionBar* fuBar)` from `Panel.c:36`.
 ///

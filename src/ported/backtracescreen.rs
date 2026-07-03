@@ -70,7 +70,7 @@ use crate::ported::crt::{ColorElements, ColorScheme, A_BOLD, KEY_CTRL, KEY_F};
 use crate::ported::functionbar::{FunctionBar_new, FunctionBar_setLabel};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_delete, Panel_get, Panel_new, Panel_prune,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_delete, Panel_get, Panel_new, Panel_prune,
     Panel_setHeader, Panel_size,
 };
 use crate::ported::process::{
@@ -225,6 +225,21 @@ pub struct BacktracePanel {
     pub printingHelper: BacktracePanelPrintingHelper,
     pub settings: *const Settings,
     pub displayOptions: i32,
+}
+
+/// Port of `const PanelClass BacktracePanel_class` (`BacktraceScreen.c:469`):
+/// sets only `.eventHandler = BacktracePanel_eventHandler`; `.drawFunctionBar`
+/// / `.printHeader` are NULL, so those slots inherit the `Panel` defaults.
+impl PanelClass for BacktracePanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        BacktracePanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of `BacktraceFrameData_new(void)` from `BacktraceScreen.c:70`.

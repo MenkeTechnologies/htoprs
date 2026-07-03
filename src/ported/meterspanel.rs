@@ -98,7 +98,7 @@ use crate::ported::header::Header_calculateHeight;
 use crate::ported::listitem::ListItem;
 use crate::ported::meter::{Meter, Meter_nextSupportedMode, Meter_setMode, Meter_toListItem};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert,
     Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_new, Panel_remove, Panel_set,
     Panel_setDefaultBar, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS,
@@ -204,6 +204,22 @@ pub struct MetersPanel {
     pub rightNeighbor: *mut MetersPanel,
     /// C `bool moving`.
     pub moving: bool,
+}
+
+/// Port of `MetersPanel.c`'s `const PanelClass MetersPanel_class` vtable
+/// (`MetersPanel.c:201`). C sets only `.eventHandler = MetersPanel_eventHandler`;
+/// `.drawFunctionBar` / `.printHeader` are NULL, so those slots inherit the
+/// trait defaults. Wires `event_handler` to [`MetersPanel_eventHandler`].
+impl PanelClass for MetersPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        MetersPanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of `void MetersPanel_setMoving(MetersPanel* this, bool moving)` from

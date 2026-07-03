@@ -48,7 +48,7 @@ use crate::ported::hashtable::{Hashtable, Hashtable_foreach};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelected, Panel_getSelectedIndex,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelected, Panel_getSelectedIndex,
     Panel_insert, Panel_new, Panel_prune, Panel_selectByTyping, Panel_setHeader, Panel_setSelected,
 };
 
@@ -80,6 +80,23 @@ pub struct AvailableColumnsPanel {
     /// C `Panel* columns` — non-owning back-pointer to the `ColumnsPanel`'s
     /// panel that this picker inserts into.
     pub columns: *mut Panel,
+}
+
+/// Port of `AvailableColumnsPanel.c`'s `const PanelClass
+/// AvailableColumnsPanel_class` vtable (`AvailableColumnsPanel.c:75`). C sets
+/// only `.eventHandler = AvailableColumnsPanel_eventHandler`; `.drawFunctionBar`
+/// / `.printHeader` are NULL, so those slots inherit the trait defaults. Wires
+/// `event_handler` to [`AvailableColumnsPanel_eventHandler`].
+impl PanelClass for AvailableColumnsPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        AvailableColumnsPanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of `static void AvailableColumnsPanel_delete(Object* object)` from

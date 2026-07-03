@@ -85,7 +85,7 @@ use crate::ported::affinity::{Affinity, Affinity_add, Affinity_new};
 use crate::ported::crt::{ColorElements, ColorScheme};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::{Panel, Panel_done};
+use crate::ported::panel::{HandlerResult, Panel, PanelClass, Panel_done};
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
 
 /// Model of the C `MaskItem` struct (`AffinityPanel.c:33`), non-hwloc
@@ -223,6 +223,25 @@ pub struct AffinityPanel {
     pub width: u32,
 }
 
+/// Port of `const PanelClass AffinityPanel_class` (`AffinityPanel.c:358`): sets
+/// only `.eventHandler = AffinityPanel_eventHandler`; `.drawFunctionBar` /
+/// `.printHeader` are NULL and inherit the `Panel` defaults. The ported
+/// [`AffinityPanel_eventHandler`] is a `todo!()` stub whose signature is `()`
+/// (not `(&mut AffinityPanel, i32) -> HandlerResult` — it awaits the
+/// panel/cpuids `Panel_splice` aliasing), so the `event_handler` slot cannot be
+/// wired without a signature mismatch and inherits the default here.
+impl PanelClass for AffinityPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        AffinityPanel_eventHandler(self, ev)
+    }
+}
+
 /// Port of `static void AffinityPanel_delete(Object* cast)` from
 /// `AffinityPanel.c:141`: `Vector_delete(this->cpuids); Panel_done(&this->super);
 /// free(this);` (the `hwloc_bitmap_free`/`MaskItem_delete(topoRoot)` block is
@@ -275,7 +294,8 @@ pub fn AffinityPanel_update() {
 /// alias `cpuids` (see [`AffinityPanel_update`]) — and calls
 /// `AffinityPanel_update` on a `HANDLED` result. Both still depend on the
 /// panel/cpuids shared-pointer aliasing, i.e. the stubbed [`Panel_splice`].
-pub fn AffinityPanel_eventHandler() {
+pub fn AffinityPanel_eventHandler(this: &mut AffinityPanel, ch: i32) -> HandlerResult {
+    let _ = (this, ch);
     todo!("port of AffinityPanel.c:203 — needs panel/cpuids aliasing (Panel_splice) + AffinityPanel_update")
 }
 

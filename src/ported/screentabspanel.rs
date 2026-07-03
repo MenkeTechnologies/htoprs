@@ -119,10 +119,10 @@ use crate::ported::listitem::{
 };
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert, Panel_new,
-    Panel_onKey, Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection,
-    Panel_setDefaultBar, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor,
-    EVENT_PANEL_LOST_FOCUS, EVENT_SET_SELECTED,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert, Panel_new,
+    Panel_onKey, Panel_prune, Panel_selectByTyping, Panel_setCursorToSelection, Panel_setDefaultBar,
+    Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, EVENT_PANEL_LOST_FOCUS,
+    EVENT_SET_SELECTED,
 };
 use crate::ported::richstring::RichString;
 use crate::ported::screenmanager::ScreenManager;
@@ -162,6 +162,21 @@ pub struct ScreenNamesPanel {
     pub renamingItem: Option<usize>,
 }
 
+/// Port of `PanelClass ScreenNamesPanel_class` (`ScreenTabsPanel.c:358`): sets
+/// only `.eventHandler = ScreenNamesPanel_eventHandler`; `.drawFunctionBar` /
+/// `.printHeader` are NULL, so those slots inherit the `Panel` defaults.
+impl PanelClass for ScreenNamesPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        ScreenNamesPanel_eventHandler(self, ev)
+    }
+}
+
 /// Port of the C `ScreenNameListItem` struct (`ScreenTabsPanel.h:31`). The
 /// embedded `ListItem super` becomes `super_`; `ss` is the C
 /// `ScreenSettings*` back-pointer aliasing an entry of `settings->screens[]`,
@@ -183,6 +198,21 @@ pub struct ScreenTabsPanel {
     pub settings: *mut Settings,
     pub names: *mut ScreenNamesPanel,
     pub cursor: i32,
+}
+
+/// Port of `PanelClass ScreenTabsPanel_class` (`ScreenTabsPanel.c:113`): sets
+/// only `.eventHandler = ScreenTabsPanel_eventHandler`; `.drawFunctionBar` /
+/// `.printHeader` are NULL, so those slots inherit the `Panel` defaults.
+impl PanelClass for ScreenTabsPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        ScreenTabsPanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of the C `ScreenTabListItem` struct (`ScreenTabsPanel.h:45`). The

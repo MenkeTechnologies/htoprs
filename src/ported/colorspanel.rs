@@ -53,7 +53,7 @@ use crate::ported::panel::{HandlerResult, Panel_getSelectedIndex};
 #[cfg(test)]
 use crate::ported::object::Object;
 use crate::ported::optionitem::{CheckItem, CheckItem_newByVal, CheckItem_set};
-use crate::ported::panel::{Panel, Panel_add, Panel_done, Panel_new, Panel_setHeader};
+use crate::ported::panel::{Panel, PanelClass, Panel_add, Panel_done, Panel_new, Panel_setHeader};
 use crate::ported::settings::Settings;
 
 /// Port of the file-scope
@@ -91,6 +91,22 @@ pub struct ColorsPanel {
     /// C `Settings* settings` — non-owning back-pointer to the settings the
     /// event handler mutates. Stored verbatim by [`ColorsPanel_new`].
     pub settings: *mut Settings,
+}
+
+/// Port of `ColorsPanel.c`'s `const PanelClass ColorsPanel_class` vtable
+/// (`ColorsPanel.c:84`). C sets only `.eventHandler = ColorsPanel_eventHandler`;
+/// `.drawFunctionBar` / `.printHeader` are NULL, so those slots inherit the
+/// trait defaults. Wires `event_handler` to [`ColorsPanel_eventHandler`].
+impl PanelClass for ColorsPanel {
+    fn as_panel(&self) -> &Panel {
+        &self.super_
+    }
+    fn as_panel_mut(&mut self) -> &mut Panel {
+        &mut self.super_
+    }
+    fn event_handler(&mut self, ev: i32) -> HandlerResult {
+        ColorsPanel_eventHandler(self, ev)
+    }
 }
 
 /// Port of `static void ColorsPanel_delete(Object* object)` from
