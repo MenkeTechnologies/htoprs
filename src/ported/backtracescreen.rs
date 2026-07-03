@@ -28,43 +28,57 @@
 //! - `BacktracePanelRow_displayError` (`:416`) — appends the row's own
 //!   error string in `CRT_colors[DEFAULT_COLOR]` via
 //!   [`RichString_appendAscii`].
+//! - `BacktracePanelRow_displayInformation` (`:308`) — renders the
+//!   process-information header line, reading the row's `const Process*`
+//!   back-pointer (modeled as a sound raw pointer to externally-owned memory
+//!   — the same idiom `BacktracePanel.processes`/`settings` use). The C `%n`
+//!   command-name offset becomes the length of the `"Thread %d: "` /
+//!   `"Process %d: "` prefix.
+//! - `BacktracePanelRow_highlightBasename` (`:283`) — repaints the object
+//!   basename column when it matches the process executable's basename;
+//!   reads the same `process` back-pointer. Its sole C caller
+//!   (`displayFrame`) is still blocked, so it has no live caller yet.
 //! - `BacktracePanelRow_display` (`:425`) — the dispatch switch; the
-//!   `BACKTRACE_PANEL_ROW_ERROR` arm is live (calls `displayError`), the
-//!   other two arms are blocked (below) and stay `todo!()`, mirroring the
-//!   `ListItem_display` partial-port precedent.
+//!   `ERROR` arm (calls `displayError`) and the `PROCESS_INFORMATION` arm
+//!   (calls the now-ported `displayInformation`) are live. The `DATA_FRAME`
+//!   arm stays `todo!()` (its `displayFrame` needs the self-referential
+//!   `panel` back-pointer), mirroring the `ListItem_display` partial-port.
 //!
 //! Stubbed (cannot be ported faithfully yet — blocker named on each):
 //! - `BacktraceFrameData_delete` (`:82`), `BacktracePanel_delete` (`:277`),
 //!   `BacktracePanelRow_delete` (`:450`) — pure `free()` / `Vector_delete`
 //!   chains; owned Rust fields are released by `Drop`, so there is no body
 //!   to port (same call as `History_delete`).
-//! - `BacktracePanelRow_displayInformation` (`:308`) and
-//!   `BacktracePanelRow_highlightBasename` (`:283`) — read the row's
-//!   `const Process*` back-pointer. A row that borrows a `&Process` cannot
-//!   be `'static`, so it cannot be stored in `Panel.items`
-//!   (`Vec<Box<dyn Object>>`); the back-pointer is not modeled (the same
-//!   friction `MainPanel.state` documents).
 //! - `BacktracePanelRow_displayFrame` (`:356`) — reads the row's
-//!   `const BacktracePanel*` back-pointer (above) AND
-//!   `settings->highlightBaseName`, a `Settings` field the partial
-//!   `settings.rs` port does not model.
+//!   `const BacktracePanel* panel` back-pointer for `panel->printingHelper`
+//!   / `panel->displayOptions` / `panel->settings->highlightBaseName`.
+//!   Unlike the `process` back-pointer, `panel` is **self-referential** (the
+//!   panel owns the row in `super.items` while the row points back at the
+//!   panel), which the owned-value model cannot keep address-stable across a
+//!   by-value move — porting it would dangle. Its formatting body and the
+//!   `highlightBasename` callee are ported; only the `panel` deref is missing.
 //! - `BacktracePanel_populateFrames` (`:168`) — adds rows to the panel as
-//!   `Object`s (`Panel_add`), but rows carry the `Process` /
-//!   `BacktracePanel` back-pointers above and so cannot be
-//!   `Box<dyn Object>`.
-//! - `BacktracePanel_new` (`:248`) — calls `populateFrames` (blocked) and
-//!   reads `settings->showProgramPath` (unmodeled `Settings` field).
+//!   `Object`s (`Panel_add`) with `row->panel = this`, the self-referential
+//!   panel back-pointer above; the rows would also need an `Object` vtable
+//!   impl the row does not yet carry.
+//! - `BacktracePanel_new` (`:248`) — calls `populateFrames` (blocked); it
+//!   also stores the self-referential panel by value on return, which would
+//!   dangle every row's `panel` back-pointer.
 //! - `BacktracePanelRow_new` (`:444`) — its sole non-default action is
-//!   `this->panel = panel`, the unmodeled `const BacktracePanel*`
-//!   back-pointer.
+//!   `this->panel = panel`, the self-referential `const BacktracePanel*`
+//!   back-pointer above.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use crate::ported::crt::{ColorElements, ColorScheme, KEY_CTRL, KEY_F};
+use crate::ported::crt::{A_BOLD, ColorElements, ColorScheme, KEY_CTRL, KEY_F};
 use crate::ported::functionbar::FunctionBar_setLabel;
 use crate::ported::panel::{HandlerResult, Panel, Panel_prune, Panel_setHeader};
-use crate::ported::process::Process;
-use crate::ported::richstring::{RichString, RichString_appendAscii};
+use crate::ported::process::{
+    CMDLINE_HIGHLIGHT_FLAG_BASENAME, Process, Process_getPid, Process_isThread,
+};
+use crate::ported::richstring::{
+    RichString, RichString_appendAscii, RichString_appendnWide, RichString_setAttrn,
+};
 use crate::ported::settings::Settings;
 
 /// `BacktracePanelRowType` discriminants from `BacktraceScreen.h:49`.
@@ -105,14 +119,29 @@ pub struct BacktracePanelPrintingHelper {
 /// [`BacktracePanel_makePrintingHelper`]) and `error` (the
 /// `BACKTRACE_PANEL_ROW_ERROR` arm, read by
 /// [`BacktracePanelRow_displayError`]) — only one of which is set per
-/// `type_`. The C `panel` / `process` back-pointers are omitted: a row
-/// that borrows them could not be `'static` (see the module docs), and
-/// none of the ported functions touch them.
+/// `type_`.
+///
+/// `process` is the C `const Process* process` back-pointer
+/// (`BacktraceScreen.h`), modeled as a raw `*const Process` — a borrowed
+/// handle to a process **owned outside** the panel (one of
+/// `BacktracePanel.processes`), the same raw-back-pointer idiom the enclosing
+/// [`BacktracePanel`] already uses for its own `processes`/`settings`. It is
+/// read (via `unsafe` deref) by [`BacktracePanelRow_displayInformation`] and
+/// [`BacktracePanelRow_highlightBasename`]. The C `const BacktracePanel*
+/// panel` back-pointer is still omitted: unlike `process` it is
+/// **self-referential** (the panel owns the row in `super.items` while the
+/// row points back at the panel), which the owned-value model cannot make
+/// address-stable — see the [`BacktracePanelRow_displayFrame`] /
+/// [`BacktracePanel_populateFrames`] blockers in the module docs.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BacktracePanelRow {
     pub type_: i32,
     pub frame: Option<BacktraceFrameData>,
     pub error: Option<String>,
+    /// C `const Process* process` — the process this row describes; a raw
+    /// back-pointer to externally-owned memory (`Default` = null). Never
+    /// dereferenced unless the row was built pointing at a live `Process`.
+    pub process: *const Process,
 }
 
 /// Port of `enum BacktraceScreenDisplayOptions_` (`BacktraceScreen.c:65`) —
@@ -383,31 +412,184 @@ pub fn BacktracePanel_delete() {
     todo!("port of BacktraceScreen.c:277")
 }
 
-/// TODO: port of `static void BacktracePanelRow_highlightBasename(const
+/// Port of `static void BacktracePanelRow_highlightBasename(const
 /// BacktracePanelRow* row, RichString* out, char* line, int
-/// objectPathStart)` from `BacktraceScreen.c:283`. Blocked: reads the row's
-/// `const Process*` back-pointer (`process->procExe` /
-/// `procExeBasenameOffset`), which is not modeled — a row borrowing a
-/// `&Process` cannot be `'static` (see the module docs).
-pub fn BacktracePanelRow_highlightBasename() {
-    todo!("port of BacktraceScreen.c:283")
+/// objectPathStart)` from `BacktraceScreen.c:283`. Reads the row's
+/// [`process`](BacktracePanelRow::process) back-pointer (a sound raw
+/// pointer to externally-owned memory) for `procExe` /
+/// `procExeBasenameOffset`, scans the object column of the pre-formatted
+/// `line` for its basename, and — when that basename matches the process's
+/// own executable basename — repaints it in `CRT_colors[PROCESS_BASENAME]`
+/// via [`RichString_setAttrn`]. The C `char* line` becomes `&str`; the C
+/// `strncmp(line + lastSlash, procExe, sizeBasename) == 0` (which stops at
+/// `procExe`'s NUL) is reproduced as `procExe.len() >= sizeBasename &&
+/// procExe[..sizeBasename] == line-slice`. The C `assert`s on the row type
+/// and `objectPathStart >= 0` become a `debug_assert!` (the `usize`
+/// `objectPathStart` is `>= 0` by construction).
+///
+/// Its sole C caller is [`BacktracePanelRow_displayFrame`], which is still a
+/// documented `todo!()` (the self-referential `panel` back-pointer), so this
+/// has no live caller in the port yet; the body is a faithful standalone port.
+pub fn BacktracePanelRow_highlightBasename(
+    row: &BacktracePanelRow,
+    out: &mut RichString,
+    line: &str,
+    objectPathStart: usize,
+) {
+    debug_assert_eq!(row.type_, BACKTRACE_PANEL_ROW_DATA_FRAME);
+
+    // C: const Process* process = row->process;
+    let process: &Process = unsafe { &*row.process };
+
+    // C: char* procExe = process->procExe ? process->procExe + process->procExeBasenameOffset : NULL;
+    //    if (!procExe) return;
+    let procExe: &[u8] = match process.procExe.as_deref() {
+        Some(s) => &s.as_bytes()[process.procExeBasenameOffset..],
+        None => return,
+    };
+
+    let line_b = line.as_bytes();
+
+    // C: size_t endBasenameIndex = objectPathStart; size_t lastSlashBasenameIndex = objectPathStart;
+    //    for (; line[end] != 0 && line[end] != ' '; end++)
+    //       if (line[end] == '/') lastSlash = end + 1;
+    // (a `&str` has no interior NUL terminator; `line.len()` bounds the scan.)
+    let mut endBasenameIndex = objectPathStart;
+    let mut lastSlashBasenameIndex = objectPathStart;
+    while endBasenameIndex < line_b.len() && line_b[endBasenameIndex] != b' ' {
+        if line_b[endBasenameIndex] == b'/' {
+            lastSlashBasenameIndex = endBasenameIndex + 1;
+        }
+        endBasenameIndex += 1;
+    }
+
+    // C: size_t sizeBasename = endBasenameIndex - lastSlashBasenameIndex;
+    let sizeBasename = endBasenameIndex - lastSlashBasenameIndex;
+
+    // C: if (strncmp(line + lastSlash, procExe, sizeBasename) == 0)
+    //        RichString_setAttrn(out, CRT_colors[PROCESS_BASENAME], lastSlash, sizeBasename);
+    // strncmp compares `sizeBasename` bytes, stopping at procExe's NUL: it can
+    // only be equal when procExe holds at least that many bytes.
+    let lineSlice = &line_b[lastSlashBasenameIndex..lastSlashBasenameIndex + sizeBasename];
+    if procExe.len() >= sizeBasename && &procExe[..sizeBasename] == lineSlice {
+        RichString_setAttrn(
+            out,
+            ColorElements::PROCESS_BASENAME.packed(ColorScheme::active()),
+            lastSlashBasenameIndex,
+            sizeBasename,
+        );
+    }
 }
 
-/// TODO: port of `static void BacktracePanelRow_displayInformation(const
-/// Object* super, RichString* out)` from `BacktraceScreen.c:308`. Blocked:
-/// reads the row's `const Process*` back-pointer (`mergedCommand` /
-/// `cmdline` / `Process_isThread` / `Process_getPid`), not modeled (above).
-pub fn BacktracePanelRow_displayInformation() {
-    todo!("port of BacktraceScreen.c:308")
+/// Port of `static void BacktracePanelRow_displayInformation(const
+/// Object* super, RichString* out)` from `BacktraceScreen.c:308`. Reads the
+/// row's [`process`](BacktracePanelRow::process) back-pointer (a sound raw
+/// pointer to externally-owned memory) and renders the process-information
+/// header line (`"Thread %d: %s"` / `"Process %d: %s"`) with the command
+/// name highlighted in `PROCESS_THREAD_BASENAME` / `PROCESS_BASENAME`.
+///
+/// The command name comes from `process->mergedCommand.str` (with the first
+/// `CMDLINE_HIGHLIGHT_FLAG_BASENAME` highlight's offset/length) or, failing
+/// that, `process->cmdline`. The C `%n` conversion (which captures the byte
+/// offset of the `%s` command name within the formatted string) is
+/// reproduced as the length of the `"Thread %d: "` / `"Process %d: "`
+/// prefix. The C `xAsprintf` -> Rust `format!`; `RichString_appendnWide`
+/// and `RichString_setAttrn` are the ported RichString ops.
+///
+/// The C loop reads `process->mergedCommand.highlights` (the array decays to
+/// `&highlights[0]`) on **every** iteration rather than `&highlights[i]`;
+/// this reproduces that behavior faithfully (it inspects `highlights[0]`).
+pub fn BacktracePanelRow_displayInformation(row: &BacktracePanelRow, out: &mut RichString) {
+    debug_assert_eq!(row.type_, BACKTRACE_PANEL_ROW_PROCESS_INFORMATION);
+
+    // C: const Process* process = row->process;
+    let process: &Process = unsafe { &*row.process };
+
+    // C: int colorBasename = DEFAULT_COLOR; size_t highlightLen = 0; size_t highlightOffset = 0;
+    // (the C `DEFAULT_COLOR` seed is always overwritten in the thread/process
+    // branch below, so it is left to that definite assignment here.)
+    let colorBasename;
+    let mut highlightLen: usize = 0;
+    let mut highlightOffset: usize = 0;
+
+    // C: const char* processName = "";
+    //    if (process->mergedCommand.str) { processName = ...; for (...) BASENAME highlight }
+    //    else if (process->cmdline) processName = process->cmdline;
+    let processName: &str = if let Some(s) = process.mergedCommand.str.as_deref() {
+        for _i in 0..process.mergedCommand.highlightCount {
+            // C: const ProcessCmdlineHighlight* highlight = process->mergedCommand.highlights;
+            // (the array decays to &highlights[0] — the C inspects [0] each pass).
+            let highlight = &process.mergedCommand.highlights[0];
+            if highlight.flags & CMDLINE_HIGHLIGHT_FLAG_BASENAME != 0 {
+                highlightLen = highlight.length;
+                highlightOffset = highlight.offset;
+                break;
+            }
+        }
+        s
+    } else if let Some(c) = process.cmdline.as_deref() {
+        c
+    } else {
+        ""
+    };
+
+    // C: if (highlightLen == 0) highlightLen = strlen(processName);
+    if highlightLen == 0 {
+        highlightLen = processName.len();
+    }
+
+    // C: xAsprintf(&information, "Thread %d: %n%s", Process_getPid(process), &indexProcessComm, processName)
+    //    (or "Process %d: %n%s"); %n captures the byte offset before %s.
+    let pid = Process_getPid(process);
+    let verb = if Process_isThread(process) {
+        colorBasename = ColorElements::PROCESS_THREAD_BASENAME;
+        "Thread"
+    } else {
+        colorBasename = ColorElements::PROCESS_BASENAME;
+        "Process"
+    };
+    let prefix = format!("{} {}: ", verb, pid);
+    let indexProcessComm = prefix.len(); // the C `%n` capture (always set)
+    let information = format!("{}{}", prefix, processName);
+    let len = information.len();
+
+    let scheme = ColorScheme::active();
+
+    // C: RichString_appendnWide(out, CRT_colors[DEFAULT_COLOR] | A_BOLD, information, len);
+    RichString_appendnWide(
+        out,
+        ColorElements::DEFAULT_COLOR.packed(scheme) | A_BOLD,
+        information.as_bytes(),
+        len,
+    );
+
+    // C: if (indexProcessComm != -1) RichString_setAttrn(out, CRT_colors[colorBasename] | A_BOLD,
+    //        indexProcessComm + highlightOffset, highlightLen);
+    // indexProcessComm is always set here (the prefix is always written).
+    RichString_setAttrn(
+        out,
+        colorBasename.packed(scheme) | A_BOLD,
+        indexProcessComm + highlightOffset,
+        highlightLen,
+    );
 }
 
 /// TODO: port of `static void BacktracePanelRow_displayFrame(const Object*
-/// super, RichString* out)` from `BacktraceScreen.c:356`. Blocked: reads the
-/// row's `const BacktracePanel*` back-pointer (`printingHelper` /
-/// `displayOptions`, above) AND `panel->settings->highlightBaseName`, a
-/// `Settings` field the partial `settings.rs` port does not model.
+/// super, RichString* out)` from `BacktraceScreen.c:356`. Blocked on the
+/// row's `const BacktracePanel* panel` back-pointer, which it dereferences
+/// for `panel->printingHelper` / `panel->displayOptions` /
+/// `panel->settings->highlightBaseName`. Unlike the `process` back-pointer
+/// (externally owned, ported as a sound raw pointer), `panel` is
+/// **self-referential** — the panel owns this row in `super.items` while the
+/// row points back at the panel — and the owned-value model cannot keep that
+/// pointer address-stable across a by-value move of the panel. Porting it
+/// would introduce a dangling self-reference (the same blocker that gates
+/// [`BacktracePanel_populateFrames`] / [`BacktracePanel_new`] /
+/// [`BacktracePanelRow_new`]). The frame-formatting logic itself and its
+/// [`BacktracePanelRow_highlightBasename`] callee are ported; only the
+/// `panel` deref is missing substrate.
 pub fn BacktracePanelRow_displayFrame() {
-    todo!("port of BacktraceScreen.c:356")
+    todo!("port of BacktraceScreen.c:356 — reads row->panel (self-referential back-pointer, no address-stable model)")
 }
 
 /// Port of `static void BacktracePanelRow_displayError(const Object* super,
@@ -427,19 +609,21 @@ pub fn BacktracePanelRow_displayError(row: &BacktracePanelRow, out: &mut RichStr
 
 /// Port of `static void BacktracePanelRow_display(const Object* super,
 /// RichString* out)` from `BacktraceScreen.c:425`. Dispatches on the row
-/// type. The `BACKTRACE_PANEL_ROW_ERROR` arm is ported (calls
-/// [`BacktracePanelRow_displayError`]); the `DATA_FRAME` and
-/// `PROCESS_INFORMATION` arms call `displayFrame` / `displayInformation`,
-/// which read the row's unmodeled `BacktracePanel` / `Process`
-/// back-pointers, so those arms stay `todo!()` — the same partial-port
-/// shape as `ListItem_display`.
+/// type. The `BACKTRACE_PANEL_ROW_ERROR` arm calls
+/// [`BacktracePanelRow_displayError`] and the `BACKTRACE_PANEL_ROW_PROCESS_INFORMATION`
+/// arm calls [`BacktracePanelRow_displayInformation`] (both now ported — they
+/// read only the sound `row->process` back-pointer). The `DATA_FRAME` arm calls
+/// [`BacktracePanelRow_displayFrame`], which reads the row's **self-referential**
+/// `const BacktracePanel* panel` back-pointer (not modeled — see the module
+/// docs), so that arm stays `todo!()` — the same partial-port shape as
+/// `ListItem_display`.
 pub fn BacktracePanelRow_display(row: &BacktracePanelRow, out: &mut RichString) {
     match row.type_ {
         BACKTRACE_PANEL_ROW_DATA_FRAME => {
-            todo!("BacktraceScreen.c:431 — BacktracePanelRow_displayFrame reads row->panel (unmodeled back-pointer) + settings->highlightBaseName (unported)")
+            todo!("BacktraceScreen.c:431 — BacktracePanelRow_displayFrame reads row->panel (self-referential back-pointer, no address-stable model) + settings->highlightBaseName")
         }
         BACKTRACE_PANEL_ROW_PROCESS_INFORMATION => {
-            todo!("BacktraceScreen.c:435 — BacktracePanelRow_displayInformation reads row->process (unmodeled back-pointer)")
+            BacktracePanelRow_displayInformation(row, out)
         }
         BACKTRACE_PANEL_ROW_ERROR => BacktracePanelRow_displayError(row, out),
         _ => {}
@@ -514,6 +698,7 @@ mod tests {
                 isSignalFrame: false,
             }),
             error: None,
+            process: std::ptr::null(),
         }
     }
 
@@ -563,11 +748,13 @@ mod tests {
                 type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION,
                 frame: None,
                 error: None,
+                process: std::ptr::null(),
             },
             BacktracePanelRow {
                 type_: BACKTRACE_PANEL_ROW_ERROR,
                 frame: None,
                 error: None,
+                process: std::ptr::null(),
             },
         ];
         let mut h = seeded_helper();
@@ -596,11 +783,13 @@ mod tests {
                 type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION,
                 frame: None,
                 error: None,
+                process: std::ptr::null(),
             },
             BacktracePanelRow {
                 type_: BACKTRACE_PANEL_ROW_ERROR,
                 frame: None,
                 error: None,
+                process: std::ptr::null(),
             },
         ];
         let mut h = seeded_helper();
@@ -691,6 +880,7 @@ mod tests {
             type_: BACKTRACE_PANEL_ROW_ERROR,
             frame: None,
             error: Some("ptrace failed".to_string()),
+            process: std::ptr::null(),
         };
         let mut out = RichString::new();
         BacktracePanelRow_displayError(&row, &mut out);
@@ -710,6 +900,7 @@ mod tests {
             type_: BACKTRACE_PANEL_ROW_ERROR,
             frame: None,
             error: Some("boom".to_string()),
+            process: std::ptr::null(),
         };
         let mut out = RichString::new();
         BacktracePanelRow_display(&row, &mut out);
@@ -723,20 +914,176 @@ mod tests {
             type_: BACKTRACE_PANEL_ROW_DATA_FRAME,
             frame: Some(BacktraceFrameData::default()),
             error: None,
+            process: std::ptr::null(),
         };
         let mut out = RichString::new();
         BacktracePanelRow_display(&row, &mut out);
     }
 
-    #[test]
-    #[should_panic(expected = "displayInformation")]
-    fn display_information_arm_is_blocked() {
-        let row = BacktracePanelRow {
+    // ── displayInformation (reads the sound `process` back-pointer) ───────
+
+    use crate::ported::process::{
+        Process_setPid, Process_setThreadGroup, ProcessCmdlineHighlight,
+    };
+
+    /// A PROCESS_INFORMATION row pointing at `p`.
+    fn info_row(p: &Process) -> BacktracePanelRow {
+        BacktracePanelRow {
             type_: BACKTRACE_PANEL_ROW_PROCESS_INFORMATION,
             frame: None,
             error: None,
+            process: p as *const Process,
+        }
+    }
+
+    #[test]
+    fn display_information_process_uses_cmdline_when_no_merged() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 4321);
+        p.mergedCommand.str = None;
+        p.cmdline = Some("/usr/bin/sleep 100".to_string());
+        let row = info_row(&p);
+
+        let mut out = RichString::new();
+        BacktracePanelRow_displayInformation(&row, &mut out);
+        // "Process %d: %s"
+        assert_eq!(rendered(&out), "Process 4321: /usr/bin/sleep 100");
+
+        // The command name (no BASENAME highlight -> whole name) is repainted
+        // in PROCESS_BASENAME|A_BOLD starting right after the "Process 4321: "
+        // prefix; the prefix keeps DEFAULT_COLOR|A_BOLD.
+        let scheme = ColorScheme::active();
+        let prefixLen = "Process 4321: ".len();
+        let defaultAttr = (ColorElements::DEFAULT_COLOR.packed(scheme) | A_BOLD) & 0xffffff;
+        let baseAttr = (ColorElements::PROCESS_BASENAME.packed(scheme) | A_BOLD) & 0xffffff;
+        for i in 0..prefixLen {
+            assert_eq!(out.chptr[i].attr, defaultAttr, "prefix attr at {i}");
+        }
+        for i in prefixLen..out.chlen as usize {
+            assert_eq!(out.chptr[i].attr, baseAttr, "name attr at {i}");
+        }
+    }
+
+    #[test]
+    fn display_information_thread_uses_thread_verb_and_color() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 77);
+        Process_setThreadGroup(&mut p, 5);
+        p.isUserlandThread = true; // Process_isThread -> true
+        assert!(Process_isThread(&p));
+        p.mergedCommand.str = None;
+        p.cmdline = Some("worker".to_string());
+        let row = info_row(&p);
+
+        let mut out = RichString::new();
+        BacktracePanelRow_displayInformation(&row, &mut out);
+        assert_eq!(rendered(&out), "Thread 77: worker");
+
+        let scheme = ColorScheme::active();
+        let baseAttr = (ColorElements::PROCESS_THREAD_BASENAME.packed(scheme) | A_BOLD) & 0xffffff;
+        let prefixLen = "Thread 77: ".len();
+        assert_eq!(out.chptr[prefixLen].attr, baseAttr);
+    }
+
+    #[test]
+    fn display_information_merged_basename_highlight_offsets() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 9);
+        // mergedCommand.str present with a BASENAME highlight covering "sleep".
+        p.mergedCommand.str = Some("/usr/bin/sleep".to_string());
+        p.mergedCommand.highlightCount = 1;
+        p.mergedCommand.highlights[0] = ProcessCmdlineHighlight {
+            offset: "/usr/bin/".len(), // 9
+            length: "sleep".len(),     // 5
+            attr: 0,
+            flags: CMDLINE_HIGHLIGHT_FLAG_BASENAME,
         };
+        let row = info_row(&p);
+
+        let mut out = RichString::new();
+        BacktracePanelRow_displayInformation(&row, &mut out);
+        assert_eq!(rendered(&out), "Process 9: /usr/bin/sleep");
+
+        // Only the "sleep" span (prefix + highlight offset, length 5) is
+        // repainted PROCESS_BASENAME; the "/usr/bin/" part keeps DEFAULT.
+        let scheme = ColorScheme::active();
+        let prefixLen = "Process 9: ".len();
+        let defaultAttr = (ColorElements::DEFAULT_COLOR.packed(scheme) | A_BOLD) & 0xffffff;
+        let baseAttr = (ColorElements::PROCESS_BASENAME.packed(scheme) | A_BOLD) & 0xffffff;
+        let hlStart = prefixLen + "/usr/bin/".len();
+        for i in prefixLen..hlStart {
+            assert_eq!(out.chptr[i].attr, defaultAttr, "pre-basename attr at {i}");
+        }
+        for i in hlStart..hlStart + "sleep".len() {
+            assert_eq!(out.chptr[i].attr, baseAttr, "basename attr at {i}");
+        }
+    }
+
+    #[test]
+    fn display_dispatches_information_arm() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, 3);
+        p.mergedCommand.str = None;
+        p.cmdline = Some("cmd".to_string());
+        let row = info_row(&p);
+
         let mut out = RichString::new();
         BacktracePanelRow_display(&row, &mut out);
+        assert_eq!(rendered(&out), "Process 3: cmd");
+    }
+
+    // ── highlightBasename (reads the sound `process` back-pointer) ────────
+
+    #[test]
+    fn highlight_basename_marks_matching_executable_basename() {
+        // process->procExe = "/usr/bin/sleep", basename offset at "sleep".
+        let mut p = Process::default();
+        Process_setPid(&mut p, 1);
+        p.procExe = Some("/usr/bin/sleep".to_string());
+        p.procExeBasenameOffset = "/usr/bin/".len(); // procExe suffix = "sleep"
+        let row = frame(0, 0x0, Some("/usr/bin/sleep"), None);
+        // Give that DATA_FRAME row the process back-pointer.
+        let row = BacktracePanelRow {
+            process: &p as *const Process,
+            ..row
+        };
+
+        // A rendered frame line whose object column (starting at index 5) is
+        // "/usr/bin/sleep" followed by a space then the function name.
+        let line = "  0  /usr/bin/sleep func+0x0";
+        let objectPathStart = 5usize;
+        // Seed `out` with the same visible text so setAttrn has cells to paint.
+        let mut out = RichString::new();
+        RichString_appendAscii(&mut out, 0, line.as_bytes());
+
+        BacktracePanelRow_highlightBasename(&row, &mut out, line, objectPathStart);
+
+        // The basename "sleep" spans [lastSlash, lastSlash+5). lastSlash is the
+        // index just past the final '/' before the space at end of the column.
+        let lastSlash = line.find("sleep").unwrap();
+        let baseAttr = ColorElements::PROCESS_BASENAME.packed(ColorScheme::active()) & 0xffffff;
+        for i in lastSlash..lastSlash + "sleep".len() {
+            assert_eq!(out.chptr[i].attr, baseAttr, "basename attr at {i}");
+        }
+        // A byte just before the basename is untouched (attr 0 from the seed).
+        assert_eq!(out.chptr[lastSlash - 1].attr, 0);
+    }
+
+    #[test]
+    fn highlight_basename_no_proc_exe_is_noop() {
+        let mut p = Process::default();
+        p.procExe = None;
+        let row = BacktracePanelRow {
+            process: &p as *const Process,
+            ..frame(0, 0x0, Some("/lib/x"), None)
+        };
+        let line = "  0  /lib/x f+0x0";
+        let mut out = RichString::new();
+        RichString_appendAscii(&mut out, 0, line.as_bytes());
+        BacktracePanelRow_highlightBasename(&row, &mut out, line, 5);
+        // Nothing repainted (all attrs stay 0).
+        for i in 0..out.chlen as usize {
+            assert_eq!(out.chptr[i].attr, 0, "attr at {i}");
+        }
     }
 }

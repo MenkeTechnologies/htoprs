@@ -170,6 +170,11 @@ pub struct GPUEngineData {
 
 /// Port of `typedef struct LinuxMachine_` (`LinuxMachine.h:69`). Embeds
 /// the base [`Machine`] as `super_` (C's `Machine super;`).
+///
+/// `#[repr(C)]` keeps `super_` at offset 0 so the C `(LinuxMachine*)host`
+/// downcast — a `*const Machine` obtained from a `LinuxMachine`, cast back —
+/// is sound (used by the linux platform meter value-setters).
+#[repr(C)]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LinuxMachine {
     pub super_: Machine,

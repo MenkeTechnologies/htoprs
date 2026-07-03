@@ -333,13 +333,50 @@ pub fn drawTab(y: i32, x: &mut i32, l: i32, name: &str, cur: bool) -> bool {
     true
 }
 
-/// TODO: port of `static void ScreenManager_drawScreenTabs(ScreenManager* this)`
-/// from `ScreenManager.c:194`. Iterates `settings->screens` at
-/// `settings->ssIndex`, printing each `ScreenSettings->heading` via
-/// [`drawTab`]. The ported `machine::Settings` has no `ssIndex` and
-/// `machine::ScreenSettings` has no `heading`, so the loop cannot be driven.
-pub fn ScreenManager_drawScreenTabs() {
-    todo!("port of ScreenManager.c:194 — machine::Settings lacks ssIndex/heading")
+/// Port of `static void ScreenManager_drawScreenTabs(ScreenManager* this)`
+/// from `ScreenManager.c:194`.
+///
+/// Draws the row of screen tabs one line above the first panel
+/// (`y = panels[0].y - 1`) starting at `SCREEN_TAB_MARGIN_LEFT`. When the
+/// manager carries an override `name`, a single current tab is drawn; else it
+/// iterates `settings->screens`, marking the tab at `settings->ssIndex` as
+/// current and stopping the first time [`drawTab`] reports the line is full.
+/// The `end:` label restores `CRT_colors[RESET_COLOR]`.
+///
+/// `settings` is reached through `this->host->settings` (both always-present
+/// pointers in C, so `.unwrap()`ed here, matching the layout ops). The C
+/// NULL-terminated `screens[]` walk becomes a `Vec` iteration; a NULL
+/// `heading` (never produced for a real screen) maps to the empty string.
+pub fn ScreenManager_drawScreenTabs(this: &ScreenManager) {
+    let host = this.host.as_ref().unwrap();
+    let settings = host.settings.as_ref().unwrap();
+    let screens = &settings.screens;
+    let cur = settings.ssIndex as i32;
+    let l = Ncurses::cols();
+    let panel = &this.panels[0];
+    let y = panel.y - 1;
+    let mut x = SCREEN_TAB_MARGIN_LEFT;
+
+    // C: if (x >= l) goto end;
+    if x < l {
+        if let Some(name) = &this.name {
+            drawTab(y, &mut x, l, name, true);
+        } else {
+            for (s, screen) in screens.iter().enumerate() {
+                let heading = screen.heading.as_deref().unwrap_or("");
+                let ok = drawTab(y, &mut x, l, heading, s as i32 == cur);
+                if !ok {
+                    break;
+                }
+            }
+        }
+    }
+
+    // end: attrset(CRT_colors[RESET_COLOR]);
+    let scheme = ColorScheme::active();
+    let mut out = io::stdout().lock();
+    Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
+    let _ = out.flush();
 }
 
 /// TODO: port of `static void ScreenManager_drawPanels(ScreenManager* this,
@@ -387,12 +424,14 @@ mod tests {
             pauseUpdate: false,
             hideSelection: false,
             hideMeters,
+            host: core::ptr::null_mut(),
         }
     }
 
     /// A `Header` whose only field the ports read is `height`.
     fn header(height: i32) -> Header {
         Header {
+            host: core::ptr::null(),
             columns: Vec::new(),
             headerLayout: HeaderLayout::HF_ONE_100,
             pad: 0,

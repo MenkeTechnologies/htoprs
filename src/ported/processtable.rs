@@ -26,6 +26,9 @@
 //!   task counters, then `Table_prepareEntries`.
 //! - [`ProcessTable_iterateEntries`] (`ProcessTable.c:56`) — delegates to
 //!   `ProcessTable_goThroughEntries` (the platform scan, stubbed below).
+//! - [`ProcessTable_cleanupEntries`] (`ProcessTable.c:62`) — per-process
+//!   `Process_makeCommandStr` + max-UID/PID tracking, wrapping the base
+//!   `Table_cleanupRow` / `Table_compact` cull.
 //!
 //! # Still stubbed (`todo!()`, named after the C fn so the port gate
 //! accepts the module)
@@ -47,17 +50,11 @@
 //!   (`typedef Process* (*Process_New)(const struct Machine_*)`,
 //!   `Process.h:241`) — a function-pointer type with no ported analog.
 //! - [`ProcessTable_goThroughEntries`] (`ProcessTable.c` platform) — the
-//!   `/proc` (or per-platform) scan; implemented by `linux/` etc.
-//! - [`ProcessTable_cleanupEntries`] (`ProcessTable.c:62`) — three
-//!   blockers: (1) it treats each row as a `Process`
-//!   (`(Process*)Vector_get`) to read `p->st_uid` and call
-//!   `Process_makeCommandStr(p, settings)`, both inaccessible on a
-//!   `Row`-typed table; (2) `Process_makeCommandStr` (`Process.c:183`) is
-//!   itself an unported stub in `process.rs`; (3) it *mutates*
-//!   `host->maxUserId`/`maxProcessId`, but [`Table::host`] is
-//!   `*const Machine` (the C `super->host` is a mutable `Machine*`), so
-//!   the write is not expressible. The base `Table_cleanupRow` /
-//!   `Table_compact` logic it wraps *is* ported, in `table.rs`.
+//!   `/proc` (or per-platform) scan. There is no generic C body: the
+//!   header (`ProcessTable.h:34`) only declares it and each platform
+//!   (`darwin/`, `linux/`, `freebsd/`, …) defines its own. It is therefore
+//!   out of scope for this generic module and filled by the platform scan
+//!   layer; the stub is the seam.
 //!
 //! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
 //! *ported*, so scaffolding does not inflate coverage.
@@ -65,11 +62,22 @@
 #![allow(dead_code)]
 
 use crate::ported::machine::Machine;
-use crate::ported::table::{Table, Table_done, Table_init, Table_prepareEntries};
+use crate::ported::object::Object;
+use crate::ported::process::{Process_getPid, Process_makeCommandStr, Process_setPid};
+use crate::ported::settings::Settings;
+use crate::ported::table::{
+    Table, Table_add, Table_cleanupRow, Table_compact, Table_done, Table_init,
+    Table_prepareEntries,
+};
 
 /// Port of htop's `struct ProcessTable_` (`ProcessTable.h:19`).
 /// Embeds [`Table`] as `super_` (the "extends Table" relation) and adds
 /// the pid-match filter and the task counters.
+///
+/// `#[repr(C)]` keeps `super_` at offset 0 so htop's `(ProcessTable*)table`
+/// downcast — a `*Table` (e.g. `Machine::processTable`) cast back — is sound
+/// (used by `TasksMeter` to read the task counters through the machine).
+#[repr(C)]
 pub struct ProcessTable {
     /// C `Table super` — the embedded base table.
     pub super_: Table,
@@ -137,8 +145,49 @@ pub fn ProcessTable_done(this: &mut ProcessTable) {
 /// (`typedef Process* (*Process_New)(...)`, `Process.h:241`), a
 /// function-pointer type with no ported analog. Cannot be gutted to a
 /// `Row`-only shell without lying about what it does.
-pub fn ProcessTable_getProcess() {
-    todo!("port of ProcessTable.c:31 — Table rows are Row, not Process; needs Process_New constructor")
+/// Port of `Process* ProcessTable_getProcess(ProcessTable* this, pid_t pid,
+/// bool* preExisting, Process_New constructor)` from `ProcessTable.c:31`.
+/// Finds the process with `pid` in the table, or constructs a fresh one via
+/// `constructor(host)` (e.g. `DarwinProcess_new`) and sets its pid.
+///
+/// Returns `(preExisting, idx)`: `idx` is the slot in `this.super_.rows`
+/// holding the process (as a `Box<dyn Object>`), which the caller reads back
+/// as a `&mut Process` via [`Object::as_process_mut`]. `preExisting` is the C
+/// out-parameter.
+///
+/// Deviation from the C: htop's `getProcess` returns the (not-yet-added) new
+/// process and the platform's `goThroughEntries` calls `ProcessTable_add`
+/// later; here the new process is added immediately (via [`Table_add`], which
+/// also stamps `seenStampMs`) so a stable `rows` index can be returned within
+/// Rust's borrow model. The net effect is identical — a new process is always
+/// added, and nothing observes the pre-add gap — and the caller skips its own
+/// add when `!preExisting`.
+pub fn ProcessTable_getProcess(
+    this: &mut ProcessTable,
+    pid: i32,
+    constructor: fn(*const Machine) -> Box<dyn Object>,
+) -> (bool, usize) {
+    if let Some(&idx) = this.super_.table.get(&pid) {
+        // Process* proc = Hashtable_get(...); *preExisting = true.
+        debug_assert_eq!(
+            Process_getPid(this.super_.rows[idx].as_ref().unwrap().as_process().unwrap()),
+            pid
+        );
+        return (true, idx);
+    }
+
+    // proc = constructor(table->host); Process_setPid(proc, pid);
+    let host = this.super_.host;
+    let mut obj = constructor(host);
+    debug_assert!(
+        obj.as_process().unwrap().cmdline.is_none(),
+        "getProcess: fresh process must have no cmdline"
+    );
+    Process_setPid(obj.as_process_mut().unwrap(), pid);
+
+    let idx = this.super_.rows.len();
+    Table_add(&mut this.super_, obj);
+    (false, idx)
 }
 
 /// Port of `static void ProcessTable_prepareEntries(Table* super)` from
@@ -172,20 +221,79 @@ pub fn ProcessTable_goThroughEntries(_this: &mut ProcessTable) {
     todo!("platform ProcessTable_goThroughEntries — /proc scan, filled by linux/ layer")
 }
 
-/// TODO: port of `static void ProcessTable_cleanupEntries(Table* super)`
-/// from `ProcessTable.c:62`. Three blockers, none yet resolvable from
-/// this file: (1) each row is cast `(Process*)Vector_get(super->rows, i)`
-/// to read `p->st_uid` and call `Process_makeCommandStr(p, settings)` —
-/// both inaccessible because the ported [`Table`] stores `Row` values, not
-/// `Process`; (2) `Process_makeCommandStr` (`Process.c:183`) is itself a
-/// stub in `process.rs`; (3) it mutates `host->maxUserId`/`maxProcessId`,
-/// but [`Table::host`] is `*const Machine` while the C `super->host` is a
-/// mutable `Machine*`, so the write cannot be expressed. The wrapped base
-/// `Table_cleanupRow` / `Table_compact` logic *is* ported (in `table.rs`);
-/// this per-process wrapper is not portable until the table models
-/// `Process` rows and `Process_makeCommandStr` lands.
-pub fn ProcessTable_cleanupEntries() {
-    todo!("port of ProcessTable.c:62 — Table rows are Row not Process; needs Process_makeCommandStr + mutable host")
+/// Port of `static void ProcessTable_cleanupEntries(Table* super)` from
+/// `ProcessTable.c:62`. Walks `super->rows` back-to-front: refreshes each
+/// process's merged command string ([`Process_makeCommandStr`]), tracks the
+/// highest UID and PID seen for column scaling, then applies the base
+/// [`Table_cleanupRow`] cull, remembering the lowest removed index. Finally
+/// [`Table_compact`]s from there.
+///
+/// Signature mapping: the C takes `Table* super` and downcasts to
+/// `ProcessTable*`; here the fn takes `&mut ProcessTable` directly and reaches
+/// the base via `super_`. Each row is recovered as a `&mut Process` /
+/// `&Process` via [`Object::as_process_mut`] / [`Object::as_process`] — the
+/// `(Process*)Vector_get` cast — since the ported [`Table`] stores its rows
+/// polymorphically (`Box<dyn Object>`, really `Process`es for a
+/// `ProcessTable`).
+///
+/// The C `super->host` is a mutable `Machine*` and the body writes
+/// `host->maxUserId`/`maxProcessId`; [`Table::host`] is `*const Machine`, so
+/// the write goes through a `*mut Machine` cast of that pointer (its non-null
+/// validity is the precondition, as in C). `settings` is read from the same
+/// `Machine` as a `*const Settings`, so the read-of-settings / write-of-host
+/// aliasing matches C's `const Settings* settings = host->settings;` beside
+/// `host->maxUserId = …` (distinct fields of one object).
+pub fn ProcessTable_cleanupEntries(this: &mut ProcessTable) {
+    // Machine* host = super->host; const Settings* settings = host->settings;
+    let host: *mut Machine = this.super_.host as *mut Machine;
+    let settings: *const Settings = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .expect("ProcessTable_cleanupEntries: host->settings is NULL") as *const Settings
+    };
+
+    // Lowest index of the row that is soft-removed. Used to speed up compaction.
+    let mut dirty_index = this.super_.rows.len();
+
+    // Finish process table update, culling any exit'd processes
+    for i in (0..this.super_.rows.len()).rev() {
+        // Process* p = (Process*) Vector_get(super->rows, i);
+        // tidy up Process state after refreshing the ProcessTable table
+        {
+            let p = this.super_.rows[i]
+                .as_mut()
+                .expect("ProcessTable_cleanupEntries: NULL row slot")
+                .as_process_mut()
+                .expect("ProcessTable_cleanupEntries: row is not a Process");
+            Process_makeCommandStr(p, unsafe { &*settings });
+        }
+
+        // keep track of the highest UID and PID for column scaling
+        let (st_uid, pid) = {
+            let p = this.super_.rows[i]
+                .as_ref()
+                .unwrap()
+                .as_process()
+                .expect("ProcessTable_cleanupEntries: row is not a Process");
+            (p.st_uid, Process_getPid(p))
+        };
+        unsafe {
+            if st_uid > (*host).maxUserId {
+                (*host).maxUserId = st_uid;
+            }
+            if pid > (*host).maxProcessId {
+                (*host).maxProcessId = pid;
+            }
+        }
+
+        if !Table_cleanupRow(&mut this.super_, i) {
+            dirty_index = i;
+        }
+    }
+
+    // compact the table in case of deletions
+    Table_compact(&mut this.super_, dirty_index);
 }
 
 #[cfg(test)]
@@ -218,6 +326,32 @@ mod tests {
         r
     }
 
+    /// A `Process_New`-shaped constructor for the tests: a fresh base
+    /// `Process` (no cmdline), boxed as `dyn Object`.
+    fn make_proc(_host: *const Machine) -> Box<dyn Object> {
+        Box::new(crate::ported::process::Process::default())
+    }
+
+    #[test]
+    fn getProcess_creates_new_then_finds_existing() {
+        let h = host(1000);
+        let mut pt = ProcessTable::empty();
+        ProcessTable_init(&mut pt, &h as *const Machine, None);
+
+        // First call for pid 42 constructs, sets the pid, and adds it.
+        let (pre1, idx1) = ProcessTable_getProcess(&mut pt, 42, make_proc);
+        assert!(!pre1);
+        assert_eq!(pt.super_.rows.len(), 1);
+        let p = pt.super_.rows[idx1].as_ref().unwrap().as_process().unwrap();
+        assert_eq!(Process_getPid(p), 42);
+
+        // Second call for the same pid finds the existing slot (no dup).
+        let (pre2, idx2) = ProcessTable_getProcess(&mut pt, 42, make_proc);
+        assert!(pre2);
+        assert_eq!(idx2, idx1);
+        assert_eq!(pt.super_.rows.len(), 1);
+    }
+
     #[test]
     fn init_wires_base_table_and_pid_match_list() {
         let h = host(0);
@@ -236,14 +370,14 @@ mod tests {
         ProcessTable_init(&mut pt, &h as *const Machine, None);
 
         // Populate the base table and dirty the counters + a row flag.
-        Table_add(&mut pt.super_, row(1));
-        Table_add(&mut pt.super_, row(2));
+        Table_add(&mut pt.super_, Box::new(row(1)));
+        Table_add(&mut pt.super_, Box::new(row(2)));
         pt.totalTasks = 9;
         pt.runningTasks = 3;
         pt.userlandThreads = 5;
         pt.kernelThreads = 4;
-        pt.super_.rows[0].as_mut().unwrap().updated = true;
-        pt.super_.rows[0].as_mut().unwrap().show = false;
+        pt.super_.rows[0].as_mut().unwrap().as_row_mut().unwrap().updated = true;
+        pt.super_.rows[0].as_mut().unwrap().as_row_mut().unwrap().show = false;
 
         ProcessTable_prepareEntries(&mut pt);
 

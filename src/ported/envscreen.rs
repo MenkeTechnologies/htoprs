@@ -210,7 +210,7 @@ pub fn EnvScreen_scan(this: &mut InfoScreen) {
     // C: Vector_insertionSort(this->lines);
     Vector_insertionSort(&mut this.lines);
     // C: Vector_insertionSort(panel->items);  (see the divergence note above)
-    this.display.items.sort_by(|a, b| a.compare(&**b).cmp(&0));
+    this.display.items.sort_by(|a, b| a.object().compare(b.object()).cmp(&0));
     // C: Panel_setSelected(panel, idx);
     Panel_setSelected(&mut this.display, idx);
 }

@@ -36,11 +36,15 @@
 //!   `Rc<RefCell<LinuxMachine>>` back-pointer modeled on `Meter` (its
 //!   `super_` is the generic `Machine` holding `activeCPUs`).
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)] // faithful C global names (LoadAverageMeter_class)
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
 use crate::ported::linux::platform::Platform_getLoadAverage;
-use crate::ported::meter::Meter;
+use crate::ported::meter::{
+    Meter, MeterClass, Meter_class, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,
+};
+use crate::ported::object::ObjectClass;
 use crate::ported::richstring::{RichString, RichString_appendnAscii};
 
 /// Port of `static const int OK_attributes[] = { METER_VALUE_OK }`
@@ -71,13 +75,7 @@ pub fn LoadAverageMeter_updateValues(this: &mut Meter) {
     this.curItems = 1;
 
     // change bar color and total based on value
-    let active_cpus = this
-        .host
-        .as_ref()
-        .expect("LoadAverageMeter_updateValues: this->host (C dereferences it)")
-        .borrow()
-        .super_
-        .activeCPUs as f64;
+    let active_cpus = unsafe { (*this.host).activeCPUs } as f64;
     if this.total < active_cpus {
         this.total = active_cpus;
     }
@@ -139,13 +137,7 @@ pub fn LoadMeter_updateValues(this: &mut Meter) {
     let _ = (five, fifteen); // C keeps `five`/`fifteen` as locals, unused
 
     // change bar color and total based on value
-    let active_cpus = this
-        .host
-        .as_ref()
-        .expect("LoadMeter_updateValues: this->host (C dereferences it)")
-        .borrow()
-        .super_
-        .activeCPUs as f64;
+    let active_cpus = unsafe { (*this.host).activeCPUs } as f64;
     if this.total < active_cpus {
         this.total = active_cpus;
     }
@@ -176,6 +168,75 @@ pub fn LoadMeter_display(this: &Meter, out: &mut RichString) {
     );
 }
 
+/// Port of `static const int LoadAverageMeter_attributes[]` from
+/// `LoadAverageMeter.c`: `{ LOAD_AVERAGE_ONE, _FIVE, _FIFTEEN }` — the
+/// per-item colors as `CRT_colors` indices (`ColorElements as i32`).
+static LoadAverageMeter_attributes: [i32; 3] = [
+    ColorElements::LOAD_AVERAGE_ONE as i32,
+    ColorElements::LOAD_AVERAGE_FIVE as i32,
+    ColorElements::LOAD_AVERAGE_FIFTEEN as i32,
+];
+
+/// Port of `static const int LoadMeter_attributes[]` from
+/// `LoadAverageMeter.c`: `{ LOAD }`.
+static LoadMeter_attributes: [i32; 1] = [ColorElements::LOAD as i32];
+
+/// Port of `const MeterClass LoadAverageMeter_class` from
+/// `LoadAverageMeter.c`. Wires the ported
+/// [`LoadAverageMeter_updateValues`]/[`LoadAverageMeter_display`] slots.
+/// `maxItems = 3` (1/5/15-minute averages); not a percent chart.
+pub static LoadAverageMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(LoadAverageMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(LoadAverageMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 1.0,
+    attributes: &LoadAverageMeter_attributes,
+    name: "LoadAverage",
+    uiName: "Load average",
+    caption: "Load average: ",
+    description: Some("Load averages: 1 minute, 5 minutes, 15 minutes"),
+    maxItems: 3,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
+/// Port of `const MeterClass LoadMeter_class` from `LoadAverageMeter.c`.
+/// The single-value (1-minute) load meter; `maxItems = 1`.
+pub static LoadMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(LoadMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(LoadMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 1.0,
+    attributes: &LoadMeter_attributes,
+    name: "Load",
+    uiName: "Load",
+    caption: "Load: ",
+    description: Some("Load: average of ready processes in the last minute"),
+    maxItems: 1,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,7 +252,7 @@ mod tests {
     /// (`..Meter::empty()`, the Rust-only bootstrap helper).
     fn meter(values: Vec<f64>) -> Meter {
         Meter {
-            host: None,
+            host: core::ptr::null(),
             values,
             mode: BAR_METERMODE,
             ..Meter::empty()
@@ -228,12 +289,10 @@ mod tests {
 
     use crate::ported::linux::linuxmachine::LinuxMachine;
     use crate::ported::machine::Machine;
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     /// A `Meter` with a 3-slot `values` and a host reporting `active_cpus`.
     fn hosted_meter(active_cpus: u32) -> Meter {
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 activeCPUs: active_cpus,
                 ..Default::default()
@@ -243,7 +302,7 @@ mod tests {
         Meter {
             values: vec![0.0; 3],
             total: 0.0,
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         }
     }

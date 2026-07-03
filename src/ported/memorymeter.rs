@@ -13,13 +13,25 @@
 //! figures are filled by the ported
 //! [`Platform_setMemoryValues`](crate::ported::linux::platform::Platform_setMemoryValues).
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)] // faithful C global names (MemoryMeter_class)
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+// Platform dispatch (darwin-first): the memory value setter and the class
+// metadata table both come from this build's platform.
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::{
+    Platform_memoryClasses, Platform_numberOfMemoryClasses, Platform_setMemoryValues,
+};
+#[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::{
     Platform_memoryClasses, Platform_numberOfMemoryClasses, Platform_setMemoryValues,
 };
-use crate::ported::meter::{Meter, Meter_humanUnit, BAR_METERMODE, GRAPH_METERMODE};
+use crate::ported::meter::{
+    Meter, MeterClass, Meter_class, Meter_humanUnit, BAR_METERMODE, GRAPH_METERMODE,
+    METERMODE_DEFAULT_SUPPORTED,
+};
+use crate::ported::object::ObjectClass;
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};
 
 /// Port of `static void MemoryMeter_updateValues(Meter* this)` from
@@ -33,20 +45,12 @@ pub fn MemoryMeter_updateValues(this: &mut Meter) {
     // C: `Settings *settings = this->host->settings;` (dereferenced
     // unconditionally). `showCachedMemory` is a `Copy` bool, so the borrow
     // is released before `Platform_setMemoryValues` re-borrows the host.
-    let show_cached_memory = {
-        let host = this
-            .host
-            .as_ref()
-            .expect("MemoryMeter_updateValues: this->host (C dereferences it)")
-            .clone();
-        let sc = host
-            .borrow()
-            .super_
+    let show_cached_memory = unsafe {
+        (*this.host)
             .settings
             .as_ref()
             .expect("MemoryMeter_updateValues: host->settings")
-            .showCachedMemory;
-        sc
+            .showCachedMemory
     };
 
     // not all memory classes are supported on all platforms
@@ -88,16 +92,13 @@ pub fn MemoryMeter_updateValues(this: &mut Meter) {
 /// is off.
 pub fn MemoryMeter_display(this: &Meter, out: &mut RichString) {
     let scheme = ColorScheme::active();
-    let show_cached_memory = this
-        .host
-        .as_ref()
-        .expect("MemoryMeter_display: this->host (C dereferences it)")
-        .borrow()
-        .super_
-        .settings
-        .as_ref()
-        .expect("MemoryMeter_display: host->settings")
-        .showCachedMemory;
+    let show_cached_memory = unsafe {
+        (*this.host)
+            .settings
+            .as_ref()
+            .expect("MemoryMeter_display: host->settings")
+            .showCachedMemory
+    };
 
     RichString_writeAscii(out, ColorElements::METER_TEXT.packed(scheme), b":");
     let buffer = Meter_humanUnit(this.total);
@@ -121,16 +122,93 @@ pub fn MemoryMeter_display(this: &Meter, out: &mut RichString) {
     }
 }
 
+/// Port of `static const int MemoryMeter_attributes[]` from `MemoryMeter.c`:
+/// `{ MEMORY_1 .. MEMORY_6 }` — the per-class bar colors as `CRT_colors`
+/// indices (`ColorElements as i32`).
+static MemoryMeter_attributes: [i32; 6] = [
+    ColorElements::MEMORY_1 as i32,
+    ColorElements::MEMORY_2 as i32,
+    ColorElements::MEMORY_3 as i32,
+    ColorElements::MEMORY_4 as i32,
+    ColorElements::MEMORY_5 as i32,
+    ColorElements::MEMORY_6 as i32,
+];
+
+/// Port of `const MeterClass MemoryMeter_class` from `MemoryMeter.c`. Wires
+/// the ported [`MemoryMeter_updateValues`]/[`MemoryMeter_display`] slots onto
+/// the vtable. A percent chart (`total = 100.0`), default `BAR_METERMODE`,
+/// `maxItems = 6` (max of the `MEMORY_N` classes). `super.delete` is dropped
+/// (Rust `Drop`); `super.extends` becomes the `Meter_class` base link.
+pub static MemoryMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(MemoryMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(MemoryMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: BAR_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 100.0,
+    attributes: &MemoryMeter_attributes,
+    name: "Memory",
+    uiName: "Memory",
+    caption: "Mem",
+    description: None,
+    maxItems: 6,
+    isMultiColumn: false,
+    isPercentChart: true,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_os = "macos"))]
     use crate::ported::linux::linuxmachine::LinuxMachine;
+    #[cfg(not(target_os = "macos"))]
     use crate::ported::machine::{Machine, Settings};
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
+    /// macOS: the memory setter reads live `vm_statistics64` from a real
+    /// `DarwinMachine` host, so assert live invariants (physical total > 0,
+    /// wired pages present, values non-negative) rather than mocked figures.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_values_reads_live_vm_stats() {
+        use crate::ported::darwin::darwinmachine::{DarwinMachine_freeCPULoadInfo, Machine_new};
+        use crate::ported::machine::{ScreenSettings, Settings};
+        use crate::ported::meter::TEXT_METERMODE;
+
+        let mut dm = Machine_new(None, 0);
+        dm.super_.settings = Some(Settings {
+            showCachedMemory: true,
+            screens: vec![ScreenSettings::default()],
+            ..Default::default()
+        });
+
+        let mut m = Meter {
+            values: vec![0.0; Platform_numberOfMemoryClasses],
+            mode: TEXT_METERMODE,
+            host: &dm.super_ as *const crate::ported::machine::Machine,
+            ..Meter::empty()
+        };
+        MemoryMeter_updateValues(&mut m);
+
+        assert!(m.total > 0.0);
+        assert!(m.values[0] > 0.0); // wired always present
+        assert!(m.values.iter().all(|&v| v.is_nan() || v >= 0.0));
+        assert!(m.txtBuffer.contains('/'));
+
+        DarwinMachine_freeCPULoadInfo(&mut dm.prev_load);
+        DarwinMachine_freeCPULoadInfo(&mut dm.curr_load);
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn hosted(show_cached: bool, mode: crate::ported::meter::MeterModeId) -> Meter {
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 totalMem: 8192,
                 settings: Some(Settings {
@@ -149,12 +227,12 @@ mod tests {
         Meter {
             values: vec![0.0; Platform_numberOfMemoryClasses],
             mode,
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         }
     }
 
-    #[test]
+    #[cfg(not(target_os = "macos"))]    #[test]
     fn update_values_sums_used_and_formats() {
         use crate::ported::meter::TEXT_METERMODE;
         // TEXT mode (not graph/bar) → no masking. used = used+shared+compressed.
@@ -168,7 +246,7 @@ mod tests {
         assert_eq!(m.values[4], 1024.0);
     }
 
-    #[test]
+    #[cfg(not(target_os = "macos"))]    #[test]
     fn bar_mode_masks_cache_when_hidden() {
         // BAR mode + showCachedMemory=false → buffers/cache masked to NaN.
         let mut m = hosted(false, BAR_METERMODE);

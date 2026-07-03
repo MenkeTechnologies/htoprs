@@ -146,11 +146,17 @@ pub fn GPU_readProcessData(
         {
             unsafe { libc::__errno() }
         }
+        #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+        {
+            unsafe { libc::___errno() }
+        }
         #[cfg(not(any(
             target_os = "linux",
             target_os = "android",
             target_os = "netbsd",
-            target_os = "openbsd"
+            target_os = "openbsd",
+            target_os = "solaris",
+            target_os = "illumos"
         )))]
         {
             unsafe { libc::__error() }

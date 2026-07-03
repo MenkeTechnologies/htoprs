@@ -94,3 +94,19 @@ pub mod freebsd;
 // text, so coverage tracking is unaffected by the cfg.
 #[cfg(target_os = "netbsd")]
 pub mod netbsd;
+
+// The Solaris/illumos platform layer binds `libkstat`/`libproc`/`utmpx`
+// symbols, so it is compiled only there — mirroring htop's per-platform
+// build. The port-purity gate and port report scan the source as text, so
+// coverage tracking is unaffected by the cfg.
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+pub mod solaris;
+
+// The OpenBSD platform layer binds openbsd-only `sysctl` MIBs and the
+// `hw.sensors` battery structs, so it is compiled only on OpenBSD. NOTE:
+// OpenBSD is a tier-3 Rust target with no prebuilt std, so this module is
+// verified by the port-purity gate + primary-source libc reading, not a
+// cross-compile. The gate/report scan source as text, unaffected by the cfg.
+#[cfg(target_os = "openbsd")]
+pub mod openbsd;
+pub mod unsupported;

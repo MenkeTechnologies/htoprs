@@ -65,6 +65,9 @@
 //!   `AllocThis` list-item constructors, expressed as the owned-return idiom
 //!   already used by the ported `ListItem_new` (`ListItem_init` + the stashed
 //!   `DynamicScreen*` / `ScreenSettings*`-as-index back-pointer).
+//! - `addDynamicScreen` (`:128`) — the `Hashtable_foreach` callback labeling a
+//!   tab `screen->heading ? screen->heading : screen->name` (`DynamicScreen`
+//!   now carries `heading`) and adding a `ScreenTabListItem_new` row.
 //! - `startRenaming` (`:276`) — enters rename mode for the selected row
 //!   (records `renamingItem`/`saved`, seeds the `LineEditor`, switches to the
 //!   `PANEL_EDIT` color and clones the `ScreenNames_renamingBar` into
@@ -85,13 +88,10 @@
 //!   `Settings_newScreen` / `Settings_newDynamicScreen` (`Settings.c:263` /
 //!   `:286`, both blocked on the platform `Process_fields[]` table) before
 //!   inserting a (now-ported) `ScreenNameListItem_new` row.
-//! - `addDynamicScreen` (`:128`) — a `Hashtable_foreach` callback whose label
-//!   is `screen->heading ? screen->heading : screen->name`, but the ported
-//!   `DynamicScreen` model has no `heading` field to read.
 //! - `ScreenTabsPanel_new` (`:138`) — needs `Hashtable_foreach` over the
-//!   unmodeled `settings->dynamicScreens` `Hashtable` field plus the stubbed
-//!   `addDynamicScreen` (its `ScreenTabListItem_new` / `ScreenNamesPanel_new`
-//!   dependencies are now ported).
+//!   unmodeled `settings->dynamicScreens` `Hashtable` field (in `settings.rs`,
+//!   outside this group); its `addDynamicScreen` / `ScreenTabListItem_new` /
+//!   `ScreenNamesPanel_new` dependencies are all ported now.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -263,7 +263,7 @@ impl ScreenNamesPanel {
     /// `(ListItem*)` cast writes `.value` on either, so both concrete types
     /// are handled here.
     fn set_item_value(&mut self, idx: usize, value: String) {
-        let obj: &mut dyn core::any::Any = self.super_.items[idx].as_mut();
+        let obj: &mut dyn core::any::Any = self.super_.items[idx].object_mut();
         if let Some(item) = obj.downcast_mut::<ScreenNameListItem>() {
             item.super_.value = value;
             return;
@@ -279,7 +279,7 @@ impl ScreenNamesPanel {
     /// row type the names panel can hold (`ScreenNameListItem` or plain
     /// `ListItem`) via the same `Any` downcast the C `(ListItem*)` cast models.
     fn item_value(&self, idx: usize) -> String {
-        let obj: &dyn core::any::Any = self.super_.items[idx].as_ref();
+        let obj: &dyn core::any::Any = self.super_.items[idx].object();
         if let Some(item) = obj.downcast_ref::<ScreenNameListItem>() {
             return item.super_.value.clone();
         }
@@ -447,7 +447,7 @@ pub fn ScreenTabsPanel_eventHandler(this: &mut ScreenTabsPanel, ch: i32) -> Hand
             None
         } else {
             let sel = Panel_getSelectedIndex(&this.super_) as usize;
-            let any: &dyn core::any::Any = this.super_.items[sel].as_ref();
+            let any: &dyn core::any::Any = this.super_.items[sel].object();
             let focus = any
                 .downcast_ref::<ScreenTabListItem>()
                 .expect("ScreenTabsPanel_eventHandler: panel row is not a ScreenTabListItem");
@@ -496,22 +496,40 @@ pub fn ScreenTabListItem_new(value: &str, ds: *mut DynamicScreen) -> ScreenTabLi
     this
 }
 
-/// TODO: port of `static void addDynamicScreen(ATTR_UNUSED ht_key_t key, void* value, void* userdata` from `ScreenTabsPanel.c:128`.
-/// Blocked: a `Hashtable_foreach` callback whose name is `screen->heading ?
-/// screen->heading : screen->name` — but the ported [`DynamicScreen`] model has
-/// no `heading` field, so the faithful `heading`-with-`name`-fallback cannot be
-/// expressed. (The `ScreenTabListItem_new` constructor it calls is now ported.)
-pub fn addDynamicScreen() {
-    todo!("port of ScreenTabsPanel.c:128 — needs DynamicScreen.heading (unmodeled field)")
+/// Port of `static void addDynamicScreen(ATTR_UNUSED ht_key_t key, void*
+/// value, void* userdata)` from `ScreenTabsPanel.c:128`.
+///
+/// ```c
+/// DynamicScreen* screen = (DynamicScreen*) value;
+/// Panel* super = (Panel*) userdata;
+/// const char* name = screen->heading ? screen->heading : screen->name;
+/// Panel_add(super, (Object*) ScreenTabListItem_new(name, screen));
+/// ```
+///
+/// A `Hashtable_foreach` callback: labels the tab with `screen->heading` (or
+/// `screen->name` when heading is `NULL`) and adds a [`ScreenTabListItem_new`]
+/// carrying the screen pointer. Following the
+/// `AvailableColumnsPanel_addDynamicColumn` precedent the port takes the
+/// already-downcast `screen: &DynamicScreen` (C's `value`) and `super_: &mut
+/// Panel` (C's `userdata`); the C `ScreenTabListItem_new(name, screen)` stores
+/// the value pointer, reproduced as `screen as *const _ as *mut _` (the
+/// address of the registry-owned screen). `key` is `ATTR_UNUSED` in C.
+pub fn addDynamicScreen(_key: u32, screen: &DynamicScreen, super_: &mut Panel) {
+    // const char* name = screen->heading ? screen->heading : screen->name;
+    let name = screen.heading.as_deref().unwrap_or(&screen.name);
+    // Panel_add(super, (Object*) ScreenTabListItem_new(name, screen));
+    let ds = screen as *const DynamicScreen as *mut DynamicScreen;
+    Panel_add(super_, Box::new(ScreenTabListItem_new(name, ds)));
 }
 
 /// TODO: port of `ScreenTabsPanel* ScreenTabsPanel_new(Settings* settings` from `ScreenTabsPanel.c:138`.
 /// Blocked: iterates `settings->dynamicScreens` via `Hashtable_foreach` +
-/// [`addDynamicScreen`] (stubbed on the unmodeled `DynamicScreen.heading`), and
-/// `settings->dynamicScreens` is itself an unmodeled `Settings` `Hashtable`
-/// field. (`ScreenTabListItem_new` and `ScreenNamesPanel_new` are now ported.)
+/// [`addDynamicScreen`] (now ported), but `settings->dynamicScreens` is itself
+/// an unmodeled `Settings` `Hashtable` field (in `settings.rs`, outside this
+/// group) — without it the `Hashtable_foreach` core of this constructor cannot
+/// be expressed. (`ScreenTabListItem_new` and `ScreenNamesPanel_new` are ported.)
 pub fn ScreenTabsPanel_new() {
-    todo!("port of ScreenTabsPanel.c:138 — needs settings->dynamicScreens (unmodeled Settings field) + addDynamicScreen")
+    todo!("port of ScreenTabsPanel.c:138 — needs settings->dynamicScreens (unmodeled Settings field, outside this group)")
 }
 
 /// Port of `ScreenNameListItem* ScreenNameListItem_new(const char* value,
@@ -587,7 +605,7 @@ pub fn ScreenNamesPanel_delete() {
 pub fn renameScreenSettings(this: &mut ScreenNamesPanel, item: usize) {
     // nameItem = (ScreenNameListItem*) item; ss = nameItem->ss; item->value
     let (ss_index, value) = {
-        let any: &dyn core::any::Any = this.super_.items[item].as_ref();
+        let any: &dyn core::any::Any = this.super_.items[item].object();
         let nameItem = any
             .downcast_ref::<ScreenNameListItem>()
             .expect("renameScreenSettings: panel row is not a ScreenNameListItem");
@@ -916,6 +934,9 @@ pub unsafe fn ScreenNamesPanel_new(settings: *mut Settings) -> ScreenNamesPanel 
 }
 
 #[cfg(test)]
+use crate::ported::panel::PanelItem;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ported::lineeditor::{LineEditor_initWithMax, LineEditor_setText};
@@ -1031,7 +1052,7 @@ mod tests {
             .items
             .iter()
             .map(|o| {
-                let any: &dyn std::any::Any = o.as_ref();
+                let any: &dyn std::any::Any = o.object();
                 let li = any.downcast_ref::<ListItem>().expect("fill adds ListItems");
                 (li.value.clone(), li.key)
             })
@@ -1040,7 +1061,7 @@ mod tests {
 
     /// The display value of a `ScreenNameListItem` row.
     fn name_value(p: &ScreenNamesPanel, idx: usize) -> String {
-        let any: &dyn std::any::Any = p.super_.items[idx].as_ref();
+        let any: &dyn std::any::Any = p.super_.items[idx].object();
         any.downcast_ref::<ScreenNameListItem>()
             .unwrap()
             .super_
@@ -1098,6 +1119,7 @@ mod tests {
         let mut panel = names_panel(&mut settings);
         let ds = DynamicScreen {
             name: "pods".to_string(),
+            heading: None,
         };
 
         ScreenNamesPanel_fill(&mut panel, Some(&ds));
@@ -1141,7 +1163,7 @@ mod tests {
         let mut settings = settings_with(vec![builtin("Main"), builtin("I/O")]);
         let mut panel = names_panel(&mut settings);
         // Row 0 edits screens[1]; its display value is the new name.
-        panel.super_.items.push(name_item("Renamed", Some(1)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Renamed", Some(1))));
 
         renameScreenSettings(&mut panel, 0);
 
@@ -1160,6 +1182,7 @@ mod tests {
     fn screen_tab_list_item_new_builds_row_with_ds_and_key_zero() {
         let mut ds = DynamicScreen {
             name: "pods".to_string(),
+            heading: None,
         };
         let item = ScreenTabListItem_new("Pods", &mut ds as *mut DynamicScreen);
         assert_eq!(item.super_.value, "Pods");
@@ -1186,7 +1209,7 @@ mod tests {
     fn start_renaming_enters_edit_mode_on_selected_row() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         panel.super_.selected = 0;
 
         startRenaming(&mut panel);
@@ -1218,7 +1241,7 @@ mod tests {
     fn renaming_default_key_edits_editor_and_row_value() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
 
         let r = ScreenNamesPanel_eventHandlerRenaming(&mut panel, b'X' as i32);
@@ -1232,7 +1255,7 @@ mod tests {
     fn renaming_equals_is_swallowed_without_editing() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
 
         let r = ScreenNamesPanel_eventHandlerRenaming(&mut panel, EQUALS);
@@ -1246,7 +1269,7 @@ mod tests {
     fn renaming_esc_cancels_and_restores_original_name() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
         // Type an edit, then cancel: the saved original must be restored and
         // the screen heading left untouched.
@@ -1271,7 +1294,7 @@ mod tests {
     fn renaming_enter_commits_edit_to_screen_settings() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
         ScreenNamesPanel_eventHandlerRenaming(&mut panel, b'Z' as i32); // "MainZ"
 
@@ -1294,7 +1317,7 @@ mod tests {
         // state stays intact.
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         panel.super_.selected = 0;
         enter_renaming(&mut panel, 0);
 
@@ -1310,7 +1333,7 @@ mod tests {
     fn normal_event_set_selected_is_handled() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
 
         let r = ScreenNamesPanel_eventHandlerNormal(&mut panel, EVENT_SET_SELECTED);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1320,7 +1343,7 @@ mod tests {
     fn normal_enter_restores_focus_color_and_handles() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         Panel_setSelectionColor(&mut panel.super_, ColorElements::PANEL_EDIT);
 
         let r = ScreenNamesPanel_eventHandlerNormal(&mut panel, KEY_ENTER);
@@ -1335,9 +1358,9 @@ mod tests {
     fn normal_navigation_reports_handled_when_focus_moves() {
         let mut settings = settings_with(Vec::new());
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("a", Some(0)));
-        panel.super_.items.push(name_item("b", Some(1)));
-        panel.super_.items.push(name_item("c", Some(2)));
+        panel.super_.items.push(PanelItem::Owned(name_item("a", Some(0))));
+        panel.super_.items.push(PanelItem::Owned(name_item("b", Some(1))));
+        panel.super_.items.push(PanelItem::Owned(name_item("c", Some(2))));
         panel.super_.selected = 0;
 
         // KEY_END moves the selection to the last row -> focus changed.
@@ -1352,8 +1375,8 @@ mod tests {
         // ListItems (a names panel legitimately holds these after a fill).
         let mut settings = settings_with(Vec::new());
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(li("apple", 0));
-        panel.super_.items.push(li("banana", 1));
+        panel.super_.items.push(PanelItem::Owned(li("apple", 0)));
+        panel.super_.items.push(PanelItem::Owned(li("banana", 1)));
         panel.super_.selected = 0;
 
         let r = ScreenNamesPanel_eventHandlerNormal(&mut panel, b'b' as i32);
@@ -1367,7 +1390,7 @@ mod tests {
         // KEY_F(5) -> addNewScreen (stubbed on Settings_newScreen).
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         let _ = ScreenNamesPanel_eventHandlerNormal(&mut panel, KEY_F5);
     }
 
@@ -1377,7 +1400,7 @@ mod tests {
     fn dispatch_routes_to_normal_when_not_renaming() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         // Not renaming: a benign key that the normal handler resolves cleanly.
         let r = ScreenNamesPanel_eventHandler(&mut panel, EVENT_SET_SELECTED);
         assert_eq!(r, HandlerResult::HANDLED);
@@ -1387,7 +1410,7 @@ mod tests {
     fn dispatch_routes_to_renaming_when_renaming() {
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut panel = names_panel(&mut settings);
-        panel.super_.items.push(name_item("Main", Some(0)));
+        panel.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         enter_renaming(&mut panel, 0);
         // Renaming: a default key edits the editor via the renaming handler.
         let r = ScreenNamesPanel_eventHandler(&mut panel, b'!' as i32);
@@ -1431,6 +1454,7 @@ mod tests {
         let mut names = names_panel(&mut settings);
         let mut ds_pods = DynamicScreen {
             name: "pods".to_string(),
+            heading: None,
         };
         let mut tabs = tabs_panel(&mut names);
         Panel_add(
@@ -1457,7 +1481,7 @@ mod tests {
         // names panel, whose F5 arm hits the addNewScreen stub.
         let mut settings = settings_with(vec![builtin("Main")]);
         let mut names = names_panel(&mut settings);
-        names.super_.items.push(name_item("Main", Some(0)));
+        names.super_.items.push(PanelItem::Owned(name_item("Main", Some(0))));
         let mut tabs = tabs_panel(&mut names);
         Panel_add(
             &mut tabs.super_,

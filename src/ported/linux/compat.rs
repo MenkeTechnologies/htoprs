@@ -51,11 +51,17 @@ pub fn Compat_faccessat(dirfd: c_int, pathname: &CStr, mode: c_int, flags: c_int
         {
             *libc::__errno() = value;
         }
+        #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+        {
+            *libc::___errno() = value;
+        }
         #[cfg(not(any(
             target_os = "linux",
             target_os = "android",
             target_os = "netbsd",
-            target_os = "openbsd"
+            target_os = "openbsd",
+            target_os = "solaris",
+            target_os = "illumos"
         )))]
         {
             *libc::__error() = value;

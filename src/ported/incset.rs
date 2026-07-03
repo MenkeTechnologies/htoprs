@@ -49,12 +49,11 @@
 //!   filter path, which calls the [`updateWeakPanel`] stub; porting a subset
 //!   that skips the filter refresh would gut filter mode, so it stays a whole
 //!   honest stub.
-//! - [`IncSet_delete`] (`:77`) is a pure teardown chain; the owned
-//!   `FunctionBar`s and `Option<History>` are released by `Drop` (and
-//!   `History_delete` is itself a `Drop` no-op), so there is no algorithm.
-//! - [`IncMode_done`] (`:61`) is `FunctionBar_delete(mode->bar)` — the
-//!   owned [`FunctionBar`] is released by `Drop`, so there is no algorithm
-//!   to port (same as `FunctionBar_delete`/`Panel_done`).
+//!
+//! [`IncSet_delete`] (`:77`) and [`IncMode_done`] (`:61`) are now ported: the
+//! C `free` chain maps to the by-value drop idiom [`FunctionBar_delete`] uses
+//! (each mode's owned `FunctionBar` is handed to `FunctionBar_delete`; the
+//! `Option<History>`/`defaultBar` drop with the struct).
 //!
 //! # Struct mapping
 //!
@@ -75,8 +74,8 @@ use std::io::{self, Write};
 
 use crate::ported::crt::{ColorElements, ColorScheme, ERR, KEY_F};
 use crate::ported::functionbar::{
-    FunctionBar, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_getWidth, FunctionBar_new,
-    FunctionBar_synthesizeEvent, Ncurses,
+    FunctionBar, FunctionBar_delete, FunctionBar_draw, FunctionBar_drawExtra, FunctionBar_getWidth,
+    FunctionBar_new, FunctionBar_synthesizeEvent, Ncurses,
 };
 use crate::ported::history::{History, History_new, History_resetPosition, History_save};
 use crate::ported::lineeditor::{
@@ -203,11 +202,14 @@ fn IncMode_initFilter(filter: &mut IncMode) {
     LineEditor_init(&mut filter.editor);
 }
 
-/// TODO: port of `IncSet.c:61`. `FunctionBar_delete(mode->bar)` — the owned
-/// [`FunctionBar`] is released by `Drop`, so there is no algorithm to port
-/// (same as `FunctionBar_delete`/`Panel_done`).
-fn IncMode_done() {
-    todo!("port of IncSet.c:61 — Drop releases the owned FunctionBar")
+/// Port of `static inline void IncMode_done(IncMode* mode)` from
+/// `IncSet.c:61`. C `FunctionBar_delete(mode->bar)`. The [`IncMode`] owns its
+/// `bar` by value, so taking `mode` by value and handing `mode.bar` to
+/// [`FunctionBar_delete`] frees the bar exactly as the C does; the remaining
+/// fields (`editor`, `isFilter`) drop at end of scope, which is the caller's
+/// `free` of the enclosing struct.
+fn IncMode_done(mode: IncMode) {
+    FunctionBar_delete(mode.bar);
 }
 
 /// Port of `IncSet.c:65`. Builds both modes (zeroed [`IncMode::empty`] then
@@ -228,12 +230,22 @@ pub fn IncSet_new(bar: Option<FunctionBar>) -> IncSet {
     this
 }
 
-/// TODO: port of `IncSet.c:77`. `IncMode_done` x2 + `History_delete` +
-/// `free` — a pure teardown chain. Every owned field (the two `FunctionBar`s,
-/// the `Option<History>`) is released by `Drop`, and `History_delete` itself
-/// is a `Drop` no-op in `history.rs`, so there is no algorithm to port.
-pub fn IncSet_delete() {
-    todo!("port of IncSet.c:77 — Drop releases owned fields (FunctionBars + History)")
+/// Port of `void IncSet_delete(IncSet* this)` from `IncSet.c:77`:
+/// `IncMode_done(&modes[0]); IncMode_done(&modes[1]); if (history)
+/// History_delete(history); free(this);`.
+///
+/// Taking `this` by value reproduces `free(this)`. The `modes` array is moved
+/// out and each [`IncMode`] handed to [`IncMode_done`] (mirroring the C call
+/// graph, which frees each mode's `FunctionBar`). The `Option<History>`
+/// `history` and the owned `Option<FunctionBar>` `defaultBar` drop with the
+/// remaining fields — the faithful analog of `History_delete(history)` (a
+/// `Drop` no-op in `history.rs`, so calling the stub is avoided) and the
+/// struct free.
+pub fn IncSet_delete(this: IncSet) {
+    let IncSet { modes, .. } = this;
+    let [search, filter] = modes;
+    IncMode_done(search);
+    IncMode_done(filter);
 }
 
 /// Port of `IncSet.c:85`. Replaces the history with one loaded from
@@ -256,16 +268,19 @@ pub fn IncSet_saveHistory(this: &IncSet) {
 
 /// TODO: port of `IncSet.c:96`. Rebuilds `panel` from the backing `lines`,
 /// keeping only items whose value matches the filter via `String_contains_i`.
-/// `vector.rs` now ports the `Vector` container (`Vector_get`/`Vector_size`),
-/// so the `lines` type is no longer the gap; the remaining blocker is the
-/// "weak panel" model. htop shares the same `Object*` between `lines` and
-/// `panel` (`Panel_add(panel, (Object*)line)` aliases a `Vector`-owned pointer
-/// into a non-owning panel, and `selected == line` is a raw-pointer identity
-/// test), whereas the Rust `Panel_add` takes an *owned*, non-`Clone`
-/// `Box<dyn Object>` — so items cannot be aliased/duplicated from `lines` into
-/// the panel, and there is no owned analog for the shared-pointer identity.
+/// `vector.rs` ports the `Vector` container (`Vector_get`/`Vector_size`) and
+/// `panel.rs` now has a `PanelItem::Borrowed(*mut dyn Object)` variant, so the
+/// *storage* for weak items exists. What is still missing is the *add path*:
+/// htop calls `Panel_add(panel, (Object*)line)` to alias a `Vector`-owned
+/// pointer into a non-owning panel, and tests `selected == line` by raw-pointer
+/// identity. The ported `Panel_add` takes an *owned*, non-`Clone`
+/// `Box<dyn Object>`; there is no `Panel_add`-for-borrowed helper to hand it a
+/// `*mut dyn Object` aliased out of `lines`, and manufacturing such aliases
+/// plus the fat-pointer identity test by hand would be an ad-hoc
+/// reimplementation of that helper. Adding the borrowed-add fn belongs in
+/// `panel.rs`, outside this port group.
 fn updateWeakPanel() {
-    todo!("port of IncSet.c:96 — weak-panel shares one Object* between lines and panel; owned Box<dyn Object> can't alias")
+    todo!("port of IncSet.c:96 — needs a Panel_add-for-borrowed path (panel.rs); PanelItem::Borrowed storage exists but no aliasing add fn")
 }
 
 /// Port of `IncSet.c:124`. Walks the panel front-to-back and selects the
@@ -486,6 +501,9 @@ pub fn IncSet_filter(this: &IncSet) -> Option<&str> {
 }
 
 #[cfg(test)]
+use crate::ported::panel::PanelItem;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ported::object::Object;
@@ -595,9 +613,9 @@ mod tests {
     #[test]
     fn get_list_item_value_returns_item_strings() {
         let mut p = Panel_new(0, 0, 10, 10, None);
-        p.items.push(li("systemd"));
-        p.items.push(li("bash"));
-        p.items.push(li("htop"));
+        p.items.push(PanelItem::Owned(li("systemd")));
+        p.items.push(PanelItem::Owned(li("bash")));
+        p.items.push(PanelItem::Owned(li("htop")));
         assert_eq!(IncSet_getListItemValue(&p, 0), "systemd");
         assert_eq!(IncSet_getListItemValue(&p, 1), "bash");
         assert_eq!(IncSet_getListItemValue(&p, 2), "htop");
@@ -608,7 +626,7 @@ mod tests {
         // It must satisfy the IncMode_GetPanelValue callback type.
         let f: IncMode_GetPanelValue = IncSet_getListItemValue;
         let mut p = Panel_new(0, 0, 10, 10, None);
-        p.items.push(li("firefox"));
+        p.items.push(PanelItem::Owned(li("firefox")));
         assert_eq!(f(&p, 0), "firefox");
     }
 
@@ -619,7 +637,7 @@ mod tests {
         use crate::ported::xutils::String_contains_i;
         let mut p = Panel_new(0, 0, 10, 10, None);
         for v in ["systemd", "bash", "htop", "sshd"] {
-            p.items.push(li(v));
+            p.items.push(PanelItem::Owned(li(v)));
         }
         let needle = "SH"; // matches "bash" and "sshd" case-insensitively
         let hits: Vec<i32> = (0..p.items.len() as i32)
@@ -634,7 +652,7 @@ mod tests {
     fn panel_of(values: &[&str]) -> Panel {
         let mut p = Panel_new(0, 0, 10, 10, None);
         for v in values {
-            p.items.push(li(v));
+            p.items.push(PanelItem::Owned(li(v)));
         }
         p
     }

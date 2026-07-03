@@ -39,13 +39,36 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::ported::crt::CRT_fatalError;
+use crate::ported::crt::{ColorElements, CRT_fatalError};
+use crate::ported::linux::platform::MemoryClass;
 // Used only by the `#[cfg(target_arch = "x86_64")]` Rosetta workaround below.
 #[cfg(target_arch = "x86_64")]
 use crate::ported::darwin::platformhelpers::{
     KernelVersion, Platform_CompareKernelVersion, Platform_isRunningTranslated,
 };
+use crate::ported::darwin::darwinmachine::DarwinMachine;
+// `Machine` is named only by the meter-setter tests now (the setters read the
+// typed `mtr.host` and cast to `*DarwinMachine`).
+#[cfg(test)]
+use crate::ported::machine::Machine;
+use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
+use crate::ported::batterymeter::BatteryMeter_class;
+use crate::ported::cpumeter::{
+    AllCPUs2Meter_class, AllCPUs4Meter_class, AllCPUs8Meter_class, AllCPUsMeter_class,
+    CPUMeter_class, LeftCPUs2Meter_class, LeftCPUs4Meter_class, LeftCPUs8Meter_class,
+    LeftCPUsMeter_class, RightCPUs2Meter_class, RightCPUs4Meter_class, RightCPUs8Meter_class,
+    RightCPUsMeter_class,
+};
+use crate::ported::hostnamemeter::HostnameMeter_class;
+use crate::ported::loadaveragemeter::{LoadAverageMeter_class, LoadMeter_class};
+use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
+use crate::ported::memorymeter::MemoryMeter_class;
+use crate::ported::swapmeter::SwapMeter_class;
+use crate::ported::sysarchmeter::SysArchMeter_class;
+use crate::ported::tasksmeter::TasksMeter_class;
+use crate::ported::uptimemeter::{SecondsUptimeMeter_class, UptimeMeter_class};
 use crate::ported::networkiometer::NetworkIOData;
+use crate::ported::xutils::saturatingSub;
 
 // `KERN_SUCCESS` (`mach/kern_return.h`).
 const KERN_SUCCESS: c_int = 0;
@@ -231,17 +254,87 @@ pub fn Platform_getMaxPid() -> libc::pid_t {
     99999
 }
 
-/// TODO: port of `static double Platform_setCPUAverageValues(Meter* mtr)` from
-/// `Platform.c:304`. Blocked: `Meter::host` (`meter.rs`) is typed as the
-/// concrete `LinuxMachine`; a `DarwinMachine`-backed meter is unmodeled.
-pub fn Platform_setCPUAverageValues() {
-    todo!("port of Platform.c:304")
+// Darwin's `CPU_METER_*` indices (`CPUMeter.h`) into `Meter::values`.
+const CPU_METER_NICE: usize = 0;
+const CPU_METER_NORMAL: usize = 1;
+const CPU_METER_KERNEL: usize = 2;
+const CPU_METER_FREQUENCY: usize = 8;
+const CPU_METER_TEMPERATURE: usize = 9;
+
+/// Port of `static double Platform_setCPUAverageValues(Meter* mtr)` from
+/// `Platform.c:304`. Averages the per-CPU nice/normal/kernel values (and the
+/// summed percentage) across `existingCPUs`, dividing by `activeCPUs`.
+///
+/// Bridge: `host` is passed explicitly until `Meter::host` is flipped to
+/// `*const Machine` (the C reads `mtr->host`).
+fn Platform_setCPUAverageValues(mtr: &mut Meter) -> f64 {
+    let host = mtr.host;
+    let (active_cpus, existing_cpus) = unsafe { ((*host).activeCPUs, (*host).existingCPUs) };
+
+    let mut sum_nice = 0.0;
+    let mut sum_normal = 0.0;
+    let mut sum_kernel = 0.0;
+    let mut sum_percent = 0.0;
+    for i in 1..=existing_cpus {
+        sum_percent += Platform_setCPUValues(mtr, i);
+        sum_nice += mtr.values[CPU_METER_NICE];
+        sum_normal += mtr.values[CPU_METER_NORMAL];
+        sum_kernel += mtr.values[CPU_METER_KERNEL];
+    }
+
+    mtr.values[CPU_METER_NICE] = sum_nice / active_cpus as f64;
+    mtr.values[CPU_METER_NORMAL] = sum_normal / active_cpus as f64;
+    mtr.values[CPU_METER_KERNEL] = sum_kernel / active_cpus as f64;
+    sum_percent / active_cpus as f64
 }
 
-/// TODO: port of `double Platform_setCPUValues(Meter* mtr, unsigned int cpu)`
-/// from `Platform.c:323`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setCPUValues() {
-    todo!("port of Platform.c:323")
+/// Port of `double Platform_setCPUValues(Meter* mtr, unsigned int cpu)` from
+/// `Platform.c:323`. For `cpu == 0` delegates to
+/// [`Platform_setCPUAverageValues`]; otherwise computes the nice/normal/
+/// kernel percentages for CPU `cpu` from the `curr_load - prev_load`
+/// cpu-tick deltas, sets frequency/temperature to `NAN`, and returns the
+/// clamped total usage. `host` is the bridge param (see the average fn).
+pub fn Platform_setCPUValues(mtr: &mut Meter, cpu: u32) -> f64 {
+    if cpu == 0 {
+        return Platform_setCPUAverageValues(mtr);
+    }
+
+    let dhost = mtr.host as *const DarwinMachine;
+    let (prev, curr) = unsafe {
+        (
+            &*(*dhost).prev_load.add((cpu - 1) as usize),
+            &*(*dhost).curr_load.add((cpu - 1) as usize),
+        )
+    };
+
+    // Sum of all cpu-state tick deltas.
+    let mut total = 0.0;
+    for i in 0..libc::CPU_STATE_MAX as usize {
+        total += curr.cpu_ticks[i] as f64 - prev.cpu_ticks[i] as f64;
+    }
+
+    let delta = |state: c_int| {
+        curr.cpu_ticks[state as usize] as f64 - prev.cpu_ticks[state as usize] as f64
+    };
+    if total > 1e-6 {
+        mtr.values[CPU_METER_NICE] = delta(libc::CPU_STATE_NICE) * 100.0 / total;
+        mtr.values[CPU_METER_NORMAL] = delta(libc::CPU_STATE_USER) * 100.0 / total;
+        mtr.values[CPU_METER_KERNEL] = delta(libc::CPU_STATE_SYSTEM) * 100.0 / total;
+    } else {
+        mtr.values[CPU_METER_NICE] = 0.0;
+        mtr.values[CPU_METER_NORMAL] = 0.0;
+        mtr.values[CPU_METER_KERNEL] = 0.0;
+    }
+
+    mtr.curItems = 3;
+
+    let total_pct =
+        mtr.values[CPU_METER_NICE] + mtr.values[CPU_METER_NORMAL] + mtr.values[CPU_METER_KERNEL];
+
+    mtr.values[CPU_METER_FREQUENCY] = f64::NAN;
+    mtr.values[CPU_METER_TEMPERATURE] = f64::NAN;
+
+    total_pct.clamp(0.0, 100.0)
 }
 
 /// TODO: port of `void Platform_setGPUValues(Meter* mtr, double* totalUsage,
@@ -251,16 +344,155 @@ pub fn Platform_setGPUValues() {
     todo!("port of Platform.c:363")
 }
 
-/// TODO: port of `void Platform_setMemoryValues(Meter* mtr)` from
-/// `Platform.c:409`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setMemoryValues() {
-    todo!("port of Platform.c:409")
+/// Port of `const MemoryClass Platform_memoryClasses[]`
+/// (`darwin/Platform.c:125`), in `MEMORY_CLASS_*` index order — the darwin
+/// 6-class breakdown the memory meter's display iterates.
+#[allow(non_upper_case_globals)] // faithful C global name
+/// Port of `const MeterClass* const Platform_meterTypes[]` from
+/// `darwin/Platform.c`. The C array is `NULL`-terminated and iterated as
+/// `for (const MeterClass* const* type = Platform_meterTypes; *type; type++)`;
+/// here it is a slice, so its length replaces the sentinel and the loop is a
+/// plain `.iter()`.
+///
+/// Only the meter classes whose `MeterClass` static is ported appear — the
+/// table grows as those statics land. Currently ported: `BlankMeter`.
+/// Pending, in the C order: `CPU`, `Clock`, `Date`, `DateTime`,
+/// `LoadAverage`, `Load`, `Memory`, `Swap`, `MemorySwap`, `Tasks`,
+/// `Battery`, `Hostname`, `SysArch`, `Uptime`, `SecondsUptime`,
+/// `AllCPUs{,2,4,8}`, `{Left,Right}CPUs{,2,4,8}`, `ZfsArc`,
+/// `ZfsCompressedArc`, `DiskIO{Rate,Time,}`, `NetworkIO`, `FileDescriptor`,
+/// `GPU`. Each is blocked only on defining its `MeterClass` static (the
+/// `updateValues`/`display` fns are ported for several already).
+///
+/// Ported entries are listed in their C-array positions relative to each
+/// other; `BlankMeter` is last in the C array too.
+pub static Platform_meterTypes: &[&'static MeterClass] = &[
+    &CPUMeter_class,
+    &ClockMeter_class,
+    &DateMeter_class,
+    &DateTimeMeter_class,
+    &LoadAverageMeter_class,
+    &LoadMeter_class,
+    &MemoryMeter_class,
+    &SwapMeter_class,
+    &TasksMeter_class,
+    &BatteryMeter_class,
+    &HostnameMeter_class,
+    &SysArchMeter_class,
+    &UptimeMeter_class,
+    &SecondsUptimeMeter_class,
+    &AllCPUsMeter_class,
+    &AllCPUs2Meter_class,
+    &AllCPUs4Meter_class,
+    &AllCPUs8Meter_class,
+    &LeftCPUsMeter_class,
+    &RightCPUsMeter_class,
+    &LeftCPUs2Meter_class,
+    &RightCPUs2Meter_class,
+    &LeftCPUs4Meter_class,
+    &RightCPUs4Meter_class,
+    &LeftCPUs8Meter_class,
+    &RightCPUs8Meter_class,
+    &BlankMeter_class,
+];
+
+pub static Platform_memoryClasses: [MemoryClass; 6] = [
+    MemoryClass { label: "wired", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_1 },
+    MemoryClass { label: "speculative", countsAsUsed: true, countsAsCache: true, color: ColorElements::MEMORY_2 },
+    MemoryClass { label: "active", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_3 },
+    MemoryClass { label: "purgeable", countsAsUsed: false, countsAsCache: true, color: ColorElements::MEMORY_4 },
+    MemoryClass { label: "compressed", countsAsUsed: true, countsAsCache: false, color: ColorElements::MEMORY_5 },
+    MemoryClass { label: "inactive", countsAsUsed: true, countsAsCache: true, color: ColorElements::MEMORY_6 },
+];
+
+/// Port of `const unsigned int Platform_numberOfMemoryClasses`
+/// (`darwin/Platform.c:132`) — `ARRAYSIZE(Platform_memoryClasses)`.
+#[allow(non_upper_case_globals)] // faithful C global name
+pub const Platform_numberOfMemoryClasses: usize = Platform_memoryClasses.len();
+
+// Darwin's `MEMORY_CLASS_*` enum (`darwin/Platform.c:116`) — indices into
+// `Meter::values`, in this exact order.
+const MEMORY_CLASS_WIRED: usize = 0;
+const MEMORY_CLASS_SPECULATIVE: usize = 1;
+const MEMORY_CLASS_ACTIVE: usize = 2;
+const MEMORY_CLASS_PURGEABLE: usize = 3;
+const MEMORY_CLASS_COMPRESSED: usize = 4;
+const MEMORY_CLASS_INACTIVE: usize = 5;
+
+/// Port of `void Platform_setMemoryValues(Meter* mtr)` from `Platform.c:409`
+/// (`HAVE_STRUCT_VM_STATISTICS64` branch). Fills the memory meter's class
+/// values in kB from the host's `vm_statistics64`: wired/active/inactive/
+/// speculative/purgeable/compressed page counts scaled by the page size,
+/// with `showCachedMemory` selecting the active/speculative split.
+/// `saturatingSub` guards the macOS underflow the C comments describe.
+///
+/// Bridge: the C reads the `DarwinMachine` from `mtr->host`; until
+/// `Meter::host` is flipped to `*const Machine`, the host is passed
+/// explicitly. The body (downcast + compute) is the final form.
+pub fn Platform_setMemoryValues(mtr: &mut Meter) {
+    let host = mtr.host;
+    let dhost = host as *const DarwinMachine;
+    let page_k = unsafe { libc::vm_page_size } as f64 / 1024.0;
+
+    let vm = unsafe { &(*dhost).vm_stats };
+    let external_page_count = vm.external_page_count;
+    let compressor_page_count = vm.compressor_page_count;
+
+    let show_cached = unsafe {
+        (*host)
+            .settings
+            .as_ref()
+            .map_or(false, |s| s.showCachedMemory)
+    };
+
+    mtr.total = (unsafe { (*dhost).host_info.max_mem } / 1024) as f64;
+    mtr.values[MEMORY_CLASS_WIRED] = page_k * vm.wire_count as f64;
+
+    if show_cached {
+        mtr.values[MEMORY_CLASS_SPECULATIVE] = page_k * vm.speculative_count as f64;
+        mtr.values[MEMORY_CLASS_ACTIVE] = page_k
+            * saturatingSub(
+                vm.active_count as u64,
+                vm.purgeable_count as u64 + external_page_count as u64,
+            ) as f64;
+        mtr.values[MEMORY_CLASS_PURGEABLE] = page_k * vm.purgeable_count as f64;
+    } else {
+        mtr.values[MEMORY_CLASS_SPECULATIVE] = 0.0;
+        mtr.values[MEMORY_CLASS_ACTIVE] = page_k
+            * saturatingSub(
+                vm.speculative_count as u64 + vm.active_count as u64,
+                external_page_count as u64,
+            ) as f64;
+        mtr.values[MEMORY_CLASS_PURGEABLE] = 0.0;
+    }
+    mtr.values[MEMORY_CLASS_COMPRESSED] = page_k * compressor_page_count as f64;
+    // macOS counts inactive pages in the "used" memory.
+    mtr.values[MEMORY_CLASS_INACTIVE] = page_k * vm.inactive_count as f64;
 }
 
-/// TODO: port of `void Platform_setSwapValues(Meter* mtr)` from
-/// `Platform.c:455`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setSwapValues() {
-    todo!("port of Platform.c:455")
+/// Port of `void Platform_setSwapValues(Meter* mtr)` from `Platform.c:455`.
+/// Reads swap totals via `sysctl(CTL_VM, VM_SWAPUSAGE)` — no host access —
+/// and fills the swap meter's total and used values (kB).
+pub fn Platform_setSwapValues(mtr: &mut Meter) {
+    /// `SWAP_METER_USED = 0` (`SwapMeter.h`).
+    const SWAP_METER_USED: usize = 0;
+
+    let mut mib: [c_int; 2] = [libc::CTL_VM, libc::VM_SWAPUSAGE];
+    let mut swapused: libc::xsw_usage = unsafe { zeroed() };
+    let mut swlen = size_of::<libc::xsw_usage>();
+    unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            &mut swapused as *mut libc::xsw_usage as *mut c_void,
+            &mut swlen,
+            ptr::null_mut(),
+            0,
+        );
+    }
+
+    mtr.total = (swapused.xsu_total / 1024) as f64;
+    mtr.values[SWAP_METER_USED] = (swapused.xsu_used / 1024) as f64;
 }
 
 /// TODO: port of `void Platform_setZfsArcValues(Meter* this)` from
@@ -482,6 +714,24 @@ pub fn Platform_getBattery() {
     todo!("port of Platform.c:684")
 }
 
+/// Port of `static inline void Platform_gettime_realtime(struct timeval*
+/// tv, uint64_t* msec)` (darwin `Platform.h:106`), which forwards to
+/// `Generic_gettime_realtime` (`generic/gettime.c`). macOS provides
+/// `clock_gettime(CLOCK_REALTIME, ...)` (10.12+), so the `HAVE_CLOCK_GETTIME`
+/// branch is faithful: on success fill `tv` (µs-truncated) and `msec`;
+/// on failure zero both.
+pub fn Platform_gettime_realtime(tv: &mut libc::timeval, msec: &mut u64) {
+    let mut ts: libc::timespec = unsafe { zeroed() };
+    if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) } == 0 {
+        tv.tv_sec = ts.tv_sec;
+        tv.tv_usec = (ts.tv_nsec / 1000) as libc::suseconds_t;
+        *msec = (ts.tv_sec as u64 * 1000) + (ts.tv_nsec as u64 / 1_000_000);
+    } else {
+        *tv = unsafe { zeroed() };
+        *msec = 0;
+    }
+}
+
 /// Port of `void Platform_gettime_monotonic(uint64_t* msec)`
 /// (`Platform.c:739`, `HAVE_HOST_GET_CLOCK_SERVICE` mach-clock branch).
 // `libc::mach_host_self`/`mach_task_self` are deprecated in `libc` in favor
@@ -515,4 +765,94 @@ pub fn Platform_getOSRelease() {
 /// (`generic/uname.c`, unported) + `Platform_getOSRelease`.
 pub fn Platform_getRelease() {
     todo!("port of Platform.c:827")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setSwapValues_reads_system_swap() {
+        let mut m = Meter::empty();
+        m.values = vec![0.0; 3];
+
+        Platform_setSwapValues(&mut m);
+
+        // Swap totals are non-negative and used never exceeds total.
+        assert!(m.total >= 0.0);
+        assert!(m.values[0] >= 0.0);
+        assert!(m.values[0] <= m.total);
+    }
+
+    #[test]
+    fn setMemoryValues_reads_vm_stats_from_host() {
+        use crate::ported::darwin::darwinmachine::{DarwinMachine_freeCPULoadInfo, Machine_new};
+        use crate::ported::machine::{ScreenSettings, Settings};
+
+        // A real host (fills vm_stats + host_info via mach), with settings.
+        let mut dm = Machine_new(None, 0);
+        dm.super_.settings = Some(Settings {
+            showCachedMemory: true,
+            screens: vec![ScreenSettings::default()],
+            ..Default::default()
+        });
+
+        let mut m = Meter::empty();
+        m.values = vec![0.0; 6];
+        m.host = &dm.super_ as *const Machine;
+
+        Platform_setMemoryValues(&mut m);
+
+        // Total is physical memory in kB; wired pages always exist.
+        assert!(m.total > 0.0);
+        assert!(m.values[MEMORY_CLASS_WIRED] > 0.0);
+        assert!(m.values.iter().all(|&v| v >= 0.0));
+
+        DarwinMachine_freeCPULoadInfo(&mut dm.prev_load);
+        DarwinMachine_freeCPULoadInfo(&mut dm.curr_load);
+    }
+
+    #[test]
+    fn setCPUValues_computes_percentages_from_load_deltas() {
+        use crate::ported::darwin::darwinmachine::{DarwinMachine_freeCPULoadInfo, Machine_new};
+
+        let mut dm = Machine_new(None, 0);
+
+        let mut m = Meter::empty();
+        m.values = vec![0.0; 10]; // through CPU_METER_TEMPERATURE (9)
+        m.host = &dm.super_ as *const Machine;
+
+        // cpu == 0 → the average across all CPUs.
+        let avg = Platform_setCPUValues(&mut m, 0);
+        assert!((0.0..=100.0).contains(&avg));
+        assert!(m.values[CPU_METER_NICE].is_finite());
+        assert!(m.values[CPU_METER_NORMAL].is_finite());
+        assert!(m.values[CPU_METER_KERNEL].is_finite());
+        assert!(m.values[CPU_METER_FREQUENCY].is_nan());
+
+        // A specific CPU also yields a valid clamped percentage.
+        let one = Platform_setCPUValues(&mut m, 1);
+        assert!((0.0..=100.0).contains(&one));
+        assert_eq!(m.curItems, 3);
+
+        DarwinMachine_freeCPULoadInfo(&mut dm.prev_load);
+        DarwinMachine_freeCPULoadInfo(&mut dm.curr_load);
+    }
+
+    #[test]
+    fn gettime_realtime_fills_tv_and_msec_consistently() {
+        let mut tv: libc::timeval = unsafe { zeroed() };
+        let mut msec: u64 = 0;
+
+        Platform_gettime_realtime(&mut tv, &mut msec);
+
+        // The realtime clock is well past the epoch, so both are populated.
+        assert!(msec > 0);
+        assert!(tv.tv_sec > 0);
+        // µs field is a truncated sub-second remainder.
+        assert!(tv.tv_usec >= 0 && (tv.tv_usec as i64) < 1_000_000);
+        // msec and tv agree to whole-second granularity (C derives both from
+        // the same timespec): floor(msec/1000) == tv_sec.
+        assert_eq!((msec / 1000) as i64, tv.tv_sec as i64);
+    }
 }

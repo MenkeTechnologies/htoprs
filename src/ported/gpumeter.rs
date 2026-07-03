@@ -319,7 +319,7 @@ mod tests {
         // test only reads the statics (GPUMeter_updateValues, the only
         // writer, is stubbed and never runs), so it is order-independent.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             values: vec![0.0; 5],
             ..Meter::empty()
         };
@@ -346,11 +346,9 @@ mod tests {
     fn update_values_computes_usage_percentage() {
         use crate::ported::linux::linuxmachine::LinuxMachine;
         use crate::ported::machine::Machine;
-        use std::cell::RefCell;
-        use std::rc::Rc;
         // total_gpu_time_diff = curGpuTime - prevGpuTime = 1e9; monotonic
         // delta = 2000ms → usage = 100 * 1e9 / 1e6 / 2000 = 50.0%.
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 monotonicMs: 2000,
                 ..Default::default()
@@ -362,7 +360,7 @@ mod tests {
         }));
         let mut m = Meter {
             values: vec![0.0; 5],
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         };
         GPUMeter_updateValues(&mut m);

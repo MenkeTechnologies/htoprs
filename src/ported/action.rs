@@ -15,16 +15,30 @@
 //! # Ported (self-contained in safe Rust)
 //!
 //! - The `Htop_Reaction` bit-flag set from `Action.h:21` (pure data).
-//! - `State`'s three `bool` fields (`Action.h:41`), which two toggle
-//!   handlers flip. `State` is modeled as a minimal plain struct holding
-//!   only those fields; the omitted members are the substrate pointers
-//!   `host` (`Machine*`), `mainPanel` (`MainPanel*`), `header`
-//!   (`Header*`) and `failedUpdate` (`const char*`), none of which the
-//!   ported handlers touch.
+//! - `State`'s three `bool` fields plus the `host: *mut Machine`
+//!   back-pointer (`Action.h:35`). The still-omitted members are the
+//!   substrate pointers `mainPanel` (`MainPanel*`), `header` (`Header*`)
+//!   and `failedUpdate` (`const char*`), none of which the ported handlers
+//!   touch.
 //! - `actionQuit` (`Action.c:454`) — `State*` is `ATTR_UNUSED`; the full
 //!   behavior is returning the `HTOP_QUIT` constant.
 //! - `actionToggleHideMeters` (`Action.c:300`) / `actionTogglePauseUpdate`
 //!   (`Action.c:703`) — flip one `State` bool and return a reaction.
+//! - **Sort handlers:** `Action_setSortKey` (`Action.c:174`, calls
+//!   `ScreenSettings_setSortKey`), and `actionSortByPID`/`actionSortByMemory`/
+//!   `actionSortByCPU`/`actionSortByTime` (`Action.c:227-239`) which reach
+//!   `st->host->settings`.
+//! - **Display toggles reaching `st->host->settings`:**
+//!   `actionToggleKernelThreads`/`actionToggleUserlandThreads`
+//!   (`Action.c:243/253` — the `Machine_scanTables(st->host)` re-scan maps to
+//!   the still-stubbed `Machine_scanTables`, a faithful stub-chain call),
+//!   `actionToggleRunningInContainer` (`Action.c:263`),
+//!   `actionToggleProgramPath` (`Action.c:271`), `actionToggleMergedCommand`
+//!   (`Action.c:279`), `actionToggleTreeView` (`Action.c:287`),
+//!   `actionExpandOrCollapseAllBranches` (`Action.c:305`), and
+//!   `actionInvertSortOrder` (`Action.c:349`) — the last three also drive the
+//!   active table (`Table_expandTree`/`Table_collapseAllBranches`, both ported).
+//! - `Action_writeableProcess`/`Action_readableProcess` (`Action.c:181/187`).
 //! - `expandCollapse` (`Action.c:148`) / `collapseIntoParent`
 //!   (`Action.c:157`) — the two `static` tree helpers that take a bare
 //!   `Panel*` (not `State`). They mutate the selected/parent [`Row`]'s
@@ -45,31 +59,21 @@
 //!
 //! - **ncurses / CRT drawing:** `actionHelp`, `addattrstr`, `actionRedraw`
 //!   (`clear()` is unported in `crt.rs`). No ported drawing primitives.
-//! - **`State` lacks `host`/`mainPanel`, and their `Settings`/`Machine`/
-//!   `Table` fields are unmodeled:** the sort handlers, screen-tab
-//!   switching (`setActiveScreen`/`actionNextScreen`/`actionPrevScreen`/
-//!   `Action_setScreenTab`), the display toggles (`actionToggle*`),
-//!   `actionInvertSortOrder`, `Action_writeableProcess`/`_readableProcess`,
-//!   and `Action_follow`. The fields they need (`dynamic`,
-//!   `hideKernelThreads`, `showProgramPath`, `lastUpdate`, `ssIndex`,
-//!   `nScreens`, `following`, `needsSort`, …) are not present in the
-//!   `Settings`/`Machine`/`ScreenSettings` already modeled by `settings.rs`
-//!   / `machine.rs`, and the reuse rule + edit-only-`action.rs` scope bar
-//!   adding them there.
-//! - **`Action_setSortKey` / `ScreenSettings_setSortKey`:** the latter is a
-//!   `todo!()` in `settings.rs` (needs the platform `Process_fields[]`
-//!   table), so `Action_setSortKey`, `actionSetSortColumn`, and the four
-//!   `actionSortBy*` handlers cannot call it.
+//! - **Screen-tab switching needs `st->mainPanel`:**
+//!   `setActiveScreen`/`actionNextScreen`/`actionPrevScreen`/
+//!   `Action_setScreenTab` call `MainPanel_setFunctionBar(st->mainPanel, …)`,
+//!   which the minimal `State` (no `mainPanel`) cannot reach; also blocked on
+//!   `Action_follow`.
 //! - **`Panel`/`ScreenManager`/`IncSet`/`MainPanel` glue:**
 //!   `Action_pickFromVector`, `Action_runSetup`/`actionSetup`,
 //!   `changePriority`/`actionHigherPriority`/`actionLowerPriority`,
 //!   `addUserToVector`/`actionFilterByUser`, `actionIncFilter`/
 //!   `actionIncSearch`, `actionTag`/`actionUntagAll`/`actionTagAllChildren`,
-//!   `actionExpandOrCollapse`/`actionCollapseIntoParent`/
-//!   `actionExpandCollapseOrSortColumn`/`actionExpandOrCollapseAllBranches`.
-//!   These reach `st->mainPanel`, which the minimal `State` does not model,
-//!   and several need mutable panel accessors the ported `Panel` API does
-//!   not expose.
+//!   `actionSetSortColumn` (needs `Action_pickFromVector` + a `Panel` of
+//!   `ListItem`s), `actionExpandOrCollapse`/`actionCollapseIntoParent`/
+//!   `actionExpandCollapseOrSortColumn`. These reach `st->mainPanel`, which
+//!   the minimal `State` does not model, and several need mutable panel
+//!   accessors the ported `Panel` API does not expose.
 //! - **`actionKill` (`Action.c:524`):** signal delivery is available via
 //!   the crate's `nix`/`libc` deps, but the handler reaches `st->mainPanel`
 //!   (`Panel_setHeader`/`Panel_draw`/`MainPanel_foreachRow`) which the
@@ -89,9 +93,16 @@
 #![allow(non_camel_case_types)] // `Htop_Reaction` mirrors the C type name verbatim
 #![allow(dead_code)]
 
+use crate::ported::machine::{Machine, Machine_scanTables};
 use crate::ported::object::Object;
 use crate::ported::panel::{Panel, Panel_setSelected, Panel_size};
+use crate::ported::process::ProcessField;
 use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf};
+use crate::ported::settings::{
+    RowField, ScreenSettings_invertSortOrder, ScreenSettings_setSortKey, Settings,
+    Settings_isReadonly,
+};
+use crate::ported::table::{Table_collapseAllBranches, Table_expandTree};
 
 /// Port of the `Htop_Reaction` enum from `Action.h:21`.
 ///
@@ -123,13 +134,22 @@ pub const HTOP_UPDATE_PANELHDR: Htop_Reaction = 0x40 | HTOP_REFRESH;
 /// — `Action.h:30`.
 pub const HTOP_RESIZE: Htop_Reaction = 0x80 | HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR;
 
-/// Minimal model of `State` from `Action.h:35`.
+/// Model of `State` from `Action.h:35`.
 ///
-/// Only the three `bool` fields are modeled, because the ported
-/// handlers touch nothing else. Omitted (substrate) members:
-/// `host: *mut Machine`, `mainPanel: *mut MainPanel`,
-/// `header: *mut Header`, `failedUpdate: *const c_char`.
+/// The three `bool` fields and the `host` back-pointer are modeled — the
+/// latter is the `Machine*` the sort/toggle handlers reach for
+/// `host->settings` / `host->activeTable`. Omitted (still-unreached)
+/// substrate members: `mainPanel: *mut MainPanel`, `header: *mut Header`,
+/// `failedUpdate: *const c_char`. The handlers that need `mainPanel`
+/// (`IncSet`, `changePriority`, `actionKill`, the child screens, …) stay
+/// stubbed.
 pub struct State {
+    /// C `Machine* host` — back-pointer to the owning machine. The
+    /// host-based handlers read/mutate `host->settings` and
+    /// `host->activeTable` through it; a valid non-null `host` is their
+    /// precondition (as in C, where `st->host->settings` is dereferenced
+    /// unconditionally).
+    pub host: *mut Machine,
     pub pauseUpdate: bool,
     pub hideSelection: bool,
     pub hideMeters: bool,
@@ -196,7 +216,7 @@ pub fn Action_setUserOnly(userName: &str, userId: &mut libc::uid_t) -> bool {
 pub fn tagAllChildren(panel: &mut Panel, parent_idx: i32) {
     // C `parent->tag = true; int parent_id = parent->id;`
     let parent_id = {
-        let obj: &mut dyn Object = panel.items[parent_idx as usize].as_mut();
+        let obj: &mut dyn Object = panel.items[parent_idx as usize].object_mut();
         let any: &mut dyn core::any::Any = obj;
         let parent = any
             .downcast_mut::<Row>()
@@ -210,7 +230,7 @@ pub fn tagAllChildren(panel: &mut Panel, parent_idx: i32) {
         // C `Row* row = Panel_get(panel, i);
         //    if (!row->tag && Row_isChildOf(row, parent_id))`
         let recurse = {
-            let obj: &dyn Object = panel.items[i as usize].as_ref();
+            let obj: &dyn Object = panel.items[i as usize].object();
             let any: &dyn core::any::Any = obj;
             let row = any
                 .downcast_ref::<Row>()
@@ -238,7 +258,7 @@ pub fn expandCollapse(panel: &mut Panel) -> bool {
     }
 
     let idx = panel.selected as usize;
-    let obj: &mut dyn Object = panel.items[idx].as_mut();
+    let obj: &mut dyn Object = panel.items[idx].object_mut();
     let any: &mut dyn core::any::Any = obj;
     let row = any
         .downcast_mut::<Row>()
@@ -262,7 +282,7 @@ pub fn collapseIntoParent(panel: &mut Panel) -> bool {
     }
 
     let parent_id = {
-        let obj: &dyn Object = panel.items[panel.selected as usize].as_ref();
+        let obj: &dyn Object = panel.items[panel.selected as usize].object();
         let any: &dyn core::any::Any = obj;
         let r = any
             .downcast_ref::<Row>()
@@ -273,14 +293,14 @@ pub fn collapseIntoParent(panel: &mut Panel) -> bool {
     let size = Panel_size(panel);
     for i in 0..size {
         let id = {
-            let obj: &dyn Object = panel.items[i as usize].as_ref();
+            let obj: &dyn Object = panel.items[i as usize].object();
             let any: &dyn core::any::Any = obj;
             any.downcast_ref::<Row>()
                 .expect("collapseIntoParent operates on the mainPanel, whose items are Rows")
                 .id
         };
         if id == parent_id {
-            let obj: &mut dyn Object = panel.items[i as usize].as_mut();
+            let obj: &mut dyn Object = panel.items[i as usize].object_mut();
             let any: &mut dyn core::any::Any = obj;
             any.downcast_mut::<Row>()
                 .expect("collapseIntoParent operates on the mainPanel, whose items are Rows")
@@ -292,19 +312,47 @@ pub fn collapseIntoParent(panel: &mut Panel) -> bool {
     false
 }
 
-/// TODO: port of `Htop_Reaction Action_setSortKey(Settings* settings, ProcessField sortKey` from `Action.c:174`.
-pub fn Action_setSortKey() {
-    todo!("port of Action.c:174")
+/// Port of `Htop_Reaction Action_setSortKey(Settings* settings,
+/// ProcessField sortKey)` from `Action.c:174`. Delegates to
+/// [`ScreenSettings_setSortKey`] on the active screen (`settings->ss`,
+/// modeled as `screens[ssIndex]`) and returns the sort-changed reaction.
+/// The C `(RowField) sortKey` cast is the identity here — the caller passes
+/// a [`RowField`] already.
+pub fn Action_setSortKey(settings: &mut Settings, sortKey: RowField) -> Htop_Reaction {
+    ScreenSettings_setSortKey(&mut settings.screens[settings.ssIndex as usize], sortKey);
+    HTOP_REFRESH | HTOP_SAVE_SETTINGS | HTOP_UPDATE_PANELHDR | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static bool Action_writeableProcess(State* st` from `Action.c:181`.
-pub fn Action_writeableProcess() {
-    todo!("port of Action.c:181")
+/// Port of `static bool Action_writeableProcess(State* st)` from
+/// `Action.c:181`. A process is writeable unless htop is read-only
+/// ([`Settings_isReadonly`]) or the active screen is a dynamic screen
+/// (`settings->ss->dynamic`, modeled as `Option<String>` — truthy when
+/// `Some`). Reads through `st->host->settings`; a valid non-null `host` is
+/// the precondition (as in C).
+pub fn Action_writeableProcess(st: &State) -> bool {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_ref()
+            .expect("Action_writeableProcess: host->settings is NULL")
+    };
+    let readonly =
+        Settings_isReadonly() || settings.screens[settings.ssIndex as usize].dynamic.is_some();
+    !readonly
 }
 
-/// TODO: port of `static bool Action_readableProcess(State* st` from `Action.c:187`.
-pub fn Action_readableProcess() {
-    todo!("port of Action.c:187")
+/// Port of `static bool Action_readableProcess(State* st)` from
+/// `Action.c:187`. A process is readable unless the active screen is a
+/// dynamic screen (`settings->ss->dynamic`). Reads through
+/// `st->host->settings` (valid non-null `host` is the precondition).
+pub fn Action_readableProcess(st: &State) -> bool {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_ref()
+            .expect("Action_readableProcess: host->settings is NULL")
+    };
+    settings.screens[settings.ssIndex as usize].dynamic.is_none()
 }
 
 /// TODO: port of `static Htop_Reaction actionSetSortColumn(State* st` from `Action.c:192`.
@@ -312,54 +360,178 @@ pub fn actionSetSortColumn() {
     todo!("port of Action.c:192")
 }
 
-/// TODO: port of `static Htop_Reaction actionSortByPID(State* st` from `Action.c:227`.
-pub fn actionSortByPID() {
-    todo!("port of Action.c:227")
+/// Port of `static Htop_Reaction actionSortByPID(State* st)` from
+/// `Action.c:227`: `Action_setSortKey(st->host->settings, PID)`.
+pub fn actionSortByPID(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionSortByPID: host->settings is NULL")
+    };
+    Action_setSortKey(settings, ProcessField::PID as RowField)
 }
 
-/// TODO: port of `static Htop_Reaction actionSortByMemory(State* st` from `Action.c:231`.
-pub fn actionSortByMemory() {
-    todo!("port of Action.c:231")
+/// Port of `static Htop_Reaction actionSortByMemory(State* st)` from
+/// `Action.c:231`: `Action_setSortKey(st->host->settings, PERCENT_MEM)`.
+pub fn actionSortByMemory(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionSortByMemory: host->settings is NULL")
+    };
+    Action_setSortKey(settings, ProcessField::PERCENT_MEM as RowField)
 }
 
-/// TODO: port of `static Htop_Reaction actionSortByCPU(State* st` from `Action.c:235`.
-pub fn actionSortByCPU() {
-    todo!("port of Action.c:235")
+/// Port of `static Htop_Reaction actionSortByCPU(State* st)` from
+/// `Action.c:235`: `Action_setSortKey(st->host->settings, PERCENT_CPU)`.
+pub fn actionSortByCPU(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionSortByCPU: host->settings is NULL")
+    };
+    Action_setSortKey(settings, ProcessField::PERCENT_CPU as RowField)
 }
 
-/// TODO: port of `static Htop_Reaction actionSortByTime(State* st` from `Action.c:239`.
-pub fn actionSortByTime() {
-    todo!("port of Action.c:239")
+/// Port of `static Htop_Reaction actionSortByTime(State* st)` from
+/// `Action.c:239`: `Action_setSortKey(st->host->settings, TIME)`.
+pub fn actionSortByTime(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionSortByTime: host->settings is NULL")
+    };
+    Action_setSortKey(settings, ProcessField::TIME as RowField)
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleKernelThreads(State* st` from `Action.c:243`.
-pub fn actionToggleKernelThreads() {
-    todo!("port of Action.c:243")
+/// Port of `static Htop_Reaction actionToggleKernelThreads(State* st)` from
+/// `Action.c:243`. Flips `settings->hideKernelThreads`, bumps
+/// `settings->lastUpdate`, then re-scans the tables so the display does not
+/// lag a tick behind the toggle.
+///
+/// The `Machine_scanTables(st->host)` call maps to the still-stubbed
+/// [`Machine_scanTables`] (the platform scan machinery); the wiring is
+/// faithful — the call panics through that `todo!()` until the scan layer
+/// lands, matching the `Process_compare`/`Process_compareByParent`
+/// stub-chain precedent.
+pub fn actionToggleKernelThreads(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionToggleKernelThreads: host->settings is NULL")
+    };
+    settings.hideKernelThreads = !settings.hideKernelThreads;
+    settings.lastUpdate += 1;
+
+    Machine_scanTables(); // C: Machine_scanTables(st->host)
+
+    HTOP_RECALCULATE | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleUserlandThreads(State* st` from `Action.c:253`.
-pub fn actionToggleUserlandThreads() {
-    todo!("port of Action.c:253")
+/// Port of `static Htop_Reaction actionToggleUserlandThreads(State* st)`
+/// from `Action.c:253`. Flips `settings->hideUserlandThreads`, bumps
+/// `settings->lastUpdate`, then re-scans the tables. The
+/// `Machine_scanTables(st->host)` call maps to the still-stubbed
+/// [`Machine_scanTables`] (see [`actionToggleKernelThreads`]).
+pub fn actionToggleUserlandThreads(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionToggleUserlandThreads: host->settings is NULL")
+    };
+    settings.hideUserlandThreads = !settings.hideUserlandThreads;
+    settings.lastUpdate += 1;
+
+    Machine_scanTables(); // C: Machine_scanTables(st->host)
+
+    HTOP_RECALCULATE | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleRunningInContainer(State* st` from `Action.c:263`.
-pub fn actionToggleRunningInContainer() {
-    todo!("port of Action.c:263")
+/// Port of `static Htop_Reaction actionToggleRunningInContainer(State* st)`
+/// from `Action.c:263`. Flips `settings->hideRunningInContainer` and bumps
+/// `settings->lastUpdate`.
+pub fn actionToggleRunningInContainer(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionToggleRunningInContainer: host->settings is NULL")
+    };
+    settings.hideRunningInContainer = !settings.hideRunningInContainer;
+    settings.lastUpdate += 1;
+
+    HTOP_RECALCULATE | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleProgramPath(State* st` from `Action.c:271`.
-pub fn actionToggleProgramPath() {
-    todo!("port of Action.c:271")
+/// Port of `static Htop_Reaction actionToggleProgramPath(State* st)` from
+/// `Action.c:271`. Flips `settings->showProgramPath` and bumps
+/// `settings->lastUpdate`.
+pub fn actionToggleProgramPath(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionToggleProgramPath: host->settings is NULL")
+    };
+    settings.showProgramPath = !settings.showProgramPath;
+    settings.lastUpdate += 1;
+
+    HTOP_REFRESH | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleMergedCommand(State* st` from `Action.c:279`.
-pub fn actionToggleMergedCommand() {
-    todo!("port of Action.c:279")
+/// Port of `static Htop_Reaction actionToggleMergedCommand(State* st)` from
+/// `Action.c:279`. Flips `settings->showMergedCommand` and bumps
+/// `settings->lastUpdate`.
+pub fn actionToggleMergedCommand(st: &State) -> Htop_Reaction {
+    let settings = unsafe {
+        (*st.host)
+            .settings
+            .as_mut()
+            .expect("actionToggleMergedCommand: host->settings is NULL")
+    };
+    settings.showMergedCommand = !settings.showMergedCommand;
+    settings.lastUpdate += 1;
+
+    HTOP_REFRESH | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING | HTOP_UPDATE_PANELHDR
 }
 
-/// TODO: port of `static Htop_Reaction actionToggleTreeView(State* st` from `Action.c:287`.
-pub fn actionToggleTreeView() {
-    todo!("port of Action.c:287")
+/// Port of `static Htop_Reaction actionToggleTreeView(State* st)` from
+/// `Action.c:287`. Flips the active screen's `treeView`; when the tree was
+/// not fully collapsed, expands it ([`Table_expandTree`]); marks the active
+/// table for re-sort. `settings->ss` is modeled as `screens[ssIndex]`, and
+/// `host->activeTable` is the `*mut Table` back-pointer (its non-null
+/// validity is the precondition, as in C).
+pub fn actionToggleTreeView(st: &State) -> Htop_Reaction {
+    let host = st.host;
+    unsafe {
+        let ssidx = (*host)
+            .settings
+            .as_ref()
+            .expect("actionToggleTreeView: host->settings is NULL")
+            .ssIndex as usize;
+        {
+            let ss = &mut (*host).settings.as_mut().unwrap().screens[ssidx];
+            ss.treeView = !ss.treeView;
+        }
+        let all_collapsed =
+            (*host).settings.as_ref().unwrap().screens[ssidx].allBranchesCollapsed;
+
+        let at = (*host)
+            .activeTable
+            .expect("actionToggleTreeView: host->activeTable is NULL");
+        if !all_collapsed {
+            Table_expandTree(&mut *at);
+        }
+        (*at).needsSort = true;
+    }
+
+    HTOP_REFRESH | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
 /// Port of `static Htop_Reaction actionToggleHideMeters(State* st)` from
@@ -372,9 +544,38 @@ pub fn actionToggleHideMeters(st: &mut State) -> Htop_Reaction {
     HTOP_RESIZE | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static Htop_Reaction actionExpandOrCollapseAllBranches(State* st` from `Action.c:305`.
-pub fn actionExpandOrCollapseAllBranches() {
-    todo!("port of Action.c:305")
+/// Port of `static Htop_Reaction actionExpandOrCollapseAllBranches(State*
+/// st)` from `Action.c:305`. A no-op outside tree view; otherwise flips the
+/// active screen's `allBranchesCollapsed` and either collapses
+/// ([`Table_collapseAllBranches`]) or expands ([`Table_expandTree`]) the
+/// active table accordingly. `settings->ss` is `screens[ssIndex]`;
+/// `host->activeTable` is the `*mut Table` back-pointer.
+pub fn actionExpandOrCollapseAllBranches(st: &State) -> Htop_Reaction {
+    let host = st.host;
+    unsafe {
+        let ssidx = (*host)
+            .settings
+            .as_ref()
+            .expect("actionExpandOrCollapseAllBranches: host->settings is NULL")
+            .ssIndex as usize;
+        if !(*host).settings.as_ref().unwrap().screens[ssidx].treeView {
+            return HTOP_OK;
+        }
+        let collapsed = {
+            let ss = &mut (*host).settings.as_mut().unwrap().screens[ssidx];
+            ss.allBranchesCollapsed = !ss.allBranchesCollapsed;
+            ss.allBranchesCollapsed
+        };
+        let at = (*host)
+            .activeTable
+            .expect("actionExpandOrCollapseAllBranches: host->activeTable is NULL");
+        if collapsed {
+            Table_collapseAllBranches(&mut *at);
+        } else {
+            Table_expandTree(&mut *at);
+        }
+    }
+    HTOP_REFRESH | HTOP_SAVE_SETTINGS
 }
 
 /// TODO: port of `static Htop_Reaction actionIncFilter(State* st` from `Action.c:319`.
@@ -397,9 +598,26 @@ pub fn actionLowerPriority() {
     todo!("port of Action.c:341")
 }
 
-/// TODO: port of `static Htop_Reaction actionInvertSortOrder(State* st` from `Action.c:349`.
-pub fn actionInvertSortOrder() {
-    todo!("port of Action.c:349")
+/// Port of `static Htop_Reaction actionInvertSortOrder(State* st)` from
+/// `Action.c:349`. Inverts the active screen's sort direction
+/// ([`ScreenSettings_invertSortOrder`]) and marks the active table for
+/// re-sort. `settings->ss` is `screens[ssIndex]`; `host->activeTable` is
+/// the `*mut Table` back-pointer.
+pub fn actionInvertSortOrder(st: &State) -> Htop_Reaction {
+    let host = st.host;
+    unsafe {
+        let ssidx = (*host)
+            .settings
+            .as_ref()
+            .expect("actionInvertSortOrder: host->settings is NULL")
+            .ssIndex as usize;
+        ScreenSettings_invertSortOrder(&mut (*host).settings.as_mut().unwrap().screens[ssidx]);
+        let at = (*host)
+            .activeTable
+            .expect("actionInvertSortOrder: host->activeTable is NULL");
+        (*at).needsSort = true;
+    }
+    HTOP_REFRESH | HTOP_SAVE_SETTINGS | HTOP_KEEP_FOLLOWING | HTOP_UPDATE_PANELHDR
 }
 
 /// TODO: port of `static Htop_Reaction actionExpandOrCollapse(State* st` from `Action.c:356`.
@@ -660,6 +878,7 @@ mod tests {
     #[test]
     fn action_quit_returns_htop_quit() {
         let st = State {
+            host: core::ptr::null_mut(),
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,
@@ -673,6 +892,7 @@ mod tests {
     #[test]
     fn action_toggle_hide_meters_flips_and_returns_resize() {
         let mut st = State {
+            host: core::ptr::null_mut(),
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,
@@ -695,6 +915,7 @@ mod tests {
     #[test]
     fn action_toggle_pause_update_flips_and_returns_refresh() {
         let mut st = State {
+            host: core::ptr::null_mut(),
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,

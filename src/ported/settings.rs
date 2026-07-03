@@ -109,6 +109,37 @@ pub fn HeaderLayout_getColumns(hLayout: HeaderLayout) -> usize {
     }
 }
 
+/// Port of the anonymous `HeaderLayout_layouts[]` row struct
+/// (`HeaderLayout.h:36`): a layout's column count, per-column percentage
+/// widths, config-file name, and setup-menu description.
+pub struct HeaderLayoutDef {
+    pub columns: u8,
+    pub widths: [u8; 4],
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+/// Port of `static const ... HeaderLayout_layouts[LAST_HEADER_LAYOUT]`
+/// (`HeaderLayout.h:41`) — the layout table, in [`HeaderLayout`] enum order.
+/// `Header_draw` reads `.widths`, the config reader/writer `.name`, and the
+/// Setup "Header Layout" panel `.description`.
+#[allow(non_upper_case_globals)] // faithful C global name
+pub static HeaderLayout_layouts: [HeaderLayoutDef; HeaderLayout::LAST_HEADER_LAYOUT as usize] = [
+    HeaderLayoutDef { columns: 1, widths: [100, 0, 0, 0], name: "one_100", description: "1 column  - full width" },
+    HeaderLayoutDef { columns: 2, widths: [50, 50, 0, 0], name: "two_50_50", description: "2 columns - 50/50 (default)" },
+    HeaderLayoutDef { columns: 2, widths: [33, 67, 0, 0], name: "two_33_67", description: "2 columns - 33/67" },
+    HeaderLayoutDef { columns: 2, widths: [67, 33, 0, 0], name: "two_67_33", description: "2 columns - 67/33" },
+    HeaderLayoutDef { columns: 3, widths: [33, 34, 33, 0], name: "three_33_34_33", description: "3 columns - 33/34/33" },
+    HeaderLayoutDef { columns: 3, widths: [25, 25, 50, 0], name: "three_25_25_50", description: "3 columns - 25/25/50" },
+    HeaderLayoutDef { columns: 3, widths: [25, 50, 25, 0], name: "three_25_50_25", description: "3 columns - 25/50/25" },
+    HeaderLayoutDef { columns: 3, widths: [50, 25, 25, 0], name: "three_50_25_25", description: "3 columns - 50/25/25" },
+    HeaderLayoutDef { columns: 3, widths: [40, 30, 30, 0], name: "three_40_30_30", description: "3 columns - 40/30/30" },
+    HeaderLayoutDef { columns: 3, widths: [30, 40, 30, 0], name: "three_30_40_30", description: "3 columns - 30/40/30" },
+    HeaderLayoutDef { columns: 3, widths: [30, 30, 40, 0], name: "three_30_30_40", description: "3 columns - 30/30/40" },
+    HeaderLayoutDef { columns: 3, widths: [40, 20, 40, 0], name: "three_40_20_40", description: "3 columns - 40/20/40" },
+    HeaderLayoutDef { columns: 4, widths: [25, 25, 25, 25], name: "four_25_25_25_25", description: "4 columns - 25/25/25/25" },
+];
+
 /// A subset of htop's `MeterColumnSetting` (`Settings.h:36`). The C
 /// `char** names` is a NUL-terminated array; here it is an owned
 /// `Vec<String>` wrapped in `Option` to distinguish "never set" (C
@@ -565,11 +596,57 @@ pub fn Settings_read() {
     todo!("port of Settings.c:320")
 }
 
-/// TODO: port of `static void writeFields(OutputFunc of, FILE* fp,` from `Settings.c:575`.
-/// Needs `toFieldName` (`Process_fields[]` / `DynamicColumn`) for its
-/// by-name branches — left stubbed.
-pub fn writeFields() {
-    todo!("port of Settings.c:575")
+/// Port of `static void writeFields(OutputFunc of, FILE* fp, const
+/// ProcessField* fields, Hashtable* columns, bool byName, char separator)`
+/// from `Settings.c:575`. Writes the screen's field list: reserved fields
+/// (`field < LAST_PROCESSFIELD`) are written by their [`toFieldName`] name
+/// when `byName`, dynamic fields (`>= LAST_PROCESSFIELD`) as
+/// `Dynamic(<name>)` when their column is enabled, and otherwise the
+/// numeric `field - 1` (the older zero-based enum form). The C
+/// `OutputFunc of` / `FILE* fp` sink is modeled as a `&mut String` buffer,
+/// matching the sibling [`writeList`] / [`writeMeters`] ports.
+///
+/// The C `for (i = 0; fields[i]; i++)` stops at the array's trailing `0`
+/// terminator; the owned `Vec<RowField>` holds exactly the resolved field
+/// ids with no terminator (see [`ScreenSettings_readFields`], which never
+/// pushes `0`), so iterating the whole slice is the faithful analog. The
+/// `< / >=` comparisons are signed (`i32`), matching the C `ProcessField`
+/// (`int`) comparison. A `None` name from `toFieldName` in the reserved
+/// branch (unreachable for a valid reserved id) writes nothing, mirroring
+/// C passing a would-be non-`NULL` `%s`.
+pub fn writeFields(
+    out: &mut String,
+    fields: &[RowField],
+    columns: &Hashtable,
+    byName: bool,
+    separator: char,
+) {
+    let mut sep = "";
+    for &field in fields {
+        if field < LAST_PROCESSFIELD as i32 && byName {
+            let pName = toFieldName(columns, field, None);
+            // C: of(fp, "%s%s", sep, pName)
+            out.push_str(sep);
+            out.push_str(pName.unwrap_or(""));
+        } else if field >= LAST_PROCESSFIELD as i32 && byName {
+            let mut enabled = false;
+            let pName = toFieldName(columns, field, Some(&mut enabled));
+            if enabled {
+                // C: of(fp, "%sDynamic(%s)", sep, pName)
+                out.push_str(sep);
+                out.push_str("Dynamic(");
+                out.push_str(pName.unwrap_or(""));
+                out.push(')');
+            }
+        } else {
+            // This "-1" is for compatibility with the older enum format.
+            // C: of(fp, "%s%d", sep, (int) fields[i] - 1)
+            out.push_str(sep);
+            out.push_str(&(field - 1).to_string());
+        }
+        sep = " ";
+    }
+    out.push(separator);
 }
 
 /// Port of `Settings.c:603`. Appends `list[0..len]` to `out`,
@@ -790,6 +867,33 @@ pub fn Settings_setHeaderLayout(this: &mut Settings, hLayout: HeaderLayout) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_layouts_table_is_consistent() {
+        use HeaderLayout::*;
+        // One row per real layout (excludes HF_INVALID / LAST).
+        assert_eq!(HeaderLayout_layouts.len(), LAST_HEADER_LAYOUT as usize);
+
+        let all = [
+            HF_ONE_100, HF_TWO_50_50, HF_TWO_33_67, HF_TWO_67_33, HF_THREE_33_34_33,
+            HF_THREE_25_25_50, HF_THREE_25_50_25, HF_THREE_50_25_25, HF_THREE_40_30_30,
+            HF_THREE_30_40_30, HF_THREE_30_30_40, HF_THREE_40_20_40, HF_FOUR_25_25_25_25,
+        ];
+        for layout in all {
+            let def = &HeaderLayout_layouts[layout as usize];
+            // `columns` agrees with the independent `HeaderLayout_getColumns`.
+            assert_eq!(def.columns as usize, HeaderLayout_getColumns(layout), "{layout:?}");
+            // The used columns' percentages sum to 100.
+            let sum: u32 = def.widths[..def.columns as usize].iter().map(|&w| w as u32).sum();
+            assert_eq!(sum, 100, "{layout:?} widths sum");
+            // Unused trailing widths are zero.
+            assert!(def.widths[def.columns as usize..].iter().all(|&w| w == 0));
+            assert!(!def.name.is_empty() && !def.description.is_empty());
+        }
+        // Spot-check a couple of specific rows.
+        assert_eq!(HeaderLayout_layouts[HF_TWO_67_33 as usize].widths, [67, 33, 0, 0]);
+        assert_eq!(HeaderLayout_layouts[HF_ONE_100 as usize].name, "one_100");
+    }
 
     /// A default 2-column (`HF_TWO_50_50`) `Settings` with empty meter
     /// columns, matching what `Settings_new` sets up before reading a
@@ -1268,5 +1372,48 @@ mod tests {
         ScreenSettings_readFields(&mut ss, &ht, "RCHAR");
         assert_eq!(ss.fields, vec![ProcessField::RCHAR as RowField]);
         assert_eq!(ss.flags, PROCESS_FLAG_IO);
+    }
+
+    /// [`writeFields`]: reserved fields are written by their [`toFieldName`]
+    /// names when `byName`, and as the older zero-based `field - 1` numeric
+    /// form otherwise; the field list is space-joined and terminated by the
+    /// separator. Round-trips with [`ScreenSettings_readFields`] on the
+    /// by-name form.
+    #[test]
+    fn write_fields_by_name_and_numeric_form() {
+        use crate::ported::hashtable::Hashtable_new;
+        use crate::ported::process::ProcessField;
+
+        let ht = Hashtable_new(0, false);
+        let fields = vec![
+            ProcessField::PID as RowField,
+            ProcessField::COMM as RowField,
+        ];
+
+        // byName: reserved field names, space-joined, then the separator.
+        let mut out = String::new();
+        writeFields(&mut out, &fields, &ht, true, '\n');
+        assert_eq!(out, "PID Command\n");
+        // The written by-name form parses back to the same field ids.
+        let mut ss = ScreenSettings::default();
+        ScreenSettings_readFields(&mut ss, &ht, out.trim_end());
+        assert_eq!(ss.fields, fields);
+
+        // !byName: the older zero-based enum form (field - 1).
+        let mut out = String::new();
+        writeFields(&mut out, &fields, &ht, false, '\n');
+        assert_eq!(
+            out,
+            format!(
+                "{} {}\n",
+                ProcessField::PID as i32 - 1,
+                ProcessField::COMM as i32 - 1
+            )
+        );
+
+        // Empty field list writes just the separator.
+        let mut out = String::new();
+        writeFields(&mut out, &[], &ht, true, ';');
+        assert_eq!(out, ";");
     }
 }

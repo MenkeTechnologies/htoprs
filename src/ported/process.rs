@@ -527,6 +527,16 @@ impl Object for Process {
         Some(self)
     }
 
+    /// Mutable view of the embedded `Row` base.
+    fn as_row_mut(&mut self) -> Option<&mut Row> {
+        Some(&mut self.super_)
+    }
+
+    /// Mutable view of self as a `Process`.
+    fn as_process_mut(&mut self) -> Option<&mut Process> {
+        Some(self)
+    }
+
     /// C `As_Process(this)` — `Process`'s [`ProcessClass`] vtable.
     fn process_class(&self) -> Option<&'static ProcessClass> {
         Some(&Process_class)
@@ -699,15 +709,45 @@ pub fn matchCmdlinePrefixWithExeSuffix(
     }
 }
 
-/// TODO: port of `void Process_fillStarttimeBuffer(Process* this)` from
-/// `Process.c:43`. Blocked on the `Machine` host deref: `now` comes from
-/// `this->super.host->realtime.tv_sec`, but
-/// [`Row::host`](crate::ported::row::Row::host) is an opaque
-/// `*const c_void` (no `Machine.realtime` reachable). The body also needs
-/// `localtime_r`/`strftime` to format into `starttime_show` — pure once
-/// `now` is available, but unreachable until the host is dereferenceable.
-pub fn Process_fillStarttimeBuffer() {
-    todo!("port of Process.c:43 — needs host->realtime.tv_sec (Row::host is an opaque pointer) + strftime")
+/// Port of `void Process_fillStarttimeBuffer(Process* this)` from
+/// `Process.c:43`. Formats `starttime_ctime` into the cached
+/// `starttime_show` via `localtime_r` + `strftime`, choosing the format by
+/// age relative to `now`: `%R` (HH:MM) within a day, `%b%d` within a year,
+/// else `%Y`.
+///
+/// C reads `now` from `this->super.host->realtime.tv_sec`. The ported
+/// [`Machine`] tracks `realtimeMs` from the same clock, and
+/// `tv_sec == realtimeMs / 1000` exactly, so `now` is derived from it —
+/// avoiding a redundant `timeval` field. `Row::host` (a `*const c_void`) is
+/// cast back to the `*const Machine` it points at in the live graph.
+pub fn Process_fillStarttimeBuffer(this: &mut Process) {
+    // now = this->super.host->realtime.tv_sec
+    let host = this.super_.host as *const Machine;
+    let now = unsafe { ((*host).realtimeMs / 1000) as i64 };
+
+    let ctime = this.starttime_ctime as libc::time_t;
+    let mut date: libc::tm = unsafe { core::mem::zeroed() };
+    unsafe {
+        libc::localtime_r(&ctime, &mut date);
+    }
+
+    // NUL-terminated strftime format strings (same thresholds as the C).
+    let fmt: &[u8] = if this.starttime_ctime > now - 86400 {
+        b"%R \0"
+    } else if this.starttime_ctime > now - 364 * 86400 {
+        b"%b%d \0"
+    } else {
+        b" %Y \0"
+    };
+
+    unsafe {
+        libc::strftime(
+            this.starttime_show.as_mut_ptr() as *mut libc::c_char,
+            this.starttime_show.len() - 1, // C: sizeof(starttime_show) - 1
+            fmt.as_ptr() as *const libc::c_char,
+            &date,
+        );
+    }
 }
 
 /// Port of `static inline char* stpcpyWithNewlineConversion(char* dstStr,
@@ -1711,21 +1751,31 @@ pub fn Process_rowIsVisible(super_: &dyn Object, table: &Table) -> bool {
 }
 
 /// TODO: port of `static bool Process_matchesFilter(const Process* this,
-/// const Table* table)` from `Process.c:878`. Blocked on the unported
-/// `Table`/`Machine`/`ProcessTable`/`Hashtable` substrate: it reads
-/// `table->host->userId`, `table->incFilter`, and the active
-/// `ProcessTable`'s `pidMatchList` (`Hashtable_get`), and calls
-/// `String_contains_i(Process_getCommand(this), ...)` — none modeled.
+/// const Table* table)` from `Process.c:878`. The first two of its three
+/// filter branches are now expressible — `table->host->userId` /
+/// `this->st_uid` and `table->incFilter` +
+/// `String_contains_i(Process_getCommand(this), …)` all have modeled
+/// substrate — but the third is not: it does
+/// `Hashtable_get(pt->pidMatchList, Process_getThreadGroup(this))` on the
+/// active `ProcessTable`'s `pidMatchList`, which this port models as an
+/// *opaque* `Option<usize>` handle (`processtable.rs`), not a real
+/// [`Hashtable`](crate::ported::hashtable::Hashtable). Making it a real
+/// `Hashtable` would change [`ProcessTable::pidMatchList`]'s type, and its
+/// `ProcessTable_init` signature is threaded through the platform
+/// `ProcessTable_new` constructors in `darwin/`/`linux/` — files outside
+/// this port's edit scope. Porting only the first two branches would
+/// silently drop the pid-filter, a behavior change, so the whole body
+/// stays a faithful stub until `pidMatchList` becomes a real `Hashtable`.
 pub fn Process_matchesFilter() {
-    todo!("port of Process.c:878 — needs Table/Machine/ProcessTable/Hashtable substrate")
+    todo!("port of Process.c:878 — pidMatchList is an opaque Option<usize>, not a real Hashtable")
 }
 
 /// TODO: port of `bool Process_rowMatchesFilter(const Row* super, const
-/// Table* table)` from `Process.c:895`. Blocked on the unported `Table`
-/// substrate: it downcasts then delegates to [`Process_matchesFilter`]
-/// (itself blocked). No `Table` type is modeled.
+/// Table* table)` from `Process.c:895`. Downcasts then delegates to
+/// [`Process_matchesFilter`], which is itself blocked on the opaque
+/// `pidMatchList` handle (see there), so this delegation stays stubbed too.
 pub fn Process_rowMatchesFilter() {
-    todo!("port of Process.c:895 — needs Table substrate")
+    todo!("port of Process.c:895 — delegates to still-stubbed Process_matchesFilter")
 }
 
 /// Port of `void Process_init(Process* this, const Machine* host)` from
@@ -2891,6 +2941,55 @@ mod tests {
         // Guard fires (downcast) before any setpriority syscall runs.
         let mut row = crate::ported::row::Row::default();
         let _ = Process_rowChangePriorityBy(&mut row as &mut dyn Object, Arg::I(1));
+    }
+
+    #[test]
+    fn fill_starttime_buffer_formats_recent_start_as_hh_mm() {
+        // `now` is derived from the host Machine's realtimeMs; a start one
+        // minute ago selects the "%R " (HH:MM) format.
+        let mut machine = Machine::default();
+        machine.realtimeMs = 1_700_000_000_000; // arbitrary epoch ms
+        let now_secs = (machine.realtimeMs / 1000) as i64;
+
+        let mut p = proc();
+        p.super_.host = &machine as *const Machine as *const c_void;
+        p.starttime_ctime = now_secs - 60;
+
+        Process_fillStarttimeBuffer(&mut p);
+
+        let end = p
+            .starttime_show
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(p.starttime_show.len());
+        let shown = std::str::from_utf8(&p.starttime_show[..end]).unwrap();
+        assert!(!shown.is_empty());
+        // "%R " is HH:MM followed by a space.
+        assert!(shown.contains(':'));
+    }
+
+    #[test]
+    fn fill_starttime_buffer_formats_old_start_as_year() {
+        let mut machine = Machine::default();
+        machine.realtimeMs = 1_700_000_000_000;
+        let now_secs = (machine.realtimeMs / 1000) as i64;
+
+        let mut p = proc();
+        p.super_.host = &machine as *const Machine as *const c_void;
+        // Two years ago -> " %Y " (the year).
+        p.starttime_ctime = now_secs - 2 * 365 * 86400;
+
+        Process_fillStarttimeBuffer(&mut p);
+
+        let end = p
+            .starttime_show
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(p.starttime_show.len());
+        let shown = std::str::from_utf8(&p.starttime_show[..end]).unwrap().trim();
+        // A 4-digit year.
+        assert_eq!(shown.len(), 4);
+        assert!(shown.chars().all(|c| c.is_ascii_digit()));
     }
 
     #[test]

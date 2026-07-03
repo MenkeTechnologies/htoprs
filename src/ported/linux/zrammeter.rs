@@ -109,9 +109,7 @@ mod tests {
     #[test]
     fn update_values_from_host_zram() {
         use crate::ported::linux::linuxmachine::{LinuxMachine, ZramStats};
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             zram: ZramStats {
                 totalZram: 1024,       // "1.00M"
                 usedZramComp: 1024 * 2, // "2.00M"
@@ -121,7 +119,7 @@ mod tests {
         }));
         let mut m = Meter {
             values: vec![0.0; 2],
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         };
         ZramMeter_updateValues(&mut m);
@@ -136,7 +134,7 @@ mod tests {
     #[test]
     fn display_writes_total_used_and_uncompressed() {
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             total: 1024.0,                      // KiB → "1.00M"
             values: vec![1024.0 * 2.0, 1024.0], // compressed "2.00M", +1M uncompressed
             ..Meter::empty()

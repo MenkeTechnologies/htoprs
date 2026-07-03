@@ -3,9 +3,14 @@
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
 //! `non_snake_case` is allowed for the whole module.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)] // faithful C global names (ClockMeter_class)
 #![allow(dead_code)]
 
-use crate::ported::meter::Meter;
+use crate::ported::crt::ColorElements;
+use crate::ported::meter::{
+    Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE,
+};
+use crate::ported::object::ObjectClass;
 
 /// Port of `static void DateTimeMeter_updateValues(Meter* this)` from
 /// `DateTimeMeter.c:32`. Formats the host's current sample time with
@@ -21,14 +26,8 @@ use crate::ported::meter::Meter;
 /// concrete `MeterClass`, since the ported `Meter` carries no concrete class
 /// pointer.
 pub fn DateTimeMeter_updateValues(this: &mut Meter) {
-    let secs = {
-        let host = this
-            .host
-            .as_ref()
-            .expect("DateTimeMeter_updateValues: this->host (C reads host->realtime)")
-            .borrow();
-        (host.super_.realtimeMs / 1000) as libc::time_t
-    };
+    // this->host->realtime.tv_sec; the ported Machine tracks realtimeMs.
+    let secs = unsafe { ((*this.host).realtimeMs / 1000) as libc::time_t };
 
     // localtime_r(&host->realtime.tv_sec, &result)
     let mut result: libc::tm = unsafe { std::mem::zeroed() };
@@ -55,18 +54,105 @@ pub fn DateTimeMeter_updateValues(this: &mut Meter) {
     this.txtBuffer = String::from_utf8_lossy(&buf[..n]).into_owned();
 }
 
+/// Port of `static const int ClockMeter_attributes[]` (`{ CLOCK }`),
+/// `DateMeter_attributes[]` (`{ DATE }`), and `DateTimeMeter_attributes[]`
+/// (`{ DATETIME }`) from `DateTimeMeter.c` — one color index each.
+static ClockMeter_attributes: [i32; 1] = [ColorElements::CLOCK as i32];
+static DateMeter_attributes: [i32; 1] = [ColorElements::DATE as i32];
+static DateTimeMeter_attributes: [i32; 1] = [ColorElements::DATETIME as i32];
+
+/// Port of `const MeterClass ClockMeter_class` from `DateTimeMeter.c`. All
+/// three date/time classes drive the one [`DateTimeMeter_updateValues`] (it
+/// selects the `strftime` format by the meter's `name`), leave `display`
+/// `NULL` (rendered from `txtBuffer`), and support TEXT/LED with
+/// `maxItems = 0`; only `attributes`/`name`/`uiName`/`caption` differ.
+pub static ClockMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: None,
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(DateTimeMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: (1 << TEXT_METERMODE) | (1 << LED_METERMODE),
+    total: 0.0,
+    attributes: &ClockMeter_attributes,
+    name: "Clock",
+    uiName: "Clock",
+    caption: "Time: ",
+    description: None,
+    maxItems: 0,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
+/// Port of `const MeterClass DateMeter_class` from `DateTimeMeter.c`.
+pub static DateMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: None,
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(DateTimeMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: (1 << TEXT_METERMODE) | (1 << LED_METERMODE),
+    total: 0.0,
+    attributes: &DateMeter_attributes,
+    name: "Date",
+    uiName: "Date",
+    caption: "Date: ",
+    description: None,
+    maxItems: 0,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
+/// Port of `const MeterClass DateTimeMeter_class` from `DateTimeMeter.c`.
+pub static DateTimeMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: None,
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(DateTimeMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: (1 << TEXT_METERMODE) | (1 << LED_METERMODE),
+    total: 0.0,
+    attributes: &DateTimeMeter_attributes,
+    name: "DateTime",
+    uiName: "Date and Time",
+    caption: "Date & Time: ",
+    description: None,
+    maxItems: 0,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ported::linux::linuxmachine::LinuxMachine;
     use crate::ported::machine::Machine;
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     /// A meter whose host reports a fixed sample time (ms) and whose class is
     /// selected by `uiName`.
     fn meter(ui_name: &'static str, realtime_ms: u64) -> Meter {
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 realtimeMs: realtime_ms,
                 ..Default::default()
@@ -75,7 +161,7 @@ mod tests {
         }));
         Meter {
             uiName: ui_name,
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         }
     }

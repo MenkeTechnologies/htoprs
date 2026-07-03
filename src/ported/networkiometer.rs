@@ -127,15 +127,7 @@ static NET_UPDATE_CACHE: Mutex<(u64, u64, u64, u64, u64)> = Mutex::new((0, 0, 0,
 /// writes rx/tx B/s into `values[0..2]`, and formats `txtBuffer` — a status
 /// word or `rx:<x>iB/s tx:<y>iB/s (<rxpps>/<txpps>pps)`.
 pub fn NetworkIOMeter_updateValues(this: &mut crate::ported::meter::Meter) {
-    let realtime_ms = {
-        let host = this
-            .host
-            .as_ref()
-            .expect("NetworkIOMeter_updateValues: this->host")
-            .clone();
-        let ms = host.borrow().super_.realtimeMs;
-        ms
-    };
+    let realtime_ms = unsafe { (*this.host).realtimeMs };
 
     let mut c = NET_UPDATE_CACHE.lock().unwrap();
     let passed_time_ms = realtime_ms.wrapping_sub(c.0);
@@ -361,11 +353,9 @@ mod tests {
         use crate::ported::linux::linuxmachine::LinuxMachine;
         use crate::ported::machine::Machine;
         use crate::ported::meter::Meter;
-        use std::cell::RefCell;
-        use std::rc::Rc;
         // First sample with a >500ms span. Linux CI: Platform_getNetworkIO
         // succeeds → "init"; no /proc/net/dev → "no data".
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 realtimeMs: 1000,
                 ..Default::default()
@@ -374,7 +364,7 @@ mod tests {
         }));
         let mut m = Meter {
             values: vec![0.0; 2],
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         };
         super::NetworkIOMeter_updateValues(&mut m);

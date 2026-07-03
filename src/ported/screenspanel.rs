@@ -47,6 +47,10 @@
 //!   `ListItem_init` constructor, carrying the owned [`ScreenSettings`]
 //!   (`this->ss`). Returns an owned value, mirroring the `ListItem_new`
 //!   owned-return idiom.
+//! - [`ScreensPanel_cleanup`] (`ScreensPanel.c:57`) — tears down the
+//!   process-wide renaming `FunctionBar` ([`Screens_renamingBar`], a
+//!   `Mutex<Option<FunctionBar>>` file-static), the same body the
+//!   `MetersPanel`/`ScreenTabsPanel` cleanups use.
 //! - [`ScreensPanel_cancelMoving`] (`ScreensPanel.c:64`) — clears every
 //!   row's `moving` flag and the panel's own `moving`, restores
 //!   `PANEL_SELECTION_FOCUS`. Same mutating downcast analog as
@@ -83,10 +87,6 @@
 //!
 //! - [`ScreenListItem_delete`] (`ScreensPanel.c:28`) — frees `ss` then
 //!   `ListItem_delete`; the owned model releases via `Drop`, no algorithm.
-//! - [`ScreensPanel_cleanup`] (`ScreensPanel.c:57`) — frees the process-
-//!   global renaming `FunctionBar`; a lazily-initialised global has no safe
-//!   reset and `FunctionBar` frees via `Drop` (same class as
-//!   `FunctionBar_delete`).
 //! - [`ScreensPanel_delete`] (`ScreensPanel.c:75`) — the destructor
 //!   (cancel any pending edit, null every `item->ss` so the settings array
 //!   keeps them, then `Panel_delete`); the bookkeeping only matters for the
@@ -110,7 +110,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use crate::ported::crt::{
     ColorElements, KEY_DC, KEY_DEL_MAC, KEY_DOWN, KEY_END, KEY_ENTER, KEY_HOME, KEY_MOUSE,
@@ -164,6 +164,15 @@ const ScreensRenamingFunctions: [&str; 10] = [
     "      ", "Cancel", "      ", "      ", "      ", "      ", "      ", "      ", "      ",
     "Done  ",
 ];
+
+/// Port of the file-static `static FunctionBar* Screens_renamingBar = NULL;`
+/// (`ScreensPanel.c:53`) — the process-wide renaming-mode bar, lazily built by
+/// [`ScreensPanel::screens_renamingBar`] and torn down by [`ScreensPanel_cleanup`].
+/// The C raw `FunctionBar*` (with `NULL` meaning "not yet built") is a
+/// `Mutex<Option<FunctionBar>>`: `None` is the `NULL` sentinel and a `Some`
+/// payload owns the bar (whose `Drop` is the analog of `FunctionBar_delete`) —
+/// the same idiom `MetersPanel`/`ScreenTabsPanel` use for their shared bars.
+static Screens_renamingBar: Mutex<Option<FunctionBar>> = Mutex::new(None);
 
 /// Port of the C `ScreenListItem` struct (`ScreensPanel.h:42`): a
 /// `ListItem` row (`super`) carrying a back-reference to its
@@ -248,12 +257,24 @@ pub fn ScreenListItem_new(value: &str, ssIndex: usize) -> ScreenListItem {
 }
 
 /// Port of `void ScreensPanel_cleanup(void)` from `ScreensPanel.c:57`.
-/// TODO: frees the process-global `Screens_renamingBar` and nulls it. A
-/// lazily-initialised `OnceLock` global has no safe reset, and the
-/// `FunctionBar` frees via `Drop` — so, like `FunctionBar_delete`, there
-/// is no algorithm to port. Left as a stub.
+///
+/// ```c
+/// if (Screens_renamingBar) {
+///    FunctionBar_delete(Screens_renamingBar);
+///    Screens_renamingBar = NULL;
+/// }
+/// ```
+///
+/// Tears down the process-wide renaming [`Screens_renamingBar`] if one was
+/// ever built: dropping the `Some` payload is the analog of `FunctionBar_delete`
+/// and leaving `None` is the `= NULL`. Idempotent (the C `NULL` guard) — the
+/// same body as `MetersPanel_cleanup` / `ScreenTabsPanel_cleanup`.
 pub fn ScreensPanel_cleanup() {
-    todo!("port of ScreensPanel.c:57 — Drop releases the global renaming FunctionBar")
+    let mut bar = Screens_renamingBar.lock().unwrap();
+    if bar.is_some() {
+        // Drop frees the bar (C `FunctionBar_delete`); `None` is the NULL.
+        *bar = None;
+    }
 }
 
 /// Port of `static void ScreensPanel_cancelMoving(ScreensPanel* this)`
@@ -272,7 +293,7 @@ pub fn ScreensPanel_cancelMoving(this: &mut ScreensPanel) {
     let super_ = &mut this.super_;
     let size = Panel_size(super_);
     for i in 0..size {
-        let obj: &mut dyn Object = super_.items[i as usize].as_mut();
+        let obj: &mut dyn Object = super_.items[i as usize].object_mut();
         let any: &mut dyn core::any::Any = obj;
         if let Some(item) = any.downcast_mut::<ScreenListItem>() {
             item.super_.moving = false;
@@ -417,7 +438,7 @@ impl ScreensPanel {
     /// uses, since ported `Panel_get`/`Panel_getSelected` hand back an
     /// immutable `&dyn Object`).
     fn set_item_value(&mut self, idx: usize, value: String) {
-        let obj: &mut dyn Object = self.super_.items[idx].as_mut();
+        let obj: &mut dyn Object = self.super_.items[idx].object_mut();
         let any: &mut dyn core::any::Any = obj;
         if let Some(item) = any.downcast_mut::<ScreenListItem>() {
             item.super_.value = value;
@@ -428,7 +449,7 @@ impl ScreensPanel {
     /// Gate-skipped associated fn — the shared read side of the
     /// `set_item_value` downcast, used by [`ScreensPanel_update`].
     fn item_value(&self, idx: usize) -> String {
-        let any: &dyn core::any::Any = self.super_.items[idx].as_ref();
+        let any: &dyn core::any::Any = self.super_.items[idx].object();
         any.downcast_ref::<ScreenListItem>()
             .expect("ScreensPanel row is not a ScreenListItem")
             .super_
@@ -440,7 +461,7 @@ impl ScreensPanel {
     /// skipped associated fn shared by the reorder in
     /// [`rebuildSettingsArray`] / [`ScreensPanel_update`].
     fn item_ssIndex(&self, idx: usize) -> usize {
-        let any: &dyn core::any::Any = self.super_.items[idx].as_ref();
+        let any: &dyn core::any::Any = self.super_.items[idx].object();
         any.downcast_ref::<ScreenListItem>()
             .expect("ScreensPanel row is not a ScreenListItem")
             .ssIndex
@@ -450,7 +471,7 @@ impl ScreensPanel {
     /// reorder each row maps to its new slot in [`Settings::screens`], so
     /// the reorder functions rewrite the index to keep the alias exact.
     fn set_item_ssIndex(&mut self, idx: usize, ssIndex: usize) {
-        let any: &mut dyn core::any::Any = self.super_.items[idx].as_mut();
+        let any: &mut dyn core::any::Any = self.super_.items[idx].object_mut();
         if let Some(item) = any.downcast_mut::<ScreenListItem>() {
             item.ssIndex = ssIndex;
         }
@@ -460,7 +481,7 @@ impl ScreensPanel {
     /// Gate-skipped associated fn used by the Enter arm of
     /// [`ScreensPanel_eventHandlerNormal`].
     fn set_item_moving(&mut self, idx: usize, moving: bool) {
-        let any: &mut dyn core::any::Any = self.super_.items[idx].as_mut();
+        let any: &mut dyn core::any::Any = self.super_.items[idx].object_mut();
         if let Some(item) = any.downcast_mut::<ScreenListItem>() {
             item.super_.moving = moving;
         }
@@ -478,7 +499,7 @@ impl ScreensPanel {
     /// C invariant keeps `prevSelected` valid during real operation.
     fn focus_ptr(&self, idx: i32) -> *const () {
         if idx >= 0 && (idx as usize) < self.super_.items.len() {
-            self.super_.items[idx as usize].as_ref() as *const dyn Object as *const ()
+            self.super_.items[idx as usize].object() as *const dyn Object as *const ()
         } else {
             core::ptr::null()
         }
@@ -486,15 +507,18 @@ impl ScreensPanel {
 
     /// The process-global `static FunctionBar* Screens_renamingBar`
     /// (`ScreensPanel.c:53`), lazily built once (C builds it on first
-    /// `ScreensPanel_new`). Gate-skipped associated fn holding a `OnceLock`
-    /// so [`startRenaming`] can clone it into `super->currentBar` without a
-    /// `settings`-owned constructor. `FunctionBar_new(.., None, None)`
-    /// reproduces the C `FunctionBar_new(ScreensRenamingFunctions, NULL,
-    /// NULL)` (static F-key/event tables).
+    /// `ScreensPanel_new`). Gate-skipped associated fn that builds the shared
+    /// [`Screens_renamingBar`] on first use and hands [`startRenaming`] a clone
+    /// to store in `super->currentBar` (the `Panel_setDefaultBar` clone idiom).
+    /// `FunctionBar_new(.., None, None)` reproduces the C
+    /// `FunctionBar_new(ScreensRenamingFunctions, NULL, NULL)` (static
+    /// F-key/event tables).
     fn screens_renamingBar() -> FunctionBar {
-        static BAR: OnceLock<FunctionBar> = OnceLock::new();
-        BAR.get_or_init(|| FunctionBar_new(Some(&ScreensRenamingFunctions), None, None))
-            .clone()
+        let mut bar = Screens_renamingBar.lock().unwrap();
+        if bar.is_none() {
+            *bar = Some(FunctionBar_new(Some(&ScreensRenamingFunctions), None, None));
+        }
+        bar.as_ref().unwrap().clone()
     }
 }
 
@@ -873,6 +897,9 @@ pub struct ScreensPanel {
 }
 
 #[cfg(test)]
+use crate::ported::panel::PanelItem;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ported::crt::{KEY_ENTER, KEY_UP};
@@ -890,7 +917,7 @@ mod tests {
     fn panel_with(names: &[&str]) -> ScreensPanel {
         let mut super_ = Panel_new(1, 1, 20, 10, None);
         for (i, n) in names.iter().enumerate() {
-            super_.items.push(row(n, i));
+            super_.items.push(PanelItem::Owned(row(n, i)));
         }
         // ScreensPanel_new sets `super->prevSelected = super->selected`.
         super_.prevSelected = super_.selected;
@@ -933,7 +960,7 @@ mod tests {
         let ptr: *mut Settings = settings.as_mut();
         let mut super_ = Panel_new(1, 1, 20, 10, None);
         for (i, n) in names.iter().enumerate() {
-            super_.items.push(row(n, i));
+            super_.items.push(PanelItem::Owned(row(n, i)));
         }
         super_.prevSelected = super_.selected;
         let sp = ScreensPanel {
@@ -950,7 +977,7 @@ mod tests {
 
     /// The display value of row `idx`.
     fn value_at(p: &ScreensPanel, idx: usize) -> String {
-        let any: &dyn core::any::Any = p.super_.items[idx].as_ref();
+        let any: &dyn core::any::Any = p.super_.items[idx].object();
         any.downcast_ref::<ScreenListItem>()
             .unwrap()
             .super_
@@ -960,7 +987,7 @@ mod tests {
 
     /// Row `idx`'s modeled `ss` alias (`ssIndex`).
     fn ss_index_at(p: &ScreensPanel, idx: usize) -> usize {
-        let any: &dyn core::any::Any = p.super_.items[idx].as_ref();
+        let any: &dyn core::any::Any = p.super_.items[idx].object();
         any.downcast_ref::<ScreenListItem>().unwrap().ssIndex
     }
 
@@ -974,7 +1001,7 @@ mod tests {
 
     /// Set the `moving` flag on row `idx` (test helper).
     fn set_moving(p: &mut ScreensPanel, idx: usize, moving: bool) {
-        let any: &mut dyn core::any::Any = p.super_.items[idx].as_mut();
+        let any: &mut dyn core::any::Any = p.super_.items[idx].object_mut();
         any.downcast_mut::<ScreenListItem>().unwrap().super_.moving = moving;
     }
 
@@ -1003,7 +1030,7 @@ mod tests {
 
         assert!(!p.moving);
         for i in 0..3 {
-            let any: &dyn core::any::Any = p.super_.items[i].as_ref();
+            let any: &dyn core::any::Any = p.super_.items[i].object();
             assert!(!any.downcast_ref::<ScreenListItem>().unwrap().super_.moving);
         }
         assert_eq!(
@@ -1039,7 +1066,7 @@ mod tests {
         startRenaming(&mut p);
         // cancelMoving ran: panel + row moving cleared.
         assert!(!p.moving);
-        let any: &dyn core::any::Any = p.super_.items[0].as_ref();
+        let any: &dyn core::any::Any = p.super_.items[0].object();
         assert!(!any.downcast_ref::<ScreenListItem>().unwrap().super_.moving);
         assert_eq!(p.renamingItem, Some(0));
     }
@@ -1211,7 +1238,7 @@ mod tests {
             p.super_.selectionColorId,
             ColorElements::PANEL_SELECTION_FOLLOW
         );
-        let any: &dyn core::any::Any = p.super_.items[0].as_ref();
+        let any: &dyn core::any::Any = p.super_.items[0].object();
         assert!(any.downcast_ref::<ScreenListItem>().unwrap().super_.moving);
         // result HANDLED => the ported ScreensPanel_update ran.
         assert!(settings.changed);

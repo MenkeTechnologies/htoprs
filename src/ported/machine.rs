@@ -60,7 +60,15 @@
 #![allow(dead_code)]
 
 use crate::ported::panel::Panel;
+use crate::ported::row::Row_setPidColumnWidth;
 use crate::ported::table::{Table, Table_setPanel};
+
+// `Machine_init` calls the platform's `Platform_getMaxPid` /
+// `Platform_gettime_realtime`, resolved at link time in the C. htoprs is
+// darwin-first, so the `#[cfg]` selects the Darwin implementations (one
+// platform per build, mirroring htop).
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::{Platform_getMaxPid, Platform_gettime_realtime};
 
 /// htop's `Table*` — a raw pointer to a [`Table`]. The crate mirrors
 /// htop's C pointer graph 1:1 (raw-pointer ownership model): `Machine`
@@ -136,12 +144,29 @@ pub struct Machine {
     pub processTable: Option<TableHandle>,
 }
 
-/// TODO: port of `void Machine_init(Machine* this, UsersTable*
-/// usersTable, uid_t userId)` from `Machine.c:22`. Needs `getuid`,
-/// `Platform_getMaxPid`, `Platform_gettime_realtime`,
-/// `Row_setPidColumnWidth`, and `hwloc` topology init.
-pub fn Machine_init() {
-    todo!("port of Machine.c:22 — needs getuid/Platform_*/hwloc")
+/// Port of `void Machine_init(Machine* this, UsersTable* usersTable, uid_t
+/// userId)` from `Machine.c:22`. Stores the users table and selected user,
+/// records the real uid (`getuid`), sets the PID column width from
+/// `Platform_getMaxPid`, and samples the realtime clock.
+///
+/// Deviations: the `#ifdef HAVE_LIBHWLOC` topology init is not built (no
+/// `libhwloc`), matching a build without it. `Platform_gettime_realtime`
+/// writes both a `timeval` and `realtimeMs`; `Machine` models only
+/// `realtimeMs` (the `timeval` reader, `checkRecalculation`, is unported),
+/// so the `timeval` is sampled into a throwaway local.
+#[cfg(target_os = "macos")]
+pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) {
+    this.usersTable = usersTable;
+    this.userId = userId;
+
+    this.htopUserId = unsafe { libc::getuid() };
+
+    // discover fixed column width limits
+    Row_setPidColumnWidth(Platform_getMaxPid());
+
+    // always maintain valid realtime timestamps
+    let mut realtime: libc::timeval = unsafe { core::mem::zeroed() };
+    Platform_gettime_realtime(&mut realtime, &mut this.realtimeMs);
 }
 
 /// TODO: port of `void Machine_done(Machine* this)` from `Machine.c:53`.

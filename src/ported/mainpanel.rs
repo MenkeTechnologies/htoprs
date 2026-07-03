@@ -93,11 +93,11 @@
 //!   `Action_setBindings` (`action.rs` stub) + `Platform_setBindings`
 //!   (`Platform.c` unported) to fill the `keys` table. The binding setup
 //!   is essential and cannot run against those stubs.
-//! - [`MainPanel_delete`] (`MainPanel.c:253`) — a pure `free` chain
-//!   (`FunctionBar_delete`/`IncSet_delete`/`free(keys)`/`Panel_done`/
-//!   `free`). [`MainPanel`] owns its fields, so `Drop` releases them;
-//!   there is no algorithm to port (same precedent as every sibling
-//!   `_delete`).
+//!
+//! [`MainPanel_delete`] (`MainPanel.c:253`) is now ported: its `free` chain
+//! maps to the by-value drop idiom (`processBar`/`readonlyBar` handed to
+//! `FunctionBar_delete`, `inc` to `IncSet_delete`, `super_` dropped in place
+//! of `Panel_done`).
 //!
 //! `gen_port_report.py` counts `todo!()` bodies as *stubbed*, not
 //! *ported*, so scaffolding does not inflate coverage.
@@ -110,10 +110,12 @@ use core::any::Any;
 
 use crate::ported::action::State;
 use crate::ported::crt::KEY_F;
-use crate::ported::functionbar::{FunctionBar, FunctionBar_setLabel};
-use crate::ported::incset::IncSet;
+use crate::ported::functionbar::{FunctionBar, FunctionBar_delete, FunctionBar_setLabel};
+use crate::ported::incset::{IncSet, IncSet_delete};
 use crate::ported::object::{Arg, Object};
-use crate::ported::panel::{Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size};
+use crate::ported::panel::{
+    Panel, Panel_get, Panel_getSelected, Panel_setSelected, Panel_size,
+};
 use crate::ported::row::Row;
 
 /// Reduced model of the C `MainPanel` struct (`MainPanel.h:21`). See the
@@ -249,7 +251,7 @@ pub fn MainPanel_foreachRow(
     let mut anyTagged = false;
     let size = Panel_size(&this.super_);
     for i in 0..size {
-        let obj: &mut dyn Object = this.super_.items[i as usize].as_mut();
+        let obj: &mut dyn Object = this.super_.items[i as usize].object_mut();
         let any: &mut dyn Any = obj;
         if let Some(row) = any.downcast_mut::<Row>() {
             if row.tag {
@@ -262,7 +264,7 @@ pub fn MainPanel_foreachRow(
         // C: Row* row = (Row*) Panel_getSelected(super); if (row) ...
         let sel = this.super_.selected;
         if sel >= 0 && (sel as usize) < this.super_.items.len() {
-            let obj: &mut dyn Object = this.super_.items[sel as usize].as_mut();
+            let obj: &mut dyn Object = this.super_.items[sel as usize].object_mut();
             let any: &mut dyn Any = obj;
             if let Some(row) = any.downcast_mut::<Row>() {
                 ok &= fn_(row, &arg);
@@ -329,14 +331,34 @@ pub fn MainPanel_setFunctionBar(this: &mut MainPanel, readonly: bool) {
     this.inc.defaultBar = this.super_.defaultBar.clone();
 }
 
-/// TODO: port of `void MainPanel_delete(Object* object)` from
-/// `MainPanel.c:253`. A pure `free` chain
-/// (`FunctionBar_delete`/`IncSet_delete`/`free(keys)`/`Panel_done`/`free`);
-/// [`MainPanel`] owns its fields, so `Drop` releases them and there is no
-/// algorithm to port (same precedent as every sibling `_delete`).
-pub fn MainPanel_delete() {
-    todo!("port of MainPanel.c:253 — Drop releases the owned fields")
+/// Port of `void MainPanel_delete(Object* object)` from `MainPanel.c:253`:
+/// `FunctionBar_delete(processBar); FunctionBar_delete(readonlyBar);
+/// IncSet_delete(inc); free(keys); Panel_done(&super); free(this);`.
+///
+/// Taking `this` by value reproduces `free(this)`. The two owned
+/// [`FunctionBar`]s and the owned [`IncSet`] are handed to
+/// [`FunctionBar_delete`]/[`IncSet_delete`] (mirroring the C call graph); the
+/// `keys` action table is omitted from the struct (`free(keys)` has no analog);
+/// and the embedded `super_` [`Panel`] plus the non-owning `state` pointer drop
+/// with the remaining fields — the faithful analog of `Panel_done(&super)` (a
+/// `Drop` no-op, so the panicking `Panel_done` stub is avoided) and the struct
+/// free.
+pub fn MainPanel_delete(this: MainPanel) {
+    let MainPanel {
+        super_,
+        inc,
+        processBar,
+        readonlyBar,
+        ..
+    } = this;
+    FunctionBar_delete(processBar);
+    FunctionBar_delete(readonlyBar);
+    IncSet_delete(inc);
+    let _ = super_;
 }
+
+#[cfg(test)]
+use crate::ported::panel::PanelItem;
 
 #[cfg(test)]
 mod tests {
@@ -419,9 +441,9 @@ mod tests {
     #[test]
     fn selected_row_returns_selected_id() {
         let mut mp = blank();
-        mp.super_.items.push(row(100));
-        mp.super_.items.push(row(200));
-        mp.super_.items.push(row(300));
+        mp.super_.items.push(PanelItem::Owned(row(100)));
+        mp.super_.items.push(PanelItem::Owned(row(200)));
+        mp.super_.items.push(PanelItem::Owned(row(300)));
         mp.super_.selected = 1;
         assert_eq!(MainPanel_selectedRow(&mp), 200);
         mp.super_.selected = 2;
@@ -434,9 +456,9 @@ mod tests {
     fn id_search_selects_matching_row_and_accumulates() {
         let mut mp = blank();
         // ids 1, 12, 123 so successive digit keys narrow the match.
-        mp.super_.items.push(row(1));
-        mp.super_.items.push(row(12));
-        mp.super_.items.push(row(123));
+        mp.super_.items.push(PanelItem::Owned(row(1)));
+        mp.super_.items.push(PanelItem::Owned(row(12)));
+        mp.super_.items.push(PanelItem::Owned(row(123)));
         // Type '1' -> id = 1 -> selects row 0; idSearch becomes 10.
         MainPanel_idSearch(&mut mp, b'1' as i32);
         assert_eq!(mp.super_.selected, 0);
@@ -454,8 +476,8 @@ mod tests {
     #[test]
     fn id_search_no_match_keeps_selection_but_advances() {
         let mut mp = blank();
-        mp.super_.items.push(row(1));
-        mp.super_.items.push(row(2));
+        mp.super_.items.push(PanelItem::Owned(row(1)));
+        mp.super_.items.push(PanelItem::Owned(row(2)));
         mp.super_.selected = 1;
         // Type '9' -> id 9, no row has id 9: selection unchanged, acc 90.
         MainPanel_idSearch(&mut mp, b'9' as i32);
@@ -466,7 +488,7 @@ mod tests {
     #[test]
     fn id_search_rolls_over_past_ten_million() {
         let mut mp = blank();
-        mp.super_.items.push(row(1));
+        mp.super_.items.push(PanelItem::Owned(row(1)));
         mp.idSearch = 1_000_001; // id = 0 + 1_000_001 -> acc 10_000_010 > 1e7
         MainPanel_idSearch(&mut mp, b'0' as i32);
         assert_eq!(mp.idSearch, 0);
@@ -495,15 +517,15 @@ mod tests {
     fn foreach_row_applies_to_tagged_only() {
         let mut mp = blank();
         for id in [10, 20, 30] {
-            mp.super_.items.push(row(id));
+            mp.super_.items.push(PanelItem::Owned(row(id)));
         }
         // Tag rows 0 and 2.
         {
-            let a: &mut dyn Any = mp.super_.items[0].as_mut();
+            let a: &mut dyn Any = mp.super_.items[0].object_mut();
             a.downcast_mut::<Row>().unwrap().tag = true;
         }
         {
-            let a: &mut dyn Any = mp.super_.items[2].as_mut();
+            let a: &mut dyn Any = mp.super_.items[2].object_mut();
             a.downcast_mut::<Row>().unwrap().tag = true;
         }
         let mut count: i32 = 0;
@@ -515,7 +537,7 @@ mod tests {
         assert_eq!(count, 2); // rows 0 and 2 visited
                               // Visited rows stamped; the untagged middle row was not.
         let indent_of = |i: usize, mp: &mut MainPanel| -> i32 {
-            let a: &mut dyn Any = mp.super_.items[i].as_mut();
+            let a: &mut dyn Any = mp.super_.items[i].object_mut();
             a.downcast_mut::<Row>().unwrap().indent
         };
         assert_eq!(indent_of(0, &mut mp), 99);
@@ -527,7 +549,7 @@ mod tests {
     fn foreach_row_falls_back_to_selected_when_none_tagged() {
         let mut mp = blank();
         for id in [10, 20, 30] {
-            mp.super_.items.push(row(id));
+            mp.super_.items.push(PanelItem::Owned(row(id)));
         }
         mp.super_.selected = 1;
         let mut count: i32 = 0;
@@ -537,16 +559,16 @@ mod tests {
         assert!(ok);
         assert!(!any_tagged);
         assert_eq!(count, 1); // only the selected row
-        let a: &mut dyn Any = mp.super_.items[1].as_mut();
+        let a: &mut dyn Any = mp.super_.items[1].object_mut();
         assert_eq!(a.downcast_mut::<Row>().unwrap().indent, 99);
     }
 
     #[test]
     fn foreach_row_ands_the_callback_results() {
         let mut mp = blank();
-        mp.super_.items.push(row(10));
+        mp.super_.items.push(PanelItem::Owned(row(10)));
         {
-            let a: &mut dyn Any = mp.super_.items[0].as_mut();
+            let a: &mut dyn Any = mp.super_.items[0].object_mut();
             a.downcast_mut::<Row>().unwrap().tag = true;
         }
         let ok = MainPanel_foreachRow(&mut mp, fail_cb, Arg::I(0), None);
@@ -557,7 +579,7 @@ mod tests {
     fn foreach_row_wastagged_out_param_is_optional() {
         // Passing None for wasAnyTagged must not panic.
         let mut mp = blank();
-        mp.super_.items.push(row(10));
+        mp.super_.items.push(PanelItem::Owned(row(10)));
         mp.super_.selected = 0;
         let ok = MainPanel_foreachRow(&mut mp, visit_cb, Arg::I(0), None);
         assert!(ok);
@@ -569,6 +591,7 @@ mod tests {
     fn set_state_stores_pointer() {
         let mut mp = blank();
         let mut st = State {
+            host: core::ptr::null_mut(),
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,

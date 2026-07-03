@@ -9,74 +9,77 @@
 //!
 //! htop's `AvailableColumnsPanel` (`AvailableColumnsPanel.h:14`) embeds a
 //! `Panel super` plus a `Panel* columns` back-pointer to the `ColumnsPanel`
-//! that spawned this picker. The reduced [`AvailableColumnsPanel`] struct
-//! models only the embedded `super_` [`Panel`]; the `columns` alias — a
-//! foreign-owned mutable `Panel*` — is **omitted**, exactly as
-//! `screenspanel.rs` omits its `columns`/`availableColumns`/`scr`
-//! back-pointers (and `columnspanel.rs` its `ss`). The functions that
-//! dereference `columns` stay stubbed for that reason.
+//! that spawned this picker. The [`AvailableColumnsPanel`] struct models the
+//! embedded `super_` [`Panel`] and the `columns` alias as a raw `*mut Panel`
+//! (the `ColorsPanel`/`HeaderOptionsPanel` back-pointer idiom — the
+//! `ColumnsPanel`'s panel is owned elsewhere).
 //!
 //! # Now ported
 //!
-//! - [`AvailableColumnsPanel_addDynamicColumn`] — the `Hashtable_foreach`
-//!   callback. All the `DynamicColumn` fields it reads (`table`, `heading`,
-//!   `name`, `description`, `caption`) are now modeled in
-//!   `dynamiccolumn.rs`, and `Panel_add` / `ListItem_new` are ported.
-//! - [`AvailableColumnsPanel_addDynamicColumns`] — drives the ported
-//!   [`Hashtable_foreach`] over the ported [`Hashtable`] with the callback
-//!   above.
+//! - [`AvailableColumnsPanel_addDynamicColumn`] / [`AvailableColumnsPanel_addDynamicColumns`]
+//!   — the `Hashtable_foreach` callback and its driver.
+//! - [`AvailableColumnsPanel_insert`] / [`AvailableColumnsPanel_eventHandler`]
+//!   — insert the selected column into `this->columns` (`Process_fields[]` /
+//!   `DynamicColumn_name` / `ROW_DYNAMIC_FIELDS` are all modeled now).
+//! - [`AvailableColumnsPanel_addPlatformColumns`] — lists every
+//!   `Process_fields[i]` with a description.
+//! - [`AvailableColumnsPanel_fill`] / [`AvailableColumnsPanel_new`] — prune +
+//!   repopulate, and the constructor.
 //!
 //! # Still stubbed
 //!
-//! The remaining blockers:
-//!
-//! - **`Process_fields[]`** — the platform-provided
-//!   `const ProcessFieldData Process_fields[]` table (`.name` /
-//!   `.description` per column) is still unported (`settings.rs` /
-//!   `columnspanel.rs` record it as missing substrate). Blocks
-//!   [`AvailableColumnsPanel_insert`] and
-//!   [`AvailableColumnsPanel_addPlatformColumns`].
-//! - **`LAST_PROCESSFIELD` / `ROW_DYNAMIC_FIELDS`** (`RowField.h:53`) — the
-//!   reserved-field count bounds are still not modeled. Blocks
-//!   [`AvailableColumnsPanel_insert`] and
-//!   [`AvailableColumnsPanel_addPlatformColumns`].
-//! - **`Platform_addDynamicScreenAvailableColumns`** — the `Platform`
-//!   layer is not ported. Blocks [`AvailableColumnsPanel_addDynamicScreens`].
-//! - **The omitted `columns: Panel*` back-pointer** — blocks
-//!   [`AvailableColumnsPanel_insert`], [`AvailableColumnsPanel_eventHandler`]
-//!   (both mutate through it), and [`AvailableColumnsPanel_new`] (stores it).
-//!
-//! Stubbed (cannot be ported faithfully yet):
 //! - [`AvailableColumnsPanel_delete`] (`AvailableColumnsPanel.c:32`) —
-//!   `Panel_done` + `free`; in Rust the owned fields are released by
-//!   `Drop`, so there is no algorithm to port (same class as
-//!   `Panel_delete` / `ListItem_delete`).
-//! - [`AvailableColumnsPanel_insert`] (`AvailableColumnsPanel.c:38`).
-//! - [`AvailableColumnsPanel_eventHandler`] (`AvailableColumnsPanel.c:47`).
-//! - [`AvailableColumnsPanel_addPlatformColumns`] (`AvailableColumnsPanel.c:105`).
-//! - [`AvailableColumnsPanel_addDynamicScreens`] (`AvailableColumnsPanel.c:116`).
-//! - [`AvailableColumnsPanel_fill`] (`AvailableColumnsPanel.c:120`).
-//! - [`AvailableColumnsPanel_new`] (`AvailableColumnsPanel.c:130`).
+//!   `Panel_done` + `free`; in Rust the owned fields are released by `Drop`,
+//!   so there is no algorithm to port (same class as `Panel_delete` /
+//!   `ListItem_delete`).
+//! - [`AvailableColumnsPanel_addDynamicScreens`] (`AvailableColumnsPanel.c:116`)
+//!   — delegates to the unported `Platform_addDynamicScreenAvailableColumns`;
+//!   [`AvailableColumnsPanel_fill`] calls it by name (chain-of-stubs), so the
+//!   `dynamicScreen` branch panics through it at runtime.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use crate::ported::dynamiccolumn::DynamicColumn;
+use crate::ported::columnspanel::ColumnsPanel_update;
+use crate::ported::crt::{KEY_ENTER, KEY_F, KEY_RECLICK};
+use crate::ported::dynamiccolumn::{DynamicColumn, DynamicColumn_name};
+use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::hashtable::{Hashtable, Hashtable_foreach};
-use crate::ported::listitem::ListItem_new;
-use crate::ported::panel::{Panel, Panel_add};
+use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+use crate::ported::listitem::{ListItem, ListItem_new};
+use crate::ported::panel::{
+    HandlerResult, Panel, Panel_add, Panel_getSelected, Panel_getSelectedIndex, Panel_insert,
+    Panel_new, Panel_prune, Panel_selectByTyping, Panel_setHeader, Panel_setSelected,
+};
+
+/// Port of `#define ROW_DYNAMIC_FIELDS LAST_RESERVED_FIELD` (`RowField.h:53`).
+/// `LAST_RESERVED_FIELD == LAST_PROCESSFIELD` (`Process.h:229`), the reserved
+/// (non-dynamic) field count.
+const ROW_DYNAMIC_FIELDS: i32 = LAST_PROCESSFIELD as i32;
+
+/// Port of the file-scope
+/// `static const char* const AvailableColumnsFunctions[]` from
+/// `AvailableColumnsPanel.c:29`. `F5=Add`, `F10=Done`, the rest blank; the C
+/// trailing `NULL` sentinel is dropped (the ported `FunctionBar_new` is
+/// length-bounded, not NUL-terminated).
+static AvailableColumnsFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "      ", "Add   ", "      ", "      ", "      ", "      ",
+    "Done  ",
+];
 
 /// Port of `typedef struct AvailableColumnsPanel_` (`AvailableColumnsPanel.h:14`).
 ///
-/// The C struct is `{ Panel super; Panel* columns; }`. The `columns`
-/// back-pointer is a foreign-owned mutable `Panel*` (owned by the spawning
-/// `ColumnsPanel`); no ported panel models such a cross-owned alias, so —
-/// following the `screenspanel.rs` / `columnspanel.rs` reduced-struct
-/// precedent — it is omitted here and the functions that dereference it
-/// remain stubs.
+/// The C struct is `{ Panel super; Panel* columns; }`. `columns` is a
+/// foreign-owned mutable `Panel*` (owned by the spawning `ColumnsPanel`),
+/// modeled here as a raw `*mut Panel` — the `ColorsPanel`/`HeaderOptionsPanel`
+/// back-pointer idiom (the `ColumnsPanel`'s panel is owned elsewhere).
 pub struct AvailableColumnsPanel {
     /// C `Panel super` — the embedded panel base. `super_` avoids the Rust
     /// `super` keyword, matching the `columnspanel.rs` convention.
     pub super_: Panel,
+    /// C `Panel* columns` — non-owning back-pointer to the `ColumnsPanel`'s
+    /// panel that this picker inserts into.
+    pub columns: *mut Panel,
 }
 
 /// TODO: port of `static void AvailableColumnsPanel_delete(Object* object)`
@@ -88,28 +91,82 @@ pub fn AvailableColumnsPanel_delete() {
     todo!("port of AvailableColumnsPanel.c:32 — Drop releases the panel")
 }
 
-/// TODO: port of `static void AvailableColumnsPanel_insert(AvailableColumnsPanel* this,
-/// int at, int key)` from `AvailableColumnsPanel.c:38`. Chooses the column
-/// name via `key >= ROW_DYNAMIC_FIELDS ? DynamicColumn_name(key) :
-/// Process_fields[key].name` and inserts a `ListItem_new(name, key)` into
-/// `this->columns`. [`crate::ported::dynamiccolumn::DynamicColumn_name`] is
-/// ported now, but this is still blocked on the unported `Process_fields[]`
-/// table, `ROW_DYNAMIC_FIELDS` (`RowField.h:53`), and the omitted
-/// foreign-owned `columns: Panel*` back-pointer.
-pub fn AvailableColumnsPanel_insert() {
-    todo!("port of AvailableColumnsPanel.c:38 — needs Process_fields[]/ROW_DYNAMIC_FIELDS + columns Panel*")
+/// Port of `static void AvailableColumnsPanel_insert(AvailableColumnsPanel* this,
+/// int at, int key)` from `AvailableColumnsPanel.c:38`.
+///
+/// Chooses the column name via `key >= ROW_DYNAMIC_FIELDS ?
+/// DynamicColumn_name(key) : Process_fields[key].name` and inserts a
+/// `ListItem_new(name, key)` at `at` into `this->columns` (the raw back-pointer
+/// to the `ColumnsPanel`'s panel).
+///
+/// # Safety
+///
+/// `this.columns` must be the valid non-owning `Panel` pointer stored by
+/// [`AvailableColumnsPanel_new`].
+pub fn AvailableColumnsPanel_insert(this: &mut AvailableColumnsPanel, at: i32, key: i32) {
+    let name: &str = if key >= ROW_DYNAMIC_FIELDS {
+        DynamicColumn_name(key as u32)
+            .expect("AvailableColumnsPanel_insert: DynamicColumn_name returned None")
+    } else {
+        Process_fields[key as usize].name
+    };
+    // C: Panel_insert(this->columns, at, (Object*) ListItem_new(name, key));
+    // SAFETY: `columns` is the non-owning back-pointer stored at construction.
+    let columns = unsafe { &mut *this.columns };
+    Panel_insert(columns, at, Box::new(ListItem_new(name, key)));
 }
 
-/// TODO: port of `static HandlerResult AvailableColumnsPanel_eventHandler(Panel* super,
-/// int ch)` from `AvailableColumnsPanel.c:47`. On Enter/reclick/F5 it inserts
-/// the selected column into `this->columns` and calls `ColumnsPanel_update`;
-/// otherwise it falls through to `Panel_selectByTyping`. `HandlerResult`,
-/// `Panel_selectByTyping` (`Panel.c:468`), and `ColumnsPanel_update`
-/// (`ColumnsPanel.c:181`) are all ported now, but this is still blocked on the
-/// omitted foreign-owned `columns: Panel*` back-pointer it mutates through and
-/// on the stubbed [`AvailableColumnsPanel_insert`] it calls.
-pub fn AvailableColumnsPanel_eventHandler() {
-    todo!("port of AvailableColumnsPanel.c:47 — needs columns Panel* back-pointer + AvailableColumnsPanel_insert")
+/// Port of `static HandlerResult AvailableColumnsPanel_eventHandler(Panel* super,
+/// int ch)` from `AvailableColumnsPanel.c:47`.
+///
+/// On Enter (`13`/`KEY_ENTER`), `KEY_RECLICK` or `F5`: reads the selected
+/// [`ListItem`]'s `key`, inserts that column into `this->columns` at the
+/// columns panel's selected index via [`AvailableColumnsPanel_insert`], moves
+/// the columns selection down one, and refreshes it with [`ColumnsPanel_update`].
+/// The default arm forwards a printable key to [`Panel_selectByTyping`].
+///
+/// Following the sibling panel port convention the C `Panel* super` upcast to
+/// `AvailableColumnsPanel*` becomes the receiver `this: &mut AvailableColumnsPanel`.
+pub fn AvailableColumnsPanel_eventHandler(
+    this: &mut AvailableColumnsPanel,
+    ch: i32,
+) -> HandlerResult {
+    const KEY_F5: i32 = KEY_F(5);
+
+    let mut result = HandlerResult::IGNORED;
+
+    match ch {
+        13 | KEY_ENTER | KEY_RECLICK | KEY_F5 => {
+            // const ListItem* selected = (ListItem*) Panel_getSelected(super);
+            // if (!selected) break;
+            let key = match Panel_getSelected(&this.super_) {
+                None => return result,
+                Some(obj) => {
+                    let any: &dyn core::any::Any = obj;
+                    any.downcast_ref::<ListItem>()
+                        .expect("AvailableColumnsPanel_eventHandler: selected is not a ListItem")
+                        .key
+                }
+            };
+
+            // SAFETY: `columns` is the non-owning back-pointer stored at
+            // construction; it outlives this panel.
+            let at = Panel_getSelectedIndex(unsafe { &*this.columns });
+            AvailableColumnsPanel_insert(this, at, key);
+            Panel_setSelected(unsafe { &mut *this.columns }, at + 1);
+            ColumnsPanel_update(unsafe { &mut *this.columns });
+            result = HandlerResult::HANDLED;
+        }
+        _ => {
+            // C: if (0 < ch && ch < 255 && isgraph((unsigned char)ch))
+            //       result = Panel_selectByTyping(super, ch);
+            if 0 < ch && ch < 255 && (ch as u8).is_ascii_graphic() {
+                result = Panel_selectByTyping(&mut this.super_, ch);
+            }
+        }
+    }
+
+    result
 }
 
 /// Port of `static void AvailableColumnsPanel_addDynamicColumn(ht_key_t key,
@@ -183,48 +240,89 @@ pub fn AvailableColumnsPanel_addDynamicColumns(
     });
 }
 
-/// TODO: port of `static void AvailableColumnsPanel_addPlatformColumns(AvailableColumnsPanel* this)`
-/// from `AvailableColumnsPanel.c:105`. Loops `1..LAST_PROCESSFIELD`, and for
-/// each field with a description, formats `"<name> - <description>"` and
-/// `Panel_add`s a `ListItem_new`. Blocked on the unported `Process_fields[]`
-/// table and the `LAST_PROCESSFIELD` bound.
-pub fn AvailableColumnsPanel_addPlatformColumns() {
-    todo!("port of AvailableColumnsPanel.c:105 — needs Process_fields[] + LAST_PROCESSFIELD")
+/// Port of `static void AvailableColumnsPanel_addPlatformColumns(AvailableColumnsPanel* this)`
+/// from `AvailableColumnsPanel.c:105`.
+///
+/// Loops `1..LAST_PROCESSFIELD`, and for each field with a description formats
+/// `"<name> - <description>"` and `Panel_add`s a `ListItem_new(description, i)`.
+/// C's `xSnprintf` into a fixed `char description[256]` becomes a heap
+/// `format!`; the 256-byte truncation is a fixed-buffer artifact, not part of
+/// the column-listing semantics.
+pub fn AvailableColumnsPanel_addPlatformColumns(this: &mut AvailableColumnsPanel) {
+    for i in 1..LAST_PROCESSFIELD {
+        if let Some(desc) = Process_fields[i].description {
+            let description = format!("{} - {}", Process_fields[i].name, desc);
+            Panel_add(&mut this.super_, Box::new(ListItem_new(&description, i as i32)));
+        }
+    }
 }
 
 /// TODO: port of `static void AvailableColumnsPanel_addDynamicScreens(AvailableColumnsPanel* this,
 /// const char* screen)` from `AvailableColumnsPanel.c:116`. Delegates to
 /// `Platform_addDynamicScreenAvailableColumns(&this->super, screen)`. Blocked
-/// on the unported `Platform` layer.
-pub fn AvailableColumnsPanel_addDynamicScreens() {
+/// on the unported `Platform` layer (no ported
+/// `Platform_addDynamicScreenAvailableColumns`). Signature matches the
+/// [`AvailableColumnsPanel_fill`] call site.
+pub fn AvailableColumnsPanel_addDynamicScreens(this: &mut AvailableColumnsPanel, screen: &str) {
+    let _ = (this, screen);
     todo!("port of AvailableColumnsPanel.c:116 — needs Platform_addDynamicScreenAvailableColumns")
 }
 
-/// TODO: port of `void AvailableColumnsPanel_fill(AvailableColumnsPanel* this,
+/// Port of `void AvailableColumnsPanel_fill(AvailableColumnsPanel* this,
 /// const char* dynamicScreen, Hashtable* dynamicColumns)` from
-/// `AvailableColumnsPanel.c:120`. `Panel_prune`s the panel, then either
-/// `addDynamicScreens` (dynamic screen) or `addPlatformColumns` +
-/// `addDynamicColumns`. `Panel_prune` and [`AvailableColumnsPanel_addDynamicColumns`]
-/// are ported, but the other two dispatch targets
-/// ([`AvailableColumnsPanel_addPlatformColumns`] and
-/// [`AvailableColumnsPanel_addDynamicScreens`]) are still blocked stubs — a
-/// body dispatching to them would panic on every branch — so this stays a stub
-/// (the `screenspanel.rs` `addNewScreen`-dispatches-to-a-stub precedent).
-pub fn AvailableColumnsPanel_fill() {
-    todo!("port of AvailableColumnsPanel.c:120 — dispatch targets addPlatformColumns/addDynamicScreens still blocked")
+/// `AvailableColumnsPanel.c:120`.
+///
+/// [`Panel_prune`]s the panel, then — for a `dynamicScreen` — calls
+/// [`AvailableColumnsPanel_addDynamicScreens`] (still a stub blocked on the
+/// unported `Platform` layer, called by name per the chain-of-stubs rule);
+/// otherwise [`AvailableColumnsPanel_addPlatformColumns`] then
+/// [`AvailableColumnsPanel_addDynamicColumns`]. `dynamicScreen` /
+/// `dynamicColumns` are `Option<&str>` / `Option<&Hashtable>` (the C
+/// NULL-able `const char*` / non-null-in-the-else-branch `Hashtable*`).
+pub fn AvailableColumnsPanel_fill(
+    this: &mut AvailableColumnsPanel,
+    dynamicScreen: Option<&str>,
+    dynamicColumns: Option<&Hashtable>,
+) {
+    Panel_prune(&mut this.super_);
+    if let Some(screen) = dynamicScreen {
+        AvailableColumnsPanel_addDynamicScreens(this, screen);
+    } else {
+        AvailableColumnsPanel_addPlatformColumns(this);
+        AvailableColumnsPanel_addDynamicColumns(
+            this,
+            dynamicColumns
+                .expect("AvailableColumnsPanel_fill: dynamicColumns is NULL in the non-screen branch"),
+        );
+    }
 }
 
-/// TODO: port of `AvailableColumnsPanel* AvailableColumnsPanel_new(Panel* columns,
-/// Hashtable* dynamicColumns)` from `AvailableColumnsPanel.c:130`. Allocates
-/// the panel, builds its `FunctionBar_new`, `Panel_init`s it, sets the
-/// "Available Columns" header, stores the `columns` back-pointer, and calls
-/// `AvailableColumnsPanel_fill`. `FunctionBar_new` / `Panel_init` /
-/// `Panel_setHeader` are ported, but this is blocked on the omitted
-/// foreign-owned `columns: Panel*` field (`this->columns = columns`, no ported
-/// cross-owned-panel alias) and on the stubbed [`AvailableColumnsPanel_fill`]
-/// it must call to populate the list.
-pub fn AvailableColumnsPanel_new() {
-    todo!("port of AvailableColumnsPanel.c:130 — needs columns Panel* field + AvailableColumnsPanel_fill")
+/// Port of `AvailableColumnsPanel* AvailableColumnsPanel_new(Panel* columns,
+/// Hashtable* dynamicColumns)` from `AvailableColumnsPanel.c:130`.
+///
+/// Builds a `1×1` [`Panel`] with the `AvailableColumnsFunctions`
+/// [`FunctionBar`](crate::ported::functionbar::FunctionBar), sets the
+/// "Available Columns" header, stores the `columns` back-pointer, and
+/// populates the list via [`AvailableColumnsPanel_fill`]`(this, NULL,
+/// dynamicColumns)`. The C `Class(ListItem)`/`owner` args to `Panel_init` type
+/// the underlying `Vector`; the ported `Panel_new` drops them, matching every
+/// sibling panel port.
+pub fn AvailableColumnsPanel_new(
+    columns: *mut Panel,
+    dynamicColumns: &Hashtable,
+) -> AvailableColumnsPanel {
+    let fuBar = FunctionBar_new(Some(&AvailableColumnsFunctions[..]), None, None);
+    let super_ = Panel_new(1, 1, 1, 1, Some(fuBar));
+
+    let mut this = AvailableColumnsPanel { super_, columns };
+
+    Panel_setHeader(&mut this.super_, "Available Columns");
+
+    // C: this->columns = columns; (set above)
+    //    AvailableColumnsPanel_fill(this, NULL, dynamicColumns);
+    AvailableColumnsPanel_fill(&mut this, None, Some(dynamicColumns));
+
+    this
 }
 
 #[cfg(test)]
@@ -237,6 +335,7 @@ mod tests {
     fn panel() -> AvailableColumnsPanel {
         AvailableColumnsPanel {
             super_: Panel_new(0, 0, 1, 1, None),
+            columns: core::ptr::null_mut(),
         }
     }
 
@@ -259,7 +358,7 @@ mod tests {
     }
 
     fn item_at(this: &AvailableColumnsPanel, i: usize) -> (&str, i32) {
-        let obj: &dyn core::any::Any = this.super_.items[i].as_ref();
+        let obj: &dyn core::any::Any = this.super_.items[i].object();
         let li = obj
             .downcast_ref::<ListItem>()
             .expect("panel item is not a ListItem");

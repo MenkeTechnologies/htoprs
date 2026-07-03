@@ -28,19 +28,23 @@
 //!   [`ColorsPanel`] owns its fields, so `Drop` releases them; there is no
 //!   algorithm to port (same precedent as every sibling `_delete`).
 //! - [`ColorsPanel_eventHandler`] (`ColorsPanel.c:50`) — on Enter/click it
-//!   sets `this->settings->colorScheme = mark`. The ported `Settings`
-//!   (`settings.rs`) has **no `colorScheme` field** (its doc comment lists
-//!   `colorScheme` among the omitted `Settings.h` fields). Without that
-//!   field the write-back cannot be modeled, so the handler stays a stub
-//!   naming the missing dependency (rule 4).
+//!   clears every scheme's [`CheckItem`], checks the selected one, writes
+//!   `this->settings->colorScheme = mark` (plus `changed`/`lastUpdate`), and
+//!   calls `CRT_setColors(mark)` + `clear()`. `Settings.colorScheme` is now
+//!   modeled, so it ports faithfully.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use core::any::Any;
 use core::sync::atomic::Ordering;
+use std::io::{self, Write};
 
-use crate::ported::crt::{CRT_colorScheme, ColorScheme};
+use crossterm::queue;
+use crossterm::terminal::{Clear, ClearType};
+
+use crate::ported::crt::{CRT_colorScheme, CRT_setColors, ColorScheme, KEY_ENTER, KEY_MOUSE, KEY_RECLICK};
+use crate::ported::panel::{HandlerResult, Panel_getSelectedIndex};
 use crate::ported::functionbar::FunctionBar_new;
 // `Object` is referenced only by the `#[cfg(test)]` helpers below (via `use
 // super::*`); gate the import so non-test builds don't flag it as unused.
@@ -95,16 +99,73 @@ pub fn ColorsPanel_delete() {
     todo!("port of ColorsPanel.c:44 — Drop releases the panel")
 }
 
-/// TODO: port of `static HandlerResult ColorsPanel_eventHandler(Panel*
-/// super, int ch)` from `ColorsPanel.c:50`. On Enter/Space/click it clears
-/// every scheme's [`CheckItem`], checks the selected one, then writes
-/// `this->settings->colorScheme = mark`, bumps `changed`/`lastUpdate`, and
-/// calls `CRT_setColors(mark)` + `clear()`. The ported `Settings`
-/// (`settings.rs`) has **no `colorScheme` field** — it is explicitly among
-/// the omitted `Settings.h` fields — so the write-back cannot be modeled.
-/// Left as a stub naming the missing dependency (rule 4).
-pub fn ColorsPanel_eventHandler() {
-    todo!("port of ColorsPanel.c:50 — needs Settings.colorScheme field")
+/// Port of `static HandlerResult ColorsPanel_eventHandler(Panel* super,
+/// int ch)` from `ColorsPanel.c:50`.
+///
+/// On Enter (`0x0a`/`0x0d`/`KEY_ENTER`), `KEY_MOUSE`, `KEY_RECLICK` or Space
+/// (`0x20`): reads the selected index `mark`, clears every scheme's
+/// [`CheckItem`] then checks row `mark`, writes `this->settings->colorScheme
+/// = mark` (plus `changed = true` / `lastUpdate++`), applies the scheme with
+/// [`CRT_setColors`] and clears the screen (`clear()`), returning `HANDLED |
+/// REDRAW`. Every other key is `IGNORED`.
+///
+/// Following the sibling panel port convention (`HeaderOptionsPanel`,
+/// `ColumnsPanel`), the C `Panel* super` upcast to `ColorsPanel*` becomes
+/// the reduced-struct receiver `this: &mut ColorsPanel`; `this.super_` is the
+/// embedded panel. The mutable `(CheckItem*)Panel_get(super, i)` writes are
+/// reproduced by indexing `this.super_.items[i]` and downcasting the
+/// `&mut dyn Object` to `&mut CheckItem` via the `Any` supertrait, the same
+/// mutating analog `HeaderOptionsPanel_eventHandler` uses. The `settings`
+/// back-pointer is the non-owning raw pointer stored at construction.
+pub fn ColorsPanel_eventHandler(this: &mut ColorsPanel, ch: i32) -> HandlerResult {
+    // C: clear() — ncurses full-screen clear; crossterm analog. A no-capture
+    // closure (not a module-level `fn`) so the call site reads `clear();`
+    // like C without adding a depth-0 helper the port gate has no C name for.
+    let clear = || {
+        let mut out = io::stdout().lock();
+        let _ = queue!(out, Clear(ClearType::All));
+        let _ = out.flush();
+    };
+
+    let mut result = HandlerResult::IGNORED;
+
+    match ch {
+        // 0x0a (LF), 0x0d (CR), KEY_ENTER, KEY_MOUSE, KEY_RECLICK, ' ' (0x20).
+        0x0a | 0x0d | KEY_ENTER | KEY_MOUSE | KEY_RECLICK | 0x20 => {
+            let mark = Panel_getSelectedIndex(&this.super_);
+            debug_assert!(mark >= 0);
+            debug_assert!((mark as usize) < ColorScheme::LAST_COLORSCHEME as usize);
+
+            // for (int i = 0; ColorSchemeNames[i] != NULL; i++)
+            //    CheckItem_set(Panel_get(super, i), false);
+            for i in 0..ColorSchemeNames.len() {
+                let any: &mut dyn Any = this.super_.items[i].object_mut();
+                if let Some(item) = any.downcast_mut::<CheckItem>() {
+                    CheckItem_set(item, false);
+                }
+            }
+            let any: &mut dyn Any = this.super_.items[mark as usize].object_mut();
+            if let Some(item) = any.downcast_mut::<CheckItem>() {
+                CheckItem_set(item, true);
+            }
+
+            // SAFETY: `settings` is the non-owning back-pointer stored at
+            // construction (`ColorsPanel_new`); the `Settings` it aliases
+            // outlives this panel.
+            let settings = unsafe { &mut *this.settings };
+            settings.colorScheme = mark;
+            settings.changed = true;
+            settings.lastUpdate += 1;
+
+            CRT_setColors(mark);
+            clear();
+
+            result = HandlerResult::HANDLED | HandlerResult::REDRAW;
+        }
+        _ => {}
+    }
+
+    result
 }
 
 /// Port of `ColorsPanel* ColorsPanel_new(Settings* settings)` from
@@ -148,7 +209,7 @@ pub fn ColorsPanel_new(settings: *mut Settings) -> ColorsPanel {
     }
 
     let idx = CRT_colorScheme.load(Ordering::Relaxed);
-    let any: &mut dyn Any = this.super_.items[idx].as_mut();
+    let any: &mut dyn Any = this.super_.items[idx].object_mut();
     if let Some(item) = any.downcast_mut::<CheckItem>() {
         CheckItem_set(item, true);
     }
@@ -166,14 +227,14 @@ mod tests {
 
     /// The `value` (checked) flag of the panel's `i`-th `CheckItem`.
     fn item_checked(cp: &ColorsPanel, i: usize) -> bool {
-        let obj: &dyn Object = cp.super_.items[i].as_ref();
+        let obj: &dyn Object = cp.super_.items[i].object();
         let any: &dyn Any = obj;
         CheckItem_get(any.downcast_ref::<CheckItem>().unwrap())
     }
 
     /// The `text` label of the panel's `i`-th `CheckItem`.
     fn item_text(cp: &ColorsPanel, i: usize) -> String {
-        let obj: &dyn Object = cp.super_.items[i].as_ref();
+        let obj: &dyn Object = cp.super_.items[i].object();
         let any: &dyn Any = obj;
         any.downcast_ref::<CheckItem>().unwrap().text.clone()
     }

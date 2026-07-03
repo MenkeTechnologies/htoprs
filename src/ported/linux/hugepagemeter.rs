@@ -143,7 +143,7 @@ mod tests {
         }
 
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             total: 2.0 * 1024.0 * 1024.0, // KiB → "2.00G"
             values: vec![1024.0, 512.0, 0.0, 0.0],
             ..Meter::empty()

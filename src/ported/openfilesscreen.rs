@@ -694,7 +694,7 @@ pub fn OpenFilesScreen_scan(this: &mut OpenFilesScreen) {
     this.super_
         .display
         .items
-        .sort_by(|a, b| a.compare(&**b).cmp(&0));
+        .sort_by(|a, b| a.object().compare(b.object()).cmp(&0));
     // C: Panel_setSelected(panel, idx);
     Panel_setSelected(&mut this.super_.display, idx);
 }

@@ -24,7 +24,7 @@
 //!
 //! | C field           | Rust field                    | Notes |
 //! |-------------------|-------------------------------|-------|
-//! | `Vector* rows`    | [`Table::rows`] `Vec<Option<Row>>` | owns the rows; `Option` models the `NULL` a slot holds after `Vector_softRemove`, reclaimed by [`Table_compact`]. `Vector_size` == `rows.len()` (holes included, exactly like C `items`). |
+//! | `Vector* rows`    | [`Table::rows`] `Vec<Option<Box<dyn Object>>>` | owns the rows polymorphically — htop's `Vector` of upcast `Row*` (really `Process*`/`DarwinProcess*`) becomes boxed `dyn Object`, recovered as `&Row` via [`Object::as_row`] (the private [`Table::row`]/[`Table::row_mut`] helpers). `Option` models the `NULL` a slot holds after `Vector_softRemove`, reclaimed by [`Table_compact`]. `Vector_size` == `rows.len()` (holes included, exactly like C `items`). |
 //! | `Vector* displayList` | [`Table::displayList`] `Vec<usize>` | the C list *borrows* `Row*`; here it borrows by index into `rows` (valid because tree building never reorders `rows` after the sort). |
 //! | `Hashtable* table`| [`Table::table`] `HashMap<i32, usize>` | id → index in `rows`. Rebuilt after any reordering ([`Table::rebuild_index`]) — the Rust-model equivalent of C's pointer stability across a `Vector` sort. |
 //! | `Machine* host`   | [`Table::host`] `*const Machine` | a real back-pointer, exactly like C. The ported fns that dereference it (`Table_add`, `Table_updateDisplayList`, `Table_cleanupRow`) read `host->monotonicMs` / `host->settings` through it; a non-null `host` is their precondition, as in C. |
@@ -88,7 +88,11 @@ use std::collections::HashMap;
 
 use crate::ported::crt::{ColorElements, ColorScheme, TreeStr};
 use crate::ported::machine::Machine;
-use crate::ported::panel::Panel;
+use crate::ported::object::Object;
+use crate::ported::panel::{
+    Panel, PanelItem, Panel_getSelectedIndex, Panel_prune, Panel_setSelected,
+    Panel_setSelectionColor, Panel_size,
+};
 use crate::ported::process::ProcessField;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendWide, RichString_getCharVal,
@@ -108,7 +112,7 @@ use crate::ported::vector::{insertionSort, quickSort};
 pub struct Table {
     /// C `Vector* rows` — all known rows, owned. A `None` slot models a
     /// `NULL` left by `Vector_softRemove`, reclaimed by [`Table_compact`].
-    pub rows: Vec<Option<Row>>,
+    pub rows: Vec<Option<Box<dyn Object>>>,
     /// C `Vector* displayList` — the row tree flattened in display order,
     /// borrowed by index into [`rows`](Table::rows).
     pub displayList: Vec<usize>,
@@ -168,10 +172,42 @@ impl Table {
     fn rebuild_index(&mut self) {
         self.table.clear();
         for (i, slot) in self.rows.iter().enumerate() {
-            if let Some(row) = slot {
-                self.table.insert(row.id, i);
+            if let Some(obj) = slot {
+                self.table.insert(obj.as_row().unwrap().id, i);
             }
         }
+    }
+
+    /// The embedded [`Row`] base of the object at slot `i`. The rows are
+    /// owned polymorphically (`Box<dyn Object>`, really `Process`es for a
+    /// `ProcessTable`); this recovers the shared `Row` view the tree/display
+    /// algorithms read/write. Panics on a `NULL` slot or a non-`Row` object
+    /// — both are Table invariants (holes are only transient, and a `Table`
+    /// only ever holds `Row`s), mirroring the C `(Row*)Vector_get(...)`.
+    #[inline]
+    fn row(&self, i: usize) -> &Row {
+        self.rows[i]
+            .as_ref()
+            .expect("Table::row: NULL slot")
+            .as_row()
+            .expect("Table::row: non-Row object")
+    }
+
+    /// Mutable counterpart of [`row`](Table::row).
+    #[inline]
+    fn row_mut(&mut self, i: usize) -> &mut Row {
+        self.rows[i]
+            .as_mut()
+            .expect("Table::row_mut: NULL slot")
+            .as_row_mut()
+            .expect("Table::row_mut: non-Row object")
+    }
+
+    /// The embedded [`Row`] of slot `i`, or `None` for a `NULL` (soft-removed)
+    /// slot — for the scan paths that tolerate holes.
+    #[inline]
+    fn row_opt(&self, i: usize) -> Option<&Row> {
+        self.rows[i].as_ref().and_then(|o| o.as_row())
     }
 }
 
@@ -233,16 +269,16 @@ pub fn Table_setPanel(this: &mut Table, panel: *mut Panel) {
 /// # Safety precondition
 /// `this.host` must be a valid non-null `*const Machine` (as in C, where
 /// `this->host->monotonicMs` is dereferenced unconditionally).
-pub fn Table_add(this: &mut Table, mut row: Row) {
+pub fn Table_add(this: &mut Table, mut row: Box<dyn Object>) {
+    let id = row.as_row().expect("Table_add: non-Row object").id;
     debug_assert!(
-        !this.table.contains_key(&row.id),
+        !this.table.contains_key(&id),
         "Table_add: id already present"
     );
 
     // highlighting row found in first scan by first scan marked "far in the past"
-    row.seenStampMs = unsafe { (*this.host).monotonicMs };
+    row.as_row_mut().unwrap().seenStampMs = unsafe { (*this.host).monotonicMs };
 
-    let id = row.id;
     let idx = this.rows.len();
     this.rows.push(Some(row));
     this.table.insert(id, idx);
@@ -265,9 +301,7 @@ pub fn Table_add(this: &mut Table, mut row: Row) {
 /// side-effect on the unported ncurses `Panel` and is omitted (the pure
 /// state change, `following = -1`, is applied).
 fn Table_removeIndex(this: &mut Table, idx: usize) {
-    let row = this.rows[idx]
-        .as_ref()
-        .expect("Table_removeIndex: slot already NULL");
+    let row = this.row(idx);
     let rowid = row.id;
     // save before row is freed
     let rowparent = Row_getGroupOrParent(row);
@@ -328,7 +362,7 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
     let mut r: isize = vsize;
     while l < r {
         let c = l + (r - l) / 2;
-        let row = this.rows[c as usize].as_ref().unwrap();
+        let row = this.row(c as usize);
         let parent = if row.isRoot {
             0
         } else {
@@ -343,7 +377,7 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
     // Find the end to know the last line for indent handling purposes
     let mut last_shown = r;
     while r < vsize {
-        let row = this.rows[r as usize].as_ref().unwrap();
+        let row = this.row(r as usize);
         if !Row_isChildOf(row, rowid) {
             break;
         }
@@ -356,10 +390,10 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
     let mut i = l;
     while i < r {
         if !show {
-            this.rows[i as usize].as_mut().unwrap().show = false;
+            this.row_mut(i as usize).show = false;
         }
 
-        let row_id = this.rows[i as usize].as_ref().unwrap().id;
+        let row_id = this.row(i as usize).id;
         this.displayList.push(i as usize);
 
         // MINIMUM(level, sizeof(row->indent) * 8 - 2); int32_t => 30.
@@ -367,19 +401,19 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
         let next_indent = indent | (1i32 << shift);
 
         let child_show = {
-            let row = this.rows[i as usize].as_ref().unwrap();
+            let row = this.row(i as usize);
             row.show && row.showChildren
         };
         let branch_indent = if i < last_shown { next_indent } else { indent };
         Table_buildTreeBranch(this, row_id, level + 1, branch_indent, child_show);
 
         if i == last_shown {
-            this.rows[i as usize].as_mut().unwrap().indent = -next_indent;
+            this.row_mut(i as usize).indent = -next_indent;
         } else {
-            this.rows[i as usize].as_mut().unwrap().indent = next_indent;
+            this.row_mut(i as usize).indent = next_indent;
         }
 
-        this.rows[i as usize].as_mut().unwrap().tree_depth = level + 1;
+        this.row_mut(i as usize).tree_depth = level + 1;
 
         i += 1;
     }
@@ -410,7 +444,7 @@ pub fn Table_buildTree(this: &mut Table) {
     let vsize = this.rows.len();
     for i in 0..vsize {
         let (id, parent) = {
-            let row = this.rows[i].as_ref().unwrap();
+            let row = this.row(i);
             (row.id, Row_getGroupOrParent(row))
         };
 
@@ -425,13 +459,16 @@ pub fn Table_buildTree(this: &mut Table) {
             // We don't know about its parent for whatever reason
             Table_findRow(this, parent).is_none()
         };
-        this.rows[i].as_mut().unwrap().isRoot = is_root;
+        this.row_mut(i).isRoot = is_root;
     }
 
     // Sort by known parent (roots first), then row ID
     let n = this.rows.len() as isize;
     quickSort(&mut this.rows, 0, n - 1, &|a, b| {
-        compareRowByKnownParentThenNatural(a.as_ref().unwrap(), b.as_ref().unwrap())
+        compareRowByKnownParentThenNatural(
+            a.as_ref().unwrap().as_row().unwrap(),
+            b.as_ref().unwrap().as_row().unwrap(),
+        )
     });
     // Pointers survive a C Vector sort; the index map must be refreshed.
     this.rebuild_index();
@@ -439,14 +476,14 @@ pub fn Table_buildTree(this: &mut Table) {
     // Find all processes whose parent is not visible
     for i in 0..vsize {
         // If parent not found, then construct the tree with this node as root
-        if this.rows[i].as_ref().unwrap().isRoot {
+        if this.row(i).isRoot {
             {
-                let row = this.rows[i].as_mut().unwrap();
+                let row = this.row_mut(i);
                 row.indent = 0;
                 row.tree_depth = 0;
             }
-            let id = this.rows[i].as_ref().unwrap().id;
-            let show_children = this.rows[i].as_ref().unwrap().showChildren;
+            let id = this.row(i).id;
+            let show_children = this.row(i).showChildren;
             this.displayList.push(i);
             Table_buildTreeBranch(this, id, 0, 0, show_children);
         }
@@ -484,7 +521,10 @@ pub fn Table_updateDisplayList(this: &mut Table) {
         if this.needsSort {
             let n = this.rows.len() as isize;
             insertionSort(&mut this.rows, 0, n - 1, &|a, b| {
-                Row_compare(a.as_ref().unwrap(), b.as_ref().unwrap())
+                Row_compare(
+                    a.as_ref().unwrap().as_row().unwrap(),
+                    b.as_ref().unwrap().as_row().unwrap(),
+                )
             });
             this.rebuild_index();
         }
@@ -499,8 +539,8 @@ pub fn Table_updateDisplayList(this: &mut Table) {
 /// Port of `void Table_expandTree(Table* this)` from `Table.c:225`. Sets
 /// `showChildren = true` on every row (expand-all).
 pub fn Table_expandTree(this: &mut Table) {
-    for row in this.rows.iter_mut().flatten() {
-        row.showChildren = true;
+    for obj in this.rows.iter_mut().flatten() {
+        obj.as_row_mut().unwrap().showChildren = true;
     }
 }
 
@@ -511,7 +551,8 @@ pub fn Table_expandTree(this: &mut Table) {
 pub fn Table_collapseAllBranches(this: &mut Table) {
     Table_buildTree(this); // Update `tree_depth` fields of the rows
     this.needsSort = true; // Table is sorted by parent now, force new sort
-    for row in this.rows.iter_mut().flatten() {
+    for obj in this.rows.iter_mut().flatten() {
+        let row = obj.as_row_mut().unwrap();
         // FreeBSD has pid 0 = kernel and pid 1 = init, so init has tree_depth = 1
         if row.tree_depth > 0 && row.id > 1 {
             row.showChildren = false;
@@ -519,27 +560,117 @@ pub fn Table_collapseAllBranches(this: &mut Table) {
     }
 }
 
-/// TODO: port of `void Table_rebuildPanel(Table* this)` from
-/// `Table.c:246`. Still genuinely blocked:
-/// (1) `Row_isVisible` / `Row_matchesFilter` are unported (no such fn
-/// anywhere in `src/`), and both gate the per-row loop;
-/// (2) this module models `panel` as an opaque `Option<usize>` handle,
-/// so it cannot call `Panel_prune` / `Panel_setSelected` /
-/// `Panel_getSelectedIndex` / `Panel_getSelected` on a real `Panel`
-/// (those fns now exist in `panel.rs`, but the `Table` never holds a
-/// live `Panel`);
-/// (3) `Panel_set` (`panel.rs`) takes a `Box<dyn Object>` while the rows
-/// here are owned `Row` values in `self.rows` (object-model mismatch);
-/// (4) the stable-tree-view driver `ss->stableTreeView` is not reachable:
-/// the `ScreenSettings` reached here via `host->settings->ss`
-/// (`machine.rs`) models only `treeView`, not `stableTreeView`.
-/// (`allowExcessScrollV` and the `stableId`/`stableLastIdx` anchor state
-/// are now modeled, so those earlier blockers are resolved.) See the
-/// module header for the full list.
-pub fn Table_rebuildPanel() {
-    todo!(
-        "port of Table.c:246 — needs live Panel drive + Row_isVisible/Row_matchesFilter + ss->stableTreeView"
-    )
+/// Port of `void Table_rebuildPanel(Table* this)` from `Table.c:246`.
+/// Rebuilds the tree/display list, then re-populates the (borrowing) live
+/// `Panel` with the visible rows: it prunes the panel, walks the display
+/// list, and sets each shown row as a [`PanelItem::Borrowed`] pointer into
+/// `this.rows` (the panel displays rows the `Table` owns — the Rust analog
+/// of htop's non-owning `Panel_set(panel, i, (Object*)row)`). Selection and
+/// scroll are preserved across the rebuild, following the `following` anchor
+/// when set.
+///
+/// The `Table::panel` (`*mut Panel`) is dereferenced here — its non-null
+/// validity is the precondition (set by `Machine_setTablesPanel`), exactly
+/// as C dereferences `this->panel`.
+///
+/// Deviation: htop's `Row_isVisible` / `Row_matchesFilter` dispatch through
+/// the `RowClass` vtable; the base slots are `true` / `false`, and the
+/// `Process` overrides (the incremental filter) are not yet ported. So
+/// `matchesFilter` is treated as `false` (no rows filtered out) and
+/// `isVisible` as `true` here — all `row.show` rows are displayed. Wiring
+/// the `Process` filter override will refine this.
+pub fn Table_rebuildPanel(this: &mut Table) {
+    Table_updateDisplayList(this);
+
+    let panel = this.panel;
+    debug_assert!(!panel.is_null());
+
+    // Snapshot selection/scroll/size before pruning.
+    let (curr_pos, curr_scroll_v, curr_size) = unsafe {
+        (
+            Panel_getSelectedIndex(&*panel),
+            (*panel).scrollV,
+            Panel_size(&*panel),
+        )
+    };
+
+    unsafe {
+        Panel_prune(&mut *panel);
+    }
+
+    // Follow the main group row if the followed row is occluded. With the
+    // base `Row_isVisible == true`, the `== false` guard is never satisfied,
+    // so this reduces to a no-op until the `Process` override lands; kept for
+    // fidelity to the C control flow.
+    if this.following != -1 {
+        if let Some(&fidx) = this.table.get(&this.following) {
+            let group = this.row(fidx).group;
+            let followed_is_visible = true; // Row_isVisible base default
+            if this.table.contains_key(&group) && !followed_is_visible {
+                this.following = group;
+            }
+        }
+    }
+
+    let row_count = this.displayList.len();
+    let mut found_followed = false;
+    let mut idx: i32 = 0;
+
+    for i in 0..row_count {
+        let row_index = this.displayList[i];
+        let (show, id) = {
+            let row = this.row(row_index);
+            (row.show, row.id)
+        };
+
+        // C: if (!row->show || Row_matchesFilter(row, this)) continue;
+        // Row_matchesFilter base default is false.
+        if !show {
+            continue;
+        }
+
+        // Panel_set(panel, idx, (Object*)row): a borrowed pointer to the
+        // table-owned row. Vector_set past the end grows the panel.
+        let row_ptr: *mut dyn Object = this.rows[row_index].as_mut().unwrap().as_mut();
+        unsafe {
+            let p = &mut *panel;
+            if (idx as usize) < p.items.len() {
+                p.items[idx as usize] = PanelItem::Borrowed(row_ptr);
+            } else {
+                p.items.push(PanelItem::Borrowed(row_ptr));
+            }
+        }
+
+        if this.following != -1 && id == this.following {
+            found_followed = true;
+            unsafe {
+                Panel_setSelected(&mut *panel, idx);
+                // Keep scroll position relative to the followed row.
+                (*panel).scrollV = idx - (curr_pos - curr_scroll_v);
+            }
+        }
+        idx += 1;
+    }
+
+    if this.following != -1 && !found_followed {
+        // Current followed row not found — reset.
+        this.following = -1;
+        unsafe {
+            Panel_setSelectionColor(&mut *panel, ColorElements::PANEL_SELECTION_FOCUS);
+        }
+    }
+
+    if this.following == -1 {
+        unsafe {
+            // If the last item was selected, keep the new last item selected.
+            if curr_pos > 0 && curr_pos == curr_size - 1 {
+                Panel_setSelected(&mut *panel, Panel_size(&*panel) - 1);
+            } else {
+                Panel_setSelected(&mut *panel, curr_pos);
+            }
+            (*panel).scrollV = curr_scroll_v;
+        }
+    }
 }
 
 /// Port of `void Table_printHeader(const Settings* settings, RichString*
@@ -600,7 +731,8 @@ pub fn Table_printHeader(settings: &Settings, header: &mut RichString) {
 /// Resets per-scan row flags before a refresh: `updated = false`,
 /// `wasShown = show`, `show = true`.
 pub fn Table_prepareEntries(this: &mut Table) {
-    for row in this.rows.iter_mut().flatten() {
+    for obj in this.rows.iter_mut().flatten() {
+        let row = obj.as_row_mut().unwrap();
         row.updated = false;
         row.wasShown = row.show;
         row.show = true;
@@ -634,7 +766,7 @@ pub fn Table_cleanupRow(this: &mut Table, idx: usize) -> bool {
     };
 
     let (tomb, updated, was_shown) = {
-        let row = this.rows[idx].as_ref().unwrap();
+        let row = this.row(idx);
         (row.tombStampMs, row.updated, row.wasShown)
     };
 
@@ -646,7 +778,7 @@ pub fn Table_cleanupRow(this: &mut Table, idx: usize) -> bool {
         // process no longer exists
         if highlight_changes && was_shown {
             // mark tombed
-            this.rows[idx].as_mut().unwrap().tombStampMs =
+            this.row_mut(idx).tombStampMs =
                 mono + (1000i64 * highlight_delay as i64) as u64;
             should_remove = false;
         } else {
@@ -718,7 +850,7 @@ pub fn Table_compact(this: &mut Table, dirtyIndex: usize) {
 /// `Table.h:81`: `Hashtable_get(this->table, id)`. Returns the row with
 /// the given id, or `None` when absent.
 pub fn Table_findRow(this: &Table, id: i32) -> Option<&Row> {
-    this.table.get(&id).and_then(|&i| this.rows[i].as_ref())
+    this.table.get(&id).and_then(|&i| this.row_opt(i))
 }
 
 #[cfg(test)]
@@ -760,7 +892,7 @@ mod tests {
         let mut t = Table::empty();
         Table_init(&mut t, h as *const Machine);
         for r in rows {
-            Table_add(&mut t, r);
+            Table_add(&mut t, Box::new(r));
         }
         t
     }
@@ -769,7 +901,7 @@ mod tests {
     fn display_ids(t: &Table) -> Vec<i32> {
         t.displayList
             .iter()
-            .map(|&i| t.rows[i].as_ref().unwrap().id)
+            .map(|&i| t.row(i).id)
             .collect()
     }
 
@@ -785,6 +917,30 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_panel_borrows_only_shown_rows() {
+        use crate::ported::panel::{Panel_get, Panel_new, Panel_size};
+
+        let h = host(1000, false, false, 0);
+        let mut t = table_with(&h, vec![row(1, 0, 0), row(2, 0, 0), row(3, 0, 0)]);
+        // Hide id 2 (added at index 1) before the rebuild.
+        t.row_mut(1).show = false;
+
+        // A live panel the table renders into (borrowing its rows).
+        let mut panel = Panel_new(0, 0, 80, 24, None);
+        t.panel = &mut panel as *mut Panel;
+
+        Table_rebuildPanel(&mut t);
+
+        // Only the two shown rows were borrowed into the panel.
+        assert_eq!(Panel_size(&panel), 2);
+        let shown: Vec<i32> = (0..Panel_size(&panel))
+            .map(|i| Panel_get(&panel, i).as_row().unwrap().id)
+            .collect();
+        assert!(shown.contains(&1) && shown.contains(&3));
+        assert!(!shown.contains(&2));
+    }
+
+    #[test]
     fn add_registers_row_and_stamps_seen() {
         let h = host(4242, false, false, 0);
         let t = table_with(&h, vec![row(10, 10, 0), row(20, 20, 0)]);
@@ -793,7 +949,7 @@ mod tests {
         assert_eq!(Table_findRow(&t, 20).unwrap().id, 20);
         assert!(Table_findRow(&t, 99).is_none());
         // seenStampMs stamped from host->monotonicMs
-        assert_eq!(t.rows[0].as_ref().unwrap().seenStampMs, 4242);
+        assert_eq!(t.row(0).seenStampMs, 4242);
     }
 
     #[test]
@@ -876,7 +1032,7 @@ mod tests {
         // filters on `show`, not buildTree).
         let h = host(1, true, false, 0);
         let mut t = table_with(&h, vec![row(1, 1, 0), row(2, 2, 1), row(4, 4, 2)]);
-        t.rows[0].as_mut().unwrap().showChildren = false;
+        t.row_mut(0).showChildren = false;
         Table_updateDisplayList(&mut t);
         assert_eq!(display_ids(&t), vec![1, 2, 4]);
         assert!(Table_findRow(&t, 1).unwrap().show);
@@ -888,11 +1044,11 @@ mod tests {
     fn expand_tree_sets_show_children_everywhere() {
         let h = host(1, true, false, 0);
         let mut t = table_with(&h, vec![row(1, 1, 0), row(2, 2, 1)]);
-        t.rows[0].as_mut().unwrap().showChildren = false;
-        t.rows[1].as_mut().unwrap().showChildren = false;
+        t.row_mut(0).showChildren = false;
+        t.row_mut(1).showChildren = false;
         Table_expandTree(&mut t);
-        assert!(t.rows[0].as_ref().unwrap().showChildren);
-        assert!(t.rows[1].as_ref().unwrap().showChildren);
+        assert!(t.row(0).showChildren);
+        assert!(t.row(1).showChildren);
     }
 
     #[test]
@@ -913,12 +1069,12 @@ mod tests {
         let h = host(1, false, false, 0);
         let mut t = table_with(&h, vec![row(1, 1, 0)]);
         {
-            let r = t.rows[0].as_mut().unwrap();
+            let r = t.row_mut(0);
             r.updated = true;
             r.show = false;
         }
         Table_prepareEntries(&mut t);
-        let r = t.rows[0].as_ref().unwrap();
+        let r = t.row(0);
         assert!(!r.updated);
         assert!(r.show);
         assert!(!r.wasShown); // wasShown = old show (false)
@@ -931,9 +1087,9 @@ mod tests {
         let h = host(1000, false, false, 0);
         let mut t = table_with(&h, vec![row(1, 1, 0), row(2, 2, 0), row(3, 3, 0)]);
         // Mark all updated except id 2.
-        t.rows[0].as_mut().unwrap().updated = true;
-        t.rows[1].as_mut().unwrap().updated = false;
-        t.rows[2].as_mut().unwrap().updated = true;
+        t.row_mut(0).updated = true;
+        t.row_mut(1).updated = false;
+        t.row_mut(2).updated = true;
 
         Table_cleanupEntries(&mut t);
 
@@ -953,14 +1109,14 @@ mod tests {
         let h = host(1000, false, true, 5);
         let mut t = table_with(&h, vec![row(7, 7, 0)]);
         {
-            let r = t.rows[0].as_mut().unwrap();
+            let r = t.row_mut(0);
             r.updated = false;
             r.wasShown = true;
         }
         Table_cleanupEntries(&mut t);
         // Still present, now tombed.
         assert_eq!(t.rows.len(), 1);
-        assert_eq!(t.rows[0].as_ref().unwrap().tombStampMs, 1000 + 1000 * 5);
+        assert_eq!(t.row(0).tombStampMs, 1000 + 1000 * 5);
     }
 
     #[test]
@@ -969,7 +1125,7 @@ mod tests {
         let h = host(1000, false, true, 5);
         let mut t = table_with(&h, vec![row(8, 8, 0)]);
         {
-            let r = t.rows[0].as_mut().unwrap();
+            let r = t.row_mut(0);
             r.updated = false;
             r.tombStampMs = 500;
         }
@@ -984,8 +1140,8 @@ mod tests {
         let h = host(1000, false, false, 0);
         let mut t = table_with(&h, vec![row(1, 1, 0), row(2, 2, 0)]);
         t.following = 2;
-        t.rows[0].as_mut().unwrap().updated = true;
-        t.rows[1].as_mut().unwrap().updated = false; // id 2 removed
+        t.row_mut(0).updated = true;
+        t.row_mut(1).updated = false; // id 2 removed
         Table_cleanupEntries(&mut t);
         assert_eq!(t.following, -1);
     }
@@ -1006,14 +1162,18 @@ mod tests {
             ],
         );
         for i in 0..5 {
-            t.rows[i].as_mut().unwrap().updated = true;
+            t.row_mut(i).updated = true;
         }
-        t.rows[2].as_mut().unwrap().updated = false; // remove id 3
+        t.row_mut(2).updated = false; // remove id 3
         Table_cleanupEntries(&mut t);
-        let ids: Vec<i32> = t.rows.iter().map(|s| s.as_ref().unwrap().id).collect();
+        let ids: Vec<i32> = t
+            .rows
+            .iter()
+            .map(|s| s.as_ref().unwrap().as_row().unwrap().id)
+            .collect();
         assert_eq!(ids, vec![1, 2, 4, 5]);
         // index map points at the right slots after compaction
-        assert_eq!(t.rows[*t.table.get(&4).unwrap()].as_ref().unwrap().id, 4);
+        assert_eq!(t.row(*t.table.get(&4).unwrap()).id, 4);
     }
 
     /// [`Table_printHeader`] builds a non-empty header from the active

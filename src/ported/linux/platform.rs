@@ -35,7 +35,23 @@ use std::sync::Mutex;
 use crate::ported::batterymeter::ACPresence;
 use crate::ported::crt::ColorElements;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
-use crate::ported::meter::Meter;
+use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
+use crate::ported::batterymeter::BatteryMeter_class;
+use crate::ported::cpumeter::{
+    AllCPUs2Meter_class, AllCPUs4Meter_class, AllCPUs8Meter_class, AllCPUsMeter_class,
+    CPUMeter_class, LeftCPUs2Meter_class, LeftCPUs4Meter_class, LeftCPUs8Meter_class,
+    LeftCPUsMeter_class, RightCPUs2Meter_class, RightCPUs4Meter_class, RightCPUs8Meter_class,
+    RightCPUsMeter_class,
+};
+use crate::ported::hostnamemeter::HostnameMeter_class;
+use crate::ported::loadaveragemeter::{LoadAverageMeter_class, LoadMeter_class};
+use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
+use crate::ported::memorymeter::MemoryMeter_class;
+use crate::ported::swapmeter::SwapMeter_class;
+use crate::ported::sysarchmeter::SysArchMeter_class;
+use crate::ported::tasksmeter::TasksMeter_class;
+use crate::ported::uptimemeter::{SecondsUptimeMeter_class, UptimeMeter_class};
+use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::xutils::{
     saturatingSub, String_contains_i, String_eq, String_startsWith, sumPositiveValues,
 };
@@ -59,6 +75,45 @@ pub const MEMORY_CLASS_CACHE: usize = 4;
 pub const MEMORY_CLASS_AVAILABLE: usize = 5;
 
 /// Port of `const MemoryClass Platform_memoryClasses[]`
+/// Port of `const MeterClass* const Platform_meterTypes[]` from
+/// `linux/Platform.c`. The C array is `NULL`-terminated and iterated as
+/// `for (type; *type; type++)`; here it is a slice, so its length replaces
+/// the sentinel. Only the meter classes whose `MeterClass` static is ported
+/// appear — the table grows as those statics land. Currently ported:
+/// `BlankMeter`. (`linux/Platform.c`'s list adds Linux-specific meters such
+/// as `PressureStall*`, `Zram`, `HugePage*`, `SELinux`, `Systemd*` on top of
+/// the shared set; all are pending their `MeterClass` static.)
+#[allow(non_upper_case_globals)] // faithful C global name
+pub static Platform_meterTypes: &[&'static MeterClass] = &[
+    &CPUMeter_class,
+    &ClockMeter_class,
+    &DateMeter_class,
+    &DateTimeMeter_class,
+    &LoadAverageMeter_class,
+    &LoadMeter_class,
+    &MemoryMeter_class,
+    &SwapMeter_class,
+    &TasksMeter_class,
+    &BatteryMeter_class,
+    &HostnameMeter_class,
+    &SysArchMeter_class,
+    &UptimeMeter_class,
+    &SecondsUptimeMeter_class,
+    &AllCPUsMeter_class,
+    &AllCPUs2Meter_class,
+    &AllCPUs4Meter_class,
+    &AllCPUs8Meter_class,
+    &LeftCPUsMeter_class,
+    &RightCPUsMeter_class,
+    &LeftCPUs2Meter_class,
+    &RightCPUs2Meter_class,
+    &LeftCPUs4Meter_class,
+    &RightCPUs4Meter_class,
+    &LeftCPUs8Meter_class,
+    &RightCPUs8Meter_class,
+    &BlankMeter_class,
+];
+
 /// (`linux/Platform.c:152`), in `MEMORY_CLASS_*` index order.
 #[allow(non_upper_case_globals)] // faithful C global name
 pub static Platform_memoryClasses: [MemoryClass; 6] = [
@@ -219,12 +274,7 @@ pub fn Platform_setGPUValues(this: &mut Meter, total_usage: &mut f64, total_gpu_
     static RESIDUE: Mutex<(u64, f64, u64)> = Mutex::new((0, 0.0, 0));
     const RESIDUE_INDEX: usize = 4; // ARRAYSIZE(GPUMeter_engineData)
 
-    let host = this
-        .host
-        .as_ref()
-        .expect("Platform_setGPUValues: this->host (C dereferences it)")
-        .clone();
-    let h = host.borrow();
+    let h = unsafe { &*(this.host as *const LinuxMachine) };
 
     let mut r = RESIDUE.lock().unwrap();
     if h.super_.monotonicMs > r.0 {
@@ -490,12 +540,7 @@ const CPU_METER_TEMPERATURE: usize = 9;
 /// (capped at 100). Offline CPUs set `curItems = 0` and return `NAN`.
 /// Temperature is `NAN` (no `BUILD_WITH_CPU_TEMP` in this build).
 pub fn Platform_setCPUValues(this: &mut Meter, cpu: u32) -> f64 {
-    let host = this
-        .host
-        .as_ref()
-        .expect("Platform_setCPUValues: this->host (C dereferences it)")
-        .clone();
-    let h = host.borrow();
+    let h = unsafe { &*(this.host as *const LinuxMachine) };
     let cpu_data = &h.cpuData[cpu as usize];
     let total = if cpu_data.totalPeriod == 0 {
         1.0
@@ -557,12 +602,7 @@ pub fn Platform_setCPUValues(this: &mut Meter, cpu: u32) -> f64 {
 /// concrete [`LinuxMachine`]; `totalMem` lives on `super_`, the rest on the
 /// `LinuxMachine`.
 pub fn Platform_setMemoryValues(this: &mut Meter) {
-    let host = this
-        .host
-        .as_ref()
-        .expect("Platform_setMemoryValues: this->host (C dereferences it)")
-        .clone();
-    let h = host.borrow();
+    let h = unsafe { &*(this.host as *const LinuxMachine) };
 
     this.total = h.super_.totalMem as f64;
     this.values[MEMORY_CLASS_USED] = h.usedMem as f64;
@@ -597,12 +637,7 @@ pub fn Platform_setMemoryValues(this: &mut Meter) {
 /// swap totals live on `super_`, the zswap counters on the `LinuxMachine`.
 /// `SwapMeter.h` indices: `USED=0`, `CACHE=1`, `FRONTSWAP=2`.
 pub fn Platform_setSwapValues(this: &mut Meter) {
-    let host = this
-        .host
-        .as_ref()
-        .expect("Platform_setSwapValues: this->host (C dereferences it)")
-        .clone();
-    let h = host.borrow();
+    let h = unsafe { &*(this.host as *const LinuxMachine) };
 
     this.total = h.super_.totalSwap as f64;
     this.values[0] = h.super_.usedSwap as f64;
@@ -627,12 +662,7 @@ pub fn Platform_setSwapValues(this: &mut Meter) {
 /// `usedZramComp <= usedZramOrig`, so the subtraction never underflows;
 /// `wrapping_sub` mirrors C's unsigned arithmetic for the impossible case.
 pub fn Platform_setZramValues(this: &mut Meter) {
-    let host = this
-        .host
-        .as_ref()
-        .expect("Platform_setZramValues: this->host (C dereferences it)")
-        .clone();
-    let h = host.borrow();
+    let h = unsafe { &*(this.host as *const LinuxMachine) };
 
     this.total = h.zram.totalZram as f64;
     this.values[0] = h.zram.usedZramComp as f64;

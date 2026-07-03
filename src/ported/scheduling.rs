@@ -238,7 +238,7 @@ pub fn Scheduling_togglePolicyPanelResetOnFork(schedPanel: &mut Panel) {
     let rof = !reset_on_fork.load(Ordering::Relaxed);
     reset_on_fork.store(rof, Ordering::Relaxed);
 
-    let item = (schedPanel.items[0].as_mut() as &mut dyn Any)
+    let item = (schedPanel.items[0].object_mut() as &mut dyn Any)
         .downcast_mut::<ListItem>()
         .expect("Scheduling_togglePolicyPanelResetOnFork: panel row 0 is not a ListItem");
     item.value = if rof {
@@ -435,7 +435,7 @@ mod tests {
 
     /// Downcast a panel row to its `ListItem` value for assertions.
     fn row_value(p: &Panel, i: usize) -> &str {
-        let any: &dyn Any = p.items[i].as_ref();
+        let any: &dyn Any = p.items[i].object();
         &any.downcast_ref::<ListItem>().unwrap().value
     }
 

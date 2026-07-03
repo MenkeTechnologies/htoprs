@@ -44,33 +44,35 @@
 //!   [`ColumnsPanel_update`] (see below): `HANDLED` paths mutate the panel
 //!   then panic in that stub; `IGNORED` paths run to completion.
 //!
+//! - [`ColumnsPanel_add`] (`ColumnsPanel.c:137`) — resolves a field/dynamic
+//!   column display name for `key` and pushes a `ListItem_new(name, key)`.
+//!   The reserved-field branch indexes the now-ported `Process_fields[key].name`
+//!   (bounded by the now-ported `LAST_PROCESSFIELD`); the dynamic branch reads
+//!   `Hashtable_get` → `DynamicColumn.heading`/`.name`. Takes `Panel* super`
+//!   (no `ColumnsPanel` field needed), so it is self-contained.
+//!
 //! # Stubbed (cannot be ported faithfully yet)
 //!
 //! - [`ColumnsPanel_delete`] (`ColumnsPanel.c:31`) — `Panel_done` +
 //!   `free`. [`ColumnsPanel`] owns its fields, so `Drop` releases them;
 //!   there is no algorithm to port (same precedent as every sibling
 //!   `_delete`, e.g. `Panel_delete`/`ListItem_delete`).
-//! - [`ColumnsPanel_add`] (`ColumnsPanel.c:137`) — indexes the platform
-//!   `Process_fields[key].name` table and `LAST_PROCESSFIELD`, and for
-//!   dynamic columns calls `Hashtable_get` for a `DynamicColumn` whose
-//!   `heading` it reads. `Hashtable_get` and `DynamicColumn.heading`/`.name`
-//!   are now ported, but the `key < LAST_PROCESSFIELD` branch still indexes
-//!   the unported platform `Process_fields[]` name table (and the
-//!   `LAST_PROCESSFIELD` bound), so the function stays blocked.
 //! - [`ColumnsPanel_fill`] (`ColumnsPanel.c:156`) — iterates `ss->fields`
-//!   and calls [`ColumnsPanel_add`]. `ScreenSettings.fields` now exists, but
-//!   `_add` is still stubbed (transitively on `Process_fields[]`) and the
-//!   reduced [`ColumnsPanel`] models no `ss` back-pointer to assign
-//!   `this->ss = ss`.
+//!   calling the now-ported [`ColumnsPanel_add`], then stores `this->ss = ss`.
+//!   That store is the blocker: `ss` is a non-owning back-pointer with no
+//!   useful safe-Rust home (its only reader, [`ColumnsPanel_update`], cannot
+//!   reach it — see below), and the reduced [`ColumnsPanel`] models no `ss`
+//!   field.
 //! - [`ColumnsPanel_new`] (`ColumnsPanel.c:164`) — allocates the panel
-//!   and calls [`ColumnsPanel_fill`] unconditionally; blocked transitively
-//!   on `_fill` (`Process_fields[]`) and on the unmodeled `ss`/`changed`
-//!   back-pointers.
+//!   and calls [`ColumnsPanel_fill`]; blocked transitively on `_fill` and on
+//!   the unmodeled `ss`/`changed` back-pointers (`changed` is a `bool*` into a
+//!   caller-owned cell, the aliasing `optionitem.rs` declines to model).
 //! - [`ColumnsPanel_update`] (`ColumnsPanel.c:181`) — rewrites
-//!   `ss->fields`/`ss->flags` from the list, OR-ing `Process_fields[key].flags`.
-//!   `ScreenSettings.fields`/`.flags` now exist, but the flag OR still needs
-//!   the unported `Process_fields[]` table and `LAST_PROCESSFIELD`, and the
-//!   reduced [`ColumnsPanel`] has no `ss`/`changed` back-pointers.
+//!   `ss->fields`/`ss->flags` from the list, OR-ing `Process_fields[key].flags`
+//!   (both tables now exist). Blocked structurally: its C body upcasts
+//!   `(ColumnsPanel*) super` to reach `this->ss`/`this->changed`, but this
+//!   port's `Panel* super` signature cannot upcast an embedded `&mut Panel`
+//!   back to its enclosing [`ColumnsPanel`] in safe Rust.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -78,11 +80,14 @@
 use crate::ported::crt::{
     ColorElements, KEY_DC, KEY_DEL_MAC, KEY_DOWN, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK, KEY_UP,
 };
-use crate::ported::listitem::ListItem;
+use crate::ported::dynamiccolumn::DynamicColumn;
+use crate::ported::hashtable::{Hashtable, Hashtable_get};
+use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::Object;
 use crate::ported::panel::{
-    HandlerResult, Panel, Panel_getSelectedIndex, Panel_moveSelectedDown, Panel_moveSelectedUp,
-    Panel_remove, Panel_selectByTyping, Panel_setSelectionColor, Panel_size,
+    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_moveSelectedDown,
+    Panel_moveSelectedUp, Panel_remove, Panel_selectByTyping, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS,
 };
 
@@ -138,7 +143,7 @@ pub fn ColumnsPanel_cancelMoving(this: &mut ColumnsPanel) {
     let super_ = &mut this.super_;
     let size = Panel_size(super_);
     for i in 0..size {
-        let obj: &mut dyn Object = super_.items[i as usize].as_mut();
+        let obj: &mut dyn Object = super_.items[i as usize].object_mut();
         let any: &mut dyn core::any::Any = obj;
         if let Some(item) = any.downcast_mut::<ListItem>() {
             item.moving = false;
@@ -205,7 +210,7 @@ pub fn ColumnsPanel_eventHandler(this: &mut ColumnsPanel, ch: i32) -> HandlerRes
                     // C: ListItem* selectedItem = (ListItem*) Panel_getSelected(super);
                     //    if (selectedItem) selectedItem->moving = true;
                     let sel = this.super_.selected as usize;
-                    let any: &mut dyn core::any::Any = this.super_.items[sel].as_mut();
+                    let any: &mut dyn core::any::Any = this.super_.items[sel].object_mut();
                     if let Some(item) = any.downcast_mut::<ListItem>() {
                         item.moving = true;
                     }
@@ -268,53 +273,85 @@ pub fn ColumnsPanel_eventHandler(this: &mut ColumnsPanel, ch: i32) -> HandlerRes
     result
 }
 
-/// TODO: port of `static void ColumnsPanel_add(Panel* super, unsigned int key,
-/// Hashtable* columns)` from `ColumnsPanel.c:137`. Reads
-/// `Process_fields[key].name`/`LAST_PROCESSFIELD` and, for dynamic
-/// columns, `Hashtable_get(columns, key)` then the `DynamicColumn`'s
-/// `heading`/`name`. `Hashtable_get` and `DynamicColumn.heading`/`.name`
-/// are now ported, but the `key < LAST_PROCESSFIELD` branch still indexes
-/// the unported platform `Process_fields[]` name table (and the
-/// `LAST_PROCESSFIELD` bound). Left as a stub.
-pub fn ColumnsPanel_add() {
-    todo!("port of ColumnsPanel.c:137 — needs Process_fields[] name table + LAST_PROCESSFIELD")
+/// Port of `static void ColumnsPanel_add(Panel* super, unsigned int key,
+/// Hashtable* columns)` from `ColumnsPanel.c:137`. Resolves the display
+/// `name` for `key` and pushes a `ListItem_new(name, key)` onto the panel.
+///
+/// For a reserved process field (`key < LAST_PROCESSFIELD`) the name is
+/// `Process_fields[key].name`; otherwise it is a dynamic column, looked up
+/// with [`Hashtable_get`] and named by its `heading` (preferred) or `name`.
+/// The C `assert(column)` + `if (!column) name = NULL` graceful path is a
+/// `None` arm here (mapped to the `"- "` fallback below). The C
+/// `Process_fields[key].name` is a `const char*` that is `NULL` for the
+/// unused table gaps; this repo models that `NULL` as the empty string
+/// (`ProcessFieldData.name` is `&'static str`, `""` for a gap), so the C
+/// `if (name == NULL) name = "- "` becomes `if name.is_empty()`.
+pub fn ColumnsPanel_add(super_: &mut Panel, key: u32, columns: &Hashtable) {
+    // C: const char* name;
+    let name: &str = if (key as usize) < LAST_PROCESSFIELD {
+        // C: name = Process_fields[key].name;
+        Process_fields[key as usize].name
+    } else {
+        // C: const DynamicColumn* column = Hashtable_get(columns, key);
+        //    assert(column);
+        //    if (!column) { name = NULL; }
+        //    else { name = column->heading ? column->heading : column->name; }
+        match Hashtable_get(columns, key) {
+            Some(obj) => {
+                let any: &dyn core::any::Any = obj;
+                let column = any
+                    .downcast_ref::<DynamicColumn>()
+                    .expect("ColumnsPanel_add: dynamic column entry is not a DynamicColumn");
+                column.heading.as_deref().unwrap_or(column.name.as_str())
+            }
+            None => "", // C NULL -> "- " fallback below
+        }
+    };
+    // C: if (name == NULL) name = "- ";  (C NULL modeled as "" here)
+    let name = if name.is_empty() { "- " } else { name };
+    // C: Panel_add(super, (Object*) ListItem_new(name, key));
+    Panel_add(super_, Box::new(ListItem_new(name, key as i32)));
 }
 
 /// TODO: port of `void ColumnsPanel_fill(ColumnsPanel* this,
 /// ScreenSettings* ss, Hashtable* columns)` from `ColumnsPanel.c:156`.
 /// `Panel_prune`s the panel, iterates `ss->fields` calling
-/// [`ColumnsPanel_add`], then assigns `this->ss = ss`. `ScreenSettings.fields`
-/// and `Panel_prune` now exist, but `_add` is still stubbed (transitively on
-/// `Process_fields[]`) and the reduced [`ColumnsPanel`] models no `ss`
-/// back-pointer to assign. Left as a stub.
+/// [`ColumnsPanel_add`] (now ported), then assigns `this->ss = ss`. The
+/// residual blocker is that `this->ss = ss` store: `ss` is a non-owning
+/// back-pointer into a `ScreenSettings` the caller owns, and the reduced
+/// [`ColumnsPanel`] models no `ss` field. Its only reader is
+/// [`ColumnsPanel_update`], whose C `Panel* super` signature cannot upcast
+/// back to `ColumnsPanel` in safe Rust (see below), so an `ss` field would be
+/// write-only dead state. Left as a stub until that back-pointer has a home.
 pub fn ColumnsPanel_fill() {
-    todo!(
-        "port of ColumnsPanel.c:156 — needs ColumnsPanel_add (Process_fields[]) + ss back-pointer"
-    )
+    todo!("port of ColumnsPanel.c:156 — needs the ss back-pointer store (no useful safe-Rust home; ColumnsPanel_update cannot reach it)")
 }
 
 /// TODO: port of `ColumnsPanel* ColumnsPanel_new(ScreenSettings* ss,
 /// Hashtable* columns, bool* changed)` from `ColumnsPanel.c:164`.
 /// Allocates the panel, sets `this->ss`/`this->changed`, and calls
-/// [`ColumnsPanel_fill`] unconditionally; blocked transitively on `_fill`
-/// (`Process_fields[]`) and on the unmodeled `ss`/`changed` back-pointers.
-/// Left as a stub.
+/// [`ColumnsPanel_fill`]. Blocked transitively on `_fill` and on the
+/// unmodeled `ss`/`changed` back-pointers (`changed` is a `bool*` into a
+/// caller-owned cell — the same pointer-into-external-cell aliasing that
+/// `optionitem.rs` declines to model in safe Rust). Left as a stub.
 pub fn ColumnsPanel_new() {
-    todo!("port of ColumnsPanel.c:164 — needs ColumnsPanel_fill (Process_fields[]) + ss/changed back-pointers")
+    todo!("port of ColumnsPanel.c:164 — needs ColumnsPanel_fill + the ss/changed back-pointers (bool*/ScreenSettings* aliasing)")
 }
 
 /// TODO: port of `void ColumnsPanel_update(Panel* super)` from
 /// `ColumnsPanel.c:181`. Rewrites `ss->fields`/`ss->flags` from the list,
-/// OR-ing `Process_fields[key].flags`. `ScreenSettings.fields`/`.flags` now
-/// exist, but the per-row flag OR still needs the unported `Process_fields[]`
-/// table and `LAST_PROCESSFIELD`, and the reduced [`ColumnsPanel`] has no
-/// `ss`/`changed` fields at all. Left as a stub. The
-/// signature matches the C `Panel* super` so [`ColumnsPanel_eventHandler`]'s
+/// OR-ing `Process_fields[key].flags` (both `Process_fields[]` and
+/// `ScreenSettings.fields`/`.flags` now exist). The blocker is structural:
+/// the C body does `ColumnsPanel* this = (ColumnsPanel*) super;` to reach
+/// `this->ss`/`this->changed`, but this port's signature is `Panel* super`
+/// (matching C) and safe Rust cannot upcast an embedded `&mut Panel` back to
+/// its enclosing [`ColumnsPanel`] to read those back-pointers. Left as a stub.
+/// The signature matches the C `Panel* super` so [`ColumnsPanel_eventHandler`]'s
 /// `HANDLED` tail can call it faithfully; every such call reaches this
 /// `todo!()` (the transitive block documented on the event handler).
 pub fn ColumnsPanel_update(super_: &mut Panel) {
     let _ = super_;
-    todo!("port of ColumnsPanel.c:181 — needs Process_fields[] flags table + LAST_PROCESSFIELD + ss/changed back-pointers")
+    todo!("port of ColumnsPanel.c:181 — Panel* super cannot upcast to ColumnsPanel in safe Rust to reach ss/changed")
 }
 
 #[cfg(test)]
@@ -342,7 +379,7 @@ mod tests {
     /// Read back the `moving` flag of row `i` via the same `Any` downcast
     /// the ported function uses.
     fn row_moving(cp: &ColumnsPanel, i: usize) -> bool {
-        let obj: &dyn Object = cp.super_.items[i].as_ref();
+        let obj: &dyn Object = cp.super_.items[i].object();
         let any: &dyn core::any::Any = obj;
         any.downcast_ref::<ListItem>().unwrap().moving
     }
@@ -385,7 +422,7 @@ mod tests {
         let mut cp = panel_with_moving_rows(2, false);
         // Already-cleared rows stay cleared; running twice is a no-op.
         for i in 0..2 {
-            let obj: &mut dyn Object = cp.super_.items[i].as_mut();
+            let obj: &mut dyn Object = cp.super_.items[i].object_mut();
             let any: &mut dyn core::any::Any = obj;
             any.downcast_mut::<ListItem>().unwrap().moving = false;
         }
@@ -410,7 +447,7 @@ mod tests {
     /// The `ListItem.value` of row `i`, via the same `Any` downcast the port
     /// uses.
     fn row_value(cp: &ColumnsPanel, i: usize) -> String {
-        let obj: &dyn Object = cp.super_.items[i].as_ref();
+        let obj: &dyn Object = cp.super_.items[i].object();
         let any: &dyn core::any::Any = obj;
         any.downcast_ref::<ListItem>().unwrap().value.clone()
     }
@@ -441,7 +478,7 @@ mod tests {
     fn mouse_without_move_mode_is_ignored() {
         let mut cp = panel_with_moving_rows(3, false);
         for i in 0..3 {
-            let obj: &mut dyn Object = cp.super_.items[i].as_mut();
+            let obj: &mut dyn Object = cp.super_.items[i].object_mut();
             (obj as &mut dyn core::any::Any)
                 .downcast_mut::<ListItem>()
                 .unwrap()
@@ -502,7 +539,7 @@ mod tests {
         // Rows start with moving=true from the fixture; clear so we can see
         // the handler set the *selected* row's flag.
         for i in 0..3 {
-            let obj: &mut dyn Object = cp.super_.items[i].as_mut();
+            let obj: &mut dyn Object = cp.super_.items[i].object_mut();
             (obj as &mut dyn core::any::Any)
                 .downcast_mut::<ListItem>()
                 .unwrap()
@@ -600,6 +637,90 @@ mod tests {
         assert_eq!(
             cp.super_.selectionColorId,
             ColorElements::PANEL_SELECTION_FOCUS
+        );
+    }
+
+    // ── ColumnsPanel_add ──────────────────────────────────────────────
+
+    use crate::ported::hashtable::{Hashtable_new, Hashtable_put};
+    use crate::ported::panel::Panel_get;
+    use crate::ported::process::ProcessField;
+
+    /// The added row's `ListItem`, via the same `Any` downcast the port uses.
+    fn added_row(panel: &Panel, i: i32) -> &ListItem {
+        let obj: &dyn Object = Panel_get(panel, i);
+        (obj as &dyn core::any::Any)
+            .downcast_ref::<ListItem>()
+            .expect("ColumnsPanel_add row is not a ListItem")
+    }
+
+    #[test]
+    fn add_reserved_field_uses_process_fields_name() {
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+        let columns = Hashtable_new(10, false);
+        // C: key < LAST_PROCESSFIELD -> name = Process_fields[key].name.
+        let key = ProcessField::PID as u32;
+        assert!((key as usize) < LAST_PROCESSFIELD);
+        ColumnsPanel_add(&mut panel, key, &columns);
+        assert_eq!(Panel_size(&panel), 1);
+        let item = added_row(&panel, 0);
+        assert_eq!(item.value, Process_fields[key as usize].name);
+        assert!(!item.value.is_empty());
+        assert_eq!(item.key, key as i32);
+    }
+
+    #[test]
+    fn add_empty_field_gap_falls_back_to_dash() {
+        // Process_fields[0] is the unused table gap (name "" == C NULL),
+        // so C's `if (name == NULL) name = "- "` fires.
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+        let columns = Hashtable_new(10, false);
+        assert!(Process_fields[0].name.is_empty());
+        ColumnsPanel_add(&mut panel, 0, &columns);
+        let item = added_row(&panel, 0);
+        assert_eq!(item.value, "- ");
+        assert_eq!(item.key, 0);
+    }
+
+    #[test]
+    fn add_dynamic_column_prefers_heading_then_name() {
+        let mut panel = Panel_new(0, 0, 10, 10, None);
+        let mut columns = Hashtable_new(10, true);
+        // key >= LAST_PROCESSFIELD -> dynamic-column branch.
+        let k_head = (LAST_PROCESSFIELD as u32) + 5;
+        let k_name = (LAST_PROCESSFIELD as u32) + 6;
+        columns_put(&mut columns, k_head, "internal_a", Some("Heading A"));
+        columns_put(&mut columns, k_name, "internal_b", None);
+
+        ColumnsPanel_add(&mut panel, k_head, &columns);
+        ColumnsPanel_add(&mut panel, k_name, &columns);
+        // Missing key: C assert(column) + graceful NULL -> "- ".
+        ColumnsPanel_add(&mut panel, (LAST_PROCESSFIELD as u32) + 99, &columns);
+
+        assert_eq!(added_row(&panel, 0).value, "Heading A"); // heading preferred
+        assert_eq!(added_row(&panel, 0).key, k_head as i32);
+        assert_eq!(added_row(&panel, 1).value, "internal_b"); // heading None -> name
+        assert_eq!(added_row(&panel, 2).value, "- "); // absent -> fallback
+    }
+
+    fn columns_put(
+        columns: &mut crate::ported::hashtable::Hashtable,
+        key: u32,
+        name: &str,
+        heading: Option<&str>,
+    ) {
+        Hashtable_put(
+            columns,
+            key,
+            Box::new(crate::ported::dynamiccolumn::DynamicColumn {
+                name: name.to_string(),
+                heading: heading.map(|s| s.to_string()),
+                caption: None,
+                description: None,
+                width: 0,
+                enabled: true,
+                table: core::ptr::null(),
+            }),
         );
     }
 }

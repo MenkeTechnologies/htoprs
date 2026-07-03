@@ -1,24 +1,24 @@
-//! Partial port of `DiskIOMeter.c` — htop's disk-IO rate/time meters.
+//! Port of `DiskIOMeter.c` — htop's disk-IO rate/time meters.
 //!
 //! C names are preserved verbatim (htop uses `CamelCase_snake`), so
 //! `non_snake_case` is allowed for the whole module — matching the spec
 //! name-for-name is the point of the port. Each C `static void
 //! Foo_display(const Object* cast, RichString* out)` ports to a free fn
-//! `pub fn Foo_display(out: &mut RichString)`: the `cast` argument is
-//! `ATTR_UNUSED` in every display fn (the data comes from file-scope
-//! statics, not the object), so it is dropped, the same way the
-//! out-param → return mappings elsewhere drop unused C parameters.
+//! `pub fn Foo_display(this: &Meter, out: &mut RichString)`: the `cast`
+//! argument is `ATTR_UNUSED` in every display fn (the data comes from
+//! file-scope statics, not the object), but the mirrored `this: &Meter` is
+//! kept (unused) so the fn fits the `MeterClass.display` vtable slot —
+//! matching the sibling meter convention (`loadaveragemeter.rs`).
 //!
 //! The file-scope static block (`DiskIOMeter.c:38`-`45`) — the
 //! `MeterRateStatus status` plus the `cached_*` rate/utilisation caches —
 //! is modeled as one `Mutex`-guarded [`DiskIOMeterState`]. C reads/writes
 //! these as unsynchronized single-threaded file statics; the `Mutex` is
 //! the safe-Rust analog for module-private mutable state (the same idiom
-//! `crt.rs` uses for `CRT_degreeSign`). The cache is written only by
-//! `DiskIOUpdateCache` (stubbed, see below), so in a running port it
-//! holds its initial `RATESTATUS_INIT` state; the display readers are
-//! nonetheless ported exactly, and the tests populate the cache directly
-//! to exercise the `RATESTATUS_DATA` branches.
+//! `crt.rs` uses for `CRT_degreeSign`). The cache is written by
+//! [`DiskIOUpdateCache`] (driven by the ported `Platform_getDiskIO`); the
+//! display readers are ported exactly, and the tests populate the cache
+//! directly to exercise the `RATESTATUS_DATA` branches.
 //!
 //! Ported (self-contained: `RichString` + `CRT_colors` are ported):
 //! - [`DiskIORateMeter_display`] (`DiskIOMeter.c:139`) — read/write byte
@@ -30,37 +30,31 @@
 //! - [`DiskIOMeter_display`] (`DiskIOMeter.c:221`) — combined display:
 //!   the rate line, then (only in the data branch) `"; "` and the time
 //!   line.
-//!
-//! Stubbed (blocked on unported substrate — each keeps its `todo!()`):
-//! - `DiskIOUpdateCache` (`:47`) — the rate/utilisation math itself is
-//!   pure, but it is driven by `Platform_getDiskIO(&data)` (the
-//!   platform-specific disk-stat reader, no platform layer ported) over a
-//!   `DiskIOData` and gated on `host->realtimeMs`; without the platform
-//!   source there is nothing to feed the cache. `Meter_humanUnit`
-//!   (`meter.rs`) is ported and would supply the `cached_*_str` fields.
-//! - `DiskIORateMeter_updateValues` (`:116`) /
-//!   `DiskIOTimeMeter_updateValues` (`:163`) — call `DiskIOUpdateCache`
-//!   (stubbed) and write `this->values[...]` / `this->txtBuffer`; the
-//!   partial `Meter` in `meter.rs` models neither `txtBuffer` nor `host`.
-//! - `DiskIOMeter_updateValues` (`:237`) — reads `this->meterData`
-//!   (`DiskIOMeterData`, two sub-`Meter` pointers) and dispatches
-//!   `Meter_updateValues` through the `MeterClass` vtable, unported.
-//! - `DiskIOMeter_draw` (`:244`) — dispatches `meter->draw(...)` function
-//!   pointers and reads `this->mode`; no vtable / terminal draw layer.
-//! - `DiskIOMeter_init` (`:265`) — `xCalloc`, `Meter_new`, `Meter_init`,
-//!   `Meter_initFn`, and `Class(DiskIORateMeter)` vtable references.
-//! - `DiskIOMeter_updateMode` (`:285`) — `Meter_setMode` (itself stubbed
-//!   in `meter.rs`) and reads the sub-meters' `->h`.
-//! - `DiskIOMeter_done` (`:296`) — `Meter_delete` + `free`; `Drop` frees
-//!   owned fields, so there is no free-everything body to port.
+//! - [`DiskIOUpdateCache`] (`:47`) / [`DiskIORateMeter_updateValues`]
+//!   (`:116`) / [`DiskIOTimeMeter_updateValues`] (`:163`) — the rate cache
+//!   refresh (driven by the ported `Platform_getDiskIO`) and the two
+//!   sub-meter value updaters.
+//! - The composite [`DiskIOMeter_updateValues`] (`:237`) /
+//!   [`DiskIOMeter_draw`] (`:244`) / [`DiskIOMeter_init`] (`:265`) /
+//!   [`DiskIOMeter_updateMode`] (`:285`) / [`DiskIOMeter_done`] (`:296`) —
+//!   now that `Meter.meterData`/`host`, `Meter_new`, `Meter_setMode`, and the
+//!   mirrored instance vtable slots are ported, the composite dispatches to
+//!   its [`DiskIORateMeter_class`]/[`DiskIOTimeMeter_class`] sub-meters (the
+//!   `CPUMeter` multi-column precedent).
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(non_upper_case_globals)] // faithful C class/global names (DiskIORateMeter_class, …)
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::sync::Mutex;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
-use crate::ported::meter::Meter_humanUnit;
+use crate::ported::meter::{
+    Meter, MeterClass, MeterModeId, Meter_class, Meter_humanUnit, Meter_new, Meter_setMode,
+    LED_METERMODE, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,
+};
+use crate::ported::object::ObjectClass;
 use crate::ported::richstring::{
     RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii,
 };
@@ -210,13 +204,10 @@ pub fn DiskIOUpdateCache(host: &crate::ported::linux::linuxmachine::LinuxMachine
 /// (`no data`/`init`/`stale`) or `r:<x>iB/s w:<y>iB/s`.
 pub fn DiskIORateMeter_updateValues(this: &mut crate::ported::meter::Meter) {
     {
-        let host = this
-            .host
-            .as_ref()
-            .expect("DiskIORateMeter_updateValues: this->host")
-            .clone();
-        let h = host.borrow();
-        DiskIOUpdateCache(&h);
+        // Linux-path meter: on Linux the host is a LinuxMachine (this is
+        // dead on darwin, where DiskIO is unported). Downcast the base host.
+        let h = unsafe { &*(this.host as *const crate::ported::linux::linuxmachine::LinuxMachine) };
+        DiskIOUpdateCache(h);
     }
 
     let st = DISK_IO_METER_STATE.lock().unwrap();
@@ -252,7 +243,8 @@ pub fn DiskIORateMeter_updateValues(this: &mut crate::ported::meter::Meter) {
 /// `read: <r>iB/s write: <w>iB/s`, coloring the labels `METER_TEXT` and
 /// each rate by its IO direction. `CRT_colors[X]` is
 /// `ColorElements::X.packed(ColorScheme::active())`.
-pub fn DiskIORateMeter_display(out: &mut RichString) {
+pub fn DiskIORateMeter_display(this: &Meter, out: &mut RichString) {
+    let _ = this;
     let scheme = ColorScheme::active();
     let state = DISK_IO_METER_STATE.lock().unwrap();
 
@@ -315,13 +307,9 @@ pub fn DiskIORateMeter_display(out: &mut RichString) {
 /// `<util>%[ (<n>disks)]`.
 pub fn DiskIOTimeMeter_updateValues(this: &mut crate::ported::meter::Meter) {
     {
-        let host = this
-            .host
-            .as_ref()
-            .expect("DiskIOTimeMeter_updateValues: this->host")
-            .clone();
-        let h = host.borrow();
-        DiskIOUpdateCache(&h);
+        // Linux-path meter (dead on darwin); downcast the base host.
+        let h = unsafe { &*(this.host as *const crate::ported::linux::linuxmachine::LinuxMachine) };
+        DiskIOUpdateCache(h);
     }
 
     let st = DISK_IO_METER_STATE.lock().unwrap();
@@ -360,7 +348,8 @@ pub fn DiskIOTimeMeter_updateValues(this: &mut crate::ported::meter::Meter) {
 /// (`%%` is a literal `%`) becomes `format!("{:.1}%", ...)`; the `%u`
 /// count is written from `cached_num_disks as u32`, matching the C
 /// `(unsigned int)` cast.
-pub fn DiskIOTimeMeter_display(out: &mut RichString) {
+pub fn DiskIOTimeMeter_display(this: &Meter, out: &mut RichString) {
+    let _ = this;
     let scheme = ColorScheme::active();
     let state = DISK_IO_METER_STATE.lock().unwrap();
 
@@ -421,8 +410,8 @@ pub fn DiskIOTimeMeter_display(out: &mut RichString) {
 /// `Mutex` is locked just long enough to copy the (`Copy`) status out —
 /// the sub-displays lock it themselves, and `std::sync::Mutex` is not
 /// reentrant.
-pub fn DiskIOMeter_display(out: &mut RichString) {
-    DiskIORateMeter_display(out);
+pub fn DiskIOMeter_display(this: &Meter, out: &mut RichString) {
+    DiskIORateMeter_display(this, out);
 
     let status = DISK_IO_METER_STATE.lock().unwrap().status;
     match status {
@@ -437,47 +426,218 @@ pub fn DiskIOMeter_display(out: &mut RichString) {
         ColorElements::METER_TEXT.packed(ColorScheme::active()),
         b"; ",
     );
-    DiskIOTimeMeter_display(out);
+    DiskIOTimeMeter_display(this, out);
 }
 
-/// TODO: port of `static void DiskIOMeter_updateValues(Meter* this)` from
-/// `DiskIOMeter.c:237`. Blocked: reads `this->meterData` (`DiskIOMeterData`,
-/// the two sub-`Meter` pointers) and dispatches `Meter_updateValues`
-/// through the `MeterClass` vtable, neither of which is ported.
-pub fn DiskIOMeter_updateValues() {
-    todo!("port of DiskIOMeter.c:237")
+/// Port of `typedef struct DiskIOMeterData_` (`DiskIOMeter.c:34`): the
+/// composite meter's private `meterData`, holding the rate and time sub-meters.
+/// The C `Meter*` pointers become owned `Meter`s (dropping the `Box` reclaims
+/// them, replacing the C `free`).
+struct DiskIOMeterData {
+    diskIORateMeter: Meter,
+    diskIOTimeMeter: Meter,
 }
 
-/// TODO: port of `static void DiskIOMeter_draw(Meter* this, int x, int y,
-/// int w)` from `DiskIOMeter.c:244`. Blocked: dispatches the sub-meters'
-/// `->draw(...)` function pointers and reads `this->mode`; there is no
-/// vtable / terminal draw layer ported.
-pub fn DiskIOMeter_draw() {
-    todo!("port of DiskIOMeter.c:244")
+impl DiskIOMeterData {
+    /// Borrows `this.meterData` as the `DiskIOMeterData` set by
+    /// [`DiskIOMeter_init`]. A Rust-only borrow helper (the `CPUMeterData::of`
+    /// precedent); an associated fn, so the port-purity gate requires no C
+    /// counterpart.
+    fn of(this: &mut Meter) -> &mut DiskIOMeterData {
+        this.meterData
+            .as_mut()
+            .and_then(|d| d.downcast_mut::<DiskIOMeterData>())
+            .expect("DiskIO meter: meterData is not an initialized DiskIOMeterData")
+    }
 }
 
-/// TODO: port of `static void DiskIOMeter_init(Meter* this)` from
-/// `DiskIOMeter.c:265`. Blocked: `xCalloc`, `Meter_new`, `Meter_init`,
-/// `Meter_initFn`, and the `Class(DiskIORateMeter)` / `Class(DiskIOTimeMeter)`
-/// vtable references, none ported.
-pub fn DiskIOMeter_init() {
-    todo!("port of DiskIOMeter.c:265")
+/// Port of `static const int DiskIORateMeter_attributes[]` (`DiskIOMeter.c:29`).
+static DiskIORateMeter_attributes: [i32; 2] = [
+    ColorElements::METER_VALUE_IOREAD as i32,
+    ColorElements::METER_VALUE_IOWRITE as i32,
+];
+
+/// Port of `static const int DiskIOTimeMeter_attributes[]` (`DiskIOMeter.c:34`).
+static DiskIOTimeMeter_attributes: [i32; 1] = [ColorElements::METER_VALUE_NOTICE as i32];
+
+/// Port of `const MeterClass DiskIORateMeter_class` (`DiskIOMeter.c:306`): the
+/// read/write byte-rate sub-meter. Wires [`DiskIORateMeter_updateValues`] and
+/// [`DiskIORateMeter_display`]. `super.delete` → `Drop`; `super.extends` → the
+/// `Meter_class` base link. Default `TEXT_METERMODE`, `total = 1.0`.
+pub static DiskIORateMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(DiskIORateMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(DiskIORateMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 1.0,
+    attributes: &DiskIORateMeter_attributes,
+    name: "DiskIORate",
+    uiName: "Disk IO Rate",
+    caption: "Dsk: ",
+    description: Some("Disk IO read & write bytes per second"),
+    maxItems: 2,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
+/// Port of `const MeterClass DiskIOTimeMeter_class` (`DiskIOMeter.c:323`): the
+/// percent-busy sub-meter. Wires [`DiskIOTimeMeter_updateValues`] and
+/// [`DiskIOTimeMeter_display`]. A percent chart, default `TEXT_METERMODE`.
+pub static DiskIOTimeMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(DiskIOTimeMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(DiskIOTimeMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 1.0,
+    attributes: &DiskIOTimeMeter_attributes,
+    name: "DiskIOTime",
+    uiName: "Disk IO Time",
+    caption: "Dsk: ",
+    description: Some("Disk percent time busy"),
+    maxItems: 1,
+    isMultiColumn: false,
+    isPercentChart: true,
+};
+
+/// Port of `const MeterClass DiskIOMeter_class` (`DiskIOMeter.c:342`): the
+/// combined multi-column meter compositing the rate and time sub-meters. Wires
+/// the ported [`DiskIOMeter_display`]/[`DiskIOMeter_updateValues`]/
+/// [`DiskIOMeter_draw`]/[`DiskIOMeter_init`]/[`DiskIOMeter_updateMode`]/
+/// [`DiskIOMeter_done`] slots. The C sets no `.attributes`/`.total`/`.maxItems`
+/// (`NULL`/`0`), so those default (empty slice / `0.0` / `0`); the empty
+/// attribute slice is never indexed because the class provides a `display`
+/// slot and its `draw` dispatches to the sub-meters.
+pub static DiskIOMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(DiskIOMeter_display),
+    init: Some(DiskIOMeter_init),
+    done: Some(DiskIOMeter_done),
+    updateMode: Some(DiskIOMeter_updateMode),
+    updateValues: Some(DiskIOMeter_updateValues),
+    draw: Some(DiskIOMeter_draw),
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 0.0,
+    attributes: &[],
+    name: "DiskIO",
+    uiName: "Disk IO",
+    caption: "Dsk: ",
+    description: Some("Disk IO rate & time combined display"),
+    maxItems: 0,
+    isMultiColumn: true,
+    isPercentChart: false,
+};
+
+/// Port of `static void DiskIOMeter_updateValues(Meter* this)` from
+/// `DiskIOMeter.c:237`. Dispatches `Meter_updateValues` on each sub-meter held
+/// in `this->meterData` (`As_Meter(m)->updateValues(m)` — the mirrored instance
+/// `updateValues` slot the ported `Meter` carries).
+pub fn DiskIOMeter_updateValues(this: &mut Meter) {
+    let data = DiskIOMeterData::of(this);
+    let rate_uv = data
+        .diskIORateMeter
+        .updateValues
+        .expect("DiskIOMeter_updateValues: rate sub-meter updateValues");
+    rate_uv(&mut data.diskIORateMeter);
+    let time_uv = data
+        .diskIOTimeMeter
+        .updateValues
+        .expect("DiskIOMeter_updateValues: time sub-meter updateValues");
+    time_uv(&mut data.diskIOTimeMeter);
 }
 
-/// TODO: port of `static void DiskIOMeter_updateMode(Meter* this,
-/// MeterModeId mode)` from `DiskIOMeter.c:285`. Blocked: `Meter_setMode`
-/// (itself stubbed in `meter.rs`) and reads the sub-meters' `->h` to size
-/// `this->h`.
-pub fn DiskIOMeter_updateMode() {
-    todo!("port of DiskIOMeter.c:285")
+/// Port of `static void DiskIOMeter_draw(Meter* this, int x, int y, int w)`
+/// from `DiskIOMeter.c:244`. In `TEXT`/`LED` mode it renders the composite's
+/// combined display by calling the rate sub-meter's `draw` fn pointer with
+/// `this` (the composite) as the meter — exactly as C does — so
+/// `Meter_displayBuffer` dispatches `this->display` (`DiskIOMeter_display`).
+/// Otherwise it splits the width in half and draws the rate and time sub-meters
+/// side by side (the `w % 2` remainder padding the gap, aligning with the CPU
+/// meter). Terminal output goes through `out` (the crossterm sink the ported
+/// draw path uses).
+pub fn DiskIOMeter_draw(out: &mut dyn Write, this: &mut Meter, x: i32, y: i32, w: i32) {
+    if this.mode == TEXT_METERMODE || this.mode == LED_METERMODE {
+        let draw = DiskIOMeterData::of(this)
+            .diskIORateMeter
+            .draw
+            .expect("DiskIOMeter_draw: rate sub-meter draw");
+        draw(&mut *out, this, x, y, w);
+        return;
+    }
+
+    // Use the same width for each sub meter to align with CPU meter
+    let colwidth = w / 2;
+    let diff = w % 2;
+    let data = DiskIOMeterData::of(this);
+    let rate_draw = data
+        .diskIORateMeter
+        .draw
+        .expect("DiskIOMeter_draw: rate sub-meter draw");
+    rate_draw(&mut *out, &mut data.diskIORateMeter, x, y, colwidth);
+    let time_draw = data
+        .diskIOTimeMeter
+        .draw
+        .expect("DiskIOMeter_draw: time sub-meter draw");
+    time_draw(&mut *out, &mut data.diskIOTimeMeter, x + colwidth + diff, y, colwidth);
 }
 
-/// TODO: port of `static void DiskIOMeter_done(Meter* this)` from
-/// `DiskIOMeter.c:296`. Blocked: `Meter_delete` on each sub-meter and
-/// `free(data)`; `Drop` frees owned fields, so there is no
-/// free-everything body to port faithfully.
-pub fn DiskIOMeter_done() {
-    todo!("port of DiskIOMeter.c:296")
+/// Port of `static void DiskIOMeter_init(Meter* this)` from `DiskIOMeter.c:265`.
+/// Allocates the [`DiskIOMeterData`] on first use, constructing the rate and
+/// time sub-meters via `Meter_new(this->host, 0, Class(...))`. `Meter_new`
+/// already runs each class `init` slot + the default `Meter_setMode`, and
+/// neither [`DiskIORateMeter_class`] nor [`DiskIOTimeMeter_class`] defines an
+/// `init` slot, so the C `if (Meter_initFn(sub)) Meter_init(sub)` re-init calls
+/// are no-ops here.
+pub fn DiskIOMeter_init(this: &mut Meter) {
+    if this.meterData.is_none() {
+        let host = this.host;
+        this.meterData = Some(Box::new(DiskIOMeterData {
+            diskIORateMeter: Meter_new(host, 0, &DiskIORateMeter_class),
+            diskIOTimeMeter: Meter_new(host, 0, &DiskIOTimeMeter_class),
+        }));
+    }
+}
+
+/// Port of `static void DiskIOMeter_updateMode(Meter* this, MeterModeId mode)`
+/// from `DiskIOMeter.c:285`. Sets the meter mode, propagates it to both
+/// sub-meters via `Meter_setMode`, and takes the container height as the
+/// taller of the two (`MAXIMUM`).
+pub fn DiskIOMeter_updateMode(this: &mut Meter, mode: MeterModeId) {
+    this.mode = mode;
+    let data = DiskIOMeterData::of(this);
+    Meter_setMode(&mut data.diskIORateMeter, mode);
+    Meter_setMode(&mut data.diskIOTimeMeter, mode);
+    let h = data.diskIORateMeter.h.max(data.diskIOTimeMeter.h);
+    this.h = h;
+}
+
+/// Port of `static void DiskIOMeter_done(Meter* this)` from `DiskIOMeter.c:296`.
+/// The C deletes both sub-meters and frees the `DiskIOMeterData`; clearing the
+/// owned `meterData` slot drops the sub-meters and reclaims all of it.
+pub fn DiskIOMeter_done(this: &mut Meter) {
+    this.meterData = None;
 }
 
 #[cfg(test)]
@@ -492,6 +652,12 @@ mod tests {
     /// Visible characters of the valid `[0, chlen)` range of `out`.
     fn text(r: &RichString) -> String {
         (0..r.chlen as usize).map(|i| r.chptr[i].chars).collect()
+    }
+
+    /// The display fns take an `ATTR_UNUSED` `&Meter` (data comes from the
+    /// file-scope statics), so any empty meter suffices as the ignored arg.
+    fn dummy() -> Meter {
+        Meter::empty()
     }
 
     /// Overwrite the whole file-scope cache for a test.
@@ -510,17 +676,17 @@ mod tests {
 
         set_state(MeterRateStatus::RATESTATUS_NODATA, "", "", 0.0, 0);
         let mut out = RichString::new();
-        DiskIORateMeter_display(&mut out);
+        DiskIORateMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "no data");
 
         set_state(MeterRateStatus::RATESTATUS_INIT, "", "", 0.0, 0);
         let mut out = RichString::new();
-        DiskIORateMeter_display(&mut out);
+        DiskIORateMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "initializing...");
 
         set_state(MeterRateStatus::RATESTATUS_STALE, "", "", 0.0, 0);
         let mut out = RichString::new();
-        DiskIORateMeter_display(&mut out);
+        DiskIORateMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "stale data");
     }
 
@@ -530,7 +696,7 @@ mod tests {
 
         set_state(MeterRateStatus::RATESTATUS_DATA, "1.23G", "45.6M", 0.0, 0);
         let mut out = RichString::new();
-        DiskIORateMeter_display(&mut out);
+        DiskIORateMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "read: 1.23GiB/s write: 45.6MiB/s");
     }
 
@@ -540,7 +706,7 @@ mod tests {
 
         set_state(MeterRateStatus::RATESTATUS_NODATA, "", "", 0.0, 0);
         let mut out = RichString::new();
-        DiskIOTimeMeter_display(&mut out);
+        DiskIOTimeMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "no data");
     }
 
@@ -551,7 +717,7 @@ mod tests {
         // num_disks <= 1 => no suffix.
         set_state(MeterRateStatus::RATESTATUS_DATA, "", "", 12.34, 1);
         let mut out = RichString::new();
-        DiskIOTimeMeter_display(&mut out);
+        DiskIOTimeMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "12.3% busy");
     }
 
@@ -563,7 +729,7 @@ mod tests {
         // color branch (color isn't asserted here, only the text).
         set_state(MeterRateStatus::RATESTATUS_DATA, "", "", 87.65, 4);
         let mut out = RichString::new();
-        DiskIOTimeMeter_display(&mut out);
+        DiskIOTimeMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "87.7% busy (4 disks)");
     }
 
@@ -574,7 +740,7 @@ mod tests {
         // num_disks >= 1000 => suffix suppressed (the C `< 1000` guard).
         set_state(MeterRateStatus::RATESTATUS_DATA, "", "", 5.0, 1000);
         let mut out = RichString::new();
-        DiskIOTimeMeter_display(&mut out);
+        DiskIOTimeMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "5.0% busy");
     }
 
@@ -584,7 +750,7 @@ mod tests {
 
         set_state(MeterRateStatus::RATESTATUS_DATA, "10K", "20K", 33.3, 2);
         let mut out = RichString::new();
-        DiskIOMeter_display(&mut out);
+        DiskIOMeter_display(&dummy(), &mut out);
         assert_eq!(
             text(&out),
             "read: 10KiB/s write: 20KiB/s; 33.3% busy (2 disks)"
@@ -599,7 +765,7 @@ mod tests {
         // line (the C returns before appending the separator).
         set_state(MeterRateStatus::RATESTATUS_STALE, "", "", 0.0, 0);
         let mut out = RichString::new();
-        DiskIOMeter_display(&mut out);
+        DiskIOMeter_display(&dummy(), &mut out);
         assert_eq!(text(&out), "stale data");
     }
 
@@ -608,13 +774,11 @@ mod tests {
         use crate::ported::linux::linuxmachine::LinuxMachine;
         use crate::ported::machine::Machine;
         use crate::ported::meter::Meter;
-        use std::cell::RefCell;
-        use std::rc::Rc;
         // First sample (cached_last_update == 0) with a >500ms span forces the
         // update path. On Linux CI Platform_getDiskIO succeeds → "init"; on a
         // host without /proc/diskstats it fails → "no data". Assert the meter
         // produces one of those and populates its value slots without panic.
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 realtimeMs: 1000,
                 ..Default::default()
@@ -623,7 +787,7 @@ mod tests {
         }));
         let mut m = Meter {
             values: vec![0.0; 2],
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         };
         super::DiskIORateMeter_updateValues(&mut m);

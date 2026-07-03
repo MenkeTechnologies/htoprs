@@ -43,16 +43,29 @@
 //!   reinventing that table rather than porting it, so the constructor is left
 //!   stubbed until the table lands in a ported `HeaderLayout` module.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use core::any::Any;
 
 use crate::ported::crt::{KEY_ENTER, KEY_MOUSE, KEY_RECLICK};
+use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::header::Header_setLayout;
-use crate::ported::optionitem::{CheckItem, CheckItem_set};
-use crate::ported::panel::{HandlerResult, Panel, Panel_getSelectedIndex};
+use crate::ported::optionitem::{CheckItem, CheckItem_newByVal, CheckItem_set};
+use crate::ported::panel::{
+    HandlerResult, Panel, Panel_add, Panel_getSelectedIndex, Panel_new, Panel_setHeader,
+};
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
-use crate::ported::settings::{HeaderLayout, Settings};
+use crate::ported::settings::{HeaderLayout, HeaderLayout_layouts, Settings};
+
+/// Port of the file-scope `static const char* const HeaderOptionsFunctions[]`
+/// from `HeaderOptionsPanel.c:24`. Nine blank slots followed by `"Done  "`;
+/// the C trailing `NULL` sentinel is dropped (the ported `FunctionBar_new` is
+/// length-bounded, not NUL-terminated).
+static HeaderOptionsFunctions: [&str; 10] = [
+    "      ", "      ", "      ", "      ", "      ", "      ", "      ", "      ", "      ",
+    "Done  ",
+];
 
 /// Reduced model of the C `HeaderOptionsPanel` struct
 /// (`HeaderOptionsPanel.h:15`): the embedded `Panel super` (as `super_`) and the
@@ -113,12 +126,12 @@ pub fn HeaderOptionsPanel_eventHandler(this: &mut HeaderOptionsPanel, ch: i32) -
             debug_assert!((mark as usize) < HeaderLayout::LAST_HEADER_LAYOUT as usize);
 
             for i in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
-                let any: &mut dyn Any = this.super_.items[i].as_mut();
+                let any: &mut dyn Any = this.super_.items[i].object_mut();
                 if let Some(item) = any.downcast_mut::<CheckItem>() {
                     CheckItem_set(item, false);
                 }
             }
-            let any: &mut dyn Any = this.super_.items[mark as usize].as_mut();
+            let any: &mut dyn Any = this.super_.items[mark as usize].object_mut();
             if let Some(item) = any.downcast_mut::<CheckItem>() {
                 CheckItem_set(item, true);
             }
@@ -168,16 +181,54 @@ pub fn HeaderOptionsPanel_eventHandler(this: &mut HeaderOptionsPanel, ch: i32) -
     result
 }
 
-/// TODO: port of `HeaderOptionsPanel* HeaderOptionsPanel_new(Settings* settings,
-/// ScreenManager* scr)` from `HeaderOptionsPanel.c:74`. Blocked on the
-/// `HeaderLayout_layouts[]` description table: `_new` labels each `CheckItem`
-/// row with `HeaderLayout_layouts[i].description` (`HeaderLayout.h:40`), which
-/// has no ported analog (only the `HeaderLayout` enum and `HeaderLayout_getColumns`
-/// are ported — see the module docs). The `HeaderOptionsPanel` wrapper and its
-/// `scr`/`settings` back-pointers are now modeled, so the description table is
-/// the sole remaining blocker.
-pub fn HeaderOptionsPanel_new() {
-    todo!("port of HeaderOptionsPanel.c:74 — needs the HeaderLayout_layouts[].description table")
+/// Port of `HeaderOptionsPanel* HeaderOptionsPanel_new(Settings* settings,
+/// ScreenManager* scr)` from `HeaderOptionsPanel.c:74`.
+///
+/// Builds a `1×1` [`Panel`] with the `HeaderOptionsFunctions` [`FunctionBar`],
+/// stores the `scr`/`settings` back-pointers, sets the "Header Layout" header,
+/// then appends one `CheckItem_newByVal(HeaderLayout_layouts[i].description,
+/// false)` for each of the `LAST_HEADER_LAYOUT` layouts and checks the row
+/// matching the active `scr->header->headerLayout`.
+///
+/// The C `Class(CheckItem)`/`owner` args to `Panel_init` type the underlying
+/// `Vector`; the ported `Panel_new` drops them (a `Vec<Box<dyn Object>>` needs
+/// no such typing), matching every sibling panel port. The final
+/// `CheckItem_set((CheckItem*)Panel_get(super, headerLayout), true)` write is
+/// reproduced by indexing `super_.items[headerLayout]` and downcasting via the
+/// `Any` supertrait, the same mutating analog `ColorsPanel_new` uses.
+pub fn HeaderOptionsPanel_new(settings: *mut Settings, scr: *mut ScreenManager) -> HeaderOptionsPanel {
+    let fuBar = FunctionBar_new(Some(&HeaderOptionsFunctions[..]), None, None);
+    let super_ = Panel_new(1, 1, 1, 1, Some(fuBar));
+
+    let mut this = HeaderOptionsPanel {
+        super_,
+        scr,
+        settings,
+    };
+
+    Panel_setHeader(&mut this.super_, "Header Layout");
+    for i in 0..(HeaderLayout::LAST_HEADER_LAYOUT as usize) {
+        Panel_add(
+            &mut this.super_,
+            Box::new(CheckItem_newByVal(HeaderLayout_layouts[i].description, false)),
+        );
+    }
+
+    // C: CheckItem_set((CheckItem*)Panel_get(super, scr->header->headerLayout), true);
+    // SAFETY: `scr` is the non-owning back-pointer just stored; the
+    // `ScreenManager` it aliases outlives this panel, and its `header` is
+    // always present at construction.
+    let headerLayout = unsafe { &*scr }
+        .header
+        .as_ref()
+        .expect("HeaderOptionsPanel_new: scr->header is NULL")
+        .headerLayout as usize;
+    let any: &mut dyn Any = this.super_.items[headerLayout].object_mut();
+    if let Some(item) = any.downcast_mut::<CheckItem>() {
+        CheckItem_set(item, true);
+    }
+
+    this
 }
 
 #[cfg(test)]
@@ -196,6 +247,7 @@ mod tests {
             pauseUpdate: false,
             hideSelection: false,
             hideMeters: false,
+            host: core::ptr::null_mut(),
         }
     }
 
@@ -216,6 +268,7 @@ mod tests {
     /// equal `HeaderLayout_getColumns(headerLayout)`, so one empty column).
     fn header() -> crate::ported::header::Header {
         crate::ported::header::Header {
+            host: core::ptr::null(),
             columns: vec![Vec::new()],
             headerLayout: HeaderLayout::HF_ONE_100,
             pad: 0,
@@ -236,7 +289,7 @@ mod tests {
     }
 
     fn item_checked(p: &Panel, i: usize) -> bool {
-        let any: &dyn Any = p.items[i].as_ref();
+        let any: &dyn Any = p.items[i].object();
         CheckItem_get(any.downcast_ref::<CheckItem>().unwrap())
     }
 

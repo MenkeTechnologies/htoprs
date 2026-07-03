@@ -187,10 +187,50 @@ pub const fn EVENT_SCREEN_TAB_GET_X(ev_: i32) -> i32 {
 /// `IncSet` (`incset.rs`).
 pub const KEY_MOUSE_BAR_CLICK: i32 = KEY_MAX + 50;
 
+/// An item in a [`Panel`]'s list. htop's `Vector* items` carries a whole-list
+/// `owner` flag deciding whether it frees its elements; here that choice is
+/// per item. An owning panel stores [`Owned`](PanelItem::Owned) boxes
+/// (dropped with the panel); a panel that only *displays* rows another
+/// structure owns — e.g. the process [`Table`](crate::ported::table::Table) —
+/// stores [`Borrowed`](PanelItem::Borrowed) raw pointers into that owner
+/// (never dropped here). The faithful analog of a non-owning C `Panel`.
+pub enum PanelItem {
+    /// The panel owns this object and drops it.
+    Owned(Box<dyn Object>),
+    /// The panel only references an object owned elsewhere (a `Table` row);
+    /// `*mut` because htop mutates rows through the panel (expand/collapse).
+    Borrowed(*mut dyn Object),
+}
+
+impl PanelItem {
+    /// The item as a shared `&dyn Object`, regardless of ownership.
+    #[inline]
+    pub fn object(&self) -> &dyn Object {
+        match self {
+            PanelItem::Owned(b) => b.as_ref(),
+            // SAFETY: a Borrowed item points at an object owned elsewhere
+            // (a Table row) that outlives its display in the panel.
+            PanelItem::Borrowed(p) => unsafe { &**p },
+        }
+    }
+
+    /// The item as a unique `&mut dyn Object`, regardless of ownership.
+    #[inline]
+    pub fn object_mut(&mut self) -> &mut dyn Object {
+        match self {
+            PanelItem::Owned(b) => b.as_mut(),
+            // SAFETY: as `object`; the row is not aliased mutably elsewhere
+            // while the panel edits it (htop's single-threaded row graph).
+            PanelItem::Borrowed(p) => unsafe { &mut **p },
+        }
+    }
+}
+
 /// Port of htop's `struct Panel_` (`Panel.h:64`). See the module docs for
 /// the field mapping. `selectionColorId` is a [`ColorElements`] (C's
 /// `ColorElements selectionColorId`), so [`Panel_draw`] can index the color
-/// tables directly; `items` is the `Vec` analog of the C `Vector* items`.
+/// tables directly; `items` is the `Vec` analog of the C `Vector* items`,
+/// each a [`PanelItem`] (owned or borrowed) — the C `owner` flag made per-item.
 pub struct Panel {
     pub x: i32,
     pub y: i32,
@@ -198,7 +238,7 @@ pub struct Panel {
     pub h: i32,
     pub cursorX: i32,
     pub cursorY: i32,
-    pub items: Vec<Box<dyn Object>>,
+    pub items: Vec<PanelItem>,
     pub selected: i32,
     pub oldSelected: i32,
     pub prevSelected: i32,
@@ -386,37 +426,42 @@ pub fn Panel_prune(this: &mut Panel) {
     this.allowExcessScrollV = false; // C: Panel.c:122
 }
 
-/// Port of `Panel.c:125`. Appends `o` to the item list.
+/// Port of `Panel.c:125`. Appends `o` to the item list (owned).
 pub fn Panel_add(this: &mut Panel, o: Box<dyn Object>) {
-    this.items.push(o);
+    this.items.push(PanelItem::Owned(o));
     this.prevSelected = -1;
     this.needsRedraw = true;
 }
 
-/// Port of `Panel.c:133`. Inserts `o` at index `i`.
+/// Port of `Panel.c:133`. Inserts `o` at index `i` (owned).
 pub fn Panel_insert(this: &mut Panel, i: i32, o: Box<dyn Object>) {
-    this.items.insert(i as usize, o);
+    this.items.insert(i as usize, PanelItem::Owned(o));
     this.prevSelected = -1;
     this.needsRedraw = true;
 }
 
 /// Port of `Panel.c:141`. Replaces the item at index `i` with `o`
-/// (C `Vector_set`).
+/// (C `Vector_set`), taking ownership.
 pub fn Panel_set(this: &mut Panel, i: i32, o: Box<dyn Object>) {
-    this.items[i as usize] = o;
+    this.items[i as usize] = PanelItem::Owned(o);
 }
 
 /// Port of `Panel.c:147`. Returns the item at index `i` (C `Vector_get`,
 /// which asserts `i` in range).
 pub fn Panel_get(this: &Panel, i: i32) -> &dyn Object {
-    this.items[i as usize].as_ref()
+    this.items[i as usize].object()
 }
 
-/// Port of `Panel.c:153`. Removes and returns the item at index `i`,
-/// decrementing `selected` when it fell off the (now shorter) end.
+/// Port of `Panel.c:153`. Removes and returns the (owned) item at index
+/// `i`, decrementing `selected` when it fell off the (now shorter) end.
+/// Only valid on an owning panel — a borrowing panel prunes and re-refs
+/// rather than removing individual items.
 pub fn Panel_remove(this: &mut Panel, i: i32) -> Box<dyn Object> {
     this.needsRedraw = true;
-    let removed = this.items.remove(i as usize);
+    let removed = match this.items.remove(i as usize) {
+        PanelItem::Owned(b) => b,
+        PanelItem::Borrowed(_) => panic!("Panel_remove on a borrowed item"),
+    };
     this.prevSelected = -1;
     if this.selected > 0 && this.selected >= this.items.len() as i32 {
         this.selected -= 1;
@@ -428,7 +473,7 @@ pub fn Panel_remove(this: &mut Panel, i: i32) -> Box<dyn Object> {
 /// list is empty.
 pub fn Panel_getSelected(this: &Panel) -> Option<&dyn Object> {
     if !this.items.is_empty() {
-        Some(this.items[this.selected as usize].as_ref())
+        Some(this.items[this.selected as usize].object())
     } else {
         None
     }
@@ -593,7 +638,7 @@ pub fn Panel_draw(
         while line < h && i < up_to {
             let mut highlight_attr = 0i32;
             {
-                let item_obj: &dyn Object = this.items[i as usize].as_ref();
+                let item_obj: &dyn Object = this.items[i as usize].object();
                 let sz = RichString_size(&item);
                 RichString_rewind(&mut item, sz);
                 item.highlightAttr = 0;
@@ -635,7 +680,7 @@ pub fn Panel_draw(
         let scroll_v = this.scrollV;
         let old_selected = this.oldSelected;
         {
-            let old_obj: &dyn Object = this.items[old_selected as usize].as_ref();
+            let old_obj: &dyn Object = this.items[old_selected as usize].object();
             let sz = RichString_size(&item);
             RichString_rewind(&mut item, sz);
             old_obj.display(&mut item);
@@ -655,7 +700,7 @@ pub fn Panel_draw(
 
         let selected = this.selected;
         {
-            let new_obj: &dyn Object = this.items[selected as usize].as_ref();
+            let new_obj: &dyn Object = this.items[selected as usize].object();
             let sz = RichString_size(&item);
             RichString_rewind(&mut item, sz);
             item.highlightAttr = 0;
@@ -1015,7 +1060,7 @@ mod tests {
 
     fn fill(p: &mut Panel, n: usize) {
         for i in 0..n {
-            p.items.push(li(&format!("item{i}")));
+            p.items.push(PanelItem::Owned(li(&format!("item{i}"))));
         }
     }
 
@@ -1483,7 +1528,7 @@ mod tests {
     fn with_items(values: &[&str]) -> Panel {
         let mut p = blank();
         for v in values {
-            p.items.push(li(v));
+            p.items.push(PanelItem::Owned(li(v)));
         }
         p
     }

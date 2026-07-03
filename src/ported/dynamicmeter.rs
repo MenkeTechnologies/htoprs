@@ -25,9 +25,8 @@
 //! - `DynamicMeters_new` (`DynamicMeter.c:39`) — returns
 //!   `Platform_dynamicMeters()`, an unported `Platform_*` fn.
 //! - `DynamicMeters_delete` (`DynamicMeter.c:43`) — calls
-//!   `Platform_dynamicMetersDone` then `Hashtable_delete`; neither the
-//!   `Platform_*` layer nor the `Hashtable` heap wrapper is ported
-//!   (`Hashtable_delete` is still a `todo!()` stub in `hashtable.rs`).
+//!   `Platform_dynamicMetersDone` then `Hashtable_delete`; `Hashtable_delete`
+//!   is ported now, but the `Platform_*` layer is not, so this stays blocked.
 //! - `DynamicMeter_init` (`DynamicMeter.c:79`) — `static` in C; thin
 //!   wrapper over `Platform_dynamicMeterInit(meter)`.
 //! - `DynamicMeter_updateValues` (`DynamicMeter.c:83`) — `static` in C;
@@ -122,10 +121,10 @@ pub fn DynamicMeters_new() {
 
 /// TODO: port of `void DynamicMeters_delete(Hashtable* dynamics)` from
 /// `DynamicMeter.c:43`. Calls `Platform_dynamicMetersDone(dynamics)` then
-/// `Hashtable_delete(dynamics)`; the `Platform_*` layer is unported and
-/// `Hashtable_delete` is still a `todo!()` stub in `hashtable.rs`.
+/// `Hashtable_delete(dynamics)`; `Hashtable_delete` is ported now, but the
+/// `Platform_*` layer is unported, so this stays blocked.
 pub fn DynamicMeters_delete() {
-    todo!("port of DynamicMeter.c:43 — needs Platform_dynamicMetersDone + Hashtable_delete")
+    todo!("port of DynamicMeter.c:43 — needs Platform_dynamicMetersDone")
 }
 
 /// Port of `bool DynamicMeter_search(Hashtable* dynamics, const char* name,

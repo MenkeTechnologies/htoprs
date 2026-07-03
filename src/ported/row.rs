@@ -313,6 +313,11 @@ impl Object for Row {
         Some(self)
     }
 
+    /// Mutable view of a base `Row` as its own embedded `Row`.
+    fn as_row_mut(&mut self) -> Option<&mut Row> {
+        Some(self)
+    }
+
     /// C `Row_class.super.compare = Row_compare`. Dispatches to
     /// [`Row_compare`]; the `const void*` args in C become a downcast of
     /// the trait object back to `Row` (via `Any`), the safe-Rust analog

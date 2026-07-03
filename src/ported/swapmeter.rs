@@ -30,11 +30,21 @@
 //!   [`LinuxMachine`](crate::ported::linux::linuxmachine::LinuxMachine) via
 //!   the `Meter::host` back-pointer.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)] // faithful C global names (SwapMeter_class)
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+// Platform dispatch (darwin-first): each build calls its own platform's swap
+// value setter, mirroring htop linking one platform's `Platform.c`. The tests
+// are `#[cfg]`-split to match (live-invariant on macOS, mocked host on linux).
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_setSwapValues;
+#[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::Platform_setSwapValues;
-use crate::ported::meter::{Meter, Meter_humanUnit};
+use crate::ported::meter::{
+    Meter, Meter_humanUnit, BAR_METERMODE, METERMODE_DEFAULT_SUPPORTED, MeterClass, Meter_class,
+};
+use crate::ported::object::ObjectClass;
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_writeAscii};
 
 /// TODO: port of `static void SwapMeter_updateValues(Meter* this)` from
@@ -118,6 +128,46 @@ pub fn SwapMeter_display(this: &Meter, out: &mut RichString) {
     }
 }
 
+/// Port of `static const int SwapMeter_attributes[]` from `SwapMeter.c`:
+/// `{ SWAP, SWAP_CACHE, SWAP_FRONTSWAP }` — the per-item bar colors as
+/// `CRT_colors` indices (`ColorElements as i32`), in `SwapMeter.h` index
+/// order (`USED=0`, `CACHE=1`, `FRONTSWAP=2`).
+static SwapMeter_attributes: [i32; 3] = [
+    ColorElements::SWAP as i32,
+    ColorElements::SWAP_CACHE as i32,
+    ColorElements::SWAP_FRONTSWAP as i32,
+];
+
+/// Port of `const MeterClass SwapMeter_class` from `SwapMeter.c`. Wires the
+/// ported [`SwapMeter_updateValues`]/[`SwapMeter_display`] slots onto the
+/// vtable. A percent chart (`total = 100.0`), default `BAR_METERMODE`,
+/// `maxItems = SWAP_METER_ITEMCOUNT` (3). `super.delete` is dropped (Rust
+/// `Drop`); `super.extends` becomes the `Meter_class` base link.
+pub static SwapMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(SwapMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(SwapMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: BAR_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 100.0,
+    attributes: &SwapMeter_attributes,
+    name: "Swap",
+    uiName: "Swap",
+    caption: "Swp",
+    description: None,
+    maxItems: 3, // SWAP_METER_ITEMCOUNT (SwapMeter.h:16)
+    isMultiColumn: false,
+    isPercentChart: true,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,7 +181,7 @@ mod tests {
     #[test]
     fn display_with_cache_and_frontswap() {
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             total: 1024.0, // KiB → "1.00M"
             values: vec![512.0, 256.0, 128.0],
             ..Meter::empty()
@@ -145,7 +195,7 @@ mod tests {
     #[test]
     fn display_omits_nan_optionals() {
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             total: 1024.0,
             values: vec![512.0, f64::NAN, f64::NAN],
             ..Meter::empty()
@@ -155,16 +205,36 @@ mod tests {
         assert_eq!(text(&out), ":1.00M used:512K");
     }
 
+    #[cfg(not(target_os = "macos"))]
     use crate::ported::linux::linuxmachine::{LinuxMachine, ZswapStats};
+    #[cfg(not(target_os = "macos"))]
     use crate::ported::machine::Machine;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+
+    /// On macOS the swap setter reads real system swap via `sysctl` (no host
+    /// mock), so assert live invariants instead of fixed values: used never
+    /// exceeds total, both non-negative, and the platform leaves the
+    /// cache/frontswap slots at `NAN`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_values_reads_live_system_swap() {
+        let mut m = Meter {
+            values: vec![0.0; 3],
+            host: core::ptr::null(),
+            ..Meter::empty()
+        };
+        SwapMeter_updateValues(&mut m);
+        assert!(m.total >= 0.0);
+        assert!(m.values[0] >= 0.0 && m.values[0] <= m.total); // USED
+        assert!(m.values[1].is_nan()); // CACHE not set on darwin
+        assert!(m.values[2].is_nan()); // FRONTSWAP not set on darwin
+    }
 
     /// update_values pulls the host swap totals; with no zswap the used/cache
     /// slots are the raw counters and txtBuffer is `used/total`.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn update_values_no_zswap() {
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 totalSwap: 2048,
                 usedSwap: 512,
@@ -175,7 +245,7 @@ mod tests {
         }));
         let mut m = Meter {
             values: vec![0.0; 3],
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         };
         SwapMeter_updateValues(&mut m);
@@ -187,9 +257,10 @@ mod tests {
     }
 
     /// zswap subtracts from USED and adds to FRONTSWAP (C: Platform.c:475).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn update_values_zswap_moves_used_to_frontswap() {
-        let host = Rc::new(RefCell::new(LinuxMachine {
+        let host = Box::leak(Box::new(LinuxMachine {
             super_: Machine {
                 totalSwap: 2048,
                 usedSwap: 512,
@@ -204,7 +275,7 @@ mod tests {
         }));
         let mut m = Meter {
             values: vec![0.0; 3],
-            host: Some(host),
+            host: &host.super_ as *const crate::ported::machine::Machine,
             ..Meter::empty()
         };
         SwapMeter_updateValues(&mut m);

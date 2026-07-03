@@ -183,6 +183,24 @@ pub trait Object: core::any::Any {
     fn process_class(&self) -> Option<&'static crate::ported::process::ProcessClass> {
         None
     }
+
+    /// Mutable counterpart of [`as_row`](Object::as_row) — a `&mut` view of
+    /// this object's embedded [`Row`](crate::ported::row::Row) base, or
+    /// `None` for non-`Row`s. Needed when a `Table` owns its rows as
+    /// `Box<dyn Object>` and mutates them in place (scan updates, tree
+    /// rebuild). The default models a non-`Row` object.
+    fn as_row_mut(&mut self) -> Option<&mut crate::ported::row::Row> {
+        None
+    }
+
+    /// Mutable counterpart of [`as_process`](Object::as_process) — a `&mut`
+    /// view of this object's embedded
+    /// [`Process`](crate::ported::process::Process) base, or `None` for
+    /// non-`Process`es. Used by the process scan to fill a row in place.
+    /// The default models a non-`Process` object.
+    fn as_process_mut(&mut self) -> Option<&mut crate::ported::process::Process> {
+        None
+    }
 }
 
 /// Port of `bool Object_isA(const Object* o, const ObjectClass* klass)`

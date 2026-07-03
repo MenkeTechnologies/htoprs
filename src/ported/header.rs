@@ -8,72 +8,66 @@
 //!   from removed columns into the last kept one.
 //! * `calcColumnWidthCount` / `Header_calculateHeight` — the layout
 //!   height/column-span arithmetic.
+//! * `Header_draw` — clears the header rows and dispatches each meter's
+//!   `draw` slot across its computed column span.
 //! * `Header_writeBackToSettings` — copies each column's meter name/mode
-//!   list back into the [`Settings`] `hColumns` (see the note on its doc
-//!   about the `(param)` formatting that is not reproduced).
+//!   list back into the [`Settings`] `hColumns`.
 //!
 //! Everything that constructs meters through the `MeterClass` vtable
 //! (`Meter_new`, `Header_addMeterByName`, `Header_addMeterByClass`,
-//! `Header_populateFromSettings`), draws to ncurses (`Header_draw`),
-//! reinitializes meters (`Header_reinit`), pulls live values
-//! (`Header_updateData`), or needs the `Machine` host allocation
-//! (`Header_new`/`Header_delete`) stays a `todo!()` stub — that substrate
-//! is not ported.
+//! `Header_populateFromSettings`), reinitializes meters (`Header_reinit`),
+//! pulls live values (`Header_updateData`), or needs the `Machine` host
+//! allocation (`Header_new`/`Header_delete`) stays a `todo!()` stub — that
+//! substrate is not ported.
 //!
 //! ## Modeled structs
 //!
 //! htop's `Header` holds `Vector** columns` where each `Vector` owns
-//! `Meter*`. The full `Meter` (`meter.rs`) deliberately omits the `h`,
-//! `columnWidthCount`, and `param` fields (see its struct doc) and cannot
-//! be constructed without the `MeterClass` vtable, so it cannot back the
-//! header arithmetic here. [`HeaderMeter`] models exactly the `Meter`
-//! fields the ported functions read or write. Likewise, the two settings
-//! values `Header_calculateHeight` reads — `headerMargin` and
-//! `screenTabs` — live on [`Header`] directly (the C reads them via
-//! `this->host->settings`), because the `Machine`/`Settings` substrate
-//! that carries them is not modeled.
+//! `Meter*`; this ports to `Vec<Vec<Meter>>` — one inner vec per column,
+//! each holding the live [`Meter`](crate::ported::meter::Meter) directly
+//! (its `h`, `columnWidthCount`, `isMultiColumn`, `mode`, `param`, `name`,
+//! and `draw` slot back every function here). The two settings values
+//! `Header_calculateHeight` reads — `headerMargin` and `screenTabs` — live
+//! on [`Header`] directly (the C reads them via `this->host->settings`),
+//! because the `Machine`/`Settings` substrate that carries them is not
+//! modeled.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 #![allow(clippy::needless_range_loop)]
 
-use crate::ported::settings::{
-    HeaderLayout, HeaderLayout_getColumns, MeterModeId, Settings, Settings_setHeaderLayout,
-};
+use std::io::Write;
 
-/// Header-local model of the `Meter` (`Meter.h`) fields that the ported
-/// header functions touch. The full `Meter` in `meter.rs` omits `h` and
-/// `columnWidthCount` and has no vtable-free constructor, so it cannot be
-/// reused for the layout arithmetic; this carries only what is read/written:
-///
-/// * `name` — the meter's serialized name as it appears in the config
-///   `meters` line. In C the string is rebuilt at write time from
-///   `As_Meter(meter)->name` plus any `(param)` suffix; here it is stored
-///   already serialized (see [`Header_writeBackToSettings`]).
-/// * `mode` — `meter->mode`, copied verbatim into the settings mode list.
-/// * `h` — `meter->h`, the meter's height in rows; drives every height sum.
-/// * `columnWidthCount` — `meter->columnWidthCount`, written by
-///   [`Header_calculateHeight`] via [`calcColumnWidthCount`].
-/// * `isBlank` — models the C `Object_isA(meter, &BlankMeter_class)` test
-///   in `calcColumnWidthCount`: `true` iff the meter is a `BlankMeter`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HeaderMeter {
-    pub name: String,
-    pub mode: MeterModeId,
-    pub h: i32,
-    pub columnWidthCount: i32,
-    pub isBlank: bool,
-}
+use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::functionbar::Ncurses;
+use crate::ported::machine::Machine;
+use crate::ported::meter::{
+    BlankMeter_class, Meter, MeterClass, Meter_new, Meter_setMode, TEXT_METERMODE,
+};
+use crate::ported::settings::{
+    HeaderLayout, HeaderLayout_getColumns, HeaderLayout_layouts, MeterModeId, Settings,
+    Settings_setHeaderLayout,
+};
+// Platform dispatch (darwin-first): the available-meter registry comes from
+// this build's platform, mirroring htop linking one platform's `Platform.c`.
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_meterTypes;
+#[cfg(not(target_os = "macos"))]
+use crate::ported::linux::platform::Platform_meterTypes;
 
 /// Model of htop's `Header` (`Header.h:20`). The C fields `columns`,
 /// `headerLayout`, `pad`, and `height` are reproduced. `Vector** columns`
-/// becomes `Vec<Vec<HeaderMeter>>` (one inner vec per column). The C
-/// `Machine* host` is replaced by the two `host->settings` values the
-/// ported arithmetic actually reads — `headerMargin` and `screenTabs` —
-/// because the `Machine`/`Settings` substrate is not modeled here.
+/// becomes `Vec<Vec<Meter>>` (one inner vec per column). The C
+/// `Machine* host` is stored as a raw `*const Machine` back-pointer (the
+/// crate's pointer-graph ownership model). The two `host->settings` values
+/// the ported height arithmetic reads — `headerMargin` and `screenTabs` —
+/// are additionally cached on the struct: zeroed at construction (like C's
+/// `xCalloc`) and refreshed when the header is populated/recalculated.
 ///
 /// Invariant (as in C): `columns.len() == HeaderLayout_getColumns(headerLayout)`.
 pub struct Header {
-    pub columns: Vec<Vec<HeaderMeter>>,
+    /// C `struct Machine_* host` — the owning machine (borrowed).
+    pub host: *const Machine,
+    pub columns: Vec<Vec<Meter>>,
     pub headerLayout: HeaderLayout,
     pub pad: i32,
     pub height: i32,
@@ -85,22 +79,40 @@ pub struct Header {
     pub screenTabs: bool,
 }
 
-/// TODO: port of `Header* Header_new(Machine* host, HeaderLayout hLayout)`
-/// from `Header.c:31`. Stubbed: allocates the `Header`, stores the
-/// `Machine* host`, and `Vector_new`s each column via `Class(Meter)`. The
-/// `Machine` host and the `Meter` `ObjectClass` are not modeled, so there
-/// is no faithful constructor; tests build [`Header`] via its public
-/// fields.
-pub fn Header_new() {
-    todo!("port of Header.c:31")
+/// Port of `Header* Header_new(Machine* host, HeaderLayout hLayout)` from
+/// `Header.c:31`. C `xCalloc`s the `Header` (zeroing `pad`/`height` and,
+/// here, the cached `headerMargin`/`screenTabs`), stores `hLayout` and the
+/// `Machine* host`, then `Vector_new`s one empty meter column per
+/// `HeaderLayout_getColumns(hLayout)` (`Header_forEachColumn`). The
+/// `Class(Meter)` object-class tag is dropped — column element identity is
+/// the Rust [`HeaderMeter`] type.
+pub fn Header_new(host: *const Machine, hLayout: HeaderLayout) -> Header {
+    let ncol = HeaderLayout_getColumns(hLayout);
+    let mut columns = Vec::with_capacity(ncol);
+    for _ in 0..ncol {
+        columns.push(Vec::new());
+    }
+
+    Header {
+        host,
+        columns,
+        headerLayout: hLayout,
+        pad: 0,
+        height: 0,
+        headerMargin: false,
+        screenTabs: false,
+    }
 }
 
-/// TODO: port of `void Header_delete(Header* this)` from `Header.c:44`.
-/// Stubbed: the body is `Vector_delete` per column then `free(columns)` /
-/// `free(this)`. Rust `Drop` reclaims a [`Header`] automatically, so there
-/// is no manual free to port.
-pub fn Header_delete() {
-    todo!("port of Header.c:44")
+/// Port of `void Header_delete(Header* this)` from `Header.c:44`.
+///
+/// C `Vector_delete`s each column, then `free(this->columns)` and
+/// `free(this)`. The [`Header`] owns its `Vec<Vec<Meter>>` columns and every
+/// [`Meter`] in them; taking `this` by value so it drops at end of scope IS
+/// that free chain (the same by-value idiom `FunctionBar_delete` uses for its
+/// `free(this)`). Nothing the header owned outlives the call.
+pub fn Header_delete(this: Header) {
+    let _ = this;
 }
 
 /// Port of `Header.c:53`.
@@ -140,26 +152,89 @@ pub fn Header_setLayout(this: &mut Header, hLayout: HeaderLayout) {
     Header_calculateHeight(this);
 }
 
-/// TODO: port of `static void Header_addMeterByName(Header* this, const
-/// char* name, MeterModeId mode, size_t column)` from `Header.c:80`.
-/// Stubbed: parses the `(param)` / `(dynamic)` suffix, then looks the name
-/// up in `Platform_meterTypes` and constructs the meter with `Meter_new`
-/// (the `MeterClass` vtable) and `Meter_setMode`; the `DynamicMeter`
-/// branch also needs `this->host->settings->dynamicMeters`
-/// (`DynamicMeter_search`). None of that substrate is ported.
-pub fn Header_addMeterByName() {
-    todo!("port of Header.c:80")
+/// Port of `static void Header_addMeterByName(Header* this, const char*
+/// name, MeterModeId mode, size_t column)` from `Header.c:80`.
+///
+/// Splits an optional `(param)` suffix off the serialized `name`, then finds
+/// the matching class in [`Platform_meterTypes`] (`type.name` equals the base
+/// name exactly, C `strncmp(...) == 0 && type->name[nameLen] == '\0'`),
+/// constructs it with [`Meter_new`], applies `mode` (when non-zero) via
+/// [`Meter_setMode`], and appends it to `column`. Unknown names add nothing
+/// (the C loop simply falls through).
+///
+/// Suffix parsing mirrors the C: `sscanf(paren, "(%10u)", &param)` — a
+/// leading unsigned int (≤10 digits) is the `CPUMeter`/single-meter param.
+/// The `DynamicMeter` branch (a non-numeric `(name)`) needs
+/// `DynamicMeter_search(settings->dynamicMeters, ...)`; `Settings` models no
+/// `dynamicMeters`, so — exactly as the C `return`s on lookup failure — a
+/// non-numeric suffix adds no meter.
+pub fn Header_addMeterByName(this: &mut Header, name: &str, mode: MeterModeId, column: usize) {
+    debug_assert!(column < HeaderLayout_getColumns(this.headerLayout));
+
+    let mut param: u32 = 0;
+    let nameLen = if let Some(parenPos) = name.find('(') {
+        // C: sscanf(paren, "(%10u)", &param) — up to 10 leading digits after
+        // '('. A non-empty digit run is the numeric param; anything else is
+        // the (unmodeled) DynamicMeter path, which the C abandons.
+        let digits: String = name[parenPos + 1..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .take(10)
+            .collect();
+        if digits.is_empty() {
+            return; // DynamicMeter lookup — see doc; adds nothing
+        }
+        param = digits.parse().unwrap_or(0);
+        parenPos
+    } else {
+        name.len()
+    };
+
+    let baseName = &name[..nameLen];
+    for &type_ in Platform_meterTypes.iter() {
+        if type_.name == baseName {
+            let mut meter = Meter_new(this.host, param, type_);
+            if mode != 0 {
+                Meter_setMode(&mut meter, mode);
+            }
+            this.columns[column].push(meter);
+            break;
+        }
+    }
 }
 
-/// TODO: port of `void Header_populateFromSettings(Header* this)` from
-/// `Header.c:120`. Stubbed: after `Header_setLayout` and pruning each
-/// column, its only work is a loop of [`Header_addMeterByName`] to
-/// construct the meters named in `settings->hColumns`. That constructor
-/// needs the `MeterClass` vtable, so the read direction (settings → live
-/// meters) cannot be ported faithfully; only the write direction
-/// ([`Header_writeBackToSettings`]) is.
-pub fn Header_populateFromSettings() {
-    todo!("port of Header.c:120")
+/// Port of `void Header_populateFromSettings(Header* this)` from
+/// `Header.c:120`.
+///
+/// Applies `settings.hLayout` via [`Header_setLayout`], then for each column
+/// prunes it (C `Vector_prune` → [`Vec::clear`]) and re-adds every meter
+/// named in `settings.hColumns[col]` through [`Header_addMeterByName`], and
+/// finally recomputes the height ([`Header_calculateHeight`]).
+///
+/// C reads `settings` via `this->host->settings`; here it is passed
+/// explicitly (the same deviation as [`Header_writeBackToSettings`], because
+/// the host→settings substrate is not the modeled path). The two cached
+/// layout inputs [`Header::headerMargin`]/[`Header::screenTabs`] — which the
+/// C `Header_calculateHeight` reads live from `host->settings` — are
+/// refreshed here from `settings` so the recomputed height matches.
+pub fn Header_populateFromSettings(this: &mut Header, settings: &Settings) {
+    Header_setLayout(this, settings.hLayout);
+    this.headerMargin = settings.headerMargin;
+    this.screenTabs = settings.screenTabs;
+
+    let numColumns = HeaderLayout_getColumns(this.headerLayout);
+    for col in 0..numColumns {
+        this.columns[col].clear();
+        let colSettings = &settings.hColumns[col];
+        for i in 0..colSettings.len {
+            // Present only when len != 0 (see Header_writeBackToSettings).
+            let name = colSettings.names.as_ref().unwrap()[i].clone();
+            let mode = colSettings.modes.as_ref().unwrap()[i];
+            Header_addMeterByName(this, &name, mode, col);
+        }
+    }
+
+    Header_calculateHeight(this);
 }
 
 /// Port of `Header.c:135`.
@@ -171,12 +246,15 @@ pub fn Header_populateFromSettings() {
 /// names/modes (C `NULL`) with `len == 0`, matching the C
 /// `len ? xCalloc(...) : NULL`.
 ///
-/// Not reproduced: the C rebuilds each name at write time as
-/// `"%s(%s)"`/`"%s(%u)"` for `DynamicMeter`/`CPUMeter` meters with a
-/// `param` (`As_Meter(meter)` vtable comparison plus `DynamicMeter_lookup`
-/// over `settings->dynamicMeters`). That vtable/host substrate is not
-/// modeled, so [`HeaderMeter::name`] is taken as the already-serialized
-/// name and copied verbatim.
+/// The C reconstructs each serialized name at write time (`Header.c:150`):
+/// `"%s(%u)"` for a `CPUMeter` with a `param`, `"%s(%s)"` for a
+/// `DynamicMeter` (via `DynamicMeter_lookup(settings->dynamicMeters,
+/// param)`), else plain `As_Meter(meter)->name`. The class-identity test
+/// `As_Meter(meter) == &CPUMeter_class` collapses to `meter.name == "CPU"`
+/// (`CPUMeter_class.name`, the unique class with that name). The
+/// `DynamicMeter` branch is elided: that meter type cannot be constructed
+/// here (`Header_addMeterByName` is a stub) and its lookup substrate
+/// (`Settings.dynamicMeters` / `DynamicMeter_lookup`) is not modeled.
 pub fn Header_writeBackToSettings(this: &Header, settings: &mut Settings) {
     Settings_setHeaderLayout(settings, this.headerLayout);
 
@@ -187,7 +265,17 @@ pub fn Header_writeBackToSettings(this: &Header, settings: &mut Settings) {
 
         let colSettings = &mut settings.hColumns[col];
         if len != 0 {
-            colSettings.names = Some(vec.iter().map(|m| m.name.clone()).collect());
+            colSettings.names = Some(
+                vec.iter()
+                    .map(|meter| {
+                        if meter.param != 0 && meter.name == "CPU" {
+                            format!("{}({})", meter.name, meter.param)
+                        } else {
+                            meter.name.to_string()
+                        }
+                    })
+                    .collect(),
+            );
             colSettings.modes = Some(vec.iter().map(|m| m.mode).collect());
         } else {
             colSettings.names = None;
@@ -197,36 +285,147 @@ pub fn Header_writeBackToSettings(this: &Header, settings: &mut Settings) {
     }
 }
 
-/// TODO: port of `Meter* Header_addMeterByClass(Header* this, const
-/// MeterClass* type, unsigned int param, size_t column)` from
-/// `Header.c:173`. Stubbed: constructs a meter with `Meter_new(this->host,
-/// param, type)` — the `MeterClass` vtable and `Machine` host are not
-/// modeled.
-pub fn Header_addMeterByClass() {
-    todo!("port of Header.c:173")
+/// Port of `Meter* Header_addMeterByClass(Header* this, const MeterClass*
+/// type, unsigned int param, size_t column)` from `Header.c:173`.
+///
+/// Constructs a meter of `type` with `Meter_new(this->host, param, type)`
+/// and appends it to `column`'s vector (C `Vector_add`), returning a
+/// mutable handle to the freshly-added meter (C returns the `Meter*`, used
+/// by the caller to `Meter_setMode`). The `assert(column < numColumns)`
+/// precondition is honored — an out-of-range column panics via the `Vec`
+/// index.
+pub fn Header_addMeterByClass<'a>(
+    this: &'a mut Header,
+    type_: &'static MeterClass,
+    param: u32,
+    column: usize,
+) -> &'a mut Meter {
+    debug_assert!(column < HeaderLayout_getColumns(this.headerLayout));
+
+    let meter = Meter_new(this.host, param, type_);
+    this.columns[column].push(meter);
+    this.columns[column].last_mut().unwrap()
 }
 
 /// TODO: port of `void Header_reinit(Header* this)` from `Header.c:183`.
-/// Stubbed: calls `Meter_init(meter)` when the meter class defines an init
-/// fn (`Meter_initFn`) — the `MeterClass` vtable is not ported.
+/// Stubbed: for every meter it runs `if (Meter_initFn(meter)) Meter_init(meter)`
+/// — dispatch through the class `init` slot (`As_Meter(meter)->init`). Unlike
+/// the `updateValues`/`draw` slots, the `init` slot is **not** mirrored onto
+/// the [`Meter`] instance in `meter.rs`, and a `Meter` carries no back-pointer
+/// to its [`MeterClass`], so there is no instance-reachable path to the init
+/// fn. Realizing it means adding an `init` field mirror in `meter.rs`, which
+/// is outside this port group.
 pub fn Header_reinit() {
-    todo!("port of Header.c:183")
+    todo!("port of Header.c:183 — Meter instance mirrors no `init` slot (needs a meter.rs field)")
 }
 
-/// TODO: port of `void Header_draw(const Header* this)` from
-/// `Header.c:194`. Stubbed: ncurses cursor drawing (`attrset`, `mvhline`)
-/// plus per-meter `meter->draw(...)` vtable dispatch and the
-/// `HeaderLayout_layouts[].widths[]` column-width table — none of the
-/// terminal/vtable substrate is ported.
-pub fn Header_draw() {
-    todo!("port of Header.c:194")
+/// Port of `void Header_draw(const Header* this)` from `Header.c:194`.
+///
+/// Clears every header row to blanks (`attrset(RESET_COLOR)` + `mvhline`
+/// across `COLS`), then lays the columns out left-to-right: each column's
+/// pixel width is `width * HeaderLayout_layouts[layout].widths[col] / 100`,
+/// with fractional remainders accumulated in `roundingLoss` and folded back
+/// in a whole column at a time (so the columns tile `width` exactly). Within
+/// a column each meter is drawn at `(x, y)` via its `draw` slot and `y`
+/// advances by `meter.h`. A text-mode, non-multi-column meter is allowed to
+/// expand rightward across `columnWidthCount - 1` empty neighbor columns
+/// (each contributes a separator column plus that neighbor's share of
+/// `width`). The `assert(meter->draw)` is honored by the `Option::expect`.
+///
+/// The C reads/writes the ncurses global cursor; here the terminal side
+/// effects go through the crossterm [`Ncurses`] shim into `out` (the
+/// `Panel_draw`/`Meter`-draw precedent). `COLS` is [`Ncurses::cols`];
+/// `floorf` is [`f32::floor`]. `this` is `&mut` because the per-meter
+/// `draw` slot takes `&mut Meter` (it updates `drawData`).
+pub fn Header_draw(this: &mut Header, mut out: &mut dyn Write) {
+    let scheme = ColorScheme::active();
+    let height = this.height;
+    let pad = this.pad;
+    let cols = Ncurses::cols();
+
+    Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
+    for y in 0..height {
+        Ncurses::mvhline(&mut out, y, 0, ' ', cols);
+    }
+
+    let numCols = HeaderLayout_getColumns(this.headerLayout);
+    let width = cols - 2 * pad - (numCols as i32 - 1);
+    let widths = HeaderLayout_layouts[this.headerLayout as usize].widths;
+    let mut x = pad;
+    let mut roundingLoss = 0.0f32;
+
+    for col in 0..numCols {
+        let mut colWidth = width as f32 * widths[col] as f32 / 100.0;
+
+        roundingLoss += colWidth - colWidth.floor();
+        if roundingLoss >= 1.0 {
+            colWidth += 1.0;
+            roundingLoss -= 1.0;
+        }
+
+        let mut y = pad / 2;
+        let colLen = this.columns[col].len();
+        for i in 0..colLen {
+            // Read the scalar fields the layout math needs before taking the
+            // `&mut` borrow that `draw` requires (no aliasing).
+            let (mode, columnWidthCount, isMultiColumn, h, draw) = {
+                let meter = &this.columns[col][i];
+                (
+                    meter.mode,
+                    meter.columnWidthCount,
+                    meter.isMultiColumn,
+                    meter.h,
+                    meter.draw,
+                )
+            };
+
+            let mut actualWidth = colWidth;
+
+            // Let meters in text mode expand to the right on empty neighbors;
+            // except for multi column meters.
+            if mode == TEXT_METERMODE && !isMultiColumn {
+                for j in 1..columnWidthCount {
+                    actualWidth += 1.0; // separator column
+                    actualWidth += width as f32 * widths[col + j as usize] as f32 / 100.0;
+                }
+            }
+
+            // C `assert(meter->draw)`.
+            let draw = draw.expect("Header_draw: meter->draw is NULL");
+            draw(
+                &mut *out,
+                &mut this.columns[col][i],
+                x,
+                y,
+                actualWidth.floor() as i32,
+            );
+            y += h;
+        }
+
+        x += colWidth.floor() as i32;
+        x += 1; // separator column
+    }
 }
 
-/// TODO: port of `void Header_updateData(Header* this)` from
-/// `Header.c:240`. Stubbed: calls `Meter_updateValues(meter)` on every
-/// meter — the `MeterClass` vtable update path is not ported.
-pub fn Header_updateData() {
-    todo!("port of Header.c:240")
+/// Port of `void Header_updateData(Header* this)` from `Header.c:240`.
+///
+/// Calls `Meter_updateValues(meter)` on every meter in every column. The C
+/// `Meter_updateValues(this_)` macro (`Meter.h:94`) expands to
+/// `As_Meter(this_)->updateValues(this_)` — the class value-update slot,
+/// mirrored onto the [`Meter`] instance as `updateValues` and dispatched
+/// here. The slot is non-`NULL` for every real meter class (the C macro has
+/// no guard and would fault otherwise), so `Option::expect` mirrors that.
+pub fn Header_updateData(this: &mut Header) {
+    let numColumns = HeaderLayout_getColumns(this.headerLayout);
+    for col in 0..numColumns {
+        let items = this.columns[col].len();
+        for i in 0..items {
+            let updateValues = this.columns[col][i]
+                .updateValues
+                .expect("Meter_updateValues: updateValues slot is NULL");
+            updateValues(&mut this.columns[col][i]);
+        }
+    }
 }
 
 /// Port of `Header.c:256`.
@@ -242,7 +441,7 @@ pub fn Header_updateData() {
 /// span if none blocks.
 fn calcColumnWidthCount(
     this: &Header,
-    curMeter: &HeaderMeter,
+    curMeter: &Meter,
     pad: i32,
     curColumn: usize,
     curHeight: i32,
@@ -264,7 +463,11 @@ fn calcColumnWidthCount(
                 continue;
             }
 
-            if !meter.isBlank {
+            // C: `!Object_isA(meter, &BlankMeter_class)`. The Rust `Meter` is
+            // a single struct whose class identity is carried by `name`
+            // (mirrored from its `MeterClass`), so the "is a BlankMeter" test
+            // collapses to a name comparison against `BlankMeter_class.name`.
+            if meter.name != BlankMeter_class.name {
                 return (i - curColumn) as i32;
             }
         }
@@ -320,41 +523,93 @@ pub fn Header_calculateHeight(this: &mut Header) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ported::settings::MeterColumnSetting;
+    use crate::ported::settings::{MeterColumnSetting, MeterModeId};
 
-    /// A meter of the given height and blankness, with a fixed mode. Name
-    /// is derived from `h` so writers have something to copy.
-    fn meter(name: &str, h: i32) -> HeaderMeter {
-        HeaderMeter {
-            name: name.to_string(),
+    /// A live [`Meter`] of the given name and height, mode fixed at 1. Uses
+    /// [`Meter::empty`] for the vtable-free fields the header math ignores.
+    fn meter(name: &'static str, h: i32) -> Meter {
+        Meter {
+            name,
             mode: 1,
             h,
-            columnWidthCount: 0,
-            isBlank: false,
+            ..Meter::empty()
         }
     }
 
-    fn blank(h: i32) -> HeaderMeter {
-        HeaderMeter {
-            name: "Blank".to_string(),
+    /// A meter whose `name` matches `BlankMeter_class.name` — the header
+    /// blank test keys on the name (see [`calcColumnWidthCount`]).
+    fn blank(h: i32) -> Meter {
+        Meter {
+            name: BlankMeter_class.name,
             mode: 1,
             h,
-            columnWidthCount: 0,
-            isBlank: true,
+            ..Meter::empty()
         }
     }
 
     /// Column meter names, for structural comparisons where the mutated
     /// `columnWidthCount` (set by `Header_calculateHeight`) is irrelevant.
-    fn names(col: &[HeaderMeter]) -> Vec<&str> {
-        col.iter().map(|m| m.name.as_str()).collect()
+    /// `Meter` is not `PartialEq` (raw pointers / fn slots), so tests compare
+    /// by name.
+    fn names(col: &[Meter]) -> Vec<&str> {
+        col.iter().map(|m| m.name).collect()
+    }
+
+    /// A test `MeterDraw` slot (`fn`, so it cannot capture) that records its
+    /// dispatch coordinates into the sink as a newline-delimited `MARK` line.
+    /// crossterm's `attrset`/`mvhline` output carries no newlines, so these
+    /// lines survive `str::lines()` filtering intact.
+    fn record_draw(out: &mut dyn Write, m: &mut Meter, x: i32, y: i32, w: i32) {
+        let _ = write!(out, "\nMARK name={} x={} y={} w={}\n", m.name, x, y, w);
+    }
+
+    /// [`meter`] with the recording [`record_draw`] slot wired in, so
+    /// [`Header_draw`]'s per-meter dispatch is observable.
+    fn draw_meter(name: &'static str, h: i32) -> Meter {
+        Meter {
+            name,
+            mode: 1,
+            h,
+            draw: Some(record_draw),
+            ..Meter::empty()
+        }
+    }
+
+    /// The `MARK` lines emitted into `buf`, in dispatch order.
+    fn marks(buf: &[u8]) -> Vec<String> {
+        String::from_utf8_lossy(buf)
+            .lines()
+            .filter(|l| l.starts_with("MARK"))
+            .map(|l| l.to_string())
+            .collect()
     }
 
     /// Build a `Header` from per-column meter lists. The layout's column
     /// count must equal `columns.len()`.
-    fn header(hLayout: HeaderLayout, columns: Vec<Vec<HeaderMeter>>) -> Header {
+    #[test]
+    fn new_allocates_one_empty_column_per_layout_column() {
+        let host = 0xF00D as *const Machine;
+        for hLayout in [
+            HeaderLayout::HF_ONE_100,
+            HeaderLayout::HF_TWO_50_50,
+            HeaderLayout::HF_THREE_33_34_33,
+        ] {
+            let h = Header_new(host, hLayout);
+            // Invariant: one empty column vector per layout column.
+            assert_eq!(h.columns.len(), HeaderLayout_getColumns(hLayout));
+            assert!(h.columns.iter().all(|c| c.is_empty()));
+            // xCalloc-zeroed scalars + stored host/layout.
+            assert_eq!(h.host, host);
+            assert_eq!(h.headerLayout, hLayout);
+            assert_eq!((h.pad, h.height), (0, 0));
+            assert!(!h.headerMargin && !h.screenTabs);
+        }
+    }
+
+    fn header(hLayout: HeaderLayout, columns: Vec<Vec<Meter>>) -> Header {
         assert_eq!(HeaderLayout_getColumns(hLayout), columns.len());
         Header {
+            host: core::ptr::null(),
             columns,
             headerLayout: hLayout,
             pad: 0,
@@ -519,6 +774,260 @@ mod tests {
         assert_eq!(calcColumnWidthCount(&h, cur, 0, 0, 3), 1);
     }
 
+    // ---- Header_draw ------------------------------------------------
+
+    #[test]
+    fn draw_dispatches_each_meter_at_stacked_y() {
+        // Two columns: col0 has two h=2 meters (drawn at y=0, y=2), col1 has
+        // one h=1 meter (y=0). `pad` is 0 so `y` starts at 0 in every column.
+        // The exact x/width depend on terminal COLS, but the dispatch count,
+        // order, and y-offsets are COLS-independent.
+        let mut h = header(
+            HeaderLayout::HF_TWO_50_50,
+            vec![
+                vec![draw_meter("A", 2), draw_meter("B", 2)],
+                vec![draw_meter("C", 1)],
+            ],
+        );
+        Header_calculateHeight(&mut h); // seeds height/columnWidthCount
+
+        let mut buf: Vec<u8> = Vec::new();
+        Header_draw(&mut h, &mut buf);
+
+        let m = marks(&buf);
+        assert_eq!(m.len(), 3, "one dispatch per meter");
+        // Dispatch order is column-major, top-to-bottom within a column.
+        assert!(m[0].contains("name=A") && m[0].contains("y=0"));
+        assert!(m[1].contains("name=B") && m[1].contains("y=2"));
+        assert!(m[2].contains("name=C") && m[2].contains("y=0"));
+    }
+
+    #[test]
+    fn draw_margin_starts_y_at_half_pad() {
+        // headerMargin -> pad=2, so each column's first meter draws at
+        // y = pad/2 = 1, the next at 1 + h.
+        let mut h = header(
+            HeaderLayout::HF_ONE_100,
+            vec![vec![draw_meter("A", 2), draw_meter("B", 2)]],
+        );
+        h.headerMargin = true;
+        Header_calculateHeight(&mut h);
+
+        let mut buf: Vec<u8> = Vec::new();
+        Header_draw(&mut h, &mut buf);
+
+        let m = marks(&buf);
+        assert_eq!(m.len(), 2);
+        assert!(m[0].contains("name=A") && m[0].contains("y=1"));
+        assert!(m[1].contains("name=B") && m[1].contains("y=3"));
+    }
+
+    #[test]
+    #[should_panic(expected = "meter->draw")]
+    fn draw_panics_on_missing_draw_slot() {
+        // `meter()` uses `Meter::empty()` -> `draw: None`; the C
+        // `assert(meter->draw)` maps to the `Option::expect` panic.
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![meter("A", 1)]]);
+        Header_calculateHeight(&mut h);
+        let mut buf: Vec<u8> = Vec::new();
+        Header_draw(&mut h, &mut buf);
+    }
+
+    // ---- Header_addMeterByClass / Header_updateData -----------------
+
+    #[test]
+    fn add_meter_by_class_appends_to_column_and_returns_it() {
+        let mut h = header(HeaderLayout::HF_TWO_50_50, vec![vec![], vec![]]);
+        let m = Header_addMeterByClass(&mut h, &BlankMeter_class, 7, 1);
+        // Returned handle is the freshly-built meter (name/param seeded by
+        // Meter_new).
+        assert_eq!(m.name, "Blank");
+        assert_eq!(m.param, 7);
+        // Appended to column 1 only.
+        assert_eq!(h.columns[0].len(), 0);
+        assert_eq!(h.columns[1].len(), 1);
+        assert_eq!(h.columns[1][0].name, "Blank");
+    }
+
+    #[test]
+    fn update_data_dispatches_update_slot_per_meter() {
+        // BlankMeter_updateValues clears txtBuffer; pre-dirty every meter and
+        // assert the dispatch reached each one.
+        let mut h = header(HeaderLayout::HF_TWO_50_50, vec![vec![], vec![]]);
+        Header_addMeterByClass(&mut h, &BlankMeter_class, 0, 0);
+        Header_addMeterByClass(&mut h, &BlankMeter_class, 0, 1);
+        h.columns[0][0].txtBuffer = "dirty".to_string();
+        h.columns[1][0].txtBuffer = "dirty".to_string();
+
+        Header_updateData(&mut h);
+
+        assert!(h.columns[0][0].txtBuffer.is_empty());
+        assert!(h.columns[1][0].txtBuffer.is_empty());
+    }
+
+    // ---- Header_addMeterByName --------------------------------------
+
+    #[test]
+    fn add_meter_by_name_looks_up_class_and_appends() {
+        let mut h = header(HeaderLayout::HF_TWO_50_50, vec![vec![], vec![]]);
+        Header_addMeterByName(&mut h, "Blank", 0, 1);
+        assert_eq!(h.columns[0].len(), 0);
+        assert_eq!(h.columns[1].len(), 1);
+        assert_eq!(h.columns[1][0].name, "Blank");
+        assert_eq!(h.columns[1][0].param, 0);
+    }
+
+    #[test]
+    fn add_meter_by_name_parses_numeric_param_suffix() {
+        // "Blank(7)" -> base name "Blank", CPUMeter-style numeric param 7.
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![]]);
+        Header_addMeterByName(&mut h, "Blank(7)", 0, 0);
+        assert_eq!(h.columns[0].len(), 1);
+        assert_eq!(h.columns[0][0].name, "Blank");
+        assert_eq!(h.columns[0][0].param, 7);
+    }
+
+    #[test]
+    fn add_meter_by_name_unknown_name_adds_nothing() {
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![]]);
+        Header_addMeterByName(&mut h, "NoSuchMeter", 0, 0);
+        assert!(h.columns[0].is_empty());
+    }
+
+    #[test]
+    fn add_meter_by_name_non_numeric_suffix_is_dynamic_and_adds_nothing() {
+        // A non-numeric "(name)" is the DynamicMeter path; its lookup
+        // substrate is unmodeled, so — as the C `return`s on lookup failure —
+        // nothing is added, even though "Blank" is otherwise a known class.
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![]]);
+        Header_addMeterByName(&mut h, "Blank(cpu)", 0, 0);
+        assert!(h.columns[0].is_empty());
+    }
+
+    #[test]
+    fn add_meter_by_name_applies_mode() {
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![]]);
+        Header_addMeterByName(&mut h, "Blank", TEXT_METERMODE, 0);
+        assert_eq!(h.columns[0][0].mode, TEXT_METERMODE);
+    }
+
+    // ---- Header_populateFromSettings --------------------------------
+
+    #[test]
+    fn populate_from_settings_relayouts_and_builds_columns() {
+        // Header starts one-column; settings ask for two -> relaid out, then
+        // each column's named meters constructed via Header_addMeterByName.
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![]]);
+        let settings = Settings {
+            hLayout: HeaderLayout::HF_TWO_50_50,
+            hColumns: vec![
+                MeterColumnSetting {
+                    len: 2,
+                    names: Some(vec!["Blank".to_string(), "Blank".to_string()]),
+                    modes: Some(vec![TEXT_METERMODE, TEXT_METERMODE]),
+                },
+                MeterColumnSetting {
+                    len: 1,
+                    names: Some(vec!["Blank".to_string()]),
+                    modes: Some(vec![TEXT_METERMODE]),
+                },
+            ],
+            ..Default::default()
+        };
+
+        Header_populateFromSettings(&mut h, &settings);
+
+        assert_eq!(h.headerLayout, HeaderLayout::HF_TWO_50_50);
+        assert_eq!(h.columns.len(), 2);
+        assert_eq!(names(&h.columns[0]), ["Blank", "Blank"]);
+        assert_eq!(names(&h.columns[1]), ["Blank"]);
+        // Height was recomputed (BlankMeter is 1 row; col0 has two).
+        assert!(h.height >= 1);
+    }
+
+    #[test]
+    fn populate_from_settings_resolves_real_meter_classes() {
+        // End-to-end: real class names resolve through Platform_meterTypes to
+        // Meter_new, which seeds each class's maxItems-sized values vector.
+        let mut h = header(HeaderLayout::HF_TWO_50_50, vec![vec![], vec![]]);
+        let settings = Settings {
+            hLayout: HeaderLayout::HF_TWO_50_50,
+            hColumns: vec![
+                MeterColumnSetting {
+                    len: 2,
+                    names: Some(vec!["Memory".to_string(), "Swap".to_string()]),
+                    modes: Some(vec![TEXT_METERMODE, TEXT_METERMODE]),
+                },
+                MeterColumnSetting {
+                    len: 1,
+                    names: Some(vec!["Tasks".to_string()]),
+                    modes: Some(vec![TEXT_METERMODE]),
+                },
+            ],
+            ..Default::default()
+        };
+
+        Header_populateFromSettings(&mut h, &settings);
+
+        assert_eq!(names(&h.columns[0]), ["Memory", "Swap"]);
+        assert_eq!(names(&h.columns[1]), ["Tasks"]);
+        // Meter_new sized values[] to each class's maxItems.
+        assert_eq!(h.columns[0][0].values.len(), 6); // Memory: MEMORY_1..6
+        assert_eq!(h.columns[0][1].values.len(), 3); // Swap: USED/CACHE/FRONTSWAP
+        assert_eq!(h.columns[1][0].values.len(), 4); // Tasks
+    }
+
+    #[test]
+    fn populate_from_settings_resolves_load_uptime_clock_hostname() {
+        // The text/load meters registered this batch also resolve.
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![]]);
+        let settings = Settings {
+            hLayout: HeaderLayout::HF_ONE_100,
+            hColumns: vec![MeterColumnSetting {
+                len: 6,
+                names: Some(vec![
+                    "LoadAverage".to_string(),
+                    "Uptime".to_string(),
+                    "Clock".to_string(),
+                    "Hostname".to_string(),
+                    "Battery".to_string(),
+                    "System".to_string(),
+                ]),
+                modes: Some(vec![TEXT_METERMODE; 6]),
+            }],
+            ..Default::default()
+        };
+
+        Header_populateFromSettings(&mut h, &settings);
+
+        assert_eq!(
+            names(&h.columns[0]),
+            ["LoadAverage", "Uptime", "Clock", "Hostname", "Battery", "System"]
+        );
+        assert_eq!(h.columns[0][0].values.len(), 3); // LoadAverage: 1/5/15
+        assert_eq!(h.columns[0][1].values.len(), 0); // Uptime: maxItems 0
+        assert_eq!(h.columns[0][4].values.len(), 1); // Battery: maxItems 1
+    }
+
+    #[test]
+    fn populate_from_settings_prunes_existing_meters_first() {
+        // Pre-seed a stale meter; populate must clear it before re-adding.
+        let mut h = header(HeaderLayout::HF_ONE_100, vec![vec![draw_meter("stale", 2)]]);
+        let settings = Settings {
+            hLayout: HeaderLayout::HF_ONE_100,
+            hColumns: vec![MeterColumnSetting {
+                len: 1,
+                names: Some(vec!["Blank".to_string()]),
+                modes: Some(vec![0]),
+            }],
+            ..Default::default()
+        };
+
+        Header_populateFromSettings(&mut h, &settings);
+
+        assert_eq!(names(&h.columns[0]), ["Blank"]); // stale gone
+    }
+
     // ---- Header_setLayout -------------------------------------------
 
     #[test]
@@ -569,9 +1078,11 @@ mod tests {
         assert_eq!(h.headerLayout, HeaderLayout::HF_TWO_33_67);
         assert_eq!(h.columns.len(), 2);
         // same column count -> early return, no calculateHeight, columns
-        // untouched
-        assert_eq!(h.columns[0], vec![meter("A", 2)]);
-        assert_eq!(h.columns[1], vec![meter("B", 2)]);
+        // untouched (Meter is not PartialEq; compare by name + height).
+        assert_eq!(names(&h.columns[0]), ["A"]);
+        assert_eq!(names(&h.columns[1]), ["B"]);
+        assert_eq!(h.columns[0][0].h, 2);
+        assert_eq!(h.columns[1][0].h, 2);
     }
 
     // ---- Header_writeBackToSettings ---------------------------------
@@ -580,12 +1091,11 @@ mod tests {
     fn write_back_copies_names_modes_and_sets_layout() {
         // Header has 2 columns; settings starts at 1 column and must be
         // resized by the layout write.
-        let hm = |n: &str, mode: MeterModeId| HeaderMeter {
-            name: n.to_string(),
+        let hm = |n: &'static str, mode: MeterModeId| Meter {
+            name: n,
             mode,
             h: 2,
-            columnWidthCount: 0,
-            isBlank: false,
+            ..Meter::empty()
         };
         let h = header(
             HeaderLayout::HF_TWO_50_50,

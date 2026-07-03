@@ -12,54 +12,16 @@
 //! `non_snake_case` function-name lint and struct-field lint are allowed
 //! for the whole module — matching the spec name-for-name is the point.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)] // faithful C global names (TasksMeter_class)
 #![allow(dead_code)]
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::meter::{
+    Meter, MeterClass, Meter_class, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,
+};
+use crate::ported::object::ObjectClass;
+use crate::ported::processtable::ProcessTable;
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendnAscii};
-
-/// Minimal model of htop's `ProcessTable` — only the four counters
-/// [`TasksMeter_updateValues`] reads (`ProcessTable.h:25-28`, all
-/// `unsigned int`). Every other `ProcessTable` field is omitted because
-/// the ported function never touches it.
-pub struct ProcessTable {
-    pub totalTasks: u32,
-    pub runningTasks: u32,
-    pub userlandThreads: u32,
-    pub kernelThreads: u32,
-}
-
-/// Minimal model of htop's `Settings` — only the two boolean flags
-/// [`TasksMeter_display`] reads (`Settings.h`, both `bool`):
-/// `hideUserlandThreads` and `hideKernelThreads`. Every other `Settings`
-/// field is omitted because this module never touches it.
-pub struct Settings {
-    pub hideUserlandThreads: bool,
-    pub hideKernelThreads: bool,
-}
-
-/// Minimal model of htop's `Machine` — only `activeCPUs`
-/// (`Machine.h:59`, `unsigned int`), the `processTable` pointer that
-/// [`TasksMeter_updateValues`] dereferences, and the `settings`
-/// back-pointer (`Machine.h`, `const Settings*`) that
-/// [`TasksMeter_display`] reads. All other `Machine` fields are omitted.
-pub struct Machine {
-    pub activeCPUs: u32,
-    pub processTable: ProcessTable,
-    pub settings: Settings,
-}
-
-/// Minimal model of htop's `Meter` — the `values` output slots
-/// (`Meter.h:126`, `double*`; `TasksMeter_class.maxItems == 4`), the
-/// `txtBuffer` text field (`Meter.h:125`, `char[256]`), and the `host`
-/// back-pointer (`Meter.h:115`, `const Machine*`). The C `txtBuffer` is
-/// a fixed 256-byte buffer; the `"%u/%u"` of two `u32` is at most 21
-/// bytes so it never truncates, hence an owned `String` (the same
-/// mapping `meter.rs`/`xutils.rs` apply to `char*` formatters).
-pub struct Meter {
-    pub values: [f64; 4],
-    pub txtBuffer: String,
-    pub host: Machine,
-}
 
 /// Port of `TasksMeter.c:29`
 /// (`static void TasksMeter_updateValues(Meter* this)`).
@@ -71,8 +33,17 @@ pub struct Meter {
 /// arithmetic in C, which wraps modulo 2^32, so `wrapping_sub` preserves
 /// the exact result before the widening to `double`.
 pub fn TasksMeter_updateValues(this: &mut Meter) {
-    let host = &this.host;
-    let pt = &host.processTable;
+    // C: `const Machine* host = this->host;`
+    //    `const ProcessTable* pt = (const ProcessTable*) host->processTable;`
+    // `Machine::processTable` is a `*mut Table` (the embedded base of a real
+    // `ProcessTable`); downcast it back — sound via `ProcessTable`'s repr(C).
+    let host = unsafe { &*this.host };
+    let pt = unsafe {
+        &*(host
+            .processTable
+            .expect("TasksMeter_updateValues: host->processTable")
+            as *const ProcessTable)
+    };
 
     this.values[0] = pt.kernelThreads as f64;
     this.values[1] = pt.userlandThreads as f64;
@@ -105,7 +76,13 @@ pub fn TasksMeter_updateValues(this: &mut Meter) {
 /// process-global that does not change mid-call), matching C's `CRT_colors`.
 pub fn TasksMeter_display(this: &Meter, out: &mut RichString) {
     let scheme = ColorScheme::active();
-    let settings = &this.host.settings;
+    // C: `const Settings* settings = this->host->settings;`
+    let settings = unsafe {
+        (*this.host)
+            .settings
+            .as_ref()
+            .expect("TasksMeter_display: host->settings")
+    };
 
     let buffer = format!("{}", this.values[2] as i32);
     RichString_appendnAscii(
@@ -186,6 +163,47 @@ pub fn TasksMeter_display(this: &Meter, out: &mut RichString) {
     RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" running");
 }
 
+/// Port of `static const int TasksMeter_attributes[]` from `TasksMeter.c`:
+/// `{ CPU_SYSTEM, PROCESS_THREAD, PROCESS, TASKS_RUNNING }` — the per-item
+/// bar colors, stored as `CRT_colors` indices (`ColorElements as i32`).
+static TasksMeter_attributes: [i32; 4] = [
+    ColorElements::CPU_SYSTEM as i32,
+    ColorElements::PROCESS_THREAD as i32,
+    ColorElements::PROCESS as i32,
+    ColorElements::TASKS_RUNNING as i32,
+];
+
+/// Port of `const MeterClass TasksMeter_class` from `TasksMeter.c`. Wires the
+/// ported [`TasksMeter_updateValues`]/[`TasksMeter_display`] slots onto the
+/// `MeterClass` vtable. `super.delete = Meter_delete` is dropped (Rust `Drop`
+/// reclaims the meter); `super.extends = Class(Meter)` becomes the
+/// `Meter_class` base link. `.maxItems = 4`, four `values[]` (running,
+/// kernel/other, userland threads, total tasks).
+pub static TasksMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: Some(TasksMeter_display),
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(TasksMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: METERMODE_DEFAULT_SUPPORTED,
+    total: 1.0,
+    attributes: &TasksMeter_attributes,
+    name: "Tasks",
+    uiName: "Task counter",
+    caption: "Tasks: ",
+    description: None,
+    maxItems: 4,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,22 +215,57 @@ mod tests {
         kernelThreads: u32,
         activeCPUs: u32,
     ) -> Meter {
+        meter_hidden(
+            totalTasks,
+            runningTasks,
+            userlandThreads,
+            kernelThreads,
+            activeCPUs,
+            false,
+            false,
+        )
+    }
+
+    /// Builds a canonical `Meter` whose `host` points at a leaked `Machine`
+    /// (address-stable, `'static` for the test) carrying a leaked
+    /// `ProcessTable` (via `Machine::processTable`) with the given counters,
+    /// plus the two hide flags in `settings`.
+    #[allow(clippy::too_many_arguments)]
+    fn meter_hidden(
+        totalTasks: u32,
+        runningTasks: u32,
+        userlandThreads: u32,
+        kernelThreads: u32,
+        activeCPUs: u32,
+        hideUserland: bool,
+        hideKernel: bool,
+    ) -> Meter {
+        use crate::ported::machine::Machine;
+        use crate::ported::settings::Settings;
+        use crate::ported::table::Table;
+
+        let mut pt = Box::new(ProcessTable::empty());
+        pt.totalTasks = totalTasks;
+        pt.runningTasks = runningTasks;
+        pt.userlandThreads = userlandThreads;
+        pt.kernelThreads = kernelThreads;
+        let pt: &'static ProcessTable = Box::leak(pt);
+
+        let mut m = Box::new(Machine::default());
+        m.activeCPUs = activeCPUs;
+        m.processTable = Some(&pt.super_ as *const Table as *mut Table);
+        m.settings = Some(Settings {
+            hideUserlandThreads: hideUserland,
+            hideKernelThreads: hideKernel,
+            ..Default::default()
+        });
+        let m: &'static Machine = Box::leak(m);
+
         Meter {
-            values: [0.0; 4],
+            values: vec![0.0; 4],
             txtBuffer: String::new(),
-            host: Machine {
-                activeCPUs,
-                processTable: ProcessTable {
-                    totalTasks,
-                    runningTasks,
-                    userlandThreads,
-                    kernelThreads,
-                },
-                settings: Settings {
-                    hideUserlandThreads: false,
-                    hideKernelThreads: false,
-                },
-            },
+            host: m as *const Machine,
+            ..Meter::empty()
         }
     }
 
@@ -284,7 +337,7 @@ mod tests {
     fn display_truncates_double_toward_zero() {
         // Non-integral values are cast (int), truncating toward zero.
         let mut m = meter(0, 0, 0, 0, 0);
-        m.values = [1.9, 2.9, 3.9, 4.9];
+        m.values = vec![1.9, 2.9, 3.9, 4.9];
         let mut out = RichString::new();
         TasksMeter_display(&m, &mut out);
         assert_eq!(text(&out), "3, 2 thr, 1 kthr; 4 running");
@@ -293,9 +346,7 @@ mod tests {
     #[test]
     fn display_text_unaffected_by_hide_flags() {
         // Hide flags only change colour, never the emitted characters.
-        let mut m = meter(100, 3, 40, 10, 8);
-        m.host.settings.hideUserlandThreads = true;
-        m.host.settings.hideKernelThreads = true;
+        let mut m = meter_hidden(100, 3, 40, 10, 8, true, true);
         TasksMeter_updateValues(&mut m);
         let mut out = RichString::new();
         TasksMeter_display(&m, &mut out);

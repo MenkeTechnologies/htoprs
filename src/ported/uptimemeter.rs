@@ -10,10 +10,15 @@
 //! `xSnprintf` formatting maps to Rust `format!` into the `String`
 //! `txtBuffer`, matching the idiom used by `filedescriptormeter.rs`.
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)] // faithful C global names (UptimeMeter_class)
 #![allow(dead_code)]
 
+use crate::ported::crt::ColorElements;
 use crate::ported::linux::platform::Platform_getUptime;
-use crate::ported::meter::Meter;
+use crate::ported::meter::{
+    Meter, MeterClass, Meter_class, LED_METERMODE, TEXT_METERMODE,
+};
+use crate::ported::object::ObjectClass;
 
 /// Port of `static void UptimeMeter_updateValues(Meter* this)` from
 /// `UptimeMeter.c:22`. Reads `Platform_getUptime()`; a non-positive value
@@ -57,3 +62,63 @@ pub fn SecondsUptimeMeter_updateValues(this: &mut Meter) {
     }
     this.txtBuffer = format!("{} s", totalseconds);
 }
+
+/// Port of `static const int UptimeMeter_attributes[]` from `UptimeMeter.c`:
+/// `{ UPTIME }`. Shared by both uptime classes.
+static UptimeMeter_attributes: [i32; 1] = [ColorElements::UPTIME as i32];
+
+/// Port of `const MeterClass UptimeMeter_class` from `UptimeMeter.c`. No
+/// custom `display` (C class leaves it `NULL`; the meter renders its
+/// `txtBuffer` via `Meter_displayBuffer`). `maxItems = 0`, TEXT/LED modes.
+pub static UptimeMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: None,
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(UptimeMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: (1 << TEXT_METERMODE) | (1 << LED_METERMODE),
+    total: 0.0,
+    attributes: &UptimeMeter_attributes,
+    name: "Uptime",
+    uiName: "Uptime",
+    caption: "Uptime: ",
+    description: None,
+    maxItems: 0,
+    isMultiColumn: false,
+    isPercentChart: false,
+};
+
+/// Port of `const MeterClass SecondsUptimeMeter_class` from `UptimeMeter.c`.
+/// Same as [`UptimeMeter_class`] but drives [`SecondsUptimeMeter_updateValues`]
+/// (raw seconds).
+pub static SecondsUptimeMeter_class: MeterClass = MeterClass {
+    super_: ObjectClass {
+        extends: Some(&Meter_class.super_),
+    },
+    display: None,
+    init: None,
+    done: None,
+    updateMode: None,
+    updateValues: Some(SecondsUptimeMeter_updateValues),
+    draw: None,
+    getCaption: None,
+    getUiName: None,
+    defaultMode: TEXT_METERMODE,
+    supportedModes: (1 << TEXT_METERMODE) | (1 << LED_METERMODE),
+    total: 0.0,
+    attributes: &UptimeMeter_attributes,
+    name: "SecondsUptime",
+    uiName: "Uptime (seconds)",
+    caption: "Uptime: ",
+    description: None,
+    maxItems: 0,
+    isMultiColumn: false,
+    isPercentChart: false,
+};

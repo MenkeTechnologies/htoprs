@@ -76,25 +76,21 @@
 //!   ascii/utf8 split is a runtime table pick and both add-char branches map to
 //!   one `mvaddch`.
 //!
-//! Stubbed (honest `todo!()`, specific blocker each):
-//! - `GraphMeterMode_draw` (`Meter.c:221`) — the value-recording half needs
-//!   `host->realtime` as a `struct timeval` (the ported `Machine` models the
-//!   sample clock only as `realtimeMs` in ms) plus the `GraphData` value ring
-//!   buffer (only two `GraphData` fields are modeled). `host->settings->delay`
-//!   is reachable. Referenced by the `Meter_modes` table as a fn pointer
-//!   (never called until a `Meter` is actually drawn in Graph mode).
+//! - `GraphMeterMode_draw` (`Meter.c:221`) — the braille/ASCII bar-graph
+//!   renderer. The value-recording half's `host->realtime` (`struct timeval`)
+//!   and `data->time` (`struct timeval`) are mapped onto the repo's ms clock
+//!   (`Machine.realtimeMs` + [`GraphData::time_ms`], the timeval reader being
+//!   unported); the `GraphData` value ring is expanded here via `Vec`. Wired
+//!   into the `Meter_modes` table as a fn pointer.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
-
-use std::cell::RefCell;
 use std::io::Write;
-use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 use crate::ported::crt::{CRT_colorSchemes, CRT_utf8, ColorElements, ColorScheme};
 use crate::ported::functionbar::Ncurses;
-use crate::ported::linux::linuxmachine::LinuxMachine;
+use crate::ported::machine::Machine;
 use crate::ported::listitem::{ListItem, ListItem_new};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 use crate::ported::richstring::{
@@ -184,6 +180,13 @@ pub const LED_METERMODE: MeterModeId = 4;
 /// `LAST_METERMODE` — trailing count sentinel (`MeterMode.h:17`).
 pub const LAST_METERMODE: MeterModeId = 5;
 
+/// Port of `#define METERMODE_DEFAULT_SUPPORTED` (`MeterMode.h:22`): the bit
+/// mask of the four real meter modes, the `supportedModes` value most meter
+/// classes use. The C macro `| 0`s a trailing term "to avoid edits when
+/// updating"; that identity term is dropped here.
+pub const METERMODE_DEFAULT_SUPPORTED: u32 =
+    (1 << BAR_METERMODE) | (1 << TEXT_METERMODE) | (1 << GRAPH_METERMODE) | (1 << LED_METERMODE);
+
 /// Port of `typedef struct GraphData_` from `Meter.h:106`. Only the two
 /// fields the ported machinery touches are modeled: `nValues` and the
 /// `values` ring buffer (C `double* values`, an owned `Vec` here).
@@ -194,6 +197,14 @@ pub const LAST_METERMODE: MeterModeId = 5;
 pub struct GraphData {
     pub nValues: usize,
     pub values: Vec<f64>,
+    /// C `struct timeval time` (`Meter.h:107`) — the next-sample deadline.
+    /// Modeled in milliseconds to match the ported `Machine`'s `realtimeMs`
+    /// clock: the repo deliberately models the sample clock as `realtimeMs`
+    /// (the `struct timeval realtime` reader is unported, `machine.rs`), so the
+    /// C `timercmp`/`timeradd` over `host->realtime` map onto integer-ms
+    /// arithmetic. Advanced by [`GraphMeterMode_draw`] by the configured update
+    /// delay; zero-initialized (C `xCalloc`).
+    pub time_ms: u64,
 }
 
 /// C `Meter_Draw` (`Meter.h:55`): `void (*)(Meter*, int, int, int)`. The
@@ -405,8 +416,8 @@ pub static Meter_modes: [MeterMode; LAST_METERMODE as usize] = [
 ///   * `draw` — the instance draw pointer (`this->draw`), assigned by
 ///     [`Meter_setMode`].
 ///
-/// The remaining C fields (`super`, `host`, `columnWidthCount`,
-/// `meterData`) are substrate the ported renderers do not touch.
+/// The remaining C fields (`super`, `host`) are substrate the ported
+/// renderers do not touch.
 pub struct Meter {
     pub values: Vec<f64>,
     pub curItems: u8,
@@ -421,6 +432,20 @@ pub struct Meter {
     pub total: f64,
     pub attributes: &'static [i32],
     pub isPercentChart: bool,
+    /// Port of `int columnWidthCount` (`Meter.h:122`) — "only used internally
+    /// by the Header". `Header_calculateHeight` writes it via
+    /// `calcColumnWidthCount`; `Header_draw` reads it to span a meter across
+    /// this many header columns.
+    pub columnWidthCount: i32,
+    /// C `Meter_isMultiColumn(this)` = `As_Meter(this)->isMultiColumn`
+    /// (`Meter.h:103`) — the class flag mirrored onto the instance (like
+    /// [`Meter::isPercentChart`]); `Header_draw` reads it to keep multi-column
+    /// meters (`AllCPUs*`) from expanding into empty neighbor columns.
+    pub isMultiColumn: bool,
+    /// C `Meter_name(this)` — the class `name` (e.g. `"AllCPUs"`,
+    /// `"LeftCPUs2"`), mirrored as an instance field; `AllCPUsMeter_getRange`
+    /// dispatches on its first byte.
+    pub name: &'static str,
     /// C `Meter_uiName(this)` — the class `uiName` (setup-menu display name),
     /// mirrored as an instance field.
     pub uiName: &'static str,
@@ -430,6 +455,10 @@ pub struct Meter {
     /// C `Object_displayFn(this)` — the inherited display slot; `None` ⇒ the
     /// `Meter_displayBuffer` else branch writes `txtBuffer` directly.
     pub display: Option<MeterDisplay>,
+    /// C `Meter_updateValues(this)` = `As_Meter(this)->updateValues(this)`
+    /// (`Meter.h:94`) — the class value-update slot mirrored onto the
+    /// instance (like `display`), dispatched by `Header_updateData`.
+    pub updateValues: Option<MeterUpdateValues>,
     /// C `Meter_updateModeFn(this)` — the class `updateMode` slot.
     pub updateMode: Option<MeterUpdateMode>,
     /// C `Meter_drawFn(this)` — the class `draw` slot (distinct from the
@@ -438,14 +467,17 @@ pub struct Meter {
     /// C `this->draw` — the instance draw pointer set by [`Meter_setMode`].
     pub draw: Option<MeterDraw>,
     /// C `Meter.host` (`Meter.h:114`) — the back-pointer to the owning
-    /// machine. C types it `Machine*`; the platform code downcasts to the
-    /// concrete `LinuxMachine*`. Rust cannot reinterpret a base reference,
-    /// so `host` holds the concrete [`LinuxMachine`] directly (the only
-    /// platform this port builds); its `super_` is the generic `Machine`
-    /// that cross-platform meters read. `Rc<RefCell<…>>` reproduces htop's
-    /// shared pointer (single-threaded; meters/header/tables all alias the
-    /// one machine). `None` on a meter not yet attached to a host.
-    pub host: Option<Rc<RefCell<LinuxMachine>>>,
+    /// machine, a raw `*const Machine` (the base type C uses; platform value
+    /// setters downcast to `*const DarwinMachine`). Null when the meter is
+    /// not yet attached to a host.
+    pub host: *const Machine,
+    /// C `void* meterData` (`Meter.h:118`) — a generic per-meter data slot
+    /// (used by `CPUMeter`'s multi-column variants for `CPUMeterData`, and by
+    /// `DiskIOMeter`/`MemorySwapMeter`). Modeled as an owned `Box<dyn Any>`
+    /// (the faithful analogue of the C `void*`); `Drop` reclaims it, replacing
+    /// the C `free` in the meter's `done` slot. Downcast with
+    /// `meterData.as_ref()?.downcast_ref::<T>()`.
+    pub meterData: Option<Box<dyn std::any::Any>>,
 }
 
 impl Meter {
@@ -458,7 +490,9 @@ impl Meter {
     /// `Meter_new`'s `this->h = 1` (`Meter.c:455`).
     pub(crate) fn empty() -> Meter {
         Meter {
-            host: None,
+            host: core::ptr::null(),
+            meterData: None,
+            name: "",
             values: Vec::new(),
             curItems: 0,
             mode: 0,
@@ -472,9 +506,12 @@ impl Meter {
             total: 0.0,
             attributes: &[],
             isPercentChart: false,
+            columnWidthCount: 0,
+            isMultiColumn: false,
             uiName: "",
             getUiName: None,
             display: None,
+            updateValues: None,
             updateMode: None,
             classDraw: None,
             draw: None,
@@ -542,14 +579,14 @@ impl Object for Meter {
 /// instance-klass analog here (see [`Meter::klass`]), so the class identity
 /// is carried by the mirrored slots.
 pub fn Meter_new(
-    host: Rc<RefCell<LinuxMachine>>,
+    host: *const Machine,
     param: u32,
     type_: &'static MeterClass,
 ) -> Meter {
     let mut this = Meter {
         h: 1,
         param,
-        host: Some(host),
+        host,
         curItems: type_.maxItems,
         curAttributes: None,
         values: if type_.maxItems > 0 {
@@ -563,9 +600,16 @@ pub fn Meter_new(
         supportedModes: type_.supportedModes,
         attributes: type_.attributes,
         isPercentChart: type_.isPercentChart,
+        // C: not in the class metadata; zero-initialised by the `Meter*
+        // this = xCalloc(1, sizeof(Meter))` in `Meter_new` (`Meter.c:79`),
+        // written later by `Header_calculateHeight`.
+        columnWidthCount: 0,
+        isMultiColumn: type_.isMultiColumn,
+        name: type_.name,
         uiName: type_.uiName,
         getUiName: type_.getUiName,
         display: type_.display,
+        updateValues: type_.updateValues,
         updateMode: type_.updateMode,
         classDraw: type_.draw,
         ..Meter::empty()
@@ -843,17 +887,187 @@ pub fn BarMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
     Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
 }
 
-/// TODO: port of `static void GraphMeterMode_draw(Meter* this, int x, int y,
-/// int w)` from `Meter.c:221`. Blocked on two substrate gaps: (1) the
-/// value-recording half reads `host->realtime` (a C `struct timeval`), but
-/// the ported `Machine` models the sample clock only as `realtimeMs` (`u64`
-/// ms), not the timeval the `timespec` arithmetic needs; (2) it expands the
-/// `GraphData` ring buffer, but the ported `GraphData` models only two of its
-/// fields, not the value ring. `host->settings->delay` is now reachable
-/// (canonical `Settings.delay`). Wired into `Meter_modes` as a fn pointer
-/// (only reached when a meter is actually drawn in Graph mode).
-pub fn GraphMeterMode_draw(_out: &mut dyn Write, _this: &mut Meter, _x: i32, _y: i32, _w: i32) {
-    todo!("port of Meter.c:221 — needs Machine host, timespec, GraphData ring buffer")
+/// Port of `#define MAX_METER_GRAPHDATA_VALUES 32768` (`Meter.h:23`) — the cap
+/// on the graph ring-buffer length.
+const MAX_METER_GRAPHDATA_VALUES: usize = 32768;
+
+/// Port of `#define PIXPERROW_ASCII 2` (`Meter.c`, non-`HAVE_LIBNCURSESW`
+/// branch) — the vertical sub-cell resolution of the ASCII graph glyphs.
+const PIXPERROW_ASCII: i32 = 2;
+/// Port of `#define PIXPERROW_UTF8 4` (`Meter.c`, `HAVE_LIBNCURSESW` branch) —
+/// the vertical sub-cell resolution of the UTF-8 braille graph glyphs.
+const PIXPERROW_UTF8: i32 = 4;
+
+/// Port of `static const char* const GraphMeterMode_dotsAscii[]` (`Meter.c`):
+/// the `(PIXPERROW_ASCII + 1)^2 = 9` cells indexed `line1 * 3 + line2`, used
+/// when `CRT_utf8` is off.
+static GraphMeterMode_dotsAscii: [&str; 9] = [
+    /*00*/ " ", /*01*/ ".", /*02*/ ":", //
+    /*10*/ ".", /*11*/ ".", /*12*/ ":", //
+    /*20*/ ":", /*21*/ ":", /*22*/ ":",
+];
+
+/// Port of `static const char* const GraphMeterMode_dotsUtf8[]` (`Meter.c`,
+/// `#ifdef HAVE_LIBNCURSESW`): the `(PIXPERROW_UTF8 + 1)^2 = 25` braille cells
+/// indexed `line1 * 5 + line2`, used when `CRT_utf8` is on. The port commits to
+/// the unicode-capable build (crossterm renders UTF-8 natively), so both tables
+/// are present and selected at runtime by [`CRT_utf8`] — the same modeling the
+/// LED digit tables use.
+static GraphMeterMode_dotsUtf8: [&str; 25] = [
+    /*00*/ " ", /*01*/ "⢀", /*02*/ "⢠", /*03*/ "⢰", /*04*/ "⢸", //
+    /*10*/ "⡀", /*11*/ "⣀", /*12*/ "⣠", /*13*/ "⣰", /*14*/ "⣸", //
+    /*20*/ "⡄", /*21*/ "⣄", /*22*/ "⣤", /*23*/ "⣴", /*24*/ "⣼", //
+    /*30*/ "⡆", /*31*/ "⣆", /*32*/ "⣦", /*33*/ "⣶", /*34*/ "⣾", //
+    /*40*/ "⡇", /*41*/ "⣇", /*42*/ "⣧", /*43*/ "⣷", /*44*/ "⣿",
+];
+
+/// Port of `static void GraphMeterMode_draw(Meter* this, int x, int y, int w)`
+/// from `Meter.c:221`. Draws the 3-column caption, expands the `GraphData` ring
+/// buffer to hold `w * 2` sub-samples (prepending zeros), records a new sample
+/// (`Meter_computeSum`, normalized by `total` for percent charts) once the
+/// per-`delay` deadline has passed, then renders the ring as a braille/ASCII
+/// bar graph — two ring entries per terminal column, scaled either to the
+/// `total` (percent charts) or to the visible window's peak. Terminal output
+/// goes through the crossterm [`Ncurses`] shim.
+///
+/// Substrate mapping: the C reads `host->realtime` (a `struct timeval`) and
+/// stores the next deadline in `data->time` (also a `timeval`), using
+/// `timercmp`/`timeradd`. The ported `Machine` models the sample clock only as
+/// `realtimeMs` (`machine.rs`), so this port stores the deadline as
+/// [`GraphData::time_ms`] and does the comparison/advance in integer
+/// milliseconds: `!timercmp(realtime, time, <)` becomes `realtimeMs >= time_ms`,
+/// and `timeradd(realtime, delay)` becomes `realtimeMs + delay_ms`, where the C
+/// `delay = { globalDelay / 10 s, (globalDelay % 10) * 100000 us }` equals
+/// `globalDelay * 100` ms exactly (`Settings.delay` is tenths of a second).
+///
+/// The C `assert(x >= 0)` / `assert(w <= INT_MAX - x)` / `assert(this->h >= 1)`
+/// are debug-only preconditions kept as `debug_assert!`. `CLAMP(x, lo, hi)`
+/// (`Macros.h:25`) and `lround` map to `f64::clamp` + `f64::round`.
+pub fn GraphMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i32, w: i32) {
+    let scheme = ColorScheme::active();
+
+    // Draw the caption
+    let caption_len = 3;
+    let caption = this.caption.clone();
+    let mut x = x;
+    let mut w = w;
+    if w >= caption_len {
+        Ncurses::attrset(&mut out, ColorElements::METER_TEXT.packed(scheme));
+        Ncurses::mvaddnstr(&mut out, y, x, &caption, caption_len);
+    }
+    w -= caption_len;
+
+    // Prepare parameters for drawing
+    debug_assert!(this.h >= 1);
+    let h = this.h;
+
+    let is_percent_chart = this.isPercentChart;
+
+    // Expand the graph data buffer if necessary
+    let old_n = this.drawData.nValues;
+    if w > (old_n / 2) as i32 && MAX_METER_GRAPHDATA_VALUES > old_n {
+        let mut new_n = (old_n + old_n / 2).max((w as usize) * 2);
+        new_n = new_n.min(MAX_METER_GRAPHDATA_VALUES);
+        let add = new_n - old_n;
+        // memmove old values to the end, memset the (new) front to zero:
+        // [0.0; add] ++ old_values.
+        let mut newv = vec![0.0f64; add];
+        newv.extend_from_slice(&this.drawData.values);
+        newv.resize(new_n, 0.0);
+        this.drawData.values = newv;
+        this.drawData.nValues = new_n;
+    }
+
+    let n_values = this.drawData.nValues;
+    if n_values < 1 {
+        Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
+        return;
+    }
+
+    // Record new value if necessary
+    // SAFETY: `this.host` is the owning machine set at Meter_new; a drawn meter
+    // is always attached. The deref borrows the Machine, not `this`.
+    let host: &Machine = unsafe { &*this.host };
+    if host.realtimeMs >= this.drawData.time_ms {
+        let global_delay = host
+            .settings
+            .as_ref()
+            .expect("GraphMeterMode_draw: host->settings")
+            .delay;
+        // delay = { globalDelay/10 s, (globalDelay%10)*100000 us } == globalDelay*100 ms
+        this.drawData.time_ms = host.realtimeMs + (global_delay as u64) * 100;
+
+        this.drawData.values.copy_within(1..n_values, 0);
+        let last = n_values - 1;
+        let mut newval = 0.0;
+        if this.curItems > 0 {
+            newval = Meter_computeSum(this);
+            if is_percent_chart && this.total > 0.0 {
+                newval /= this.total;
+            }
+        }
+        this.drawData.values[last] = newval;
+    }
+
+    if w < 1 {
+        Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
+        return;
+    }
+    x += caption_len;
+
+    // Graph drawing style (character set, etc.)
+    let utf8 = CRT_utf8.load(Ordering::Relaxed);
+    let (dots, pix_per_row): (&[&str], i32) = if utf8 {
+        (&GraphMeterMode_dotsUtf8[..], PIXPERROW_UTF8)
+    } else {
+        (&GraphMeterMode_dotsAscii[..], PIXPERROW_ASCII)
+    };
+
+    // Starting positions of graph data and terminal column
+    if w as usize > n_values / 2 {
+        x += w - (n_values / 2) as i32;
+        w = (n_values / 2) as i32;
+    }
+    let mut i = n_values - (w as usize) * 2;
+
+    // Determine the graph scale
+    let mut total = 1.0f64;
+    if !is_percent_chart {
+        for j in i..n_values {
+            total = this.drawData.values[j].max(total);
+        }
+    }
+    debug_assert!(total >= 1.0);
+
+    // Draw the actual graph
+    let values = &this.drawData.values;
+    let mut col = 0i32;
+    while i < n_values - 1 {
+        let pix = pix_per_row * h;
+        let v1 = (values[i] / total * pix as f64).clamp(1.0, pix as f64).round() as i32;
+        let v2 = (values[i + 1] / total * pix as f64)
+            .clamp(1.0, pix as f64)
+            .round() as i32;
+
+        let mut color_idx = ColorElements::GRAPH_1;
+        for line in 0..h {
+            let line1 = (v1 - pix_per_row * (h - 1 - line)).clamp(0, pix_per_row);
+            let line2 = (v2 - pix_per_row * (h - 1 - line)).clamp(0, pix_per_row);
+
+            Ncurses::attrset(&mut out, color_idx.packed(scheme));
+            Ncurses::mvaddstr(
+                &mut out,
+                y + line,
+                x + col,
+                dots[(line1 * (pix_per_row + 1) + line2) as usize],
+            );
+            color_idx = ColorElements::GRAPH_2;
+        }
+        i += 2;
+        col += 1;
+    }
+
+    Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
 }
 
 /// Port of `static const char* const LEDMeterMode_digitsAscii[]` from
@@ -1168,7 +1382,7 @@ mod tests {
     fn compute_sum_ignores_negatives_and_nan() {
         // sumPositiveValues skips values <= 0 and NaN: 5 + 2 = 7.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             values: vec![5.0, -3.0, f64::NAN, 2.0],
             curItems: 4,
             ..Meter::empty()
@@ -1180,7 +1394,7 @@ mod tests {
     fn compute_sum_honors_cur_items() {
         // Only the first curItems entries are summed; trailing 100.0 unused.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             values: vec![1.0, 2.0, 100.0],
             curItems: 2,
             ..Meter::empty()
@@ -1193,7 +1407,7 @@ mod tests {
         // Two DBL_MAX positives overflow to +inf; MINIMUM(DBL_MAX, inf)
         // picks DBL_MAX since DBL_MAX < inf.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             values: vec![f64::MAX, f64::MAX],
             curItems: 2,
             ..Meter::empty()
@@ -1203,16 +1417,13 @@ mod tests {
 
     // ── Meter_nextSupportedMode ───────────────────────────────────────
 
-    /// `METERMODE_DEFAULT_SUPPORTED` (`MeterMode.h:21`): all four real
-    /// modes supported = bits 1..4 set.
-    const ALL_MODES: u32 = (1 << BAR_METERMODE)
-        | (1 << TEXT_METERMODE)
-        | (1 << GRAPH_METERMODE)
-        | (1 << LED_METERMODE);
+    /// All four real modes supported = bits 1..4 set (the ported
+    /// [`METERMODE_DEFAULT_SUPPORTED`]).
+    const ALL_MODES: u32 = METERMODE_DEFAULT_SUPPORTED;
 
     fn mode_meter(mode: MeterModeId, supportedModes: u32) -> Meter {
         Meter {
-            host: None,
+            host: core::ptr::null(),
             mode,
             supportedModes,
             ..Meter::empty()
@@ -1322,7 +1533,7 @@ mod tests {
         // No display slot: writes txtBuffer in CRT_colors[attributes[0]].
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             txtBuffer: "hi".to_string(),
             attributes: &ATTRS,
             ..Meter::empty()
@@ -1344,7 +1555,7 @@ mod tests {
         }
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             txtBuffer: "ignored".to_string(),
             attributes: &ATTRS,
             display: Some(disp),
@@ -1361,7 +1572,7 @@ mod tests {
     fn text_meter_draw_caption_then_value() {
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             attributes: &ATTRS,
@@ -1376,7 +1587,7 @@ mod tests {
     #[test]
     fn text_meter_draw_zero_width_prints_nothing() {
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             ..Meter::empty()
@@ -1391,7 +1602,7 @@ mod tests {
     fn text_meter_draw_caption_only_when_width_equals_caption() {
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             attributes: &ATTRS,
@@ -1409,7 +1620,7 @@ mod tests {
     fn bar_meter_draw_borders_fill_and_text() {
         static ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "50%".to_string(),
             values: vec![50.0],
@@ -1435,7 +1646,7 @@ mod tests {
         // isPercentChart: total is NOT auto-grown from the sum.
         static ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "".to_string(),
             values: vec![50.0],
@@ -1458,7 +1669,7 @@ mod tests {
             ColorElements::CPU_SYSTEM as i32,
         ];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "IO ".to_string(),
             txtBuffer: "".to_string(),
             values: vec![120.0, 30.0],
@@ -1480,7 +1691,7 @@ mod tests {
         static CLASS_ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
         static CUR_ATTRS: [i32; 1] = [ColorElements::CPU_SYSTEM as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "".to_string(),
             values: vec![100.0],
@@ -1506,7 +1717,7 @@ mod tests {
         // '5' is blitted as a 3-row seven-segment cell, '%' as a single char.
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "".to_string(),
             txtBuffer: "5%".to_string(),
             attributes: &ATTRS,
@@ -1526,7 +1737,7 @@ mod tests {
     fn led_meter_draw_prints_caption() {
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "".to_string(),
             attributes: &ATTRS,
@@ -1542,7 +1753,7 @@ mod tests {
         // w <= captionWidth → early return after caption, no digit cells.
         static ATTRS: [i32; 1] = [ColorElements::METER_VALUE as i32];
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             txtBuffer: "5".to_string(),
             attributes: &ATTRS,
@@ -1558,7 +1769,7 @@ mod tests {
     #[test]
     fn set_mode_assigns_height_from_table() {
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             ..Meter::empty()
@@ -1580,7 +1791,7 @@ mod tests {
     #[test]
     fn set_mode_resets_draw_data() {
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             ..Meter::empty()
@@ -1595,7 +1806,7 @@ mod tests {
     #[test]
     fn set_mode_same_mode_is_noop() {
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             h: 42, // sentinel: unchanged when mode doesn't switch
@@ -1610,7 +1821,7 @@ mod tests {
     fn set_mode_unsupported_mode_is_rejected() {
         // Only TEXT supported: a switch to GRAPH is ignored.
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             mode: TEXT_METERMODE,
             supportedModes: 1 << TEXT_METERMODE,
             h: 7,
@@ -1624,7 +1835,7 @@ mod tests {
     #[test]
     fn set_mode_out_of_range_is_rejected() {
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             h: 9,
@@ -1644,7 +1855,7 @@ mod tests {
             this.h = 100 + mode as i32;
         }
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             mode: BAR_METERMODE,
             supportedModes: ALL_MODES,
             updateMode: Some(upd),
@@ -1665,7 +1876,7 @@ mod tests {
     #[test]
     fn blank_meter_update_values_clears_text() {
         let mut m = Meter {
-            host: None,
+            host: core::ptr::null(),
             txtBuffer: "stale".to_string(),
             ..Meter::empty()
         };
@@ -1700,15 +1911,13 @@ mod tests {
     #[test]
     fn meter_new_builds_instance_from_class() {
         use crate::ported::linux::linuxmachine::LinuxMachine;
-        use std::cell::RefCell;
-        use std::rc::Rc;
 
-        let host = Rc::new(RefCell::new(LinuxMachine::default()));
-        let m = Meter_new(Rc::clone(&host), 7, &BlankMeter_class);
+        let host = Box::leak(Box::new(LinuxMachine::default()));
+        let m = Meter_new(&host.super_ as *const crate::ported::machine::Machine, 7, &BlankMeter_class);
 
         assert_eq!(m.param, 7);
         assert_eq!(m.h, 1);
-        assert!(m.host.is_some());
+        assert!(!m.host.is_null());
         // maxItems == 0 → no values buffer, curItems 0.
         assert_eq!(m.curItems, 0);
         assert!(m.values.is_empty());
@@ -1730,7 +1939,7 @@ mod tests {
     fn to_list_item_reserved_mode_has_no_suffix() {
         // mode == 0 (reserved): label is just the uiName, no " [..]" suffix.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             uiName: "CPU",
             mode: 0,
             ..Meter::empty()
@@ -1745,7 +1954,7 @@ mod tests {
     fn to_list_item_real_mode_appends_mode_uiname() {
         // mode > 0: suffix " [<Meter_modes[mode].uiName>]" is appended.
         let bar = Meter {
-            host: None,
+            host: core::ptr::null(),
             uiName: "CPU",
             mode: BAR_METERMODE,
             ..Meter::empty()
@@ -1753,7 +1962,7 @@ mod tests {
         assert_eq!(Meter_toListItem(&bar, false).value, "CPU [Bar]");
 
         let text = Meter {
-            host: None,
+            host: core::ptr::null(),
             uiName: "Memory",
             mode: TEXT_METERMODE,
             ..Meter::empty()
@@ -1761,7 +1970,7 @@ mod tests {
         assert_eq!(Meter_toListItem(&text, false).value, "Memory [Text]");
 
         let graph = Meter {
-            host: None,
+            host: core::ptr::null(),
             uiName: "Swap",
             mode: GRAPH_METERMODE,
             ..Meter::empty()
@@ -1773,7 +1982,7 @@ mod tests {
     fn to_list_item_propagates_moving_flag() {
         // The caller's `moving` bool is copied onto the returned item.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             uiName: "CPU",
             mode: 0,
             ..Meter::empty()
@@ -1790,7 +1999,7 @@ mod tests {
             "CPU average".to_string()
         }
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             uiName: "STATIC-IGNORED",
             getUiName: Some(dyn_name),
             mode: BAR_METERMODE,
@@ -1808,7 +2017,7 @@ mod tests {
             "a".repeat(40)
         }
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             getUiName: Some(long_name),
             mode: 0,
             ..Meter::empty()
@@ -1841,7 +2050,7 @@ mod tests {
         // Object::display routes to the instance display slot (BlankMeter_display
         // here — a no-op), not a panic.
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             display: Some(BlankMeter_display),
             ..Meter::empty()
         };
@@ -1860,7 +2069,7 @@ mod tests {
         let mut v = Vector_new(&Meter_class.super_, true, 10);
 
         let m = Meter {
-            host: None,
+            host: core::ptr::null(),
             caption: "CPU".to_string(),
             param: 7,
             ..Meter::empty()

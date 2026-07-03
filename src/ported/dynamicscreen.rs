@@ -51,14 +51,17 @@
 use crate::ported::hashtable::{Hashtable, Hashtable_foreach, Hashtable_get};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 
-/// Model of the C `DynamicScreen` struct (`DynamicScreen.h`). Only the
-/// `name` field is read by [`DynamicScreen_compare`] /
-/// [`DynamicScreen_lookup`]; the C struct's other fields (`heading`,
-/// `caption`, `fields`, `sortKey`, `columnKeys`, `direction`) are omitted
-/// because the ported code paths never read them.
+/// Model of the C `DynamicScreen` struct (`DynamicScreen.h`). `name` is read
+/// by [`DynamicScreen_compare`] / [`DynamicScreen_lookup`]; `heading` (C
+/// `char* heading`, the user-settable readable name, nullable ⇒ `Option`) is
+/// read by `ScreenTabsPanel.c`'s `addDynamicScreen`. The remaining C fields
+/// (`caption`, `fields`, `sortKey`, `columnKeys`, `direction`) are omitted
+/// because no ported code path reads them.
 pub struct DynamicScreen {
     /// C `char name[32]` — unique name, cannot contain spaces.
     pub name: String,
+    /// C `char* heading` — user-settable more readable name (`NULL` ⇒ `None`).
+    pub heading: Option<String>,
 }
 
 /// Adapter class descriptor that lets a [`DynamicScreen`] be stored in
@@ -176,6 +179,7 @@ mod tests {
     fn screen(name: &str) -> DynamicScreen {
         DynamicScreen {
             name: name.to_string(),
+            heading: None,
         }
     }
 
