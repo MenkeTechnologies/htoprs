@@ -92,7 +92,8 @@ use crate::ported::crt::{CRT_disableDelay, CRT_enableDelay, KEY_F};
 use crate::ported::functionbar::{FunctionBar_new, FunctionBar_setLabel, Ncurses};
 use crate::ported::incset::IncSet_new;
 use crate::ported::infoscreen::{
-    InfoScreen, InfoScreen_addLine, InfoScreen_appendLine, InfoScreen_drawTitled, InfoScreen_init,
+    InfoScreen, InfoScreenClass, InfoScreen_addLine, InfoScreen_appendLine, InfoScreen_drawTitled,
+    InfoScreen_init,
 };
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
@@ -144,6 +145,34 @@ pub struct TraceScreen {
     pub follow: bool,
     /// C `bool strace_alive` — the tracer child is still running.
     pub strace_alive: bool,
+}
+
+/// Port of `const InfoScreenClass TraceScreen_class` (`TraceScreen.c:207`):
+/// `{ .draw = TraceScreen_draw, .onErr = TraceScreen_updateTrace,
+/// .onKey = TraceScreen_onKey }`. Wires the three installed vtable slots so
+/// [`InfoScreen_run`](crate::ported::infoscreen::InfoScreen_run) dispatches this
+/// screen; there is no `scan` slot in C (trait default). `onErr`/`onKey` take
+/// the concrete `TraceScreen*` (they touch the tracer pipe/child), so they
+/// forward `self`; `draw` takes the base `InfoScreen*`.
+impl InfoScreenClass for TraceScreen {
+    fn super_InfoScreen(&mut self) -> &mut InfoScreen {
+        &mut self.super_
+    }
+    fn draw(&mut self) {
+        TraceScreen_draw(&mut self.super_);
+    }
+    fn onErr(&mut self) {
+        TraceScreen_updateTrace(self);
+    }
+    fn onKey(&mut self, ch: c_int) -> bool {
+        TraceScreen_onKey(self, ch)
+    }
+    fn has_onErr(&self) -> bool {
+        true
+    }
+    fn has_onKey(&self) -> bool {
+        true
+    }
 }
 
 /// Port of `TraceScreen* TraceScreen_new(const Process* process)` from

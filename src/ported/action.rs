@@ -113,6 +113,8 @@ use crate::ported::crt::{
 use crate::ported::commandscreen::{CommandScreen_delete, CommandScreen_new};
 use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
 use crate::ported::infoscreen::InfoScreen_run;
+use crate::ported::openfilesscreen::{OpenFilesScreen_delete, OpenFilesScreen_new};
+use crate::ported::tracescreen::{TraceScreen_delete, TraceScreen_forkTracer, TraceScreen_new};
 use crate::ported::dynamiccolumn::DynamicColumn;
 use crate::ported::functionbar::{FunctionBar_newEnterEsc, Ncurses};
 use crate::ported::hashtable::Hashtable_get;
@@ -1419,8 +1421,36 @@ pub fn actionSetup(st: &mut State) -> Htop_Reaction {
 /// `InfoScreen`. Blocked on ncurses: the epilogue calls `clear()` (unported
 /// in `crt.rs`), and `InfoScreen_run` takes `&mut dyn InfoScreenClass` while
 /// `OpenFilesScreen` does not implement that trait, so it cannot be driven yet.
-pub fn actionLsof(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:579 — clear() unported + OpenFilesScreen has no InfoScreenClass impl")
+pub fn actionLsof(st: &mut State) -> Htop_Reaction {
+    // C: if (!Action_writeableProcess(st)) return HTOP_OK;
+    if !Action_writeableProcess(st) {
+        return HTOP_OK;
+    }
+    // C: const Process* p = (Process*)Panel_getSelected((Panel*)st->mainPanel);
+    let mainpanel = st.mainPanel;
+    if mainpanel.is_null() {
+        return HTOP_OK;
+    }
+    // C: OpenFilesScreen* ofs = OpenFilesScreen_new(p);
+    let mut ofs = {
+        // SAFETY: `mainPanel` is the process panel wired at startup.
+        let panel = unsafe { &(*mainpanel).super_ };
+        let p = match Panel_getSelected(panel).and_then(|o| o.as_process()) {
+            Some(p) => p,
+            None => return HTOP_OK,
+        };
+        OpenFilesScreen_new(p)
+    };
+    // C: InfoScreen_run((InfoScreen*)ofs);
+    InfoScreen_run(&mut ofs);
+    // C: OpenFilesScreen_delete((Object*)ofs);
+    OpenFilesScreen_delete(ofs);
+    // C: clear(); CRT_enableDelay();
+    let mut out = std::io::stdout().lock();
+    Ncurses::clear(&mut out);
+    Ncurses::refresh(&mut out);
+    CRT_enableDelay();
+    HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
 /// TODO: port of `static Htop_Reaction actionShowLocks(State* st)` from
@@ -1447,8 +1477,39 @@ pub fn actionBacktrace(_st: &mut State) -> Htop_Reaction {
 /// `Action.c:644`. Forks a tracer and shows its `TraceScreen` modally. Blocked
 /// on ncurses (`clear()` unported) and the `InfoScreen_run` trait gap
 /// (`TraceScreen` does not implement `InfoScreenClass`).
-pub fn actionStrace(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:644 — clear() unported + TraceScreen has no InfoScreenClass impl")
+pub fn actionStrace(st: &mut State) -> Htop_Reaction {
+    // C: if (!Action_writeableProcess(st)) return HTOP_OK;
+    if !Action_writeableProcess(st) {
+        return HTOP_OK;
+    }
+    // C: const Process* p = (Process*)Panel_getSelected((Panel*)st->mainPanel);
+    let mainpanel = st.mainPanel;
+    if mainpanel.is_null() {
+        return HTOP_OK;
+    }
+    // C: TraceScreen* ts = TraceScreen_new(p);
+    let mut ts = {
+        // SAFETY: `mainPanel` is the process panel wired at startup.
+        let panel = unsafe { &(*mainpanel).super_ };
+        let p = match Panel_getSelected(panel).and_then(|o| o.as_process()) {
+            Some(p) => p,
+            None => return HTOP_OK,
+        };
+        TraceScreen_new(p)
+    };
+    // C: bool ok = TraceScreen_forkTracer(ts); if (ok) InfoScreen_run(...);
+    if TraceScreen_forkTracer(&mut ts) {
+        InfoScreen_run(&mut ts);
+    }
+    // C: TraceScreen_delete((Object*)ts);  — kills the tracer child + closes the
+    // pipe; the owned InfoScreen fields then release when `ts` drops at scope end.
+    TraceScreen_delete(&mut ts);
+    // C: clear(); CRT_enableDelay();
+    let mut out = std::io::stdout().lock();
+    Ncurses::clear(&mut out);
+    Ncurses::refresh(&mut out);
+    CRT_enableDelay();
+    HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
 /// Port of `static Htop_Reaction actionTag(State* st)` from `Action.c:665`.
