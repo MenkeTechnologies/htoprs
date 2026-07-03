@@ -503,6 +503,13 @@ impl Ncurses {
         let _ = queue!(out, terminal::Clear(terminal::ClearType::All), MoveTo(0, 0));
     }
 
+    /// ncurses `addstr()` — write the string at the current cursor position (in
+    /// the current attribute), advancing the cursor. No `MoveTo`, so it
+    /// continues from wherever the last `mvaddstr`/`addstr` left off.
+    pub(crate) fn addstr<W: Write>(out: &mut W, s: &str) {
+        let _ = queue!(out, Print(s));
+    }
+
     /// ncurses `beep()` — the audible terminal bell (BEL, `\a`).
     pub(crate) fn beep<W: Write>(out: &mut W) {
         let _ = out.write_all(b"\x07");

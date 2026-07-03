@@ -1559,12 +1559,14 @@ pub fn actionTogglePauseUpdate(st: &mut State) -> Htop_Reaction {
     HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING
 }
 
-/// TODO: port of `static inline void addattrstr(int attr, const char* str)`
-/// from `Action.c:746`. The body is `attrset(attr); addstr(str);` — both
-/// ncurses drawing primitives that are not ported in `crt.rs`. Used only by
-/// [`actionHelp`], which is itself ncurses-blocked.
-pub fn addattrstr() {
-    todo!("port of Action.c:746 — attrset/addstr ncurses primitives unported in crt.rs")
+/// Port of `static inline void addattrstr(int attr, const char* str)` from
+/// `Action.c:746`: set the attribute, then write the string at the current
+/// cursor. Takes the crossterm output sink (htoprs's terminal backend) in
+/// place of the C global `stdscr`. Used by [`actionHelp`] to lay out the
+/// colored help legend.
+pub fn addattrstr<W: std::io::Write>(out: &mut W, attr: i32, str_: &str) {
+    Ncurses::attrset(out, attr);
+    Ncurses::addstr(out, str_);
 }
 
 /// TODO: port of `static Htop_Reaction actionHelp(State* st)` from
