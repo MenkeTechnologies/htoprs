@@ -1,16 +1,35 @@
 //! Port of `CommandLine.c` — htop's command-line entry and flag output.
 //!
-//! Only the `-V` / `-h` flag printers are ported so far; the full
-//! `CommandLine_parseArgs` getopt_long switch and the interactive run
-//! loop are not yet ported.
+//! The `-V` / `-h` flag printers and the `parseArguments` getopt_long switch
+//! are ported; the interactive run loop (`CommandLine_run`) is still driven
+//! from `main.rs` rather than ported wholesale.
 #![allow(non_snake_case)]
+
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
+use std::ptr;
+
+// The platform `Process_fields[]` table + count, for `--sort-key=help` and the
+// column lookup. Selected by target, mirroring htop's per-platform link.
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::darwinprocess::{Process_fields, LAST_PROCESSFIELD};
+#[cfg(all(not(target_os = "macos"), target_os = "linux"))]
+use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
+
+// getopt's result globals. The `libc` crate declares `getopt_long` and `option`
+// for the BSD/apple target but not the `optarg`/`optind` externs, so bind the
+// real libSystem/glibc symbols directly (same ones htop's getopt_long fills).
+extern "C" {
+    static mut optarg: *mut c_char;
+    static mut optind: c_int;
+}
 
 /// htop's `VERSION` — a build-time macro produced by configure. The
 /// faithful Rust equivalent is the crate version from `Cargo.toml`.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// htop's `COPYRIGHT` macro (`configure.ac:1833`).
-const COPYRIGHT: &str = "(C) MenkeTechnologies 2026.";
+pub(crate) const COPYRIGHT: &str = "(C) MenkeTechnologies 2026.";
 
 /// Port of `printVersionFlag(const char* name)` from `CommandLine.c`.
 /// C: `printf("%s " VERSION "\n", name)`.

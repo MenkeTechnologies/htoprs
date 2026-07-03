@@ -108,8 +108,14 @@
 
 use crate::ported::categoriespanel::CategoriesPanel_new;
 use crate::ported::crt::{
-    CRT_enableDelay, CRT_setMouse, ColorElements, KEY_DOWN, KEY_F, KEY_RECLICK, KEY_SHIFT_TAB,
+    CRT_enableDelay, CRT_readKey, CRT_setMouse, ColorElements, ColorScheme, KEY_DOWN, KEY_F,
+    KEY_RECLICK, KEY_SHIFT_TAB,
 };
+use crate::ported::commandline::{COPYRIGHT, VERSION};
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::{Platform_memoryClasses, Platform_numberOfMemoryClasses};
+#[cfg(not(target_os = "macos"))]
+use crate::ported::linux::platform::{Platform_memoryClasses, Platform_numberOfMemoryClasses};
 use crate::ported::commandscreen::{CommandScreen_delete, CommandScreen_new};
 use crate::ported::processlocksscreen::{ProcessLocksScreen_delete, ProcessLocksScreen_new};
 use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
@@ -1750,15 +1756,340 @@ pub fn addattrstr<W: std::io::Write>(out: &mut W, attr: i32, str_: &str) {
     Ncurses::addstr(out, str_);
 }
 
-/// TODO: port of `static Htop_Reaction actionHelp(State* st)` from
-/// `Action.c:751`. Draws the full help page. Blocked on the ncurses draw
-/// substrate: `clear()`, `attrset`, `mvaddstr`, `mvhline`, `addstr`,
-/// `refresh()`, [`addattrstr`] and `CRT_readKey`'s companions, plus the
-/// `Platform_memoryClasses` table — none ported in `crt.rs`.
-pub fn actionHelp(_st: &mut State) -> Htop_Reaction {
-    todo!(
-        "port of Action.c:751 — clear/attrset/mvaddstr/mvhline/refresh ncurses substrate unported"
-    )
+/// One row of the help-screen key legend. Models the anonymous file-static
+/// `struct { const char* key; bool roInactive; const char* info; }` used by
+/// `helpLeft`/`helpRight` (`Action.c:686`/`Action.c:713`). The C arrays are
+/// NUL-`key` terminated; the Rust slices carry their own length, so the
+/// terminator entry is dropped.
+struct HelpItem {
+    key: &'static str,
+    roInactive: bool,
+    info: &'static str,
+}
+
+/// Port of `static const struct { ... } helpLeft[]` from `Action.c:686`.
+#[allow(non_upper_case_globals)]
+const helpLeft: &[HelpItem] = &[
+    HelpItem { key: "      #: ", roInactive: false, info: "hide/show header meters" },
+    HelpItem { key: "    Tab: ", roInactive: false, info: "switch to next screen tab" },
+    HelpItem { key: " Arrows: ", roInactive: false, info: "scroll process list" },
+    HelpItem { key: " Digits: ", roInactive: false, info: "incremental PID search" },
+    HelpItem { key: "   F3 /: ", roInactive: false, info: "incremental name search" },
+    HelpItem { key: "   F4 \\: ", roInactive: false, info: "incremental name filtering" },
+    HelpItem { key: "   F5 t: ", roInactive: false, info: "tree view" },
+    HelpItem { key: "      p: ", roInactive: false, info: "toggle program path" },
+    HelpItem { key: "      m: ", roInactive: false, info: "toggle merged command" },
+    HelpItem { key: "      Z: ", roInactive: false, info: "pause/resume process updates" },
+    HelpItem { key: "      u: ", roInactive: false, info: "show processes of a single user" },
+    HelpItem { key: "      H: ", roInactive: false, info: "hide/show user process threads" },
+    HelpItem { key: "      K: ", roInactive: false, info: "hide/show kernel threads" },
+    HelpItem { key: "      O: ", roInactive: false, info: "hide/show processes in containers" },
+    HelpItem { key: "      F: ", roInactive: false, info: "cursor follows process" },
+    HelpItem { key: "  + - *: ", roInactive: false, info: "expand/collapse tree/toggle all" },
+    HelpItem { key: "N P M T: ", roInactive: false, info: "sort by PID, CPU%, MEM% or TIME" },
+    HelpItem { key: "      I: ", roInactive: false, info: "invert sort order" },
+    HelpItem { key: " F6 > .: ", roInactive: false, info: "select sort column" },
+];
+
+/// Port of `static const struct { ... } helpRight[]` from `Action.c:713`.
+/// The `a` (`HAVE_LIBHWLOC || HAVE_AFFINITY`), `b` (`HAVE_BACKTRACE_SCREEN`)
+/// and `Y` (`SCHEDULER_SUPPORT`) entries are Linux-only in htop; the darwin
+/// build compiles them out (matching the `#if`/`#ifdef` guards in the C).
+#[allow(non_upper_case_globals)]
+const helpRight: &[HelpItem] = &[
+    HelpItem { key: "  S-Tab: ", roInactive: false, info: "switch to previous screen tab" },
+    HelpItem { key: "  Space: ", roInactive: false, info: "tag process" },
+    HelpItem { key: "      c: ", roInactive: false, info: "tag process and its children" },
+    HelpItem { key: "      U: ", roInactive: false, info: "untag all processes" },
+    HelpItem { key: "   F9 k: ", roInactive: true, info: "kill process/tagged processes" },
+    HelpItem { key: "   F7 ]: ", roInactive: true, info: "higher priority (root only)" },
+    HelpItem { key: "   F8 [: ", roInactive: true, info: "lower priority (+ nice)" },
+    #[cfg(target_os = "linux")]
+    HelpItem { key: "      a: ", roInactive: true, info: "set CPU affinity" },
+    #[cfg(target_os = "linux")]
+    HelpItem { key: "      b: ", roInactive: false, info: "show process backtrace" },
+    HelpItem { key: "      e: ", roInactive: false, info: "show process environment" },
+    HelpItem { key: "      i: ", roInactive: true, info: "set IO priority" },
+    HelpItem { key: "      l: ", roInactive: true, info: "list open files with lsof" },
+    HelpItem { key: "      x: ", roInactive: false, info: "list file locks of process" },
+    HelpItem { key: "      s: ", roInactive: true, info: "trace syscalls with strace" },
+    HelpItem { key: "      w: ", roInactive: false, info: "wrap process command in multiple lines" },
+    #[cfg(target_os = "linux")]
+    HelpItem { key: "      Y: ", roInactive: true, info: "set scheduling policy" },
+    HelpItem { key: " F2 C S: ", roInactive: false, info: "setup" },
+    HelpItem { key: " F1 h ?: ", roInactive: false, info: "show this help screen" },
+    HelpItem { key: "  F10 q: ", roInactive: false, info: "quit" },
+];
+
+/// Port of `static Htop_Reaction actionHelp(State* st)` from `Action.c:751`.
+///
+/// Clears the screen and paints the full help page: the version/copyright
+/// banner, the colored CPU/memory/swap-bar legends, the process-state key,
+/// then the two-column key-binding table (`helpLeft`/`helpRight`), and finally
+/// waits for a keypress before wiping the screen. The C `#define addbartext`
+/// and `#define addattrstatestr` macros become nested `fn`s; `CRT_colors[X]`
+/// is `ColorElements::X.packed(scheme)` (the active scheme read once, exactly
+/// as C's `CRT_colors` already points at `CRT_colorSchemes[CRT_colorScheme]`);
+/// `LINES`/`COLS` are `Ncurses::lines()`/`Ncurses::cols()`.
+pub fn actionHelp(st: &mut State) -> Htop_Reaction {
+    use crate::ported::crt::ColorElements::{
+        BAR_BORDER, BAR_SHADOW, CPU_GUEST, CPU_IOWAIT, CPU_IRQ, CPU_NICE_TEXT, CPU_NORMAL,
+        CPU_SOFTIRQ, CPU_STEAL, CPU_SYSTEM, DEFAULT_COLOR, HELP_BOLD, HELP_SHADOW, PROCESS_D_STATE,
+        PROCESS_RUN_STATE, PROCESS_SHADOW, PROCESS_THREAD, SWAP,
+    };
+    use std::io::Write;
+
+    // C `#define addbartext(attr, prefix, text)`: default-colored prefix, then
+    // the attributed text.
+    fn addbartext<W: Write>(out: &mut W, scheme: ColorScheme, attr: i32, prefix: &str, text: &str) {
+        addattrstr(out, ColorElements::DEFAULT_COLOR.packed(scheme), prefix);
+        addattrstr(out, attr, text);
+    }
+
+    // C `#define addattrstatestr(attr, state, desc)`: attributed state glyph,
+    // then default-colored `": " desc`.
+    fn addattrstatestr<W: Write>(out: &mut W, scheme: ColorScheme, attr: i32, state: &str, desc: &str) {
+        addattrstr(out, attr, state);
+        addattrstr(out, ColorElements::DEFAULT_COLOR.packed(scheme), &format!(": {desc}"));
+    }
+
+    let scheme = ColorScheme::active();
+
+    // C reads st->host->settings->detailedCPUTime / showCachedMemory.
+    // SAFETY: st->host is a valid, non-null Machine* (C precondition).
+    let (detailedCPUTime, showCachedMemory) = {
+        let settings = unsafe {
+            (*st.host)
+                .settings
+                .as_ref()
+                .expect("actionHelp: host->settings is NULL")
+        };
+        (settings.detailedCPUTime, settings.showCachedMemory)
+    };
+
+    let mut out = std::io::stdout().lock();
+
+    // C: clear(); attrset(CRT_colors[HELP_BOLD]);
+    Ncurses::clear(&mut out);
+    Ncurses::attrset(&mut out, HELP_BOLD.packed(scheme));
+
+    // C: for (int i = 0; i < LINES - 1; i++) mvhline(i, 0, ' ', COLS);
+    let lines = Ncurses::lines();
+    let cols = Ncurses::cols();
+    for i in 0..(lines - 1) {
+        Ncurses::mvhline(&mut out, i, 0, ' ', cols);
+    }
+
+    let mut line: i32 = 0;
+
+    // C: mvaddstr(line++, 0, "htop " VERSION " - " COPYRIGHT);
+    Ncurses::mvaddstr(&mut out, line, 0, &format!("htop {VERSION} - {COPYRIGHT}"));
+    line += 1;
+    // C: mvaddstr(line++, 0, "Released under the GNU GPLv2+. ...");
+    Ncurses::mvaddstr(
+        &mut out,
+        line,
+        0,
+        "Released under the GNU GPLv2+. See 'man' page for more info.",
+    );
+    line += 1;
+
+    // C: attrset(CRT_colors[DEFAULT_COLOR]); line++;
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+    line += 1;
+    // C: mvaddstr(line++, 0, "CPU usage bar: ");
+    Ncurses::mvaddstr(&mut out, line, 0, "CPU usage bar: ");
+    line += 1;
+
+    addattrstr(&mut out, BAR_BORDER.packed(scheme), "[");
+    addbartext(&mut out, scheme, CPU_NICE_TEXT.packed(scheme), "", "low");
+    addbartext(&mut out, scheme, CPU_NORMAL.packed(scheme), "/", "normal");
+    addbartext(&mut out, scheme, CPU_SYSTEM.packed(scheme), "/", "kernel");
+    if detailedCPUTime {
+        addbartext(&mut out, scheme, CPU_IRQ.packed(scheme), "/", "irq");
+        addbartext(&mut out, scheme, CPU_SOFTIRQ.packed(scheme), "/", "soft-irq");
+        addbartext(&mut out, scheme, CPU_STEAL.packed(scheme), "/", "steal");
+        addbartext(&mut out, scheme, CPU_GUEST.packed(scheme), "/", "guest");
+        addbartext(&mut out, scheme, CPU_IOWAIT.packed(scheme), "/", "io-wait");
+        addbartext(&mut out, scheme, BAR_SHADOW.packed(scheme), " ", "used%");
+    } else {
+        addbartext(&mut out, scheme, CPU_GUEST.packed(scheme), "/", "virt");
+        addbartext(
+            &mut out,
+            scheme,
+            BAR_SHADOW.packed(scheme),
+            "                             ",
+            "used%",
+        );
+    }
+    addattrstr(&mut out, BAR_BORDER.packed(scheme), "]");
+
+    // C: attrset(CRT_colors[DEFAULT_COLOR]); mvaddstr(line++, 0, "Memory bar:    ");
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+    Ncurses::mvaddstr(&mut out, line, 0, "Memory bar:    ");
+    line += 1;
+    addattrstr(&mut out, BAR_BORDER.packed(scheme), "[");
+    // memory classes are OS-specific; ideal bar length 56 chars, pad to 45.
+    let mut barTxtLen: i32 = 0;
+    for i in 0..Platform_numberOfMemoryClasses {
+        // skip reclaimable cache classes if "show cached memory" is off
+        if !showCachedMemory && Platform_memoryClasses[i].countsAsCache {
+            continue;
+        }
+        // skip the available-memory class (special case for the Linux platform)
+        if !Platform_memoryClasses[i].countsAsUsed && !Platform_memoryClasses[i].countsAsCache {
+            continue;
+        }
+        addbartext(
+            &mut out,
+            scheme,
+            Platform_memoryClasses[i].color.packed(scheme),
+            if i == 0 { "" } else { "/" },
+            Platform_memoryClasses[i].label,
+        );
+        barTxtLen +=
+            (if i == 0 { 0 } else { 1 }) + Platform_memoryClasses[i].label.len() as i32;
+    }
+    for _ in barTxtLen..45 {
+        addattrstr(&mut out, BAR_SHADOW.packed(scheme), " "); // pad to 45 chars if necessary
+    }
+    addbartext(&mut out, scheme, BAR_SHADOW.packed(scheme), " ", "used");
+    addbartext(&mut out, scheme, BAR_SHADOW.packed(scheme), "/", "total");
+    addattrstr(&mut out, BAR_BORDER.packed(scheme), "]");
+
+    // C: attrset(CRT_colors[DEFAULT_COLOR]); mvaddstr(line++, 0, "Swap bar:      ");
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+    Ncurses::mvaddstr(&mut out, line, 0, "Swap bar:      ");
+    line += 1;
+    addattrstr(&mut out, BAR_BORDER.packed(scheme), "[");
+    addbartext(&mut out, scheme, SWAP.packed(scheme), "", "used");
+    #[cfg(target_os = "linux")]
+    {
+        use crate::ported::crt::ColorElements::{SWAP_CACHE, SWAP_FRONTSWAP};
+        addbartext(&mut out, scheme, SWAP_CACHE.packed(scheme), "/", "cache");
+        addbartext(&mut out, scheme, SWAP_FRONTSWAP.packed(scheme), "/", "frontswap");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        addbartext(&mut out, scheme, BAR_SHADOW.packed(scheme), "                ", "");
+    }
+    addbartext(
+        &mut out,
+        scheme,
+        BAR_SHADOW.packed(scheme),
+        "                          ",
+        "used",
+    );
+    addbartext(&mut out, scheme, BAR_SHADOW.packed(scheme), "/", "total");
+    addattrstr(&mut out, BAR_BORDER.packed(scheme), "]");
+
+    // C: line++;
+    line += 1;
+
+    // C: attrset(CRT_colors[DEFAULT_COLOR]);
+    //    mvaddstr(line++, 0, "Type and layout of header meters ...");
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+    Ncurses::mvaddstr(
+        &mut out,
+        line,
+        0,
+        "Type and layout of header meters are configurable in the setup screen.",
+    );
+    line += 1;
+    // C: if (CRT_colorScheme == COLORSCHEME_MONOCHROME) { mvaddstr(line, 0, ...); }
+    if scheme == ColorScheme::COLORSCHEME_MONOCHROME {
+        Ncurses::mvaddstr(
+            &mut out,
+            line,
+            0,
+            "In monochrome, meters display as different chars, in order: |#*@$%&.",
+        );
+    }
+    // C: line++;
+    line += 1;
+
+    // C: mvaddstr(line, 0, "Process state: ");  (note: no line++ here)
+    Ncurses::mvaddstr(&mut out, line, 0, "Process state: ");
+    addattrstatestr(&mut out, scheme, PROCESS_RUN_STATE.packed(scheme), "R", "running; ");
+    addattrstatestr(&mut out, scheme, PROCESS_SHADOW.packed(scheme), "S", "sleeping; ");
+    addattrstatestr(&mut out, scheme, PROCESS_RUN_STATE.packed(scheme), "t", "traced/stopped; ");
+    addattrstatestr(&mut out, scheme, PROCESS_D_STATE.packed(scheme), "Z", "zombie; ");
+    addattrstatestr(&mut out, scheme, PROCESS_D_STATE.packed(scheme), "D", "disk sleep");
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+
+    // C: line += 2;
+    line += 2;
+
+    // C: const bool readonly = Settings_isReadonly();
+    let readonly = Settings_isReadonly();
+
+    // C: for (item = 0; helpLeft[item].key; item++) { ... }
+    for item in 0..helpLeft.len() {
+        let entry = &helpLeft[item];
+        let shadowed = entry.roInactive && readonly;
+        let y = line + item as i32;
+        Ncurses::attrset(
+            &mut out,
+            if shadowed { HELP_SHADOW } else { DEFAULT_COLOR }.packed(scheme),
+        );
+        Ncurses::mvaddstr(&mut out, y, 10, entry.info);
+        Ncurses::attrset(
+            &mut out,
+            if shadowed { HELP_SHADOW } else { HELP_BOLD }.packed(scheme),
+        );
+        Ncurses::mvaddstr(&mut out, y, 1, entry.key);
+        if entry.key == "      H: " {
+            Ncurses::attrset(
+                &mut out,
+                if shadowed { HELP_SHADOW } else { PROCESS_THREAD }.packed(scheme),
+            );
+            Ncurses::mvaddstr(&mut out, y, 33, "threads");
+        } else if entry.key == "      K: " {
+            Ncurses::attrset(
+                &mut out,
+                if shadowed { HELP_SHADOW } else { PROCESS_THREAD }.packed(scheme),
+            );
+            Ncurses::mvaddstr(&mut out, y, 27, "threads");
+        }
+    }
+    let leftHelpItems = helpLeft.len() as i32;
+
+    // C: for (item = 0; helpRight[item].key; item++) { ... }
+    for item in 0..helpRight.len() {
+        let entry = &helpRight[item];
+        let shadowed = entry.roInactive && readonly;
+        let y = line + item as i32;
+        Ncurses::attrset(
+            &mut out,
+            if shadowed { HELP_SHADOW } else { HELP_BOLD }.packed(scheme),
+        );
+        Ncurses::mvaddstr(&mut out, y, 43, entry.key);
+        Ncurses::attrset(
+            &mut out,
+            if shadowed { HELP_SHADOW } else { DEFAULT_COLOR }.packed(scheme),
+        );
+        Ncurses::mvaddstr(&mut out, y, 52, entry.info);
+    }
+    // C: line += MAXIMUM(leftHelpItems, item);
+    line += leftHelpItems.max(helpRight.len() as i32);
+    // C: line++;
+    line += 1;
+
+    // C: attrset(CRT_colors[HELP_BOLD]); mvaddstr(line++, 0, "Press any key to return.");
+    Ncurses::attrset(&mut out, HELP_BOLD.packed(scheme));
+    Ncurses::mvaddstr(&mut out, line, 0, "Press any key to return.");
+    line += 1;
+    let _ = line; // final post-increment value is unused (matches C)
+    // C: attrset(CRT_colors[DEFAULT_COLOR]); refresh();
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+    Ncurses::refresh(&mut out);
+    // C: CRT_readKey(); clear();
+    CRT_readKey();
+    Ncurses::clear(&mut out);
+    Ncurses::refresh(&mut out);
+
+    // C: return HTOP_RECALCULATE | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING;
+    HTOP_RECALCULATE | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING
 }
 
 /// Port of `static Htop_Reaction actionUntagAll(State* st)` from
