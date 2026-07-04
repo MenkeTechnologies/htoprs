@@ -2303,6 +2303,30 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
     // C: line++;
     line += 1;
 
+    // htoprs extension: htop's `helpLeft`/`helpRight` cover only the ported
+    // bindings, so append the htoprs-original hotkeys (theme overlay + bar
+    // style + monitoring layer) here — otherwise this legend hides features the
+    // shell actually supports.
+    Ncurses::attrset(&mut out, HELP_BOLD.packed(scheme));
+    Ncurses::mvaddstr(&mut out, line, 0, "htoprs extras (not in upstream htop):");
+    line += 1;
+    Ncurses::attrset(&mut out, DEFAULT_COLOR.packed(scheme));
+    Ncurses::mvaddstr(
+        &mut out,
+        line,
+        2,
+        "b bar style   B border   g header   c/C theme chooser/editor",
+    );
+    line += 1;
+    Ncurses::mvaddstr(
+        &mut out,
+        line,
+        2,
+        "f find   r filter   d snapshot   o export   A alerts   G graph   v sparkline",
+    );
+    line += 1;
+    line += 1;
+
     // C: attrset(CRT_colors[HELP_BOLD]); mvaddstr(line++, 0, "Press any key to return.");
     Ncurses::attrset(&mut out, HELP_BOLD.packed(scheme));
     Ncurses::mvaddstr(&mut out, line, 0, "Press any key to return.");

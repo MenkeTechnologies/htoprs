@@ -95,6 +95,21 @@ impl ProcRing {
             .unwrap_or_default()
     }
 
+    /// Braille CPU graph for `pid`: `height_cells` rows of `width_cells`
+    /// columns, newest sample at the right edge, scaled to `max` percent. Same
+    /// braille renderer as the `G` history graph ([`braille::graph_rows`]), so
+    /// the inline sparklines match it instead of chunky block glyphs.
+    pub fn cpu_braille(
+        &self,
+        pid: u32,
+        width_cells: usize,
+        height_cells: usize,
+        max: f32,
+    ) -> Vec<String> {
+        let series: Vec<f64> = self.cpu_series(pid).iter().map(|&v| v as f64).collect();
+        braille::graph_rows(&series, width_cells, height_cells, max as f64)
+    }
+
     /// Right-aligned CPU sparkline for `pid`, exactly `width` glyphs, scaled
     /// to `max` percent. Newest sample sits at the right edge.
     pub fn cpu_sparkline(&self, pid: u32, width: usize, max: f32) -> String {

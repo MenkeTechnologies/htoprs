@@ -7,8 +7,6 @@
 
 use std::collections::VecDeque;
 
-use crate::extensions::braille::Canvas;
-
 /// Bounded ring of one scalar metric over time.
 pub struct Scalar {
     cap: usize,
@@ -39,27 +37,12 @@ impl Scalar {
     }
 
     /// Render the last `width_cells*2` samples as `height_cells` braille rows,
-    /// scaling values to `max`. Each dot column is one sample; bars fill from
-    /// the bottom up.
+    /// scaling values to `max`, newest at the right edge. Delegates to the
+    /// shared [`crate::extensions::braille::graph_rows`] so the graph and the
+    /// per-PID sparklines render identically.
     pub fn render(&self, width_cells: usize, height_cells: usize, max: f64) -> Vec<String> {
-        let w_dots = width_cells.max(1) * 2;
-        let h_dots = height_cells.max(1) * 4;
-        let mut cv = Canvas::new(w_dots, h_dots);
-
-        let start = self.buf.len().saturating_sub(w_dots);
-        for (col, &v) in self.buf.iter().skip(start).enumerate() {
-            let frac = if max > 0.0 {
-                (v / max).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let filled = (frac * h_dots as f64).round() as usize;
-            for up in 0..filled {
-                let y = h_dots - 1 - up; // bottom-anchored
-                cv.set(col, y);
-            }
-        }
-        cv.rows()
+        let values: Vec<f64> = self.buf.iter().copied().collect();
+        crate::extensions::braille::graph_rows(&values, width_cells, height_cells, max)
     }
 }
 

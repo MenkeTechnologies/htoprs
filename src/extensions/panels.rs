@@ -47,6 +47,11 @@ use crate::ported::table::Table;
 const HISTORY: usize = 300;
 /// Width in cells of the overdrawn sparkline column.
 const SPARK_W: usize = 12;
+/// Physical terminal lines the CPU graph occupies beneath each process in
+/// double-height mode. Each line is 4 braille dot-rows, so the graph shows
+/// `SPARK_GRAPH_H * 4` levels of amplitude. Tune here; the process panel's
+/// `rowHeight` becomes `1 + SPARK_GRAPH_H` (the info line plus the graph).
+const SPARK_GRAPH_H: i32 = 3;
 /// Rows of matches a list modal shows at once.
 const LIST_ROWS: usize = 16;
 
@@ -870,10 +875,16 @@ pub fn draw_spark_col<W: Write>(out: &mut W, y: i32, x: i32, w: i32, pid: u32) {
         if s.spark != SparkMode::Column || w as usize <= SPARK_W + 2 {
             return;
         }
-        // `cpu_sparkline` already returns exactly `SPARK_W` glyphs, so print the
-        // whole string. `mvaddnstr`'s `n` is a *byte* limit and the braille
-        // glyphs are 3 bytes each — an `n`-slice lands mid-char and panics.
-        let spark = s.ring.cpu_sparkline(pid, SPARK_W, 100.0);
+        // One braille row `SPARK_W` cells wide (same renderer as the `G`
+        // graph). Print the whole string — `mvaddnstr`'s `n` is a *byte* limit
+        // and braille glyphs are 3 bytes each, so an `n`-slice would land
+        // mid-char and panic.
+        let spark = s
+            .ring
+            .cpu_braille(pid, SPARK_W, 1, 100.0)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         let sx = x + w - SPARK_W as i32;
         Ncurses::attrset(
             out,
@@ -898,10 +909,15 @@ pub fn draw_spark_row<W: Write>(out: &mut W, y2: i32, x: i32, w: i32, pid: u32) 
         if s.spark != SparkMode::Double || w <= 0 {
             return;
         }
-        // A left-padded, right-aligned sparkline exactly `w` glyphs wide so the
-        // newest sample sits at the panel's right edge and older history scrolls
-        // left as it ages.
-        let spark = s.ring.cpu_sparkline(pid, w as usize, 100.0);
+        // One braille row spanning the full panel width (same renderer as the
+        // `G` graph): each cell is 2 samples wide, the newest at the right edge,
+        // older history scrolling left as it ages.
+        let spark = s
+            .ring
+            .cpu_braille(pid, w as usize, 1, 100.0)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         Ncurses::attrset(
             out,
             ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()),

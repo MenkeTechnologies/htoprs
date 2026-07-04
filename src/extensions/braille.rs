@@ -26,6 +26,37 @@ pub fn spark(values: &[f32], max: f32) -> String {
         .collect()
 }
 
+/// Render `values` (oldest→newest) as `height_cells` braille rows of
+/// `width_cells` columns via [`Canvas`]: 2 samples per cell column, bars
+/// growing up from the bottom, the newest sample anchored at the right edge,
+/// scaled to `max`. `max <= 0` renders all-blank. This is the shared graph
+/// renderer behind both the `G` history graph ([`crate::extensions::graph::Scalar::render`])
+/// and the per-PID CPU sparklines, so they share one look.
+pub fn graph_rows(values: &[f64], width_cells: usize, height_cells: usize, max: f64) -> Vec<String> {
+    let w_dots = width_cells.max(1) * 2;
+    let h_dots = height_cells.max(1) * 4;
+    let mut cv = Canvas::new(w_dots, h_dots);
+
+    // Keep only the newest `w_dots` samples and right-align them so the latest
+    // sits at the right edge (older history scrolls left as it ages).
+    let n = values.len().min(w_dots);
+    let start = values.len() - n;
+    let col_off = w_dots - n;
+    for (i, &v) in values[start..].iter().enumerate() {
+        let frac = if max > 0.0 {
+            (v / max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let filled = (frac * h_dots as f64).round() as usize;
+        for up in 0..filled {
+            let y = h_dots - 1 - up; // bottom-anchored
+            cv.set(col_off + i, y);
+        }
+    }
+    cv.rows()
+}
+
 /// A braille dot bitmap. Dot resolution is `2 * w` wide by `4 * h` tall.
 pub struct Canvas {
     /// width in cells
@@ -108,6 +139,25 @@ mod tests {
         let mut c = Canvas::new(2, 4);
         c.set(1, 3); // dot8 -> 0x80
         assert_eq!(c.rows()[0].chars().next().unwrap(), '\u{2880}');
+    }
+
+    #[test]
+    fn graph_rows_right_aligns_newest_when_underfilled() {
+        // Two samples into a 4-cell (8-dot) row: they must land at the right
+        // edge (newest at the rightmost cell), leaving the left cells blank.
+        let rows = graph_rows(&[100.0, 100.0], 4, 1, 100.0);
+        assert_eq!(rows.len(), 1);
+        let cells: Vec<char> = rows[0].chars().collect();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0], '\u{2800}'); // blank left
+        assert_eq!(cells[1], '\u{2800}');
+        assert_ne!(cells[3], '\u{2800}'); // newest at the right edge
+    }
+
+    #[test]
+    fn graph_rows_zero_max_is_blank() {
+        let rows = graph_rows(&[50.0, 90.0], 3, 1, 0.0);
+        assert!(rows[0].chars().all(|c| c == '\u{2800}'));
     }
 
     #[test]
