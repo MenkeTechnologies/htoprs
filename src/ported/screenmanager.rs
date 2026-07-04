@@ -787,7 +787,7 @@ pub fn ScreenManager_run(
                 }
             }
             ScreenManager_drawPanels(this, focus, force_redraw);
-            // htoprs extension: paint the themed border chrome (if `b`-toggled)
+            // htoprs extension: paint the themed border chrome (if `B`-toggled)
             // then the help/chooser/editor overlay over the freshly-drawn
             // panels (each a no-op when off/closed).
             {

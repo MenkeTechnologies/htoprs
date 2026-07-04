@@ -812,7 +812,10 @@ pub fn BarMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
 
     let mut block_sizes = [0i32; 10];
 
-    // First draw in the bar[] buffer...
+    // Block sizes. The C computes these inline in the fill loop below; htoprs
+    // splits the computation out so the extension bar style can see the total
+    // filled width and each cell's fractional position (needed for the gradient
+    // shading and tip glyph). The per-item math is byte-for-byte the C's.
     let mut offset = 0i32;
     for i in 0..this.curItems as usize {
         let value = this.values[i];
@@ -824,20 +827,29 @@ pub fn BarMeterMode_draw(mut out: &mut dyn Write, this: &mut Meter, x: i32, y: i
         } else {
             block_sizes[i] = 0;
         }
+        offset += block_sizes[i];
+    }
+    let total_filled = offset;
+
+    // First draw in the bar[] buffer...
+    offset = 0;
+    for i in 0..this.curItems as usize {
         let next_offset = offset + block_sizes[i];
         let mut j = offset;
         while j < next_offset {
             if RichString_getCharVal(&bar, (start_pos + j) as usize) == ' ' {
-                if scheme == ColorScheme::COLORSCHEME_MONOCHROME {
-                    debug_assert!(i < BarMeterMode_characters.len());
-                    RichString_setChar(
-                        &mut bar,
-                        (start_pos + j) as usize,
-                        BarMeterMode_characters[i] as char,
-                    );
-                } else {
-                    RichString_setChar(&mut bar, (start_pos + j) as usize, '|');
-                }
+                // htoprs extension: a non-Classic bar style overrides the fill
+                // glyph (each segment keeps its own color, set below); Classic
+                // returns `None`, falling through to htop's native glyph.
+                let ch = match crate::extensions::barstyle::fill_glyph(j, total_filled, w) {
+                    Some(styled) => styled,
+                    None if scheme == ColorScheme::COLORSCHEME_MONOCHROME => {
+                        debug_assert!(i < BarMeterMode_characters.len());
+                        BarMeterMode_characters[i] as char
+                    }
+                    None => '|',
+                };
+                RichString_setChar(&mut bar, (start_pos + j) as usize, ch);
             }
             j += 1;
         }
@@ -1645,6 +1657,32 @@ mod tests {
         assert!(printed.contains(']'), "printed: {printed:?}");
         assert!(printed.contains('|'), "printed: {printed:?}");
         assert!(printed.contains("50%"), "printed: {printed:?}");
+    }
+
+    /// htoprs extension: a non-Classic bar style swaps the fill glyph. With
+    /// `BarStyle::Solid` active the ported fill loop draws `█`, not htop's `|`.
+    #[test]
+    fn bar_meter_draw_uses_extension_bar_style() {
+        use crate::extensions::barstyle::{self, BarStyle};
+        static ATTRS: [i32; 1] = [ColorElements::CPU_NORMAL as i32];
+        let mut m = Meter {
+            host: core::ptr::null(),
+            caption: "CPU".to_string(),
+            txtBuffer: "50%".to_string(),
+            values: vec![50.0],
+            curItems: 1,
+            total: 100.0,
+            isPercentChart: true,
+            attributes: &ATTRS,
+            ..Meter::empty()
+        };
+        barstyle::set(BarStyle::Solid);
+        let mut buf: Vec<u8> = Vec::new();
+        BarMeterMode_draw(&mut buf, &mut m, 0, 0, 20);
+        barstyle::set(BarStyle::Classic); // restore for other tests on this thread
+        let printed = printed_chars(&buf);
+        assert!(printed.contains('\u{2588}'), "printed: {printed:?}"); // █
+        assert!(!printed.contains('|'), "should not use htop glyph: {printed:?}");
     }
 
     #[test]

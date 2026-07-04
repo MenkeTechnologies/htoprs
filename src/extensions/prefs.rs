@@ -11,9 +11,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::barstyle::BarStyle;
 use super::theme::{CustomThemeColors, ThemeName};
 
-/// The persisted htoprs theme preferences.
+/// The persisted htoprs preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Prefs {
     /// The selected built-in theme.
@@ -25,6 +26,9 @@ pub struct Prefs {
     /// Saved custom palettes, keyed by user-chosen name.
     #[serde(default)]
     pub custom_themes: HashMap<String, CustomThemeColors>,
+    /// The `b`-cycled bar meter fill style.
+    #[serde(default)]
+    pub bar_style: BarStyle,
 }
 
 /// `~/.config/htoprs/prefs.json` (honoring `$XDG_CONFIG_HOME`), matching the
@@ -49,6 +53,16 @@ pub fn load() -> Option<Prefs> {
     let path = config_path()?;
     let data = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&data).ok()
+}
+
+/// Load the current prefs (or defaults), apply `f`, and persist the result.
+/// Read-modify-write so independent subsystems (theme, bar style) can update
+/// their own fields without clobbering each other's — the file is the single
+/// shared store.
+pub fn update(f: impl FnOnce(&mut Prefs)) {
+    let mut prefs = load().unwrap_or_default();
+    f(&mut prefs);
+    save(&prefs);
 }
 
 /// Persist `prefs` atomically (write to a temp file, then rename). Failures are
@@ -98,6 +112,7 @@ mod tests {
             theme: ThemeName::BladeRunner,
             active_custom_theme: Some("mine".to_string()),
             custom_themes: customs,
+            ..Prefs::default()
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: Prefs = serde_json::from_str(&json).unwrap();
@@ -138,10 +153,12 @@ mod tests {
             theme: ThemeName::GlitchPop,
             active_custom_theme: None,
             custom_themes: HashMap::new(),
+            bar_style: BarStyle::Thin,
         };
         save(&p);
         let back = load().expect("prefs should load back");
         assert_eq!(back.theme, ThemeName::GlitchPop);
+        assert_eq!(back.bar_style, BarStyle::Thin);
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("XDG_CONFIG_HOME");
     }

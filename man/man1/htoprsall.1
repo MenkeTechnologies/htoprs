@@ -268,6 +268,15 @@ Meters are laid out in a left and a right column; both the set of
 meters and their modes are configured in the setup screen (chapter 10)
 and persisted to
 .IR htoprc .
+.PP
+Press
+.B b
+on the main screen to cycle the character every bar meter is filled with,
+through five styles \(em Classic (\fB|\fR, htop's default), Gradient
+(position-shaded blocks), Solid, Thin, and Ascii (\fB#\fR) \(em keeping each
+segment's color. The choice persists to
+.I ~/.config/htoprs/prefs.json
+and is restored on the next launch.
 .SH "5.  TREE VIEW"
 Press
 .B F5
@@ -374,6 +383,7 @@ u|Show only one user's processes (chooser)
 H|Hide / show userland process threads
 K|Hide / show kernel threads
 p|Toggle full program path in the Command column
+b|Cycle the bar meter fill style (Classic / Gradient / Solid / Thin / Ascii)
 Z|Pause / resume list updates
 .TE
 .SS Process actions

@@ -26,6 +26,12 @@
 //! (the monitoring analog of [`overlay`]).
 //! [`help`] renders the styled `htoprs -h` screen (figlet banner + status box
 //! + sectioned option list) shown in place of the plain ported `printHelpFlag`.
+//! [`barstyle`] is the `b`-key bar fill-glyph cycler ported from storageshower
+//! (Classic → Gradient → Solid → Thin → Ascii), consulted by the ported
+//! `BarMeterMode_draw` fill loop and wired into the keybinding table as an
+//! [`Htop_Action`].
+//!
+//! [`Htop_Action`]: crate::ported::action::Htop_Action
 
 pub mod colors;
 pub mod overlay;
@@ -33,6 +39,7 @@ pub mod prefs;
 pub mod theme;
 
 pub mod alerts;
+pub mod barstyle;
 pub mod braille;
 pub mod bridge;
 pub mod export;

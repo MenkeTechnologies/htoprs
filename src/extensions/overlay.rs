@@ -389,11 +389,13 @@ impl OverlayState {
                     .unwrap_or_else(|| Theme::palette_values(self.theme_name));
                 self.theme_edit.open(palette);
             }
-            // Border toggle is on `b` (not `x`): htop binds `x` to the
-            // file-locks screen (`action.rs` actionShowLocks), and the overlay
-            // intercepts keys before htop's handler, so using `x` here shadowed
-            // that feature. `b` (border) is free in htop's key map.
-            KeyCode::Char('b') => {
+            // Border toggle is on `B` (capital). It was `b`, but htoprs gave
+            // lowercase `b` to the bar fill-style cycler (`extensions::barstyle`,
+            // ported from storageshower), and the overlay intercepts keys before
+            // htop's handler, so keeping `b` here shadowed that. `B` is free in
+            // both htop's key map and the monitoring layer. (`x` is out — htop
+            // binds it to the file-locks screen.)
+            KeyCode::Char('B') => {
                 self.show_border = !self.show_border;
                 self.layout_dirty = true; // the usable area changed → re-layout
                 self.set_status(if self.show_border {
@@ -515,7 +517,7 @@ pub fn border_margin() -> u16 {
 }
 
 /// Read and clear the layout-dirty flag; the run loop resizes the panels when
-/// this returns true (after a `b` border toggle).
+/// this returns true (after a `B` border toggle).
 pub fn take_layout_dirty() -> bool {
     OVERLAY.with(|o| {
         let mut s = o.borrow_mut();
@@ -538,10 +540,12 @@ pub fn dispatch_key(ch: i32) -> bool {
         }
         if s.dirty {
             s.dirty = false;
-            super::prefs::save(&super::prefs::Prefs {
-                theme: s.theme_name,
-                active_custom_theme: s.active_custom_theme.clone(),
-                custom_themes: s.custom_themes.clone(),
+            // Read-modify-write so a concurrent bar-style choice in the shared
+            // prefs.json is preserved (only the theme fields are touched here).
+            super::prefs::update(|p| {
+                p.theme = s.theme_name;
+                p.active_custom_theme = s.active_custom_theme.clone();
+                p.custom_themes = s.custom_themes.clone();
             });
         }
         consumed
@@ -869,7 +873,7 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
             &[
                 ("c", "Theme chooser"),
                 ("C", "Theme editor"),
-                ("b", "Toggle border"),
+                ("B", "Toggle border"),
                 ("g", "Toggle header"),
                 ("h ?", "Toggle help"),
                 ("q", "Quit"),
@@ -885,6 +889,7 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
                 ("A", "Alerts"),
                 ("G", "CPU graph"),
                 ("v", "Sparkline col"),
+                ("b", "Bar fill style"),
             ],
         ),
     ];
@@ -1236,15 +1241,23 @@ mod tests {
     }
 
     #[test]
-    fn b_toggles_border_with_status() {
+    fn capital_b_toggles_border_with_status() {
         let mut s = OverlayState::new();
         assert!(!s.show_border); // off by default (htop-like)
-        assert!(s.handle_key(key(KeyCode::Char('b'))));
+        assert!(s.handle_key(key(KeyCode::Char('B'))));
         assert!(s.show_border);
         assert_eq!(s.status.as_deref(), Some("Border: on"));
-        s.handle_key(key(KeyCode::Char('b')));
+        s.handle_key(key(KeyCode::Char('B')));
         assert!(!s.show_border);
         assert_eq!(s.status.as_deref(), Some("Border: off"));
+    }
+
+    #[test]
+    fn lowercase_b_not_consumed_by_overlay_when_idle() {
+        // htoprs binds `b` to the bar fill-style cycler (ported keymap); the
+        // overlay must let it pass through when idle.
+        let mut s = OverlayState::new();
+        assert!(!s.handle_key(key(KeyCode::Char('b'))));
     }
 
     #[test]
@@ -1254,7 +1267,7 @@ mod tests {
         draw_chrome(&mut out);
         assert!(out.is_empty());
         // Turn the border on, then it must emit box-drawing bytes + title.
-        dispatch_key(b'b' as i32);
+        dispatch_key(b'B' as i32);
         let mut out2: Vec<u8> = Vec::new();
         draw_chrome(&mut out2);
         let s = String::from_utf8_lossy(&out2);

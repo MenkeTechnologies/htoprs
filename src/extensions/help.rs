@@ -142,6 +142,7 @@ pub fn print_help(name: &str) {
     println!("{}", opt("A", "Threshold alerts (recolor firing rows)"));
     println!("{}", opt("G", "Braille CPU history graph"));
     println!("{}", opt("v", "Per-PID CPU sparkline column"));
+    println!("{}", opt("b", "Cycle bar fill style (classic/gradient/solid/thin/ascii)"));
     println!();
 
     println!("{}", section("INFO"));

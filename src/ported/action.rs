@@ -2482,8 +2482,12 @@ pub fn Action_setBindings(keys: &mut [Option<Htop_Action>]) {
     keys[b'\\' as usize] = Some(actionIncFilter);
     keys[b']' as usize] = Some(actionHigherPriority);
     keys[b'a' as usize] = Some(actionSetAffinity);
-    // #if defined(HAVE_BACKTRACE_SCREEN)  — not defined on the darwin-first
-    // target:  keys['b'] = actionBacktrace;
+    // Upstream `#if defined(HAVE_BACKTRACE_SCREEN)` binds keys['b'] =
+    // actionBacktrace, but that is not defined on the darwin-first target, so
+    // htoprs repurposes the free 'b' slot for the bar fill-glyph cycler (ported
+    // from storageshower) — an htoprs-original handler living in src/extensions
+    // (same extension-hook pattern the ScreenManager uses for the theme system).
+    keys[b'b' as usize] = Some(crate::extensions::barstyle::cycle_bar_style);
     keys[b'c' as usize] = Some(actionTagAllChildren);
     keys[b'e' as usize] = Some(actionShowEnvScreen);
     keys[b'h' as usize] = Some(actionHelp);
