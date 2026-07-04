@@ -37,7 +37,6 @@ const KEY_LEFT: i32 = 0o404;
 const KEY_RIGHT: i32 = 0o405;
 const KEY_BACKSPACE: i32 = 0o407;
 const KEY_ENTER: i32 = 0o527;
-const KEY_F1: i32 = 0o411; // KEY_F(1) == 265; htop's F1 = Help
 
 /// Convert a [`Theme`] color (`crossterm::style::Color`) into the
 /// `ratatui::style::Color` the buffer styling API expects. `Theme` only ever
@@ -371,8 +370,12 @@ impl OverlayState {
         }
 
         // Top-level overlay hotkeys (iftoprs main.rs, theme-relevant subset).
+        // `h`/`?`/F1 are intentionally NOT handled here: they fall through to
+        // htop's ported `actionHelp`, which paints the full key-binding legend
+        // (bar/state legends + the two-column table). The overlay's own
+        // `show_help` panel was a stopgap from when `actionHelp` was a
+        // `todo!()`; it is now superseded.
         match key.code {
-            KeyCode::Char('h') | KeyCode::Char('?') => self.show_help = !self.show_help,
             KeyCode::Char('c') => {
                 self.show_help = false;
                 self.themed = true;
@@ -434,11 +437,9 @@ impl OverlayState {
     /// Route a raw ncurses key int (as read by `Panel_getCh`) into
     /// [`OverlayState::handle_key`]. Returns `true` if consumed.
     pub fn handle_ncurses_key(&mut self, ch: i32) -> bool {
-        // htop's F1 = Help, but the ported `actionHelp` is an unfinished
-        // `todo!()` that panics; route F1 to the themed help overlay instead.
-        if ch == KEY_F1 {
-            return self.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
-        }
+        // F1 (like `h`/`?`) is left for htop's ported `actionHelp` — the overlay
+        // no longer shadows the help key (its themed `show_help` panel was a
+        // stopgap from when `actionHelp` was a `todo!()`).
         match ncurses_to_keycode(ch) {
             Some(code) => self.handle_key(KeyEvent::new(code, KeyModifiers::NONE)),
             None => false,
@@ -1205,11 +1206,13 @@ mod tests {
     // ── Top-level hotkeys ──
 
     #[test]
-    fn h_toggles_help() {
+    fn help_keys_fall_through_to_actionhelp() {
+        // The overlay no longer intercepts h/?/F1 — they fall through to the
+        // ported `actionHelp`. `handle_key` must report them unconsumed and
+        // never open the (superseded) themed help panel.
         let mut s = OverlayState::new();
-        assert!(s.handle_key(key(KeyCode::Char('h'))));
-        assert!(s.show_help);
-        assert!(s.handle_key(key(KeyCode::Char('?'))));
+        assert!(!s.handle_key(key(KeyCode::Char('h'))));
+        assert!(!s.handle_key(key(KeyCode::Char('?'))));
         assert!(!s.show_help);
     }
 
@@ -1522,10 +1525,13 @@ mod tests {
     }
 
     #[test]
-    fn handle_ncurses_key_toggles_help() {
+    fn handle_ncurses_key_leaves_help_for_actionhelp() {
+        // h and F1 are no longer overlay hotkeys; they pass through unconsumed
+        // to htop's ported `actionHelp`.
         let mut s = OverlayState::new();
-        assert!(s.handle_ncurses_key(b'h' as i32));
-        assert!(s.show_help);
+        assert!(!s.handle_ncurses_key(b'h' as i32));
+        assert!(!s.handle_ncurses_key(0o411)); // KEY_F(1)
+        assert!(!s.show_help);
     }
 
     #[test]
@@ -1591,9 +1597,9 @@ mod tests {
     fn thread_local_dispatch_consumes_hotkey() {
         // Runs on its own test thread → fresh OVERLAY.
         assert!(!overlay_active());
-        assert!(dispatch_key(b'h' as i32)); // help toggles on, consumed
+        assert!(dispatch_key(b'c' as i32)); // theme chooser opens, consumed
         assert!(overlay_active());
-        assert!(dispatch_key(b'h' as i32)); // toggles off
+        assert!(dispatch_key(27)); // Esc closes the chooser
         assert!(!overlay_active());
     }
 
@@ -1605,17 +1611,14 @@ mod tests {
 
     #[test]
     fn dispatch_then_draw_active_emits_overlay_bytes() {
-        // End-to-end through the thread-local state: open help, render+blit.
-        // (blit interleaves per-cell escape sequences, so the emitted title is
-        // not contiguous in the byte stream — the buffer-level content is
-        // asserted by `draw_help_writes_title_and_does_not_panic`. Here we just
-        // confirm the thread-local pipeline emits the modal when open.)
-        assert!(dispatch_key(b'h' as i32));
+        // End-to-end through the thread-local state: open the theme chooser
+        // (h/? now fall through to actionHelp), render+blit. Confirms the
+        // thread-local pipeline emits the modal when an overlay is open.
+        assert!(dispatch_key(b'c' as i32));
+        assert!(overlay_active());
         let mut out: Vec<u8> = Vec::new();
         draw_active(&mut out);
         assert!(!out.is_empty());
-        // The 'H' of the HTOPRS title is Print'd as a bare byte.
-        assert!(out.contains(&b'H'));
     }
 
     #[test]
