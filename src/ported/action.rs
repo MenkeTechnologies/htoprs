@@ -1475,12 +1475,13 @@ pub fn actionKill(st: &mut State) -> Htop_Reaction {
     HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
-/// TODO: port of `static Htop_Reaction actionFilterByUser(State* st)` from
+/// Port of `static Htop_Reaction actionFilterByUser(State* st)` from
 /// `Action.c:548`. Builds a users picker (populated by [`addUserToVector`] via
-/// `UsersTable_foreach`), runs it through the now-ported [`Action_pickFromVector`],
-/// and sets `host->userId` from the pick. Blocked on the unported
-/// `UsersTable_foreach` (the machine's `usersTable` is an opaque handle) and
-/// `Vector_insertionSort`.
+/// `UsersTable_foreach` over the machine's uid->name cache), runs it through
+/// [`Action_pickFromVector`], and sets `host->userId` from the pick — "All
+/// users" (`key == -1`) resets to `(uid_t)-1`, otherwise the chosen name maps
+/// to its uid via [`Action_setUserOnly`]. The `Vector_insertionSort` becomes a
+/// direct sort of the `Vec<PanelItem>` by each `ListItem`'s name.
 pub fn actionFilterByUser(st: &mut State) -> Htop_Reaction {
     // C: Panel* usersPanel = Panel_new(0,0,0,0, Class(ListItem), true,
     //       FunctionBar_newEnterEsc("Show   ", "Cancel "));
@@ -1494,9 +1495,9 @@ pub fn actionFilterByUser(st: &mut State) -> Htop_Reaction {
     Panel_setHeader(&mut usersPanel, "Show processes of:");
 
     // C: UsersTable_foreach(host->usersTable, addUserToVector, usersPanel);
-    // `usersTable` is an opaque handle; it is `None` on darwin (the machine is
-    // built with no table), so no per-user rows are added — the faithful result
-    // for an empty table.
+    // The machine's `usersTable` (an opaque pointer) is the uid->name cache the
+    // process scan populates; each cached user becomes a picker row. An unset
+    // table (`None`) yields just the "All users" entry inserted below.
     // SAFETY: host aliases the caller-owned Machine for the run.
     let usersTable = unsafe { (*st.host).usersTable };
     if let Some(ptr) = usersTable {

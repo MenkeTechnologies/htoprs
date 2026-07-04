@@ -92,8 +92,18 @@ fn run_tui(flags: commandline::CommandLineSettings) {
     // Platform_init() — mach-tick / scheduler-tick calibration (darwin).
     Platform_init();
 
+    // UsersTable_new(): the uid->name cache htop's `CommandLine_run` builds and
+    // hands to `Machine_new`. Leaked for the program's lifetime (as in C, where
+    // it lives until exit) and stored on the machine as an opaque pointer; the
+    // process scan populates it via `UsersTable_getRef`, and the `u` user-filter
+    // picker iterates it. Without this the machine carried no users table, so
+    // the `u` menu listed nobody.
+    let users_table: *mut htoprs::ported::userstable::UsersTable =
+        Box::into_raw(Box::new(htoprs::ported::userstable::UsersTable_new()));
+
     // Machine_new(usersTable, userId): userId (uid_t)-1 == "all users".
-    let host_raw: *mut DarwinMachine = Box::into_raw(Machine_new(None, u32::MAX));
+    let host_raw: *mut DarwinMachine =
+        Box::into_raw(Machine_new(Some(users_table as usize), u32::MAX));
     // SAFETY: host_raw is a fresh leaked allocation; the embedded base Machine
     // is at offset 0 (`super_`), matching the C `&this->super` upcast.
     let host_ptr: *mut Machine = unsafe { &mut (*host_raw).super_ };

@@ -47,6 +47,7 @@ use crate::ported::processtable::{
     ProcessTable_init, ProcessTable_prepareEntries,
 };
 use crate::ported::table::{Table, TableClass};
+use crate::ported::userstable::{UsersTable, UsersTable_getRef};
 
 // ── The `kinfo_proc` struct family (`sys/sysctl.h`, `sys/proc.h`, `sys/vm.h`).
 //
@@ -366,8 +367,9 @@ pub fn ProcessTable_delete(mut this: DarwinProcessTable) {
 ///   macOS `task_for_pid` is SIP-restricted for non-self processes, so it
 ///   clears `taskAccess` and emits no thread rows for those (self and
 ///   accessible tasks still enumerate) — the same behavior as htop on macOS.
-/// - `proc->user = UsersTable_getRef(...)` is skipped (the `UsersTable` is
-///   unported); `st_uid` is still tracked.
+/// - `proc->user = UsersTable_getRef(host->usersTable, st_uid)` resolves and
+///   caches the uid's name (via `getpwuid` on a miss) so the `u` user-filter
+///   picker can list the users owning processes.
 /// - Per [`ProcessTable_getProcess`], a newly-seen process is added inside
 ///   `getProcess`, so the C's trailing `ProcessTable_add` is not repeated.
 pub fn ProcessTable_goThroughEntries(dpt: &mut DarwinProcessTable) {
@@ -440,7 +442,17 @@ pub fn ProcessTable_goThroughEntries(dpt: &mut DarwinProcessTable) {
             let uid = kp.kp_eproc.e_ucred.cr_uid;
             if (*dproc).super_.st_uid != uid {
                 (*dproc).super_.st_uid = uid;
-                // proc->user = UsersTable_getRef(...) — UsersTable unported.
+                // C: proc->super.user =
+                //      UsersTable_getRef(host->usersTable, proc->super.st_uid);
+                // Populates the machine's uid->name cache (getpwuid on a miss)
+                // that the `u` user-filter picker later iterates, and records
+                // the row's user name. The table is a separately-leaked
+                // allocation reached through the machine's opaque pointer, so
+                // the `&mut` never aliases `host`.
+                if let Some(ut) = (*host).usersTable {
+                    let ut = &mut *(ut as *mut UsersTable);
+                    (*dproc).super_.user = UsersTable_getRef(ut, uid).map(str::to_owned);
+                }
             }
 
             // Disabled for High Sierra due to a bug in macOS High Sierra.
