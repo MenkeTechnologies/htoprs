@@ -191,8 +191,9 @@ impl PanelState {
             modal: Modal::None,
             spark: saved.as_ref().map(|p| p.spark).unwrap_or_default(),
             agg_by: saved.as_ref().map(|p| p.agg_by).unwrap_or_default(),
-            // Restore the saved hot-row-highlight toggle; absent (first run) = on.
-            alert_hl: saved.as_ref().and_then(|p| p.alert_hl).unwrap_or(true),
+            // Restore the saved hot-row-highlight toggle; absent (first run) =
+            // off (opt-in via the Alerts modal `A` → `t`).
+            alert_hl: saved.as_ref().and_then(|p| p.alert_hl).unwrap_or(false),
             pending_select: None,
             pending_key: None,
             finder_query: String::new(),
@@ -1346,6 +1347,9 @@ mod tests {
         for _ in 0..3 {
             PANELS.with(|p| p.borrow_mut().ingest(vec![hot.clone()], None));
         }
+        // The hot-row highlight is off by default (opt-in); enable it to check
+        // the recolor path.
+        PANELS.with(|p| p.borrow_mut().alert_hl = true);
         assert!(alert_attr(999).is_some());
         assert!(alert_attr(1).is_none());
         // Regression: the firing-row recolor must NOT be the cursor's selection
