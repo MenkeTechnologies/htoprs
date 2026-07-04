@@ -785,11 +785,10 @@ pub fn Platform_getProcessLocks(
     None
 }
 
-/// TODO: port of `void Platform_getFileDescriptors(double* used, double* max)`
-/// from `Platform.c:533`. Blocked: needs `Generic_getFileDescriptors_sysctl`
-/// (`generic/fdstat_sysctl.c`, unported).
-pub fn Platform_getFileDescriptors() {
-    todo!("port of Platform.c:533")
+/// Port of `void Platform_getFileDescriptors(double* used, double* max)`
+/// (`Platform.c:533`) — delegates to the shared `Generic_getFileDescriptors_sysctl`.
+pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
+    crate::ported::generic::fdstat_sysctl::Generic_getFileDescriptors_sysctl(used, max);
 }
 
 /// TODO: port of `bool Platform_getDiskIO(DiskIOData* data)` from

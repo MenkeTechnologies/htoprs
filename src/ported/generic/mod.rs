@@ -5,4 +5,5 @@
 //! which platform module is active.
 #![allow(non_snake_case)]
 
+pub mod fdstat_sysctl;
 pub mod gettime;

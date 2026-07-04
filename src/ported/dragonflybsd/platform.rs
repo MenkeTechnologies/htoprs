@@ -327,8 +327,8 @@ pub fn Platform_getProcessLocks() {
 /// TODO: port of `void Platform_getFileDescriptors(double* used, double* max)`
 /// (`Platform.c:275`). Blocked: needs `Generic_getFileDescriptors_sysctl`
 /// (`generic/fdstat_sysctl.c`, unported).
-pub fn Platform_getFileDescriptors() {
-    todo!("port of dragonflybsd/Platform.c:275 — needs Generic_getFileDescriptors_sysctl")
+pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
+    crate::ported::generic::fdstat_sysctl::Generic_getFileDescriptors_sysctl(used, max);
 }
 
 /// TODO: port of `bool Platform_getDiskIO(DiskIOData* data)`
