@@ -38,6 +38,7 @@ pub mod overlay;
 pub mod prefs;
 pub mod theme;
 
+pub mod aggregate;
 pub mod alerts;
 pub mod barstyle;
 pub mod braille;

@@ -68,6 +68,7 @@ enforced mechanically, following the same precedent as `zshrs`.
   | `o` | Export the current table to JSON + CSV under `~/.config/htoprs/` |
   | `A` | Threshold alerts — the rule set and every currently-firing PID |
   | `G` | Braille CPU history graph (system total plus the selected PID) |
+  | `y` | Aggregate/pivot: live CPU+memory totals grouped by user / command / parent (`Tab` cycles the key) |
   | `v` | Cycle the per-PID CPU sparkline: off → narrow right-edge column → CPU-scaled inline braille graph |
 
   Two of these reach the rows themselves rather than a modal, injected at the

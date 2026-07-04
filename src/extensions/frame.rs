@@ -24,11 +24,29 @@
 //! paints and waits) still reaches the screen.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 thread_local! {
     /// The in-progress frame's bytes, or `None` when no frame is open.
     static FRAME: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// The last frame we presented, split into per-terminal-row byte segments,
+    /// so [`present`] can skip re-emitting rows that did not change — the core
+    /// of the flicker fix (a CPU-% tick repaints a handful of rows, not the
+    /// whole ~150 KB screen). `None` until the first frame or after a clear.
+    static PREV: RefCell<Option<Screen>> = const { RefCell::new(None) };
+}
+
+/// A presented frame decomposed for row-level diffing: a `preamble` (bytes
+/// before the first cursor move — usually an initial SGR / cursor toggle) and
+/// one self-contained byte segment per terminal row. Each row segment begins
+/// with the SGR that was in effect when the cursor landed on the row, so it can
+/// be re-emitted alone and render identically regardless of which other rows
+/// were skipped.
+#[derive(Default, PartialEq)]
+struct Screen {
+    preamble: Vec<u8>,
+    rows: BTreeMap<usize, Vec<u8>>,
 }
 
 /// DEC private mode 2026 (synchronized update) begin/end.
@@ -85,9 +103,10 @@ pub fn frame_out() -> FrameOut {
     FrameOut
 }
 
-/// Close the open frame and present it atomically: one `write_all` of
-/// `Begin` + buffered bytes + `End`, then a single flush. A no-op when no frame
-/// is open or the frame is empty.
+/// Close the open frame and present only what changed since the last frame:
+/// parse the buffer into per-row segments, diff against the previous frame, and
+/// write just the changed rows (wrapped in one 2026 region). A no-op when no
+/// frame is open, the frame is empty, or nothing changed.
 pub fn present() {
     let mut out = io::stdout().lock();
     if present_to(&mut out) {
@@ -95,22 +114,160 @@ pub fn present() {
     }
 }
 
-/// Take the open frame and, if non-empty, write `Begin` + bytes + `End` to
-/// `out` in that order. Returns `true` if anything was written. The frame is
-/// always closed (taken) if one was open, empty or not. Split out from
-/// [`present`] so the wrapping/atomicity contract is testable against an
-/// in-memory writer without touching the real terminal.
+/// Diff the open frame against the last one and write only the changed rows to
+/// `out`, wrapped in `Begin`/`End`. Returns `true` if anything was written.
+/// Split out from [`present`] so the diff is testable against an in-memory
+/// writer. The frame is always closed (taken) if one was open.
 fn present_to<W: Write>(out: &mut W) -> bool {
     let taken = FRAME.with(|f| f.borrow_mut().take());
-    match taken {
-        Some(buf) if !buf.is_empty() => {
-            let _ = out.write_all(BEGIN_SYNC);
-            let _ = out.write_all(&buf);
-            let _ = out.write_all(END_SYNC);
-            true
-        }
-        _ => false,
+    let Some(buf) = taken else {
+        return false;
+    };
+    if buf.is_empty() {
+        return false;
     }
+
+    let (next, clear) = parse_frame(&buf);
+
+    // A screen clear (`\e[2J`, from a modal) invalidates the whole prior frame.
+    let base = PREV.with(|p| p.borrow_mut().take());
+    let base = if clear { None } else { base };
+
+    let mut body: Vec<u8> = Vec::new();
+
+    // Preamble (initial SGR / cursor toggle): emit when it changed.
+    if base.as_ref().map(|b| &b.preamble) != Some(&next.preamble) {
+        body.extend_from_slice(&next.preamble);
+    }
+
+    // Changed rows only — this is what removes the full-screen repaint.
+    for (row, seg) in &next.rows {
+        if base.as_ref().and_then(|b| b.rows.get(row)) != Some(seg) {
+            body.extend_from_slice(seg);
+        }
+    }
+
+    // Rows that existed last frame but are absent now (terminal shrank / fewer
+    // lines drawn): blank them so no stale text lingers.
+    if let Some(b) = base.as_ref() {
+        for row in b.rows.keys() {
+            if !next.rows.contains_key(row) {
+                let _ = write!(&mut body, "\x1b[{};1H\x1b[0m\x1b[K", row + 1);
+            }
+        }
+    }
+
+    PREV.with(|p| *p.borrow_mut() = Some(next));
+
+    if body.is_empty() {
+        return false; // nothing changed → nothing to draw → no flicker
+    }
+    let _ = out.write_all(BEGIN_SYNC);
+    let _ = out.write_all(&body);
+    let _ = out.write_all(END_SYNC);
+    true
+}
+
+/// Split a frame's raw byte stream into a [`Screen`] for row diffing. Tracks the
+/// cursor row from CUP (`\e[row;colH`) sequences and the active SGR state; each
+/// row segment is prefixed with the entry SGR so it renders correctly on its
+/// own. Also reports whether a full-screen clear (`\e[2J`) appeared. Any bytes
+/// that are not a recognized CSI are copied through verbatim, so unknown
+/// sequences and text are preserved.
+fn parse_frame(frame: &[u8]) -> (Screen, bool) {
+    let mut screen = Screen::default();
+    let mut clear = false;
+    let mut cur_row: Option<usize> = None;
+    let mut cur_sgr: Vec<u8> = Vec::new();
+
+    // Append `bytes` to whichever bucket the cursor is currently in.
+    fn push(screen: &mut Screen, cur_row: Option<usize>, bytes: &[u8]) {
+        match cur_row {
+            None => screen.preamble.extend_from_slice(bytes),
+            // The bucket exists: it is created when the cursor moves to the row.
+            Some(r) => {
+                if let Some(buf) = screen.rows.get_mut(&r) {
+                    buf.extend_from_slice(bytes);
+                }
+            }
+        }
+    }
+
+    let n = frame.len();
+    let mut i = 0;
+    while i < n {
+        if frame[i] == 0x1b && i + 1 < n && frame[i + 1] == b'[' {
+            // CSI: params (0x30..=0x3f), intermediates (0x20..=0x2f), final (0x40..=0x7e).
+            let start = i;
+            let mut j = i + 2;
+            while j < n && (0x20..=0x3f).contains(&frame[j]) {
+                j += 1;
+            }
+            if j >= n {
+                // Truncated CSI at end of buffer — copy the rest through.
+                push(&mut screen, cur_row, &frame[start..]);
+                break;
+            }
+            let final_b = frame[j];
+            let params = &frame[i + 2..j];
+            let seq = &frame[start..=j];
+            match final_b {
+                b'H' | b'f' => {
+                    let row = parse_first_param(params).saturating_sub(1);
+                    cur_row = Some(row);
+                    // New row → seed with the entry SGR so it's self-contained.
+                    let bucket = screen.rows.entry(row).or_insert_with(|| cur_sgr.clone());
+                    bucket.extend_from_slice(seq);
+                }
+                b'm' => {
+                    if is_sgr_reset(params) {
+                        cur_sgr.clear();
+                    }
+                    cur_sgr.extend_from_slice(seq);
+                    push(&mut screen, cur_row, seq);
+                }
+                b'J' => {
+                    if params == b"2" {
+                        clear = true;
+                    }
+                    push(&mut screen, cur_row, seq);
+                }
+                _ => push(&mut screen, cur_row, seq),
+            }
+            i = j + 1;
+        } else {
+            // Text or a non-CSI escape: copy the single byte through.
+            push(&mut screen, cur_row, &frame[i..i + 1]);
+            i += 1;
+        }
+    }
+
+    (screen, clear)
+}
+
+/// The first numeric parameter of a CSI sequence (digits before `;`), or `1`
+/// when absent — matching the CUP default (`\e[H` == row 1, col 1).
+fn parse_first_param(params: &[u8]) -> usize {
+    let mut n = 0usize;
+    let mut seen = false;
+    for &b in params {
+        if b.is_ascii_digit() {
+            n = n * 10 + (b - b'0') as usize;
+            seen = true;
+        } else {
+            break;
+        }
+    }
+    if seen {
+        n
+    } else {
+        1
+    }
+}
+
+/// Whether an SGR sequence resets all attributes (`\e[m`, `\e[0m`, `\e[00m`).
+fn is_sgr_reset(params: &[u8]) -> bool {
+    params.is_empty() || params == b"0" || params == b"00"
 }
 
 #[cfg(test)]

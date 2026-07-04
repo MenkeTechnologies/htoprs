@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::aggregate::GroupBy;
 use super::barstyle::BarStyle;
 use super::panels::SparkMode;
 use super::theme::{CustomThemeColors, ThemeName};
@@ -45,6 +46,9 @@ pub struct Prefs {
     /// The `v`-cycled per-PID CPU sparkline mode.
     #[serde(default)]
     pub spark: SparkMode,
+    /// The `Tab`-cycled key the aggregate/pivot modal (`y`) rolls up on.
+    #[serde(default)]
+    pub agg_by: GroupBy,
 }
 
 /// `~/.config/htoprs/prefs.json` (honoring `$XDG_CONFIG_HOME`), matching the
@@ -57,11 +61,32 @@ fn config_path() -> Option<PathBuf> {
 /// the prefs file and the other extension artifacts (saved filters, snapshot
 /// and export dumps). `None` when neither `$XDG_CONFIG_HOME` nor `$HOME` is set.
 pub(crate) fn config_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("htoprs"))
+    // Under `cargo test`, sandbox prefs to a per-thread temp dir. Tests run in
+    // parallel and share process-global env + the thread-local PanelState that
+    // loads/persists prefs; a shared real config file would race between tests
+    // (and pollute the developer's ~/.config). A per-thread path gives each test
+    // thread its own file, and tests on one thread run sequentially, so prefs
+    // I/O is deterministic and isolated without touching the real config.
+    #[cfg(test)]
+    {
+        let tid: String = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        return Some(
+            std::env::temp_dir()
+                .join(format!("htoprs_test_{}_{}", std::process::id(), tid))
+                .join("htoprs"),
+        );
+    }
+    #[cfg(not(test))]
+    {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        Some(base.join("htoprs"))
+    }
 }
 
 /// Read the saved prefs, or `None` if the file is absent or unparsable.

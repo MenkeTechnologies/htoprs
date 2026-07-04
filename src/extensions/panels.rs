@@ -30,6 +30,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
+use crate::extensions::aggregate::{aggregate, GroupBy};
 use crate::extensions::alerts::{AlertEngine, Firing, Metric, Rule};
 use crate::extensions::filter::{Compiled, Field, Filter, FilterStore};
 use crate::extensions::graph::Scalar;
@@ -87,6 +88,7 @@ enum Modal {
     Export,
     Alerts,
     Graph,
+    Aggregate,
 }
 
 /// The complete live state for the monitoring extensions.
@@ -109,6 +111,9 @@ struct PanelState {
     // ── UI ────────────────────────────────────────────────────────────────
     modal: Modal,
     spark: SparkMode,
+    /// The key the aggregate/pivot modal (`y`) rolls the table up on. Cycled
+    /// with `Tab` and persisted to prefs.
+    agg_by: GroupBy,
     /// Whether firing (over-threshold) rows get the hot-row recolor. Toggled
     /// from the Alerts modal (`A`, then `t`); the alert engine keeps evaluating
     /// either way, so the modal's firing counts stay live when this is off.
@@ -152,6 +157,7 @@ impl PanelState {
             tick: 0,
             modal: Modal::None,
             spark: saved.as_ref().map(|p| p.spark).unwrap_or_default(),
+            agg_by: saved.as_ref().map(|p| p.agg_by).unwrap_or_default(),
             // Restore the saved hot-row-highlight toggle; absent (first run) = on.
             alert_hl: saved.as_ref().and_then(|p| p.alert_hl).unwrap_or(true),
             pending_select: None,
@@ -255,6 +261,11 @@ impl PanelState {
                 toast("CPU history graph");
             }
             0x76 => self.toggle_spark(), // 'v'
+            0x79 => {
+                // 'y' — open the aggregation/pivot rollup.
+                self.modal = Modal::Aggregate;
+                toast(format!("Aggregate by {}", self.agg_by.label()));
+            }
             _ => return false,
         }
         true
@@ -282,6 +293,18 @@ impl PanelState {
                     } else {
                         "Hot-row highlight: off"
                     });
+                } else {
+                    self.modal = Modal::None;
+                }
+            }
+            Modal::Aggregate => {
+                // Tab cycles the group-by key (and persists it); any other
+                // non-Esc key closes. Tab arrives as `Char('\t')` (see `handle`).
+                if code == KeyCode::Char('\t') {
+                    self.agg_by = self.agg_by.next();
+                    let by = self.agg_by;
+                    super::prefs::update(|p| p.agg_by = by);
+                    toast(format!("Aggregate by {}", by.label()));
                 } else {
                     self.modal = Modal::None;
                 }
@@ -484,8 +507,41 @@ impl PanelState {
             ),
             Modal::Alerts => self.render_alerts(buf, area, &s),
             Modal::Graph => self.render_graph(buf, area, &s),
+            Modal::Aggregate => self.render_aggregate(buf, area, &s),
             Modal::None => {}
         }
+    }
+
+    /// The aggregation/pivot modal (`y`): the live table rolled up on the
+    /// current [`GroupBy`] key, sorted by CPU, top `LIST_ROWS` groups.
+    fn render_aggregate(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
+        let groups = aggregate(&self.table, self.agg_by);
+        let mut lines = Vec::new();
+        lines.push((
+            format!(
+                "by {} · {} groups · Tab cycle · Esc close",
+                self.agg_by.label(),
+                groups.len()
+            ),
+            s.dim,
+        ));
+        lines.push((
+            format!("{:<22} {:>5} {:>7} {:>10}", "KEY", "PROCS", "CPU%", "MEM"),
+            s.body.add_modifier(Modifier::BOLD),
+        ));
+        for g in groups.iter().take(LIST_ROWS) {
+            lines.push((
+                format!(
+                    "{:<22} {:>5} {:>6.1} {:>10}",
+                    trunc(&g.key, 22),
+                    g.count,
+                    g.cpu,
+                    human_kb(g.mem_kb)
+                ),
+                s.body,
+            ));
+        }
+        self.render_lines(buf, area, s, "Aggregate", lines);
     }
 
     /// Draw a centered box titled `title` holding `lines` of pre-styled text.
@@ -817,6 +873,20 @@ fn trunc(s: &str, w: usize) -> String {
     }
 }
 
+/// Format a KB count as a human-readable `K`/`M`/`G` string (base-1024), e.g.
+/// `512K`, `3.9M`, `2.1G` — for the aggregate modal's memory column.
+fn human_kb(kb: u64) -> String {
+    const M: u64 = 1024;
+    const G: u64 = 1024 * 1024;
+    if kb >= G {
+        format!("{:.1}G", kb as f64 / G as f64)
+    } else if kb >= M {
+        format!("{:.1}M", kb as f64 / M as f64)
+    } else {
+        format!("{kb}K")
+    }
+}
+
 // ─── thread-local live state + public API ───────────────────────────────────
 
 thread_local! {
@@ -1040,6 +1110,34 @@ mod tests {
         let hits = PANELS.with(|p| p.borrow().finder_hits.len());
         assert!(hits >= 1, "expected firefox rows, got {hits}");
         dispatch_key(27);
+    }
+
+    #[test]
+    fn aggregate_opens_cycles_and_closes() {
+        ingest_ticks(1);
+        assert!(!panel_active());
+        assert!(dispatch_key(0x79)); // 'y' opens the aggregate modal
+        assert!(panel_active());
+        let first = PANELS.with(|p| p.borrow().agg_by);
+        dispatch_key(9); // Tab cycles the group-by key
+        let second = PANELS.with(|p| p.borrow().agg_by);
+        assert_ne!(first, second);
+        assert_eq!(second, first.next()); // cycles in order, and persists
+        dispatch_key(27); // Esc closes
+        assert!(!panel_active());
+    }
+
+    #[test]
+    fn aggregate_rolls_up_synthetic_table() {
+        // The pure rollup sums CPU/mem and returns at least one group for the
+        // synthetic table, sorted CPU-descending.
+        ingest_ticks(1);
+        let groups =
+            PANELS.with(|p| aggregate(&p.borrow().table, crate::extensions::aggregate::GroupBy::User));
+        assert!(!groups.is_empty());
+        for w in groups.windows(2) {
+            assert!(w[0].cpu >= w[1].cpu, "groups must be CPU-descending");
+        }
     }
 
     #[test]
