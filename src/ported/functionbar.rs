@@ -28,7 +28,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use crossterm::cursor::{Hide, MoveTo, Show};

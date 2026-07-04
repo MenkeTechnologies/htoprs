@@ -286,6 +286,8 @@ impl OverlayState {
                 KeyCode::Enter => {
                     self.theme_chooser.active = false;
                     self.dirty = true; // persist the chosen theme
+                    let name = self.theme_name.display_name();
+                    self.set_status(format!("Theme: {name}"));
                 }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') => {
                     self.theme_chooser.active = false;
@@ -403,12 +405,16 @@ impl OverlayState {
             // Esc closes it when it is up (matching the chooser/editor). When
             // help is not shown, Esc is not ours — htop uses it to clear the
             // selection — so it falls through to `_ => return false`.
-            KeyCode::Char('h') | KeyCode::Char('?') => self.show_help = !self.show_help,
+            KeyCode::Char('h') | KeyCode::Char('?') => {
+                self.show_help = !self.show_help;
+                self.set_status(if self.show_help { "Help" } else { "Help closed" });
+            }
             KeyCode::Esc if self.show_help => self.show_help = false,
             KeyCode::Char('c') => {
                 self.show_help = false;
                 self.themed = true;
                 self.theme_chooser.open(self.theme_name);
+                self.set_status("Theme chooser");
             }
             KeyCode::Char('C') => {
                 self.show_help = false;
@@ -420,6 +426,7 @@ impl OverlayState {
                     .map(|ct| [ct.c1, ct.c2, ct.c3, ct.c4, ct.c5, ct.c6])
                     .unwrap_or_else(|| Theme::palette_values(self.theme_name));
                 self.theme_edit.open(palette);
+                self.set_status("Theme editor");
             }
             // Border toggle is on `B` (capital). It was `b`, but htoprs gave
             // lowercase `b` to the bar fill-style cycler (`extensions::barstyle`,
@@ -686,6 +693,19 @@ pub fn draw_chrome<W: Write>(out: &mut W) {
 /// the toast paints on top immediately.
 pub fn set_status(msg: impl Into<String>) {
     OVERLAY.with(|o| o.borrow_mut().set_status(msg));
+}
+
+/// The current (non-expired) status-toast text, or `None`. Test hook used to
+/// assert a hotkey wired a confirmation toast.
+#[cfg(test)]
+pub(crate) fn status_text() -> Option<String> {
+    OVERLAY.with(|o| {
+        let s = o.borrow();
+        s.status
+            .as_ref()
+            .filter(|m| !m.expired())
+            .map(|m| m.text.clone())
+    })
 }
 
 /// Draw the transient status toast — port of iftoprs `draw_status`

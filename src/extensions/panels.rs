@@ -28,6 +28,7 @@ use crossterm::terminal;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use serde::{Deserialize, Serialize};
 
 use crate::extensions::alerts::{AlertEngine, Firing, Metric, Rule};
 use crate::extensions::filter::{Compiled, Field, Filter, FilterStore};
@@ -55,10 +56,18 @@ const SPARK_GRAPH_H: i32 = 3;
 /// Rows of matches a list modal shows at once.
 const LIST_ROWS: usize = 16;
 
-/// How the per-PID CPU sparkline is shown, cycled by `v`.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum SparkMode {
+/// Show a transient confirmation toast for a monitoring-hotkey action, reusing
+/// the same status-toast channel the theme overlay and the `b` bar-style cycler
+/// use (`overlay::draw_status`, auto-dismissed after 3s).
+fn toast(msg: impl Into<String>) {
+    crate::extensions::overlay::set_status(msg);
+}
+
+/// How the per-PID CPU sparkline is shown, cycled by `v`. Persisted to prefs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum SparkMode {
     /// No sparkline.
+    #[default]
     Off,
     /// A narrow `SPARK_W`-cell sparkline overdrawn at each row's right edge,
     /// keeping the 1-item-1-line layout.
@@ -227,15 +236,24 @@ impl PanelState {
         if crate::extensions::overlay::overlay_active() {
             return false;
         }
-        // Idle hotkeys. Bytes chosen from keys htop leaves unbound.
+        // Idle hotkeys. Bytes chosen from keys htop leaves unbound. Each surfaces
+        // a transient confirmation toast (`overlay::set_status`), like `b`.
         match ch {
-            0x66 => self.open_finder(),         // 'f'
-            0x72 => self.open_filter(),         // 'r'
-            0x64 => self.snapshot_action(),     // 'd'
-            0x6f => self.export_action(),       // 'o'
-            0x41 => self.modal = Modal::Alerts, // 'A'
-            0x47 => self.modal = Modal::Graph,  // 'G'
-            0x76 => self.toggle_spark(),        // 'v'
+            0x66 => self.open_finder(),     // 'f'
+            0x72 => self.open_filter(),     // 'r'
+            0x64 => self.snapshot_action(), // 'd'
+            0x6f => self.export_action(),   // 'o'
+            0x41 => {
+                // 'A'
+                self.modal = Modal::Alerts;
+                toast(format!("Alerts — {} firing", self.firing.len()));
+            }
+            0x47 => {
+                // 'G'
+                self.modal = Modal::Graph;
+                toast("CPU history graph");
+            }
+            0x76 => self.toggle_spark(), // 'v'
             _ => return false,
         }
         true
@@ -258,6 +276,11 @@ impl PanelState {
                     self.alert_hl = !self.alert_hl;
                     let on = self.alert_hl;
                     super::prefs::update(|p| p.alert_hl = Some(on));
+                    toast(if on {
+                        "Hot-row highlight: on"
+                    } else {
+                        "Hot-row highlight: off"
+                    });
                 } else {
                     self.modal = Modal::None;
                 }
@@ -275,6 +298,7 @@ impl PanelState {
         self.finder_query.clear();
         self.finder_sel = 0;
         self.recompute_finder();
+        toast("Process finder");
     }
 
     fn finder_key(&mut self, code: KeyCode) {
@@ -310,6 +334,7 @@ impl PanelState {
     fn open_filter(&mut self) {
         self.modal = Modal::Filter;
         self.filter_msg.clear();
+        toast("Filter");
     }
 
     fn filter_key(&mut self, code: KeyCode) {
@@ -357,10 +382,18 @@ impl PanelState {
             None => {
                 self.baseline = Some(Snapshot::capture(self.tick, &self.table));
                 self.diff = None;
+                toast("Snapshot baseline captured");
             }
             Some(base) => {
                 let now = Snapshot::capture(self.tick, &self.table);
-                self.diff = Some(diff(base, &now));
+                let d = diff(base, &now);
+                toast(format!(
+                    "Diff: +{} -{} ~{}",
+                    d.added.len(),
+                    d.removed.len(),
+                    d.changed.len()
+                ));
+                self.diff = Some(d);
             }
         }
         self.modal = Modal::Diff;
@@ -372,14 +405,21 @@ impl PanelState {
             KeyCode::Char('r') => {
                 self.baseline = Some(Snapshot::capture(self.tick, &self.table));
                 self.diff = None;
+                toast("Baseline reset");
             }
             // 'w' writes the current baseline snapshot to the config dir.
             KeyCode::Char('w') => {
                 if let Some(base) = &self.baseline {
                     let name = format!("snapshot-{}.json", base.tick);
                     match write_artifact(&name, &base.to_json()) {
-                        Some(path) => self.export_msg = format!("wrote {path}"),
-                        None => self.export_msg = "write failed (no config dir)".into(),
+                        Some(path) => {
+                            self.export_msg = format!("wrote {path}");
+                            toast("Snapshot written");
+                        }
+                        None => {
+                            self.export_msg = "write failed (no config dir)".into();
+                            toast("Snapshot write failed");
+                        }
                     }
                 }
             }
@@ -395,8 +435,14 @@ impl PanelState {
         let jp = write_artifact(&jn, &json);
         let cp = write_artifact(&cn, &csv);
         self.export_msg = match (jp, cp) {
-            (Some(a), Some(b)) => format!("{a}\n{b}"),
-            _ => "export failed (no config dir)".into(),
+            (Some(a), Some(b)) => {
+                toast("Exported JSON + CSV");
+                format!("{a}\n{b}")
+            }
+            _ => {
+                toast("Export failed — no config dir");
+                "export failed (no config dir)".into()
+            }
         };
         self.modal = Modal::Export;
     }
@@ -408,6 +454,11 @@ impl PanelState {
             SparkMode::Column => SparkMode::Double,
             SparkMode::Double => SparkMode::Off,
         };
+        toast(match self.spark {
+            SparkMode::Off => "CPU graph: off",
+            SparkMode::Column => "CPU graph: column",
+            SparkMode::Double => "CPU graph: inline (taller = busier)",
+        });
     }
 
     // ── rendering ─────────────────────────────────────────────────────────

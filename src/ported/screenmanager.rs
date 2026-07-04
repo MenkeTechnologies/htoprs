@@ -67,7 +67,7 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use std::io::{self, Write};
+use std::io::Write;
 
 use crate::ported::action::State;
 use crate::ported::crt::{
