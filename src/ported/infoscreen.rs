@@ -725,6 +725,13 @@ pub fn InfoScreen_run(this: &mut dyn InfoScreenClass) {
             }
         }
     }
+
+    // htoprs extension: this modal painted the whole screen directly (outside
+    // the frame-diff pipeline), so the diff cache no longer matches what is on
+    // screen. Invalidate it so the main loop's next frame repaints in full —
+    // otherwise unchanged-looking rows (including the function bar) are skipped
+    // and the previous view stays torn on screen. See `extensions::frame`.
+    crate::extensions::frame::invalidate();
 }
 
 #[cfg(test)]

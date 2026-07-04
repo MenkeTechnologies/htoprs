@@ -224,8 +224,17 @@ fn parse_frame(frame: &[u8]) -> (Screen, bool) {
                 b'H' | b'f' => {
                     let row = parse_first_param(params).saturating_sub(1);
                     cur_row = Some(row);
-                    // New row → seed with the entry SGR so it's self-contained.
-                    let bucket = screen.rows.entry(row).or_insert_with(|| cur_sgr.clone());
+                    // Re-assert the active SGR on EVERY move into the row, not
+                    // just the first: a draw commonly sets colors *before* its
+                    // `MoveTo` (e.g. the status toast: fg/bg/bold, then move,
+                    // then text). Those SGR bytes were attributed to whatever
+                    // row the cursor was on before, so without re-applying here
+                    // the moved-to content (and any later overdraw of the same
+                    // row) would render with the wrong/again no colors — that is
+                    // why the toast lost its background. Prepending `cur_sgr` to
+                    // each move keeps every row segment self-contained.
+                    let bucket = screen.rows.entry(row).or_default();
+                    bucket.extend_from_slice(&cur_sgr);
                     bucket.extend_from_slice(seq);
                 }
                 b'm' => {
@@ -357,6 +366,25 @@ mod tests {
         let (sink, _) = render(b"\x1b[32m\x1b[1;1HG1\x1b[2;1HXY");
         assert_eq!(body(&sink), b"\x1b[32m\x1b[2;1HXY");
         reset();
+    }
+
+    /// The status-toast pattern: row 2 is drawn as a plain process row earlier
+    /// in the frame; then a toast sets its bg SGR (while the cursor is on a
+    /// DIFFERENT row), moves back to row 2, and prints. Because the SGR is
+    /// emitted before the move AND row 2 already exists, the fix must re-assert
+    /// the active SGR on the revisit so the toast keeps its background.
+    #[test]
+    fn toast_over_existing_row_keeps_background() {
+        // proc on row2, other on row1, then bg-highlight + move back to row2.
+        let (s, _) = parse_frame(b"\x1b[2;1Hproc\x1b[1;1Hother\x1b[48;5;4m\x1b[2;1Htoast");
+        let seg = s.rows.get(&1).expect("row 2 present");
+        // The bg SGR must appear immediately before the toast's move-to(2,1).
+        let want = b"\x1b[48;5;4m\x1b[2;1Htoast";
+        assert!(
+            seg.windows(want.len()).any(|w| w == want),
+            "row 2 segment missing bg before toast text: {:?}",
+            String::from_utf8_lossy(seg)
+        );
     }
 
     /// A `\e[2J` clear invalidates the whole previous frame → everything is

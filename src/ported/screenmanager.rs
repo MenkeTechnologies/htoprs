@@ -731,6 +731,11 @@ pub fn ScreenManager_run(
         ScreenManager_resize(this);
     }
 
+    // htoprs extension: entering a (possibly nested) run loop — the frame-diff
+    // cache belongs to whatever was on screen before, so drop it and repaint
+    // this loop's first frame in full.
+    crate::extensions::frame::invalidate();
+
     'main: while !quit {
         // Sample the machine BEFORE opening the synchronized-update region.
         // checkRecalculation's Machine_scan / Machine_scanTables are slow
@@ -848,7 +853,13 @@ pub fn ScreenManager_run(
         crate::extensions::frame::present();
 
         let prevCh = ch;
-        ch = Panel_getCh(this.panels[focus].as_panel());
+        // htoprs extension: a command-palette (`:`) pick injects its action's
+        // key here, in place of the blocking read, so it flows through the whole
+        // dispatch pipeline (extension modal + overlay + htop) as if typed.
+        ch = match crate::extensions::panels::take_pending_key() {
+            Some(k) => k,
+            None => Panel_getCh(this.panels[focus].as_panel()),
+        };
 
         // HAVE_GETMOUSE mouse-decode block (ScreenManager.c:280-336) is gapped:
         // `getmouse`/`MEVENT` are not in `src/ported` (`crt::CRT_readKey`
@@ -1060,6 +1071,12 @@ pub fn ScreenManager_run(
     if let Some(lk) = lastKey {
         *lk = ch;
     }
+
+    // htoprs extension: leaving this run loop hands the screen back to the
+    // parent (or exit). The parent's diff cache no longer matches the screen
+    // this loop drew, so invalidate it — the parent repaints its first frame
+    // in full, erasing this loop's contents cleanly.
+    crate::extensions::frame::invalidate();
 }
 
 #[cfg(test)]
