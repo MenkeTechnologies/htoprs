@@ -1536,7 +1536,14 @@ impl Crt {
                     Some(c as i32)
                 }
             }
-            KeyCode::Enter => Some(KEY_ENTER),
+            // The main Return key: ncurses `getch()` delivers it as the raw
+            // carriage return `13` (`0x0d`), NOT the `KEY_ENTER` (343) keypad
+            // code — only the numeric-keypad Enter yields `KEY_ENTER`. htop's
+            // picker paths gate on `ch == 13` alone (`Panel_selectByTyping`,
+            // `Panel.c:519`; `Action_pickFromVector`, `Action.c:84`), while
+            // every panel that also accepts the keypad Enter stacks
+            // `case 13`/`case KEY_ENTER`. Mapping to `13` drives both.
+            KeyCode::Enter => Some(13),
             KeyCode::Tab => Some('\t' as i32),
             // htop's define_key remaps "\e[Z" to KEY_SHIFT_TAB (not the
             // ncurses default KEY_BTAB) for supported terminals.
@@ -2570,7 +2577,9 @@ mod tests {
 
     #[test]
     fn map_enter_tab_esc_function_keys() {
-        assert_eq!(map(&press(KeyCode::Enter)), Some(KEY_ENTER));
+        // Main Return -> raw CR (13), the value htop's `ch == 13` picker
+        // paths require; KEY_ENTER (343) is the keypad Enter only.
+        assert_eq!(map(&press(KeyCode::Enter)), Some(13));
         assert_eq!(map(&press(KeyCode::Tab)), Some('\t' as i32));
         assert_eq!(map(&press(KeyCode::BackTab)), Some(KEY_SHIFT_TAB));
         assert_eq!(map(&press(KeyCode::Esc)), Some(27));
