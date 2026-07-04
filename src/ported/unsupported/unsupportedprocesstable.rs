@@ -6,7 +6,7 @@
 //! - [`ProcessTable_new`] (`UnsupportedProcessTable.c:19`)
 //! - [`ProcessTable_goThroughEntries`] (`UnsupportedProcessTable.c:35`)
 //! - [`ProcessTable_delete`] (`UnsupportedProcessTable.c:29`) — pure teardown:
-//!   [`ProcessTable_done`] on `&mut this.super_`, then `Drop` releases the owned
+//!   [`ProcessTable_done`](crate::ported::processtable::ProcessTable_done) on `&mut this.super_`, then `Drop` releases the owned
 //!   fields (the darwin `ProcessTable_delete` precedent).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)] // faithful C global name (UnsupportedProcessTable_class)
@@ -127,7 +127,7 @@ pub fn ProcessTable_new(
 /// `UnsupportedProcessTable.c:29`. The C body runs
 /// `ProcessTable_done(&this->super)` then `free(this)` (no platform-specific
 /// heap fields). Taking `this` by value hands the [`UnsupportedProcessTable`]
-/// to `Drop` for the allocation; the base teardown is [`ProcessTable_done`] on
+/// to `Drop` for the allocation; the base teardown is [`ProcessTable_done`](crate::ported::processtable::ProcessTable_done) on
 /// `&mut this.super_` (the darwin `ProcessTable_delete` precedent).
 pub fn ProcessTable_delete(mut this: UnsupportedProcessTable) {
     crate::ported::processtable::ProcessTable_done(&mut this.super_);

@@ -7,7 +7,7 @@
 //! - [`UnsupportedProcess_rowWriteField`] (`UnsupportedProcess.c:61`)
 //! - [`UnsupportedProcess_compareByKey`] (`UnsupportedProcess.c:82`)
 //! - [`Process_delete`] (`UnsupportedProcess.c:54`) — pure teardown:
-//!   [`Process_done`] on the destructured `super_`, then `Drop` reclaims the
+//!   [`Process_done`](crate::ported::process::Process_done) on the destructured `super_`, then `Drop` reclaims the
 //!   [`UnsupportedProcess`] allocation and its `Option<String>` base fields (the
 //!   darwin/linux `Process_delete` precedent).
 //!
@@ -411,7 +411,7 @@ pub fn UnsupportedProcess_new(host: *const Machine) -> Box<UnsupportedProcess> {
 /// The C body runs `Process_done(super)` then `free(cast)` (no platform-specific
 /// heap fields to release). Taking `this` by value hands the
 /// [`UnsupportedProcess`] to `Drop` for the allocation and its `Option<String>`
-/// base fields; the base teardown is [`Process_done`] on the destructured
+/// base fields; the base teardown is [`Process_done`](crate::ported::process::Process_done) on the destructured
 /// `super_` (the darwin/linux `Process_delete` precedent).
 pub fn Process_delete(this: UnsupportedProcess) {
     let UnsupportedProcess { super_, .. } = this;
