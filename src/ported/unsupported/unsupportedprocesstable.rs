@@ -5,12 +5,9 @@
 //! [`UnsupportedProcess`]):
 //! - [`ProcessTable_new`] (`UnsupportedProcessTable.c:19`)
 //! - [`ProcessTable_goThroughEntries`] (`UnsupportedProcessTable.c:35`)
-//!
-//! Still `todo!()`:
-//! - `ProcessTable_delete` — the C body is a pure teardown
-//!   (`ProcessTable_done(&this->super)` then `free(this)`); Rust's `Drop`
-//!   releases the owned fields, so there is no faithful safe-Rust analog (the
-//!   same blocker the native darwin `ProcessTable_delete` port carries).
+//! - [`ProcessTable_delete`] (`UnsupportedProcessTable.c:29`) — pure teardown:
+//!   [`ProcessTable_done`] on `&mut this.super_`, then `Drop` releases the owned
+//!   fields (the darwin `ProcessTable_delete` precedent).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)] // faithful C global name (UnsupportedProcessTable_class)
 #![allow(dead_code)]
@@ -126,14 +123,14 @@ pub fn ProcessTable_new(
     this
 }
 
-/// TODO: port of `void ProcessTable_delete(Object* cast)` from
-/// `UnsupportedProcessTable.c:29`. Kept stubbed: the C body is a pure teardown
-/// — `ProcessTable_done(&this->super)` followed by `free(this)` (no
-/// platform-specific heap fields). Rust owns the [`UnsupportedProcessTable`]
-/// allocation and its base fields, so `Drop` reclaims them; there is no
-/// faithful safe-Rust analog (the darwin `ProcessTable_delete` precedent).
-pub fn ProcessTable_delete() {
-    todo!("port of UnsupportedProcessTable.c:29 — pure free() teardown; Rust Drop handles it")
+/// Port of `void ProcessTable_delete(Object* cast)` from
+/// `UnsupportedProcessTable.c:29`. The C body runs
+/// `ProcessTable_done(&this->super)` then `free(this)` (no platform-specific
+/// heap fields). Taking `this` by value hands the [`UnsupportedProcessTable`]
+/// to `Drop` for the allocation; the base teardown is [`ProcessTable_done`] on
+/// `&mut this.super_` (the darwin `ProcessTable_delete` precedent).
+pub fn ProcessTable_delete(mut this: UnsupportedProcessTable) {
+    crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }
 
 /// Port of `void ProcessTable_goThroughEntries(ProcessTable* super)`

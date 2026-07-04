@@ -683,10 +683,12 @@ pub fn ProcessTable_new(
     this
 }
 
-/// TODO: port of `void ProcessTable_delete(Object* cast)` from
-/// `NetBSDProcessTable.c:50`. Kept stubbed: the C body is a pure teardown —
-/// `ProcessTable_done(&this->super)` then `free(this)`; Rust `Drop` reclaims
-/// the owned fields (darwin/openbsd `ProcessTable_delete` precedent).
-pub fn ProcessTable_delete() {
-    todo!("port of NetBSDProcessTable.c:50 — pure free() teardown; Rust Drop handles it")
+/// Port of `void ProcessTable_delete(Object* cast)` from
+/// `NetBSDProcessTable.c:50` — the C body is a pure teardown:
+/// `ProcessTable_done(&this->super)` then `free(this)`. `ProcessTable_done`
+/// takes `&mut` and tears the base table down in place; `this` then drops at
+/// scope end — the `free(this)` (darwin/openbsd `ProcessTable_delete`
+/// precedent).
+pub fn ProcessTable_delete(mut this: NetBSDProcessTable) {
+    crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }

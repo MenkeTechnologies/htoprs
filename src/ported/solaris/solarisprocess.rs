@@ -11,12 +11,10 @@
 //! - [`SolarisProcess_new`] (`SolarisProcess.c:63`)
 //! - [`SolarisProcess_rowWriteField`] (`SolarisProcess.c:77`)
 //! - [`SolarisProcess_compareByKey`] (`SolarisProcess.c:104`)
-//!
-//! Still `todo!()`:
-//! - `Process_delete` is a pure teardown (`Process_done` + `free(sp->zname)` +
-//!   `free(sp)`); Rust `Drop` reclaims the [`SolarisProcess`] allocation and
-//!   its `Option<String>` `zname`, so there is no faithful safe-Rust analog
-//!   (the linux/darwin `Process_delete` precedent).
+//! - [`Process_delete`] (`SolarisProcess.c:70`) — pure teardown: [`Process_done`]
+//!   on the destructured `super_`, then `Drop` reclaims the [`SolarisProcess`]
+//!   allocation and its `Option<String>` `zname` (the linux/darwin
+//!   `Process_delete` precedent).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -529,14 +527,15 @@ pub fn SolarisProcess_new(host: *const Machine) -> Box<SolarisProcess> {
     this
 }
 
-/// TODO: port of `void Process_delete(Object* cast)` from `SolarisProcess.c:70`.
-/// Kept stubbed: the C body is a pure teardown — `Process_done` +
-/// `free(sp->zname)` + `free(sp)`. Rust owns the [`SolarisProcess`] allocation
-/// and its `Option<String>` `zname`, so `Drop` reclaims them automatically;
-/// there is no faithful safe-Rust analog (the linux/darwin `Process_delete`
-/// precedent).
-pub fn Process_delete() {
-    todo!("port of SolarisProcess.c:70 — pure free() teardown; Rust Drop handles it")
+/// Port of `void Process_delete(Object* cast)` from `SolarisProcess.c:70`. The
+/// C body runs `Process_done(&this->super)`, then `free(sp->zname)` and
+/// `free(sp)`. Taking `this` by value hands the [`SolarisProcess`] to `Drop`,
+/// which reclaims the `Option<String>` `zname` and the allocation; the base
+/// teardown is [`Process_done`] on the destructured `super_` (the linux/darwin
+/// `Process_delete` precedent).
+pub fn Process_delete(this: SolarisProcess) {
+    let SolarisProcess { super_, .. } = this;
+    crate::ported::process::Process_done(super_);
 }
 
 /// Port of `static void SolarisProcess_rowWriteField(const Row* super,

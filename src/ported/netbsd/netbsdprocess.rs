@@ -447,15 +447,15 @@ pub fn NetBSDProcess_new(host: *const Machine) -> Box<NetBSDProcess> {
     this
 }
 
-/// TODO: port of `void Process_delete(Object* cast)` from
-/// `NetBSDProcess.c:225`. Kept stubbed: the C body is a pure teardown —
-/// `Process_done(&this->super)` followed by `free(this)` (no NetBSD-only heap
-/// fields to release). Rust owns the [`NetBSDProcess`] allocation and its
-/// `Option<String>` base fields, so `Drop` reclaims them automatically; there
-/// is no faithful safe-Rust analog (the darwin/linux `Process_delete`
+/// Port of `void Process_delete(Object* cast)` from `NetBSDProcess.c:225` —
+/// the C body is a pure teardown: `Process_done(&this->super)` followed by
+/// `free(this)` (no NetBSD-only heap fields to release). Take `this` by value:
+/// the base teardown runs on the moved-out `super_`, and the final
+/// `free(this)` folds into the by-value consume (the darwin `Process_delete`
 /// precedent).
-pub fn Process_delete() {
-    todo!("port of NetBSDProcess.c:225 — pure free() teardown; Rust Drop handles it")
+pub fn Process_delete(this: NetBSDProcess) {
+    let NetBSDProcess { super_, .. } = this;
+    crate::ported::process::Process_done(super_);
 }
 
 /// Port of `static void NetBSDProcess_rowWriteField(const Row* super,

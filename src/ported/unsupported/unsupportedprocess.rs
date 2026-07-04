@@ -6,13 +6,10 @@
 //! - [`UnsupportedProcess_new`] (`UnsupportedProcess.c:47`)
 //! - [`UnsupportedProcess_rowWriteField`] (`UnsupportedProcess.c:61`)
 //! - [`UnsupportedProcess_compareByKey`] (`UnsupportedProcess.c:82`)
-//!
-//! Still `todo!()`:
-//! - `Process_delete` — the C body is a pure teardown (`Process_done(super)`
-//!   then `free(cast)`, no platform-specific heap fields). Rust owns the
-//!   [`UnsupportedProcess`] allocation and its `Option<String>` base fields, so
-//!   `Drop` reclaims them; there is no faithful safe-Rust analog (the same
-//!   blocker the native darwin/linux `Process_delete` ports carry).
+//! - [`Process_delete`] (`UnsupportedProcess.c:54`) — pure teardown:
+//!   [`Process_done`] on the destructured `super_`, then `Drop` reclaims the
+//!   [`UnsupportedProcess`] allocation and its `Option<String>` base fields (the
+//!   darwin/linux `Process_delete` precedent).
 //!
 //! The C `const ProcessFieldData Process_fields[LAST_PROCESSFIELD]` table
 //! (`UnsupportedProcess.c:18`) is process-field *data*, not a `todo!()`
@@ -410,15 +407,15 @@ pub fn UnsupportedProcess_new(host: *const Machine) -> Box<UnsupportedProcess> {
     this
 }
 
-/// TODO: port of `void Process_delete(Object* cast)` from
-/// `UnsupportedProcess.c:54`. Kept stubbed: the C body is a pure teardown —
-/// `Process_done(super)` followed by `free(cast)` (no platform-specific heap
-/// fields to release). Rust owns the [`UnsupportedProcess`] allocation and its
-/// `Option<String>` base fields, so `Drop` reclaims them automatically; there
-/// is no faithful safe-Rust analog (the darwin/linux `Process_delete`
-/// precedent).
-pub fn Process_delete() {
-    todo!("port of UnsupportedProcess.c:54 — pure free() teardown; Rust Drop handles it")
+/// Port of `void Process_delete(Object* cast)` from `UnsupportedProcess.c:54`.
+/// The C body runs `Process_done(super)` then `free(cast)` (no platform-specific
+/// heap fields to release). Taking `this` by value hands the
+/// [`UnsupportedProcess`] to `Drop` for the allocation and its `Option<String>`
+/// base fields; the base teardown is [`Process_done`] on the destructured
+/// `super_` (the darwin/linux `Process_delete` precedent).
+pub fn Process_delete(this: UnsupportedProcess) {
+    let UnsupportedProcess { super_, .. } = this;
+    crate::ported::process::Process_done(super_);
 }
 
 /// Port of `static void UnsupportedProcess_rowWriteField(const Row* super,

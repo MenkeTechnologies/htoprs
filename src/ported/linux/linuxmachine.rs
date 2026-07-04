@@ -1173,14 +1173,16 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<LinuxMachine> 
     this
 }
 
-/// Deliberate non-port: `void Machine_delete(Machine* super)` from
-/// `LinuxMachine.c:877` is a pure `free()` teardown — it walks and frees
-/// the `gpuEngineData` linked list, `free`s `cpuData`, and calls
-/// `Machine_done(super)` (itself a free/destroy teardown). Rust `Drop`
-/// releases the owned `Vec`/`Box`/`String` fields of `LinuxMachine`, so
-/// this has no ported body (rule 3).
-pub fn Machine_delete() {
-    todo!("deliberate non-port: free() teardown handled by Drop (LinuxMachine.c:877)")
+/// Port of `void Machine_delete(Machine* super)` from `LinuxMachine.c:877`.
+/// The C body downcasts to `LinuxMachine*`, walks and frees the
+/// `gpuEngineData` linked list, `free`s `cpuData`, and calls
+/// `Machine_done(super)` (itself a free/destroy teardown). Take `this` by
+/// value: `Machine_done` tears the base machine down in place, the owned
+/// `Vec`/`Box`/`String` fields of `LinuxMachine` drop when `this` falls out
+/// of scope (the `free`s), matching the darwin `Process_delete`/
+/// `ProcessTable_delete` by-value teardown precedent.
+pub fn Machine_delete(mut this: LinuxMachine) {
+    crate::ported::machine::Machine_done(&mut this.super_);
 }
 
 /// Port of `bool Machine_isCPUonline(const Machine* super, unsigned int

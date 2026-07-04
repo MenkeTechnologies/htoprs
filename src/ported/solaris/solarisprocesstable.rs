@@ -15,11 +15,9 @@
 //! - [`SolarisProcessTable_getProcessState`] (`SolarisProcessTable.c:92`)
 //! - [`SolarisProcessTable_walkproc`] (`SolarisProcessTable.c:110`)
 //! - [`ProcessTable_goThroughEntries`] (`SolarisProcessTable.c:266`)
-//!
-//! Still `todo!()`:
-//! - `ProcessTable_delete` is a pure teardown (`ProcessTable_done` +
-//!   `free(this)`); Rust `Drop` reclaims the allocation (the darwin/linux
-//!   `ProcessTable_delete` precedent).
+//! - [`ProcessTable_delete`] (`SolarisProcessTable.c:59`) — pure teardown:
+//!   [`ProcessTable_done`] on `&mut this.super_`, then `Drop` reclaims the
+//!   allocation (the darwin/linux `ProcessTable_delete` precedent).
 //!
 //! Deviations from the C (documented, not silent):
 //! - `proc->user = UsersTable_getRef(...)` is skipped (the `UsersTable` is
@@ -254,12 +252,13 @@ pub fn ProcessTable_new(
     this
 }
 
-/// TODO: port of `void ProcessTable_delete(Object* cast)` from
-/// `SolarisProcessTable.c:59`. Kept stubbed: the C body is a pure teardown —
-/// `ProcessTable_done(&this->super)` + `free(this)`. Rust owns the allocation,
-/// so `Drop` reclaims it (the darwin/linux `ProcessTable_delete` precedent).
-pub fn ProcessTable_delete() {
-    todo!("port of SolarisProcessTable.c:59 — pure free() teardown; Rust Drop handles it")
+/// Port of `void ProcessTable_delete(Object* cast)` from
+/// `SolarisProcessTable.c:59`. The C body runs `ProcessTable_done(&this->super)`
+/// then `free(this)`. Taking `this` by value hands the [`SolarisProcessTable`]
+/// to `Drop` for the allocation; the base teardown is [`ProcessTable_done`] on
+/// `&mut this.super_` (the darwin/linux `ProcessTable_delete` precedent).
+pub fn ProcessTable_delete(mut this: SolarisProcessTable) {
+    crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }
 
 /// Port of `static void SolarisProcessTable_updateExe(pid_t pid, Process*

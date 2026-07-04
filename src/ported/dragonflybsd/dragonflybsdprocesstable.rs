@@ -31,11 +31,13 @@ pub fn ProcessTable_new() {
     todo!("port of DragonFlyBSDProcessTable.c:30 — ProcessTable_init + kvm (DragonFly-only)")
 }
 
-/// TODO: port of `void ProcessTable_delete(Object* cast)`
-/// (`DragonFlyBSDProcessTable.c:40`). `ProcessTable_done` + `free`; Rust
-/// `Drop` releases the owned fields.
-pub fn ProcessTable_delete() {
-    todo!("port of DragonFlyBSDProcessTable.c:40 — teardown handled by Drop")
+/// Port of `void ProcessTable_delete(Object* cast)`
+/// (`DragonFlyBSDProcessTable.c:40`). The C body is `ProcessTable_done(&this->super)`
+/// then `free(this)`. Take `this` by value: `ProcessTable_done` tears the base
+/// table down in place and `this` drops at scope end (the `free(this)`),
+/// matching the darwin `ProcessTable_delete` precedent.
+pub fn ProcessTable_delete(mut this: DragonFlyBSDProcessTable) {
+    crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }
 
 /// TODO: port of `static void DragonFlyBSDProcessTable_updateExe(const struct

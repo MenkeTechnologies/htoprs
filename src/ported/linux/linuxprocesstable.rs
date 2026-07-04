@@ -440,16 +440,17 @@ pub fn ProcessTable_new(host: *const Machine, pidMatchList: Option<usize>) -> Li
     this
 }
 
-/// TODO: port of `void ProcessTable_delete(Object* cast)` from
-/// `LinuxProcessTable.c:287`. Kept stubbed: a pure `free()` teardown —
-/// `ProcessTable_done(&this->super)`, then `free()` of each `ttyDrivers[i].path`
-/// and the array, the `#ifdef HAVE_DELAYACCT` netlink-socket destroy (the
-/// non-delayacct build variant this module commits to omits it), and
-/// `free(this)`. Rust owns the `Option<Vec<TtyDriver>>` and every
-/// `Option<String>`, so `Drop` reclaims them automatically (the
-/// `Affinity_delete` precedent).
-pub fn ProcessTable_delete() {
-    todo!("port of LinuxProcessTable.c:287 — pure free() teardown; Rust Drop handles it")
+/// Port of `void ProcessTable_delete(Object* cast)` from
+/// `LinuxProcessTable.c:287`. The C body calls `ProcessTable_done(&this->super)`,
+/// then `free`s each `ttyDrivers[i].path` and the array, does the
+/// `#ifdef HAVE_DELAYACCT` netlink-socket destroy (omitted here — the
+/// non-delayacct build variant this module commits to), and `free(this)`. Take
+/// `this` by value: `ProcessTable_done` tears the base table down in place,
+/// the `Option<Vec<TtyDriver>>` / `Option<String>` fields drop when `this`
+/// falls out of scope (the `free(this)`), matching the darwin
+/// `ProcessTable_delete` precedent.
+pub fn ProcessTable_delete(mut this: LinuxProcessTable) {
+    crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }
 
 /// Port of `LinuxProcessTable.c:302`. Rescales a jiffy-denominated time `t`

@@ -472,15 +472,15 @@ pub fn OpenBSDProcess_new(host: *const Machine) -> Box<OpenBSDProcess> {
     this
 }
 
-/// TODO: port of `void Process_delete(Object* cast)` from
-/// `OpenBSDProcess.c:217`. Kept stubbed: the C body is a pure teardown —
-/// `Process_done((Process*)cast)` followed by `free(this)` (no OpenBSD-only
-/// heap fields to release). Rust owns the [`OpenBSDProcess`] allocation and
-/// its `Option<String>` base fields, so `Drop` reclaims them automatically;
-/// there is no faithful safe-Rust analog (the darwin/linux `Process_delete`
-/// precedent).
-pub fn Process_delete() {
-    todo!("port of OpenBSDProcess.c:217 — pure free() teardown; Rust Drop handles it")
+/// Port of `void Process_delete(Object* cast)` from `OpenBSDProcess.c:217` —
+/// the C body is a pure teardown: `Process_done((Process*)cast)` followed by
+/// `free(this)` (no OpenBSD-only heap fields to release). Take `this` by value:
+/// the base teardown runs on the moved-out `super_`, the Copy `addr` scalar
+/// drops trivially, and the final `free(this)` folds into the by-value consume
+/// (the darwin `Process_delete` precedent).
+pub fn Process_delete(this: OpenBSDProcess) {
+    let OpenBSDProcess { super_, .. } = this;
+    crate::ported::process::Process_done(super_);
 }
 
 /// Port of `static void OpenBSDProcess_rowWriteField(const Row* super,

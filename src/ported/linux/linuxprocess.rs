@@ -23,9 +23,12 @@
 //! - [`LinuxProcess_isAutogroupEnabled`] (`LinuxProcess.c:178`) — reads
 //!   `sched_autogroup_enabled` via the now-ported `Compat_readfile`.
 //!
+//! Also ported:
+//! - [`Process_delete`] (`LinuxProcess.c:119`) — the by-value teardown
+//!   consuming `super_` into `Process_done`, the Linux-only heap fields
+//!   dropping with the destructured remainder (darwin precedent).
+//!
 //! Still stubbed (blocked on unported substrate; see each fn's doc):
-//! - [`Process_delete`] (`LinuxProcess.c:119`) — a pure `free()` teardown
-//!   (Rust `Drop` handles it), kept stubbed per the module port rules.
 //! - [`LinuxProcess_rowWriteField`] (`LinuxProcess.c:226`) and
 //!   [`LinuxProcess_compareByKey`] (`LinuxProcess.c:366`) — both switch on
 //!   the Linux platform [`ProcessField`] ids (`M_DRS`, `RCHAR`, `OOM`, …)
@@ -1034,15 +1037,17 @@ pub fn LinuxProcess_new(host: *const Machine) -> LinuxProcess {
     this
 }
 
-/// TODO: port of `void Process_delete(Object* cast)` from
-/// `LinuxProcess.c:119`. Kept stubbed: the C body is a pure teardown —
-/// `Process_done(...)` followed by `free(container_short/cgroup_short/
-/// cgroup/secattr)` and `free(this)`. Rust owns those `Option<String>`
-/// allocations and the struct itself, so `Drop` reclaims them
-/// automatically; there is no faithful safe-Rust analog (the
-/// `Affinity_delete` / `History_delete` precedent).
-pub fn Process_delete() {
-    todo!("port of LinuxProcess.c:119 — pure free() teardown; Rust Drop handles it")
+/// Port of `void Process_delete(Object* cast)` from `LinuxProcess.c:119`.
+/// The C body downcasts to `LinuxProcess*`, calls `Process_done(&this->super)`,
+/// then `free`s the Linux-only heap fields (`cgroup`, `cgroup_short`,
+/// `container_short`, `secattr`) and `free(this)`. Take `this` by value: the
+/// base teardown is `Process_done` on the moved-out `super_`, the Linux-only
+/// `Option<String>` fields drop when the destructured remainder falls out of
+/// scope, and the final `free(this)` folds into the by-value consume (the
+/// darwin `Process_delete` precedent).
+pub fn Process_delete(this: LinuxProcess) {
+    let LinuxProcess { super_, .. } = this;
+    crate::ported::process::Process_done(super_);
 }
 
 /// Port of `static int LinuxProcess_effectiveIOPriority(const LinuxProcess*
