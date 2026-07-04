@@ -288,7 +288,6 @@ fn is_sgr_reset(params: &[u8]) -> bool {
     params.is_empty() || params == b"0" || params == b"00"
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,7 +322,12 @@ mod tests {
         let (sink, wrote) = render(b"\x1b[1;1HAAAA\x1b[2;1HBBBB");
         assert!(wrote);
         assert_eq!(body(&sink), b"\x1b[1;1HAAAA\x1b[2;1HBBBB");
-        assert_eq!(sink.windows(BEGIN_SYNC.len()).filter(|w| *w == BEGIN_SYNC).count(), 1);
+        assert_eq!(
+            sink.windows(BEGIN_SYNC.len())
+                .filter(|w| *w == BEGIN_SYNC)
+                .count(),
+            1
+        );
         reset();
     }
 
@@ -459,7 +463,10 @@ mod tests {
     #[test]
     fn truncated_csi_is_preserved() {
         let (s, _) = parse_frame(b"\x1b[1;1Hx\x1b[3");
-        assert_eq!(s.rows.get(&0).map(|v| &v[..]), Some(&b"\x1b[1;1Hx\x1b[3"[..]));
+        assert_eq!(
+            s.rows.get(&0).map(|v| &v[..]),
+            Some(&b"\x1b[1;1Hx\x1b[3"[..])
+        );
     }
 
     /// Frame buffering: writes accumulate and `begin_frame` clears stale bytes.

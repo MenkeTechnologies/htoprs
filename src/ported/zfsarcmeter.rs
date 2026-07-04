@@ -91,13 +91,25 @@ pub fn ZfsArcMeter_display(this: &Meter, out: &mut RichString) {
         );
         let buffer = Meter_humanUnit(this.values[0]);
         RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" MFU:");
-        RichString_appendAscii(out, ColorElements::ZFS_MFU.packed(scheme), buffer.as_bytes());
+        RichString_appendAscii(
+            out,
+            ColorElements::ZFS_MFU.packed(scheme),
+            buffer.as_bytes(),
+        );
         let buffer = Meter_humanUnit(this.values[1]);
         RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" MRU:");
-        RichString_appendAscii(out, ColorElements::ZFS_MRU.packed(scheme), buffer.as_bytes());
+        RichString_appendAscii(
+            out,
+            ColorElements::ZFS_MRU.packed(scheme),
+            buffer.as_bytes(),
+        );
         let buffer = Meter_humanUnit(this.values[2]);
         RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" Anon:");
-        RichString_appendAscii(out, ColorElements::ZFS_ANON.packed(scheme), buffer.as_bytes());
+        RichString_appendAscii(
+            out,
+            ColorElements::ZFS_ANON.packed(scheme),
+            buffer.as_bytes(),
+        );
         let buffer = Meter_humanUnit(this.values[3]);
         RichString_appendAscii(out, ColorElements::METER_TEXT.packed(scheme), b" Hdr:");
         RichString_appendAscii(

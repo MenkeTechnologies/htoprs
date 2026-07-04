@@ -673,7 +673,7 @@ pub fn Platform_setSwapValues(mtr: &mut Meter) {
 
 /// Port of `void Platform_setZfsArcValues(Meter* this)` from `Platform.c:465`.
 /// Casts the host to the concrete [`DarwinMachine`] and hands its `zfs` snapshot
-/// to [`ZfsArcMeter_readStats`].
+/// to [`ZfsArcMeter_readStats`](crate::ported::zfsarcmeter::ZfsArcMeter_readStats).
 pub fn Platform_setZfsArcValues(this: &mut Meter) {
     let dhost = unsafe { &*(this.host as *const DarwinMachine) };
 
@@ -682,7 +682,7 @@ pub fn Platform_setZfsArcValues(this: &mut Meter) {
 
 /// Port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
 /// `Platform.c:471`. Casts the host to the concrete [`DarwinMachine`] and hands
-/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
+/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`](crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats).
 pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
     let dhost = unsafe { &*(this.host as *const DarwinMachine) };
 

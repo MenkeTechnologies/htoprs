@@ -41,8 +41,8 @@
 //! - `Action_writeableProcess`/`Action_readableProcess` (`Action.c:181/187`).
 //! - `expandCollapse` (`Action.c:148`) / `collapseIntoParent`
 //!   (`Action.c:157`) — the two `static` tree helpers that take a bare
-//!   `Panel*` (not `State`). They mutate the selected/parent [`Row`]'s
-//!   `showChildren` via the ported [`Panel`]/[`Row`] substrate. The
+//!   `Panel*` (not `State`). They mutate the selected/parent [`Row`](crate::ported::row::Row)'s
+//!   `showChildren` via the ported [`Panel`]/[`Row`](crate::ported::row::Row) substrate. The
 //!   ported `Panel_get`/`Panel_getSelected` yield only `&dyn Object`, so
 //!   the mutating analog indexes `panel.items` and downcasts to `&mut Row`
 //!   through the `Any` supertrait — the exact idiom `ColumnsPanel.c`'s

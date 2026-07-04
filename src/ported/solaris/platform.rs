@@ -234,7 +234,8 @@ pub fn Platform_setSwapValues(this: &mut Meter) {
 /// snapshot (populated from the `zfs:0:arcstats` kstat) to
 /// [`ZfsArcMeter_readStats`].
 pub fn Platform_setZfsArcValues(this: &mut Meter) {
-    let shost = unsafe { &*(this.host as *const crate::ported::solaris::solarismachine::SolarisMachine) };
+    let shost =
+        unsafe { &*(this.host as *const crate::ported::solaris::solarismachine::SolarisMachine) };
 
     crate::ported::zfsarcmeter::ZfsArcMeter_readStats(this, &shost.zfs);
 }
@@ -243,7 +244,8 @@ pub fn Platform_setZfsArcValues(this: &mut Meter) {
 /// `Platform.c:272`. Casts the host to the concrete [`SolarisMachine`] and hands
 /// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
 pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
-    let shost = unsafe { &*(this.host as *const crate::ported::solaris::solarismachine::SolarisMachine) };
+    let shost =
+        unsafe { &*(this.host as *const crate::ported::solaris::solarismachine::SolarisMachine) };
 
     crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats(this, &shost.zfs);
 }

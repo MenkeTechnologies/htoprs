@@ -407,7 +407,11 @@ impl OverlayState {
             // selection — so it falls through to `_ => return false`.
             KeyCode::Char('h') | KeyCode::Char('?') => {
                 self.show_help = !self.show_help;
-                self.set_status(if self.show_help { "Help" } else { "Help closed" });
+                self.set_status(if self.show_help {
+                    "Help"
+                } else {
+                    "Help closed"
+                });
             }
             KeyCode::Esc if self.show_help => self.show_help = false,
             // Color-scheme chooser on `z` and theme editor on `~`: htop binds
@@ -1456,8 +1460,14 @@ mod tests {
     fn action_key_label_covers_priority_and_toggles_only() {
         use crate::ported::crt::KEY_F;
         // The keys the user named plus the other action keys get a label.
-        assert_eq!(action_key_label(b'[' as i32), Some("Lower priority (nice +1)"));
-        assert_eq!(action_key_label(b']' as i32), Some("Raise priority (nice -1)"));
+        assert_eq!(
+            action_key_label(b'[' as i32),
+            Some("Lower priority (nice +1)")
+        );
+        assert_eq!(
+            action_key_label(b']' as i32),
+            Some("Raise priority (nice -1)")
+        );
         assert_eq!(action_key_label(b't' as i32), Some("Toggle tree view"));
         assert_eq!(action_key_label(KEY_F(8)), Some("Lower priority (nice +1)"));
         // Navigation, digits, and modal/extension keys must NOT toast here
@@ -1477,10 +1487,16 @@ mod tests {
         // The toggle must mark the state dirty so dispatch_key persists it to
         // prefs — otherwise the border does not survive a restart.
         assert!(s.dirty);
-        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Border: on"));
+        assert_eq!(
+            s.status.as_ref().map(|m| m.text.as_str()),
+            Some("Border: on")
+        );
         s.handle_key(key(KeyCode::Char('B')));
         assert!(!s.show_border);
-        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Border: off"));
+        assert_eq!(
+            s.status.as_ref().map(|m| m.text.as_str()),
+            Some("Border: off")
+        );
     }
 
     #[test]
@@ -1542,7 +1558,10 @@ mod tests {
         assert!(!s.show_header); // off by default
         assert!(s.handle_key(key(KeyCode::Char('g'))));
         assert!(s.show_header);
-        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Header: on"));
+        assert_eq!(
+            s.status.as_ref().map(|m| m.text.as_str()),
+            Some("Header: on")
+        );
     }
 
     #[test]
@@ -1643,7 +1662,10 @@ mod tests {
             [10, 20, 30, 40, 50, 60]
         );
         assert_eq!(s.active_custom_theme.as_deref(), Some("cool"));
-        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Saved theme: cool"));
+        assert_eq!(
+            s.status.as_ref().map(|m| m.text.as_str()),
+            Some("Saved theme: cool")
+        );
     }
 
     #[test]

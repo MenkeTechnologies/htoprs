@@ -664,7 +664,6 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
         );
     }
     let _ = out.flush();
-    drop(out);
 
     // htoprs: the base `Panel_draw` above draws each panel's static
     // `currentBar` (the F-key bar). When the focused panel is capturing text

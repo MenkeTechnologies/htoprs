@@ -64,18 +64,22 @@ use crate::ported::infoscreen::{
 // TUI runs on darwin, which reads the env via `sysctl(KERN_PROCARGS2)`; the
 // import was hardcoded to the linux `/proc/<pid>/environ` reader, so `e` always
 // failed on macOS ("Could not read process environment"). Select per target.
-#[cfg(target_os = "linux")]
-use crate::ported::linux::platform::Platform_getProcessEnv;
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::platform::Platform_getProcessEnv;
-#[cfg(target_os = "freebsd")]
-use crate::ported::freebsd::platform::Platform_getProcessEnv;
 #[cfg(target_os = "dragonfly")]
 use crate::ported::dragonflybsd::platform::Platform_getProcessEnv;
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::Platform_getProcessEnv;
+#[cfg(target_os = "linux")]
+use crate::ported::linux::platform::Platform_getProcessEnv;
+use crate::ported::listitem::ListItem_new;
 #[cfg(target_os = "netbsd")]
 use crate::ported::netbsd::platform::Platform_getProcessEnv;
+use crate::ported::object::{Object, ObjectClass};
 #[cfg(target_os = "openbsd")]
 use crate::ported::openbsd::platform::Platform_getProcessEnv;
+use crate::ported::panel::{Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected};
+use crate::ported::process::{Process, Process_getCommand, Process_getPid};
 #[cfg(target_os = "solaris")]
 use crate::ported::solaris::platform::Platform_getProcessEnv;
 #[cfg(not(any(
@@ -88,10 +92,6 @@ use crate::ported::solaris::platform::Platform_getProcessEnv;
     target_os = "solaris"
 )))]
 use crate::ported::unsupported::platform::Platform_getProcessEnv;
-use crate::ported::listitem::ListItem_new;
-use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::{Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected};
-use crate::ported::process::{Process, Process_getCommand, Process_getPid};
 use crate::ported::vector::{Vector_insertionSort, Vector_new};
 
 /// Port of `#define VECTOR_DEFAULT_SIZE (10)` from `Vector.h:15` — the

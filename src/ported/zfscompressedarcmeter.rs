@@ -24,7 +24,9 @@ use crate::ported::meter::{
     Meter, MeterClass, Meter_class, Meter_humanUnit, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,
 };
 use crate::ported::object::ObjectClass;
-use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii};
+use crate::ported::richstring::{
+    RichString, RichString_appendAscii, RichString_appendnAscii, RichString_writeAscii,
+};
 
 /// Port of `static const int ZfsCompressedArcMeter_attributes[]` from
 /// `ZfsCompressedArcMeter.c:23`: `{ ZFS_COMPRESSED }`.

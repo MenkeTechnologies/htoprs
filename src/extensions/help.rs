@@ -143,7 +143,10 @@ pub fn print_help(name: &str) {
     println!("{}", opt("G", "Braille CPU history graph"));
     println!(
         "{}",
-        opt("y", "Aggregate/pivot: totals by user / command / parent (Tab cycles)")
+        opt(
+            "y",
+            "Aggregate/pivot: totals by user / command / parent (Tab cycles)"
+        )
     );
     println!(
         "{}",
@@ -151,9 +154,18 @@ pub fn print_help(name: &str) {
     );
     println!(
         "{}",
-        opt("v", "Cycle per-PID CPU sparkline: off / column / inline graph (taller = busier)")
+        opt(
+            "v",
+            "Cycle per-PID CPU sparkline: off / column / inline graph (taller = busier)"
+        )
     );
-    println!("{}", opt("b", "Cycle bar fill style (classic/gradient/solid/thin/ascii)"));
+    println!(
+        "{}",
+        opt(
+            "b",
+            "Cycle bar fill style (classic/gradient/solid/thin/ascii)"
+        )
+    );
     println!();
 
     println!("{}", section("INFO"));

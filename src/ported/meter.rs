@@ -1682,7 +1682,10 @@ mod tests {
         barstyle::set(BarStyle::Classic); // restore for other tests on this thread
         let printed = printed_chars(&buf);
         assert!(printed.contains('\u{2588}'), "printed: {printed:?}"); // █
-        assert!(!printed.contains('|'), "should not use htop glyph: {printed:?}");
+        assert!(
+            !printed.contains('|'),
+            "should not use htop glyph: {printed:?}"
+        );
     }
 
     #[test]

@@ -1261,7 +1261,9 @@ impl Panel {
     /// Cumulative physical lines from item `lo` up to (excluding) `hi`, summing
     /// per-item heights. `lo > hi` yields 0.
     fn line_span(&self, lo: i32, hi: i32) -> i32 {
-        (lo.max(0)..hi.max(0)).map(|k| self.item_height(k as usize)).sum()
+        (lo.max(0)..hi.max(0))
+            .map(|k| self.item_height(k as usize))
+            .sum()
     }
 
     /// Items that fit in `lines` starting at `from` and walking `dir` (+1 down,

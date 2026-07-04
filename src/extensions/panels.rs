@@ -1291,8 +1291,12 @@ mod tests {
         // The pure rollup sums CPU/mem and returns at least one group for the
         // synthetic table, sorted CPU-descending.
         ingest_ticks(1);
-        let groups =
-            PANELS.with(|p| aggregate(&p.borrow().table, crate::extensions::aggregate::GroupBy::User));
+        let groups = PANELS.with(|p| {
+            aggregate(
+                &p.borrow().table,
+                crate::extensions::aggregate::GroupBy::User,
+            )
+        });
         assert!(!groups.is_empty());
         for w in groups.windows(2) {
             assert!(w[0].cpu >= w[1].cpu, "groups must be CPU-descending");

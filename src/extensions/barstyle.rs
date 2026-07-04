@@ -21,7 +21,7 @@ use std::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 use crate::ported::action::{
-    State, HTOP_KEEP_FOLLOWING, HTOP_REDRAW_BAR, HTOP_REFRESH, Htop_Reaction,
+    Htop_Reaction, State, HTOP_KEEP_FOLLOWING, HTOP_REDRAW_BAR, HTOP_REFRESH,
 };
 
 /// The bar fill glyph style. `Classic` is htop's native fill; the other four
@@ -151,7 +151,11 @@ mod tests {
             BarStyle::Ascii,
         ];
         let mut s = BarStyle::Classic;
-        for expected_next in seq.iter().skip(1).chain(std::iter::once(&BarStyle::Classic)) {
+        for expected_next in seq
+            .iter()
+            .skip(1)
+            .chain(std::iter::once(&BarStyle::Classic))
+        {
             s = s.next();
             assert_eq!(s, *expected_next);
         }

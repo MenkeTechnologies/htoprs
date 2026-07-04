@@ -60,6 +60,10 @@ fn config_path() -> Option<PathBuf> {
 /// The `~/.config/htoprs` directory (honoring `$XDG_CONFIG_HOME`), shared by
 /// the prefs file and the other extension artifacts (saved filters, snapshot
 /// and export dumps). `None` when neither `$XDG_CONFIG_HOME` nor `$HOME` is set.
+// The `#[cfg(test)]` early-out uses `return` so the mutually-exclusive
+// `#[cfg(not(test))]` block can follow it; that reads as a needless return to
+// clippy, but a tail expression there would be an unused value in test builds.
+#[allow(clippy::needless_return)]
 pub(crate) fn config_dir() -> Option<PathBuf> {
     // Under `cargo test`, sandbox prefs to a per-thread temp dir. Tests run in
     // parallel and share process-global env + the thread-local PanelState that

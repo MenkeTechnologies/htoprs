@@ -41,19 +41,6 @@ use crate::ported::action::{
 use crate::ported::batterymeter::ACPresence;
 use crate::ported::batterymeter::BatteryMeter_class;
 use crate::ported::commandline::CommandLineStatus;
-use crate::ported::crt::KEY_F;
-use crate::ported::functionbar::Ncurses;
-use crate::ported::linux::ioprioritypanel::IOPriorityPanel_new;
-use crate::ported::linux::linuxprocess::{
-    IOPriority, LinuxProcess, LinuxProcess_isAutogroupEnabled,
-    LinuxProcess_rowChangeAutogroupPriorityBy, LinuxProcess_rowSetIOPriority,
-};
-use crate::ported::listitem::ListItem;
-use crate::ported::mainpanel::{MainPanel, MainPanel_foreachRow};
-use crate::ported::object::{Arg, Object};
-use crate::ported::panel::Panel_getSelected;
-use crate::ported::processlocksscreen::{FileLocks_Data, FileLocks_LockData, FileLocks_ProcessData};
-use crate::ported::settings::Settings_isReadonly;
 use crate::ported::cpumeter::{
     AllCPUs2Meter_class, AllCPUs4Meter_class, AllCPUs8Meter_class, AllCPUsMeter_class,
     CPUMeter_class, LeftCPUs2Meter_class, LeftCPUs4Meter_class, LeftCPUs8Meter_class,
@@ -61,13 +48,28 @@ use crate::ported::cpumeter::{
     RightCPUsMeter_class,
 };
 use crate::ported::crt::ColorElements;
+use crate::ported::crt::KEY_F;
 use crate::ported::datetimemeter::{ClockMeter_class, DateMeter_class, DateTimeMeter_class};
+use crate::ported::functionbar::Ncurses;
 use crate::ported::hostnamemeter::HostnameMeter_class;
 use crate::ported::linux::compat::{Compat_openatArgClose, Compat_readfile, Compat_readfileat};
+use crate::ported::linux::ioprioritypanel::IOPriorityPanel_new;
 use crate::ported::linux::linuxmachine::LinuxMachine;
+use crate::ported::linux::linuxprocess::{
+    IOPriority, LinuxProcess, LinuxProcess_isAutogroupEnabled,
+    LinuxProcess_rowChangeAutogroupPriorityBy, LinuxProcess_rowSetIOPriority,
+};
+use crate::ported::listitem::ListItem;
 use crate::ported::loadaveragemeter::{LoadAverageMeter_class, LoadMeter_class};
+use crate::ported::mainpanel::{MainPanel, MainPanel_foreachRow};
 use crate::ported::memorymeter::MemoryMeter_class;
 use crate::ported::meter::{BlankMeter_class, Meter, MeterClass};
+use crate::ported::object::{Arg, Object};
+use crate::ported::panel::Panel_getSelected;
+use crate::ported::processlocksscreen::{
+    FileLocks_Data, FileLocks_LockData, FileLocks_ProcessData,
+};
+use crate::ported::settings::Settings_isReadonly;
 use crate::ported::swapmeter::SwapMeter_class;
 use crate::ported::sysarchmeter::SysArchMeter_class;
 use crate::ported::tasksmeter::TasksMeter_class;
@@ -873,7 +875,7 @@ pub fn Platform_setZramValues(this: &mut Meter) {
 
 /// Port of `void Platform_setZfsArcValues(Meter* this)` from `Platform.c:507`.
 /// Casts the host to the concrete [`LinuxMachine`] and hands its `zfs` snapshot
-/// to [`ZfsArcMeter_readStats`].
+/// to [`ZfsArcMeter_readStats`](crate::ported::zfsarcmeter::ZfsArcMeter_readStats).
 pub fn Platform_setZfsArcValues(this: &mut Meter) {
     let lhost = unsafe { &*(this.host as *const LinuxMachine) };
 
@@ -882,7 +884,7 @@ pub fn Platform_setZfsArcValues(this: &mut Meter) {
 
 /// Port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
 /// `Platform.c:513`. Casts the host to the concrete [`LinuxMachine`] and hands
-/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
+/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`](crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats).
 pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
     let lhost = unsafe { &*(this.host as *const LinuxMachine) };
 
@@ -976,7 +978,8 @@ pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessDat
     //    &_, locktype, exclusive, readwrite, &_, &maj, &min, &inode, &start, lock_end)
     // Returns (locktype, exclusive, readwrite, maj, min, inode, start, lock_end)
     // only when all 10 conversions succeed (C `10 != sscanf` → continue).
-    let scan_lock = |rest: &str| -> Option<(String, String, String, u32, u32, u64, u64, String)> {
+    type LockScan = (String, String, String, u32, u32, u64, u64, String);
+    let scan_lock = |rest: &str| -> Option<LockScan> {
         let mut it = rest.split_whitespace();
         // %d: — the lock index, then a literal ':' with no space ("1:").
         let idx = it.next()?;
@@ -1001,7 +1004,9 @@ pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessDat
         let start = it.next()?.parse::<u64>().ok()?;
         // %24s — the end offset marker ("EOF" or a decimal), truncated to 24.
         let lock_end: String = it.next()?.chars().take(24).collect();
-        Some((locktype, exclusive, readwrite, maj, min, inode, start, lock_end))
+        Some((
+            locktype, exclusive, readwrite, maj, min, inode, start, lock_end,
+        ))
     };
 
     // C builds an in-order singly-linked list; collect in order here.
@@ -1031,9 +1036,8 @@ pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessDat
         };
 
         // C: int fd = openat(dfd, de->d_name, O_RDONLY | O_CLOEXEC); if (fd == -1) continue;
-        let fd = unsafe {
-            libc::openat(dfd, (*de).d_name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
-        };
+        let fd =
+            unsafe { libc::openat(dfd, (*de).d_name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if fd == -1 {
             continue;
         }
@@ -1103,9 +1107,8 @@ pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessDat
                         )
                     };
                     if link_len != -1 {
-                        data.filename = Some(
-                            String::from_utf8_lossy(&link[..link_len as usize]).into_owned(),
-                        );
+                        data.filename =
+                            Some(String::from_utf8_lossy(&link[..link_len as usize]).into_owned());
                     }
                 }
             }

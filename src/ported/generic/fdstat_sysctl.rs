@@ -101,11 +101,32 @@ pub fn Generic_getFileDescriptors_sysctl(used: &mut f64, max: &mut f64) {
     }
 
     #[cfg(target_os = "macos")]
-    internal(Some(b"kern.maxfiles\0"), Some(b"kern.num_files\0"), 0, 0, used, max);
+    internal(
+        Some(b"kern.maxfiles\0"),
+        Some(b"kern.num_files\0"),
+        0,
+        0,
+        used,
+        max,
+    );
     #[cfg(target_os = "dragonfly")]
-    internal(Some(b"kern.maxfiles\0"), Some(b"kern.openfiles\0"), 0, 0, used, max);
+    internal(
+        Some(b"kern.maxfiles\0"),
+        Some(b"kern.openfiles\0"),
+        0,
+        0,
+        used,
+        max,
+    );
     #[cfg(target_os = "freebsd")]
-    internal(Some(b"kern.maxfiles\0"), Some(b"kern.openfiles\0"), 0, 0, used, max);
+    internal(
+        Some(b"kern.maxfiles\0"),
+        Some(b"kern.openfiles\0"),
+        0,
+        0,
+        used,
+        max,
+    );
     #[cfg(target_os = "netbsd")]
     internal(
         Some(b"kern.maxfiles\0"),

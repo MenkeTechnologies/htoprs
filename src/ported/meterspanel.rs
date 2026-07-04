@@ -234,12 +234,10 @@ impl Drop for MetersPanel {
         let mut meters =
             core::mem::replace(&mut self.meters, Vector_new(&Meter_class.super_, true, 1));
         let mut column: Vec<Meter> = Vec::with_capacity(meters.array.len());
-        for slot in meters.array.drain(..) {
-            if let Some(obj) = slot {
-                let any: Box<dyn Any> = obj;
-                if let Ok(meter) = any.downcast::<Meter>() {
-                    column.push(*meter);
-                }
+        for obj in meters.array.drain(..).flatten() {
+            let any: Box<dyn Any> = obj;
+            if let Ok(meter) = any.downcast::<Meter>() {
+                column.push(*meter);
             }
         }
         // SAFETY: `header` outlives the Setup `ScreenManager` (Action_runSetup

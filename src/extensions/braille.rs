@@ -32,7 +32,12 @@ pub fn spark(values: &[f32], max: f32) -> String {
 /// scaled to `max`. `max <= 0` renders all-blank. This is the shared graph
 /// renderer behind both the `G` history graph ([`crate::extensions::graph::Scalar::render`])
 /// and the per-PID CPU sparklines, so they share one look.
-pub fn graph_rows(values: &[f64], width_cells: usize, height_cells: usize, max: f64) -> Vec<String> {
+pub fn graph_rows(
+    values: &[f64],
+    width_cells: usize,
+    height_cells: usize,
+    max: f64,
+) -> Vec<String> {
     let w_dots = width_cells.max(1) * 2;
     let h_dots = height_cells.max(1) * 4;
     let mut cv = Canvas::new(w_dots, h_dots);
