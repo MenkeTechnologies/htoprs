@@ -16,25 +16,20 @@
 //! - [`NetBSDMachine_scanCPUFrequency`] (`NetBSDMachine.c:230`)
 //! - [`Machine_scan`] (`NetBSDMachine.c:276`)
 //! - [`Machine_delete`] (`NetBSDMachine.c:135`)
+//! - [`Machine_new`] (`NetBSDMachine.c:105`)
 //! - `Machine_isCPUonline` / `Machine_getCPUPhysicalCoreID` /
 //!   `Machine_getCPUThreadIndex` (`NetBSDMachine.c:287`/`295`/`301`)
-//!
-//! Still `todo!()`:
-//! - `Machine_new` (`NetBSDMachine.c:105`) calls `Machine_init`, which is
-//!   `#[cfg(target_os = "macos")]` in `machine.rs` and therefore absent on the
-//!   NetBSD target; the base `Machine_init` cannot be reached from here and
-//!   `machine.rs` is out of scope for this module.
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
 use std::ffi::CString;
 use std::mem::size_of;
-use std::os::raw::{c_int, c_long, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
 
 use crate::ported::crt::CRT_fatalError;
-use crate::ported::machine::{Machine, Machine_done};
+use crate::ported::machine::{Machine, Machine_done, Machine_init};
 use crate::ported::xutils::saturatingSub;
 
 // ── NetBSD sysctl identifiers absent from `libc` for this target.
@@ -62,8 +57,21 @@ const CP_IDLE: usize = 4;
 
 /// `ONE_K` (`Macros.h`) — the KiB divisor.
 const ONE_K: usize = 1024;
+/// `#define KVM_NO_FILES ((int)0x80000000)` (`kvm.h`).
+const KVM_NO_FILES: c_int = 0x8000_0000u32 as c_int;
+/// `#define _POSIX2_LINE_MAX 2048` (`limits.h`) — the `kvm_openfiles` errbuf.
+const _POSIX2_LINE_MAX: usize = 2048;
 
 extern "C" {
+    /// `kvm_t* kvm_openfiles(const char*, const char*, const char*, int,
+    /// char*)` (`kvm.h`). Not exposed by `libc`.
+    fn kvm_openfiles(
+        execfile: *const c_char,
+        corefile: *const c_char,
+        swapfile: *const c_char,
+        flags: c_int,
+        errbuf: *mut c_char,
+    ) -> *mut c_void;
     /// `int kvm_close(kvm_t*)` (`kvm.h`). Not exposed by `libc`.
     fn kvm_close(kd: *mut c_void) -> c_int;
 }
@@ -544,11 +552,70 @@ pub fn Machine_getCPUThreadIndex(host: &Machine, id: u32) -> i32 {
     0
 }
 
-/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
-/// from `NetBSDMachine.c:105`. Blocked: the C runs `Machine_init(super, ...)`,
-/// but the ported `Machine_init` is `#[cfg(target_os = "macos")]` in
-/// `machine.rs` and is not compiled for the NetBSD target; it cannot be
-/// reached from here and `machine.rs` is out of scope for this module.
-pub fn Machine_new() {
-    todo!("port of NetBSDMachine.c:105 — blocked: base Machine_init is macos-gated")
+/// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)` from
+/// `NetBSDMachine.c:105`. Allocates a `NetBSDMachine` (C `xCalloc`, mirrored by
+/// explicit zero-init), runs the base [`Machine_init`], samples the CPU count
+/// ([`NetBSDMachine_updateCPUcount`]), reads the kernel `fscale` and page size,
+/// and opens the `kvm` handle. Returns the owning `Box<NetBSDMachine>` (C
+/// returns `&this->super`); the caller derives `*mut Machine` from
+/// `&mut box.super_`.
+pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<NetBSDMachine> {
+    let fmib: [c_int; 2] = [libc::CTL_KERN, libc::KERN_FSCALE];
+
+    // NetBSDMachine* this = xCalloc(1, sizeof(NetBSDMachine));
+    let mut this = Box::new(NetBSDMachine {
+        super_: Machine::default(),
+        kd: ptr::null_mut(),
+        fscale: 0,
+        pageSize: 0,
+        pageSizeKB: 0,
+        wiredMem: 0,
+        activeMem: 0,
+        pagedMem: 0,
+        inactiveMem: 0,
+        cpuData: Vec::new(),
+    });
+
+    Machine_init(&mut this.super_, usersTable, userId);
+
+    NetBSDMachine_updateCPUcount(&mut this);
+
+    let mut size = size_of::<c_long>();
+    if unsafe {
+        libc::sysctl(
+            fmib.as_ptr(),
+            2,
+            &mut this.fscale as *mut c_long as *mut c_void,
+            &mut size,
+            ptr::null(),
+            0,
+        )
+    } < 0
+        || this.fscale <= 0
+    {
+        CRT_fatalError("fscale sysctl call failed");
+    }
+
+    let pageSize = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if pageSize <= 0 {
+        CRT_fatalError("pagesize sysconf call failed");
+    }
+    this.pageSize = pageSize as usize;
+    this.pageSizeKB = this.pageSize / ONE_K;
+
+    let mut errbuf = [0 as c_char; _POSIX2_LINE_MAX];
+    this.kd = unsafe {
+        kvm_openfiles(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            KVM_NO_FILES,
+            errbuf.as_mut_ptr(),
+        )
+    };
+    if this.kd.is_null() {
+        CRT_fatalError("kvm_openfiles() failed");
+    }
+
+    this
 }

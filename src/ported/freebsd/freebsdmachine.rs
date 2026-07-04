@@ -9,21 +9,14 @@
 //!   `ZfsArcStats` is reused from the (platform-independent) zfs model.
 //!
 //! Ported functions:
-//! - [`Machine_delete`] (`FreeBSDMachine.c:147`).
+//! - [`Machine_new`] (`FreeBSDMachine.c:53`),
+//!   [`Machine_delete`] (`FreeBSDMachine.c:147`).
 //! - [`FreeBSDMachine_scanCPU`] (`FreeBSDMachine.c:165`),
 //!   [`FreeBSDMachine_scanMemoryInfo`] (`FreeBSDMachine.c:305`),
 //!   [`Machine_scan`] (`FreeBSDMachine.c:389`).
 //! - [`Machine_isCPUonline`] (`FreeBSDMachine.c:397`),
 //!   [`Machine_getCPUPhysicalCoreID`] (`FreeBSDMachine.c:406`),
 //!   [`Machine_getCPUThreadIndex`] (`FreeBSDMachine.c:412`).
-//!
-//! Still `todo!()`:
-//! - `Machine_new` (`FreeBSDMachine.c:53`) calls the base `Machine_init`
-//!   (`machine.rs`), which is `#[cfg(target_os = "macos")]`-gated (it depends
-//!   on `Platform_gettime_realtime`, only wired for darwin). Widening that gate
-//!   is out of this module's edit scope, so the constructor is left stubbed;
-//!   its body — MIB resolution, page-size / CPU-count / `kern.fscale` sampling,
-//!   initial clicks, and `kvm_openfiles` — is otherwise fully portable.
 //!
 //! Deviation (documented, as the darwin port): `openzfs_sysctl_init` /
 //! `openzfs_sysctl_updateArcStats` (`generic/openzfs_sysctl.c`) are unported,
@@ -37,8 +30,9 @@ use std::mem::size_of;
 use std::os::raw::{c_int, c_ulong, c_void};
 use std::ptr;
 
+use crate::ported::crt::CRT_fatalError;
 use crate::ported::linux::linuxmachine::{memory_t, ZfsArcStats};
-use crate::ported::machine::{Machine, Machine_done};
+use crate::ported::machine::{Machine, Machine_done, Machine_init};
 
 /// Port of `typedef struct CPUData_` (`FreeBSDMachine.h:20`) — the per-CPU
 /// percentages and frequency/temperature for one core (plus, at index 0 on
@@ -122,16 +116,223 @@ pub struct FreeBSDMachine {
     pub MIB_kern_cp_times: [c_int; 2],
 }
 
-/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
-/// from `FreeBSDMachine.c:53`. Blocked: the C first calls the base
-/// `Machine_init(super, usersTable, userId)`, but that port
-/// (`machine.rs:166`) is `#[cfg(target_os = "macos")]`-gated — it depends on
-/// `Platform_gettime_realtime`, only wired for darwin — and widening that gate
-/// is out of this module's edit scope. The remaining body (MIB resolution,
-/// page size / CPU count / `kern.fscale` sampling, initial `kern.cp_time{,s}`
-/// clicks, and `kvm_openfiles`) is otherwise fully portable.
-pub fn Machine_new() {
-    todo!("port of FreeBSDMachine.c:53 — needs base Machine_init (macos-gated in machine.rs)")
+/// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)` from
+/// `FreeBSDMachine.c:53`. Allocates a `FreeBSDMachine` (C `xCalloc`, mirrored
+/// by explicit zero-init), runs the base [`Machine_init`], caches the sysctl
+/// MIBs, resolves the usable page size via `sysctl(vm.stats.vm.v_page_size)`,
+/// detects SMP + CPU count, allocates and fetches the initial `kern.cp_time{,s}`
+/// clicks, reads `kern.fscale` (default 2048), and opens the `kvm` descriptor.
+/// Returns the owning `Box<FreeBSDMachine>` (C returns `&this->super`); the
+/// caller derives `*mut Machine` from `&mut box.super_`.
+///
+/// Deviations: `openzfs_sysctl_init` / `openzfs_sysctl_updateArcStats`
+/// (`generic/openzfs_sysctl.c`) are unported — skipped, as in
+/// [`Machine_scan`]. The C caches a `MIB_vm_stats_vm_v_page_count` file-scope
+/// static that is never read; the [`FreeBSDMachine`] struct model omits it, so
+/// its `sysctlnametomib` is resolved into a throwaway to preserve the side
+/// effect.
+pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<FreeBSDMachine> {
+    // Nested helper for the repeated `len = N; sysctlnametomib(name, MIB, &len)`
+    // idiom the C inlines per MIB (`len` is the array element count, in/out).
+    fn nametomib(name: &core::ffi::CStr, mib: &mut [c_int]) {
+        let mut len: libc::size_t = mib.len();
+        unsafe {
+            libc::sysctlnametomib(name.as_ptr(), mib.as_mut_ptr(), &mut len);
+        }
+    }
+
+    // FreeBSDMachine* this = xCalloc(1, sizeof(FreeBSDMachine));
+    let mut this = Box::new(FreeBSDMachine {
+        super_: Machine::default(),
+        kd: ptr::null_mut(),
+        pageSize: 0,
+        pageSizeKb: 0,
+        kernelFScale: 0,
+        wiredMem: 0,
+        buffersMem: 0,
+        activeMem: 0,
+        laundryMem: 0,
+        inactiveMem: 0,
+        arcMem: 0,
+        zfs: ZfsArcStats::default(),
+        cpus: Vec::new(),
+        cp_time_o: Vec::new(),
+        cp_time_n: Vec::new(),
+        cp_times_o: Vec::new(),
+        cp_times_n: Vec::new(),
+        MIB_hw_physmem: [0; 2],
+        MIB_vm_stats_vm_v_wire_count: [0; 4],
+        MIB_vm_stats_vm_v_active_count: [0; 4],
+        MIB_vm_stats_vm_v_laundry_count: [0; 4],
+        MIB_vm_stats_vm_v_inactive_count: [0; 4],
+        MIB_vfs_bufspace: [0; 2],
+        MIB_kern_cp_time: [0; 2],
+        MIB_kern_cp_times: [0; 2],
+    });
+
+    Machine_init(&mut this.super_, usersTable, userId);
+
+    // physical memory in system: hw.physmem
+    nametomib(c"hw.physmem", &mut this.MIB_hw_physmem);
+
+    // usable pagesize : vm.stats.vm.v_page_size
+    let mut len = size_of::<c_int>();
+    if unsafe {
+        libc::sysctlbyname(
+            c"vm.stats.vm.v_page_size".as_ptr(),
+            &mut this.pageSize as *mut c_int as *mut c_void,
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    } == -1
+    {
+        CRT_fatalError("Cannot get pagesize by sysctl");
+    }
+    this.pageSizeKb = this.pageSize / 1024; // ONE_K
+
+    // usable page count vm.stats.vm.v_page_count — the C caches this MIB but
+    // never reads it; the struct model omits it, so resolve into a throwaway.
+    nametomib(c"vm.stats.vm.v_page_count", &mut [0 as c_int; 4]);
+
+    nametomib(
+        c"vm.stats.vm.v_wire_count",
+        &mut this.MIB_vm_stats_vm_v_wire_count,
+    );
+    nametomib(
+        c"vm.stats.vm.v_active_count",
+        &mut this.MIB_vm_stats_vm_v_active_count,
+    );
+    nametomib(
+        c"vm.stats.vm.v_laundry_count",
+        &mut this.MIB_vm_stats_vm_v_laundry_count,
+    );
+    nametomib(
+        c"vm.stats.vm.v_inactive_count",
+        &mut this.MIB_vm_stats_vm_v_inactive_count,
+    );
+
+    nametomib(c"vfs.bufspace", &mut this.MIB_vfs_bufspace);
+
+    // openzfs_sysctl_init / openzfs_sysctl_updateArcStats — ZFS substrate unported.
+
+    let mut smp: c_int = 0;
+    let mut len = size_of::<c_int>();
+    if unsafe {
+        libc::sysctlbyname(
+            c"kern.smp.active".as_ptr(),
+            &mut smp as *mut c_int as *mut c_void,
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    } != 0
+        || len != size_of::<c_int>()
+    {
+        smp = 0;
+    }
+
+    let mut cpus: c_int = 1;
+    let mut len = size_of::<c_int>();
+    if smp != 0 {
+        let err = unsafe {
+            libc::sysctlbyname(
+                c"kern.smp.cpus".as_ptr(),
+                &mut cpus as *mut c_int as *mut c_void,
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if err != 0 {
+            cpus = 1;
+        }
+    } else {
+        cpus = 1;
+    }
+
+    let cpustates = libc::CPUSTATES as usize;
+    let sizeof_cp_time_array = size_of::<c_ulong>() * cpustates;
+    nametomib(c"kern.cp_time", &mut this.MIB_kern_cp_time);
+    this.cp_time_o = vec![0 as c_ulong; cpustates];
+    this.cp_time_n = vec![0 as c_ulong; cpustates];
+
+    // fetch initial single (or average) CPU clicks from kernel
+    let mut len = sizeof_cp_time_array;
+    unsafe {
+        libc::sysctl(
+            this.MIB_kern_cp_time.as_ptr() as *mut c_int,
+            2,
+            this.cp_time_o.as_mut_ptr() as *mut c_void,
+            &mut len,
+            ptr::null_mut(),
+            0,
+        );
+    }
+
+    // on smp box, fetch rest of initial CPU's clicks
+    if cpus > 1 {
+        nametomib(c"kern.cp_times", &mut this.MIB_kern_cp_times);
+        this.cp_times_o = vec![0 as c_ulong; cpus as usize * cpustates];
+        this.cp_times_n = vec![0 as c_ulong; cpus as usize * cpustates];
+        let mut len = cpus as usize * sizeof_cp_time_array;
+        unsafe {
+            libc::sysctl(
+                this.MIB_kern_cp_times.as_ptr() as *mut c_int,
+                2,
+                this.cp_times_o.as_mut_ptr() as *mut c_void,
+                &mut len,
+                ptr::null_mut(),
+                0,
+            );
+        }
+    }
+
+    this.super_.existingCPUs = std::cmp::max(cpus, 1) as u32;
+    // TODO: support offline CPUs and hot swapping
+    this.super_.activeCPUs = this.super_.existingCPUs;
+
+    if cpus == 1 {
+        this.cpus.resize(1, CPUData::default());
+    } else {
+        // on smp we need CPUs + 1 to store averages too (as kernel kindly
+        // provides that as well)
+        this.cpus
+            .resize(this.super_.existingCPUs as usize + 1, CPUData::default());
+    }
+
+    let mut len = size_of::<c_int>();
+    if unsafe {
+        libc::sysctlbyname(
+            c"kern.fscale".as_ptr(),
+            &mut this.kernelFScale as *mut c_int as *mut c_void,
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    } == -1
+        || this.kernelFScale <= 0
+    {
+        // sane default for kernel-provided CPU percentage scaling, at least on
+        // x86 machines, in case this sysctl call failed
+        this.kernelFScale = 2048;
+    }
+
+    let mut errbuf = [0 as libc::c_char; libc::_POSIX2_LINE_MAX as usize];
+    this.kd = unsafe {
+        libc::kvm_openfiles(
+            ptr::null(),
+            c"/dev/null".as_ptr(),
+            ptr::null(),
+            0,
+            errbuf.as_mut_ptr(),
+        )
+    };
+    if this.kd.is_null() {
+        CRT_fatalError("kvm_openfiles() failed");
+    }
+
+    this
 }
 
 /// Port of `void Machine_delete(Machine* super)` from `FreeBSDMachine.c:147`.
