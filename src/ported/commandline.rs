@@ -514,6 +514,214 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
     (CommandLineStatus::Ok, flags)
 }
 
+/// Port of `int CommandLine_run(int argc, char** argv)` from `CommandLine.c:339`
+/// — htop's program entry proper. Parses the arguments ([`parseArguments`], the
+/// ported `getopt_long` half), and on a runnable parse assembles the shared
+/// runtime object graph (`Machine` / `ProcessTable` / `Settings` / `Header` /
+/// `MainPanel` / `ScreenManager`) and drives the [`ScreenManager_run`] main loop,
+/// returning the process exit code. This is the single startup path: the binary
+/// (`src/main.rs`) and the faithful [`crate::ported::htop::main`] both delegate
+/// here.
+///
+/// The C run graph is a web of shared pointers that live until `exit`, so the
+/// long-lived objects are heap-allocated with [`Box::into_raw`] (leaked for the
+/// program's lifetime, as the C heap allocations are) and wired with raw
+/// pointers — the faithful analog of the C pointer graph. Only the `macos`
+/// (darwin) platform is assembled today; other targets report the gap and exit
+/// non-zero.
+///
+/// [`ScreenManager_run`]: crate::ported::screenmanager::ScreenManager_run
+#[cfg(target_os = "macos")]
+pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
+    use crate::ported::action::State;
+    use crate::ported::crt::{CRT_done, CRT_init, ColorScheme};
+    use crate::ported::darwin::darwinmachine::{DarwinMachine, Machine_new, Machine_scan};
+    use crate::ported::darwin::darwinprocesstable::{DarwinProcessTable, ProcessTable_new};
+    use crate::ported::darwin::platform::Platform_init;
+    use crate::ported::dynamiccolumn::DynamicColumns_new;
+    use crate::ported::hashtable::{Hashtable, Hashtable_new};
+    use crate::ported::header::{Header, Header_new, Header_populateFromSettings};
+    use crate::ported::machine::{
+        Machine, Machine_populateTablesFromSettings, Machine_scanTables, Machine_setTablesPanel,
+    };
+    use crate::ported::mainpanel::{
+        MainPanel, MainPanel_new, MainPanel_setState, MainPanel_updateLabels,
+    };
+    use crate::ported::panel::Panel;
+    use crate::ported::screenmanager::{ScreenManager_add, ScreenManager_new, ScreenManager_run};
+    use crate::ported::settings::{ScreenSettings_setSortKey, Settings_new};
+    use crate::ported::table::Table;
+    use crate::ported::userstable::{UsersTable, UsersTable_new};
+
+    // C: getopt_long parse (STATUS_OK_EXIT → 0, STATUS_ERROR_EXIT → 1).
+    let flags = match parseArguments(program, argv) {
+        (CommandLineStatus::OkExit, _) => return 0,
+        (CommandLineStatus::ErrorExit, _) => return 1,
+        (CommandLineStatus::Ok, flags) => flags,
+    };
+
+    // htoprs infra (no C analog): restore the terminal on a panic so a stub hit
+    // mid-render does not leave the tty in raw mode / the alternate screen.
+    {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            use crossterm::{cursor, execute, terminal};
+            let _ = terminal::disable_raw_mode();
+            let mut out = std::io::stdout();
+            let _ = execute!(out, terminal::LeaveAlternateScreen, cursor::Show);
+            default(info);
+        }));
+    }
+
+    // Platform_init() — mach-tick / scheduler-tick calibration (darwin).
+    Platform_init();
+
+    // UsersTable_new(): the uid->name cache handed to Machine_new; leaked for the
+    // program's lifetime (as in C, until exit).
+    let users_table: *mut UsersTable = Box::into_raw(Box::new(UsersTable_new()));
+
+    // Machine_new(usersTable, userId): userId (uid_t)-1 == "all users".
+    let host_raw: *mut DarwinMachine =
+        Box::into_raw(Machine_new(Some(users_table as usize), u32::MAX));
+    // SAFETY: host_raw is a fresh leaked allocation; the base Machine is at
+    // offset 0 (`super_`), matching the C `&this->super` upcast.
+    let host_ptr: *mut Machine = unsafe { &mut (*host_raw).super_ };
+
+    // ProcessTable_new(host, pidMatchList).
+    let pt_raw: *mut DarwinProcessTable =
+        Box::into_raw(ProcessTable_new(host_ptr as *const Machine, None));
+    // SAFETY: DarwinProcessTable -> ProcessTable (super_) -> Table (super_).
+    let pt_table: *mut Table = unsafe { &mut (*pt_raw).super_.super_ };
+
+    // Dynamic tables: DynamicColumns_new is ported; dynamic meters/screens are
+    // empty on stock darwin (no PCP), so an empty owner Hashtable is faithful.
+    let dm: *mut Hashtable = Box::into_raw(Box::new(Hashtable_new(7, true)));
+    let dc: *mut Hashtable = Box::into_raw(Box::new(DynamicColumns_new()));
+    let ds: *mut Hashtable = Box::into_raw(Box::new(Hashtable_new(7, true)));
+
+    // Settings_new(host, dm, dc, ds).
+    // SAFETY: host_raw is live; the &Machine borrow ends with this call.
+    let mut settings = Settings_new(unsafe { &(*host_raw).super_ }, Some(dm), Some(dc), Some(ds));
+
+    // Apply the parsed CLI flags to the settings (C CommandLine.c:375-400).
+    let ss_index = settings.ssIndex as usize;
+    if flags.delay != -1 {
+        settings.delay = flags.delay;
+    }
+    if flags.treeView {
+        settings.screens[ss_index].treeView = true;
+    }
+    if flags.highlightChanges {
+        settings.highlightChanges = true;
+    }
+    if flags.highlightDelaySecs != -1 {
+        settings.highlightDelaySecs = flags.highlightDelaySecs;
+    }
+    if flags.sortKey > 0 {
+        if !flags.treeView {
+            settings.screens[ss_index].treeView = false;
+        }
+        ScreenSettings_setSortKey(&mut settings.screens[ss_index], flags.sortKey);
+    }
+    if flags.hideFunctionBar {
+        settings.hideFunctionBar = 2;
+    }
+    // SAFETY: host_raw is live and unaliased here.
+    unsafe {
+        (*host_raw).super_.iterationsRemaining = flags.iterationsRemaining as i64;
+    }
+
+    // Locals captured before `settings` moves into the host below. `--no-color`
+    // loads CRT in monochrome without persisting the override.
+    let delay = settings.delay;
+    let color_scheme = if !flags.useColors {
+        ColorScheme::COLORSCHEME_MONOCHROME as i32
+    } else {
+        settings.colorScheme
+    };
+    let h_layout = settings.hLayout;
+    let tree_view = settings.screens[ss_index].treeView;
+
+    // Machine_populateTablesFromSettings moves `settings` into host->settings.
+    // SAFETY: host_raw is live and unaliased for this &mut.
+    Machine_populateTablesFromSettings(unsafe { &mut (*host_raw).super_ }, settings, pt_table);
+
+    // Header_new(host, hLayout) + Header_populateFromSettings.
+    let header_raw: *mut Header =
+        Box::into_raw(Box::new(Header_new(host_ptr as *const Machine, h_layout)));
+    // SAFETY: header_raw and host->settings are both live.
+    Header_populateFromSettings(unsafe { &mut *header_raw }, unsafe {
+        (*host_raw).super_.settings.as_ref().unwrap()
+    });
+
+    // CRT_init: enters raw mode + alternate screen (crossterm). Mouse capture
+    // stays off; `--no-unicode` and `-n` (retain screen for batch runs) honored.
+    CRT_init(
+        delay,
+        color_scheme,
+        false,
+        flags.allowUnicode,
+        flags.iterationsRemaining != -1,
+    );
+
+    // MainPanel_new() — build the process panel, its bars, and key bindings.
+    let mut panel_box: Box<MainPanel> = Box::new(MainPanel_new());
+    let panel_ptr: *mut MainPanel = &mut *panel_box;
+    // SAFETY: panel_ptr is live; its embedded Panel is at `super_`.
+    Machine_setTablesPanel(unsafe { &mut (*host_raw).super_ }, unsafe {
+        &mut (*panel_ptr).super_ as *mut Panel
+    });
+    MainPanel_updateLabels(&mut panel_box, tree_view, flags.commFilter.is_some());
+
+    // State: the shared UI state the handlers and ScreenManager dereference.
+    let state_raw: *mut State = Box::into_raw(Box::new(State {
+        host: host_ptr,
+        mainPanel: panel_ptr,
+        header: header_raw,
+        failedUpdate: None,
+        pauseUpdate: false,
+        hideSelection: false,
+        hideMeters: false,
+    }));
+    MainPanel_setState(&mut panel_box, state_raw);
+
+    // ScreenManager_new(header, host, state); add the MainPanel (moves the box;
+    // panel_ptr stays valid — a Box's pointee address is move-stable).
+    let mut scr = ScreenManager_new(header_raw, host_ptr, state_raw);
+    ScreenManager_add(&mut scr, panel_box, -1);
+
+    // Initial data collection.
+    // SAFETY: host_raw is live and unaliased for these &mut calls.
+    Machine_scan(unsafe { &mut *host_raw });
+    Machine_scanTables(unsafe { &mut (*host_raw).super_ });
+
+    // htoprs extensions: load the saved theme + bar style before the first frame
+    // (the same extension hooks `ScreenManager_run` already weaves into the loop).
+    crate::extensions::overlay::init_from_prefs();
+    crate::extensions::barstyle::init_from_prefs();
+
+    // The main loop.
+    ScreenManager_run(&mut scr, None, None, None);
+
+    CRT_done();
+    0
+}
+
+/// Non-darwin [`CommandLine_run`]: the interactive TUI is wired for macOS in this
+/// build. Validates the arguments (so `-h`/`-V`/bad flags still behave), then
+/// reports the platform gap and returns a non-zero exit code.
+#[cfg(not(target_os = "macos"))]
+pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
+    match parseArguments(program, argv) {
+        (CommandLineStatus::OkExit, _) => return 0,
+        (CommandLineStatus::ErrorExit, _) => return 1,
+        (CommandLineStatus::Ok, _) => {}
+    }
+    eprintln!("htoprs: the interactive TUI is wired for macOS (darwin) in this build");
+    eprintln!("htoprs: run 'htoprs --help' for the command-line options");
+    1
+}
+
 #[cfg(test)]
 mod tests {
     // printVersionFlag / printHelpFlag write to stdout; their content
