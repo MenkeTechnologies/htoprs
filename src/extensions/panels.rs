@@ -850,16 +850,37 @@ fn hot_row_attr() -> i32 {
     }
 }
 
-/// Physical lines a process row occupies, driven by the `v` spark mode: `2` in
-/// double-height mode, `1` otherwise. `Panel_draw`/`Panel_onKey` read this to
-/// scale their screen-Y projection and page steps; the process panel's
-/// `rowHeight` is synced from it each frame.
+/// The process panel's `rowHeight` signal: `1 + SPARK_GRAPH_H` (the maximum a
+/// process can occupy) when the `v` cycle is in double-height mode, else `1`.
+/// A value `> 1` tells `Panel_draw`/`Panel_onKey` the panel is in graph mode and
+/// must use per-row heights ([`graph_lines`]); the actual lines a given row
+/// takes are CPU-dependent, so this is only the ceiling.
 pub fn row_height() -> i32 {
     PANELS.with(|p| {
         if p.borrow().spark == SparkMode::Double {
-            2
+            1 + SPARK_GRAPH_H
         } else {
             1
+        }
+    })
+}
+
+/// Graph lines a process occupies beneath its info row: `0` when not in
+/// double-height mode, otherwise scaled by the PID's latest CPU so busier
+/// processes are taller ("more CPU = more rows"). Clamped to `1..=SPARK_GRAPH_H`
+/// for any live CPU, `0` only at exactly idle. The process's total row height is
+/// `1 + graph_lines(pid)`.
+pub fn graph_lines(pid: u32) -> i32 {
+    PANELS.with(|p| {
+        let s = p.borrow();
+        if s.spark != SparkMode::Double {
+            return 0;
+        }
+        let cpu = s.ring.latest_cpu(pid);
+        if cpu <= 0.0 {
+            0
+        } else {
+            ((cpu / 100.0 * SPARK_GRAPH_H as f32).ceil() as i32).clamp(1, SPARK_GRAPH_H)
         }
     })
 }
@@ -898,31 +919,29 @@ pub fn draw_spark_col<W: Write>(out: &mut W, y: i32, x: i32, w: i32, pid: u32) {
     });
 }
 
-/// Draw the full-width CPU sparkline on a process row's second physical line
-/// (double-height mode). Called by `Panel_draw` at `(y2, x)` after it fills the
-/// line's background. Spans the panel width `w`, newest sample at the right
-/// edge, scaled to 100%. A no-op when not in double-height mode or the PID has
-/// no history.
-pub fn draw_spark_row<W: Write>(out: &mut W, y2: i32, x: i32, w: i32, pid: u32) {
+/// Draw the full-width CPU graph on a process row's `n_rows` physical lines
+/// beneath its info line (double-height mode). Called by `Panel_draw` with the
+/// graph's top htop-space `(y_top, x)`, the panel width `w`, and how many lines
+/// the graph spans (`1 + graph_lines`-driven, so busier processes are taller).
+/// A multi-row braille bitmap like the `G` graph, newest sample at the right,
+/// bars growing up from the bottom. A no-op when not in double-height mode.
+pub fn draw_spark_row<W: Write>(out: &mut W, y_top: i32, x: i32, w: i32, n_rows: i32, pid: u32) {
     PANELS.with(|p| {
         let s = p.borrow();
-        if s.spark != SparkMode::Double || w <= 0 {
+        if s.spark != SparkMode::Double || w <= 0 || n_rows <= 0 {
             return;
         }
-        // One braille row spanning the full panel width (same renderer as the
-        // `G` graph): each cell is 2 samples wide, the newest at the right edge,
-        // older history scrolling left as it ages.
-        let spark = s
-            .ring
-            .cpu_braille(pid, w as usize, 1, 100.0)
-            .into_iter()
-            .next()
-            .unwrap_or_default();
+        // `n_rows` braille rows spanning the full panel width (same renderer as
+        // the `G` graph): each cell is 2 samples wide, the newest at the right
+        // edge, bars growing up across all `n_rows` lines.
+        let rows = s.ring.cpu_braille(pid, w as usize, n_rows as usize, 100.0);
         Ncurses::attrset(
             out,
             ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()),
         );
-        Ncurses::mvaddstr(out, y2, x, &spark);
+        for (i, row) in rows.iter().enumerate() {
+            Ncurses::mvaddstr(out, y_top + i as i32, x, row);
+        }
         Ncurses::attrset(
             out,
             ColorElements::RESET_COLOR.packed(ColorScheme::active()),
@@ -999,7 +1018,7 @@ mod tests {
         assert_eq!(row_height(), 1); // side column keeps single-height rows
         dispatch_key(0x76);
         assert_eq!(PANELS.with(|p| p.borrow().spark), SparkMode::Double);
-        assert_eq!(row_height(), 2); // double-height inline sparkline
+        assert_eq!(row_height(), 1 + SPARK_GRAPH_H); // graph-mode ceiling
         dispatch_key(0x76);
         assert_eq!(PANELS.with(|p| p.borrow().spark), SparkMode::Off);
         assert_eq!(row_height(), 1);
@@ -1053,20 +1072,46 @@ mod tests {
 
     #[test]
     fn spark_row_full_width_never_panics() {
-        // The double-height second line renders a full panel-width sparkline;
-        // multi-byte braille + a wide `w` must not panic or mis-slice.
+        // The double-height graph renders `n_rows` full panel-width braille
+        // lines; multi-byte braille + a wide `w` must not panic or mis-slice.
         PANELS.with(|p| p.borrow_mut().spark = SparkMode::Double);
         for t in 0..40 {
             PANELS.with(|p| p.borrow_mut().ingest(synthetic_table(t), Some(200)));
         }
-        assert_eq!(row_height(), 2);
+        assert_eq!(row_height(), 1 + SPARK_GRAPH_H);
         let mut sink: Vec<u8> = Vec::new();
-        draw_spark_row(&mut sink, 4, 0, 120, 200);
+        draw_spark_row(&mut sink, 4, 0, 120, SPARK_GRAPH_H, 200);
         assert!(!sink.is_empty());
-        // Off mode draws nothing on the second line.
+        // Off mode draws nothing.
         PANELS.with(|p| p.borrow_mut().spark = SparkMode::Off);
         let mut empty: Vec<u8> = Vec::new();
-        draw_spark_row(&mut empty, 4, 0, 120, 200);
+        draw_spark_row(&mut empty, 4, 0, 120, SPARK_GRAPH_H, 200);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn graph_lines_scale_with_cpu() {
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Double);
+        let mk = |pid: u32, cpu: f32| Proc {
+            pid,
+            ppid: 1,
+            user: "u".into(),
+            comm: "c".into(),
+            cmdline: "c".into(),
+            state: 'R',
+            cpu,
+            mem_kb: 1,
+        };
+        PANELS.with(|p| {
+            p.borrow_mut()
+                .ingest(vec![mk(10, 0.0), mk(11, 20.0), mk(12, 100.0)], None)
+        });
+        // idle: no graph rows; light load: 1 row; pegged: the full ceiling.
+        assert_eq!(graph_lines(10), 0);
+        assert_eq!(graph_lines(11), 1);
+        assert_eq!(graph_lines(12), SPARK_GRAPH_H);
+        // Off mode: always zero regardless of CPU.
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Off);
+        assert_eq!(graph_lines(12), 0);
     }
 }

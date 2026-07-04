@@ -79,6 +79,18 @@ impl ProcRing {
         self.map.len()
     }
 
+    /// The most recent CPU sample for `pid` (0.0 if untracked). Cheap — reads
+    /// the ring's last slot without allocating, unlike [`cpu_series`].
+    ///
+    /// [`cpu_series`]: ProcRing::cpu_series
+    pub fn latest_cpu(&self, pid: u32) -> f32 {
+        self.map
+            .get(&pid)
+            .and_then(|r| r.buf.last())
+            .map(|s| s.cpu)
+            .unwrap_or(0.0)
+    }
+
     /// CPU history for `pid`, oldest-first (empty if untracked).
     pub fn cpu_series(&self, pid: u32) -> Vec<f32> {
         self.map

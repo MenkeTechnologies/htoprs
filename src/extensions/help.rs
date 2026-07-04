@@ -143,7 +143,7 @@ pub fn print_help(name: &str) {
     println!("{}", opt("G", "Braille CPU history graph"));
     println!(
         "{}",
-        opt("v", "Cycle per-PID CPU sparkline: off / column / double-height rows")
+        opt("v", "Cycle per-PID CPU sparkline: off / column / inline graph (taller = busier)")
     );
     println!("{}", opt("b", "Cycle bar fill style (classic/gradient/solid/thin/ascii)"));
     println!();

@@ -480,9 +480,16 @@ pub fn Panel_done(this: Panel) {
 /// `(int)this->selectedLen` truncates the `size_t` to `int`; `as i32`
 /// reproduces that, and the surrounding arithmetic stays in `i32`.
 pub fn Panel_setCursorToSelection(this: &mut Panel) {
-    // htoprs: `* rowHeight` projects the item index to its top physical line
-    // (identity at the default `rowHeight == 1`, the C form).
-    this.cursorY = this.y + (this.selected - this.scrollV) * this.rowHeight.max(1) + 1;
+    // htoprs: sum the physical heights of the items above the selection to find
+    // its top line. At the default `rowHeight == 1` this reduces to the C form
+    // `selected - scrollV`; in graph mode rows are variable-height, so the span
+    // is accumulated per item.
+    let offset = if this.rowHeight.max(1) <= 1 {
+        this.selected - this.scrollV
+    } else {
+        this.line_span(this.scrollV, this.selected)
+    };
+    this.cursorY = this.y + offset + 1;
     this.cursorX = this.x + (this.selectedLen as i32) - this.scrollH;
 }
 
@@ -732,19 +739,24 @@ pub fn Panel_draw(
         h -= 1;
     }
 
-    // htoprs: physical lines per item (1 = the faithful htop model). `vis` is
-    // how many *items* fit in the `h` remaining lines — the double-height
-    // process panel shows half as many as its line count.
+    // htoprs: `rh` is the per-item line-height ceiling (1 = the faithful htop
+    // model; > 1 = graph mode, where each process is `1 + graph_lines(cpu)`
+    // tall). `ensure_scroll_var` keeps the selection visible under either model.
     let rh = this.rowHeight.max(1);
-    let vis = (h / rh).max(1);
 
-    this.ensure_scroll(size, vis);
+    this.ensure_scroll_var(size, h);
 
     // topPad: empty screen lines above the first row (non-zero only when
     // allowExcessScrollV left scrollV negative). C: Panel.c:293-296.
     let top_pad = if this.scrollV < 0 { -this.scrollV } else { 0 };
     let first = this.scrollV + top_pad;
-    let up_to = (first + vis - top_pad).min(size);
+    // In graph mode the item count that fits is variable, so draw until the
+    // lines run out (`line < h` below); uniform mode keeps the ported bound.
+    let up_to = if rh <= 1 {
+        (first + h - top_pad).min(size)
+    } else {
+        size
+    };
 
     let selection_color = if focus {
         this.selectionColorId.packed(ColorScheme::active())
@@ -753,7 +765,10 @@ pub fn Panel_draw(
     };
 
     let mut item = RichString::new();
-    if this.needsRedraw || force_redraw {
+    // htoprs: graph mode (`rh > 1`) uses variable per-row heights, so the
+    // two-row incremental cursor-move path can't project rows by a fixed
+    // stride — force the full redraw there.
+    if this.needsRedraw || force_redraw || rh > 1 {
         let mut line = 0i32;
         // Blank pad lines above the first row (C: Panel.c:305-308). `top_pad`
         // counts items, so `* rh` gives the screen lines to blank.
@@ -763,6 +778,9 @@ pub fn Panel_draw(
         }
         let mut i = first;
         while line < h && i < up_to {
+            // htoprs: physical lines this item occupies (1 in single-height
+            // mode; CPU-scaled `1 + graph_lines` for a process in graph mode).
+            let ih = this.item_height(i as usize);
             let mut highlight_attr = 0i32;
             // htoprs extension: the pid of a process row, for the alert recolor
             // and sparkline hooks below. `None` for non-process rows (setup
@@ -811,17 +829,27 @@ pub fn Panel_draw(
             if let Some(pid) = row_pid {
                 crate::extensions::panels::draw_spark_col(&mut out, y + line, x, w, pid);
             }
-            // htoprs extension: in double-height mode (`rh >= 2`) a process row
-            // owns a second physical line carrying a full-width CPU sparkline.
-            // Fill it with the row's highlight background first so a selected or
-            // hot row's spark line matches, then let the extension paint glyphs.
-            if rh >= 2 && line + 1 < h {
+            // htoprs extension: in graph mode a process row owns `ih - 1` lines
+            // below it carrying a CPU braille graph whose height scales with the
+            // process's CPU. Fill each line with the row's highlight background
+            // first (so a selected/hot row's graph matches), then paint glyphs.
+            let graph_h = (ih - 1).min(h - line - 1).max(0);
+            if graph_h > 0 {
                 if highlight_attr != 0 {
                     Ncurses::attrset(&mut out, highlight_attr);
                 }
-                Ncurses::mvhline(&mut out, y + line + 1, x, ' ', w);
+                for g in 1..=graph_h {
+                    Ncurses::mvhline(&mut out, y + line + g, x, ' ', w);
+                }
                 if let Some(pid) = row_pid {
-                    crate::extensions::panels::draw_spark_row(&mut out, y + line + 1, x, w, pid);
+                    crate::extensions::panels::draw_spark_row(
+                        &mut out,
+                        y + line + 1,
+                        x,
+                        w,
+                        graph_h,
+                        pid,
+                    );
                 }
             }
             if highlight_attr != 0 {
@@ -830,7 +858,7 @@ pub fn Panel_draw(
                     ColorElements::RESET_COLOR.packed(ColorScheme::active()),
                 );
             }
-            line += rh;
+            line += ih;
             i += 1;
         }
         while line < h {
@@ -876,17 +904,9 @@ pub fn Panel_draw(
                 (old_len - scrollH).min(w),
             );
         }
-        // htoprs: repaint the leaving row's second line (sparkline) in
-        // double-height mode, keeping its hot background if still firing.
-        if rh >= 2 {
-            if let Some(attr) = old_hot {
-                Ncurses::attrset(&mut out, attr);
-            }
-            Ncurses::mvhline(&mut out, old_y + 1, x, ' ', w);
-            if let Some(pid) = old_pid {
-                crate::extensions::panels::draw_spark_row(&mut out, old_y + 1, x, w, pid);
-            }
-        }
+        // NB: this incremental cursor-move path runs only in single-height
+        // mode (`rh == 1`); graph mode forces the full redraw above, so no
+        // second graph line needs repainting here.
         if old_hot.is_some() {
             Ncurses::attrset(
                 &mut out,
@@ -895,12 +915,8 @@ pub fn Panel_draw(
         }
 
         let selected = this.selected;
-        let new_pid: Option<u32>;
         {
             let new_obj: &dyn Object = this.items[selected as usize].object();
-            new_pid = new_obj
-                .as_process()
-                .map(|p| Process_getPid(p).max(0) as u32);
             let sz = RichString_size(&item);
             RichString_rewind(&mut item, sz);
             item.highlightAttr = 0;
@@ -922,15 +938,6 @@ pub fn Panel_draw(
                 scrollH,
                 (new_len - scrollH).min(w),
             );
-        }
-        // htoprs: paint the newly-selected row's second line (sparkline) with
-        // the selection background so both of its lines read as the cursor.
-        if rh >= 2 {
-            Ncurses::attrset(&mut out, selection_color);
-            Ncurses::mvhline(&mut out, new_y + 1, x, ' ', w);
-            if let Some(pid) = new_pid {
-                crate::extensions::panels::draw_spark_row(&mut out, new_y + 1, x, w, pid);
-            }
         }
         Ncurses::attrset(
             &mut out,
@@ -1001,12 +1008,16 @@ pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
             this.needsRedraw = true;
         }
         KEY_PPAGE => {
-            // htoprs: page by visible *items* (`available_height` already
-            // accounts for `rowHeight`).
-            this.panel_scroll(-available_height, size);
+            // htoprs: page by however many items fill one screen of lines,
+            // walking up from the selection — variable-height-aware.
+            let lines = this.h - Panel_headerHeight(this);
+            let step = this.items_per_page(this.selected, lines, -1);
+            this.panel_scroll(-step, size);
         }
         KEY_NPAGE => {
-            this.panel_scroll(available_height, size);
+            let lines = this.h - Panel_headerHeight(this);
+            let step = this.items_per_page(this.selected, lines, 1);
+            this.panel_scroll(step, size);
         }
         KEY_WHEELUP => {
             let amt = crt::CRT_scrollWheelVAmount.load(Ordering::Relaxed);
@@ -1227,6 +1238,81 @@ impl Panel {
         }
     }
 
+    /// htoprs: physical terminal lines item `i` occupies. `1` in the default
+    /// single-height model. When the panel is in graph mode (`rowHeight > 1`) a
+    /// process row is `1 + graph_lines(pid)` tall — CPU-scaled, so busier
+    /// processes are taller — while any non-process item stays uniform at
+    /// `rowHeight`. This is the single source every screen-Y projection uses.
+    fn item_height(&self, i: usize) -> i32 {
+        let rh = self.rowHeight.max(1);
+        if rh <= 1 || i >= self.items.len() {
+            return rh.max(1);
+        }
+        let obj = self.items[i].object();
+        match obj.as_process() {
+            Some(p) => 1 + crate::extensions::panels::graph_lines(Process_getPid(p).max(0) as u32),
+            None => rh,
+        }
+    }
+
+    /// Cumulative physical lines from item `lo` up to (excluding) `hi`, summing
+    /// per-item heights. `lo > hi` yields 0.
+    fn line_span(&self, lo: i32, hi: i32) -> i32 {
+        (lo.max(0)..hi.max(0)).map(|k| self.item_height(k as usize)).sum()
+    }
+
+    /// Items that fit in `lines` starting at `from` and walking `dir` (+1 down,
+    /// -1 up), by accumulating [`item_height`]. At least 1. Used for page steps
+    /// when rows are variable-height.
+    ///
+    /// [`item_height`]: Panel::item_height
+    fn items_per_page(&self, from: i32, lines: i32, dir: i32) -> i32 {
+        let size = self.items.len() as i32;
+        let mut used = 0;
+        let mut cnt = 0;
+        let mut k = from;
+        while k >= 0 && k < size {
+            used += self.item_height(k as usize);
+            if used > lines {
+                break;
+            }
+            cnt += 1;
+            k += dir;
+        }
+        cnt.max(1)
+    }
+
+    /// Variable-height-aware scroll clamp. For the default single-height model
+    /// (`rowHeight <= 1`) this defers to [`ensure_scroll`] for byte-identical
+    /// ported behavior. In graph mode it keeps the selected row fully visible by
+    /// summing per-item heights instead of assuming a fixed stride. `h` is the
+    /// drawable line count after the header adjustment.
+    ///
+    /// [`ensure_scroll`]: Panel::ensure_scroll
+    fn ensure_scroll_var(&mut self, size: i32, h: i32) {
+        if self.rowHeight.max(1) <= 1 {
+            self.ensure_scroll(size, h);
+            return;
+        }
+        if size == 0 {
+            self.scrollV = 0;
+            return;
+        }
+        self.selected = self.selected.clamp(0, size - 1);
+        self.scrollV = self.scrollV.clamp(0, size - 1);
+        // Selected above the viewport top → scroll up to it.
+        if self.selected < self.scrollV {
+            self.scrollV = self.selected;
+            self.needsRedraw = true;
+        }
+        // Selected below the viewport bottom → scroll down one item at a time
+        // until the run [scrollV..=selected] fits in `h` lines.
+        while self.scrollV < self.selected && self.line_span(self.scrollV, self.selected + 1) > h {
+            self.scrollV += 1;
+            self.needsRedraw = true;
+        }
+    }
+
     /// The `PANEL_SCROLL(amount)` macro body (`Panel.c:387`): shift the
     /// selection and clamp `scrollV` into `[0, MAX(0, size - h - headerHeight)]`.
     fn panel_scroll(&mut self, amount: i32, size: i32) {
@@ -1301,6 +1387,7 @@ mod tests {
         // line via `(selected - scrollV) * rowHeight`, so row 7 with 2 lines each
         // and scrollV=2 lands twice as far down as the single-height case.
         let mut p = blank();
+        fill(&mut p, 10); // non-process (ListItem) rows are uniform at rowHeight
         p.x = 3;
         p.y = 5;
         p.selected = 7;
@@ -1309,7 +1396,7 @@ mod tests {
         p.selectedLen = 20;
         p.rowHeight = 2;
         Panel_setCursorToSelection(&mut p);
-        assert_eq!(p.cursorY, 16); // 5 + (7 - 2) * 2 + 1
+        assert_eq!(p.cursorY, 16); // 5 + sum(heights[2..7]=5*2) + 1
         assert_eq!(p.cursorX, 19); // 3 + 20 - 4 (horizontal is unaffected)
     }
 

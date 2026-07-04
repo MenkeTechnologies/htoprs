@@ -68,19 +68,22 @@ enforced mechanically, following the same precedent as `zshrs`.
   | `o` | Export the current table to JSON + CSV under `~/.config/htoprs/` |
   | `A` | Threshold alerts — the rule set and every currently-firing PID |
   | `G` | Braille CPU history graph (system total plus the selected PID) |
-  | `v` | Cycle the per-PID CPU sparkline: off → narrow right-edge column → full-width double-height rows |
+  | `v` | Cycle the per-PID CPU sparkline: off → narrow right-edge column → CPU-scaled inline braille graph |
 
   Two of these reach the rows themselves rather than a modal, injected at the
   per-row draw site in `Panel_draw` (the same extension-hook pattern the theme
   border uses, so no new ported `fn`): a firing-alert PID's row is recolored,
   and the `v` sparkline is drawn on the rows. `v` cycles three states — off, a
-  narrow sparkline overdrawn at each row's right edge, and a double-height mode
-  where every process occupies two lines (the normal row plus a full-width CPU
-  sparkline beneath it). The double-height mode sets the process panel's
-  `rowHeight` to 2; `Panel_draw`/`Panel_onKey` scale their screen-Y projection,
-  page steps, and visible-item capacity by it, so the cursor, paging, and
-  scrolling all track whole processes. Non-process panels keep `rowHeight = 1`
-  and are unaffected.
+  narrow braille sparkline overdrawn at each row's right edge, and an inline
+  graph mode where each process grows a full-width braille CPU graph beneath its
+  info line. The graph is rendered by the same braille canvas as the `G` history
+  graph, and its **height scales with the process's CPU**: idle processes stay a
+  single line, busy ones grow up to `SPARK_GRAPH_H` graph lines (more CPU = more
+  rows). This makes the process panel variable-height: `Panel_draw`/`Panel_onKey`
+  project every screen-Y, page step, and scroll clamp through per-row heights
+  (`item_height` = `1 + graph_lines(cpu)` for a process, `1` otherwise), so the
+  cursor, paging, and scrolling all track whole processes. Non-process panels
+  keep `rowHeight = 1` and are byte-identical to the ported behavior.
 - **Bar fill-glyph cycler (`extensions::barstyle`, ported from storageshower):**
   `b` cycles the character every bar meter (CPU, Memory, Swap, …) fills with,
   through five styles — Classic (`|`, htop's default), Gradient (position-shaded
