@@ -46,12 +46,14 @@ enforced mechanically, following the same precedent as `zshrs`.
   chosen theme recolor the live htop UI in 256-color via a base16-style ANSI
   palette remap consulted at the single `Ncurses::to_color` choke point, and
   `extensions::prefs` persists the selection to `~/.config/htoprs/prefs.json`.
-  The overlay is wired into `ScreenManager_run`: `c` opens the theme chooser,
-  `C` the editor, `h`/`?`/F1 the themed help overlay (`Esc` closes it), `g`
-  toggles the header, `B` toggles the border (`B`, since lowercase `b` is the
-  bar fill-style cycler below and `x` is htop's file-locks screen). Toggles and
-  the bar-style change surface a transient status toast (`overlay::draw_status`,
-  ported from iftoprs).
+  The overlay is wired into `ScreenManager_run`: `z` opens the theme (color
+  scheme) chooser, `~` the editor, `h`/`?`/F1 the themed help overlay (`Esc`
+  closes it), `g` toggles the header, `B` toggles the border. These are all
+  keys htop leaves free — lowercase `c` (tag process + children) and `C`
+  (setup) belong to htop, so the overlay must not shadow them; likewise `b` is
+  the bar fill-style cycler below and `x` is htop's file-locks screen. Toggles
+  and the bar-style change surface a transient status toast
+  (`overlay::draw_status`, ported from iftoprs).
   `extensions::bridge` materializes the live ported `Process` rows as the
   `Proc` model (via `Object::as_process`), and `extensions::panels` is the
   running-TUI wiring for the htoprs-original monitoring capabilities — the

@@ -190,7 +190,7 @@ pub struct OverlayState {
     /// Last transient status message set by a toggle/save/style change, shown
     /// as a centered toast until it expires (iftoprs `status_msg` + `draw_status`).
     pub status: Option<StatusMsg>,
-    /// True once the user has engaged the theme UI (`c`/`C`). While set, the
+    /// True once the user has engaged the theme UI (`z`/`~`). While set, the
     /// live palette is pushed to [`super::colors`] so the htoprs UI recolors.
     pub themed: bool,
     /// Set when a selection/save should be persisted to the prefs file; the
@@ -289,7 +289,7 @@ impl OverlayState {
                     let name = self.theme_name.display_name();
                     self.set_status(format!("Theme: {name}"));
                 }
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') => {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('z') => {
                     self.theme_chooser.active = false;
                 }
                 _ => {}
@@ -410,13 +410,17 @@ impl OverlayState {
                 self.set_status(if self.show_help { "Help" } else { "Help closed" });
             }
             KeyCode::Esc if self.show_help => self.show_help = false,
-            KeyCode::Char('c') => {
+            // Color-scheme chooser on `z` and theme editor on `~`: htop binds
+            // lowercase `c` (tag process + children) and `C` (setup), and the
+            // overlay intercepts keys before htop, so the old `c`/`C` bindings
+            // shadowed those. `z` and `~` are free in htop's key map.
+            KeyCode::Char('z') => {
                 self.show_help = false;
                 self.themed = true;
                 self.theme_chooser.open(self.theme_name);
                 self.set_status("Theme chooser");
             }
-            KeyCode::Char('C') => {
+            KeyCode::Char('~') => {
                 self.show_help = false;
                 self.themed = true;
                 let palette = self
@@ -1053,8 +1057,8 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
         (
             "htoprs THEME",
             &[
-                ("c", "Theme chooser"),
-                ("C", "Theme editor"),
+                ("z", "Theme chooser"),
+                ("~", "Theme editor"),
                 ("B", "Toggle border"),
                 ("g", "Toggle header"),
             ],
@@ -1108,7 +1112,7 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
         row += 1;
     }
 
-    let tl = format!("theme: {} | c=chooser", state.theme_name.display_name());
+    let tl = format!("theme: {} | z=chooser", state.theme_name.display_name());
     set_str(
         buf,
         x0 + (bw.saturating_sub(tl.len() as u16)) / 2,
@@ -1411,11 +1415,11 @@ mod tests {
     }
 
     #[test]
-    fn c_opens_chooser_selecting_current() {
+    fn z_opens_chooser_selecting_current() {
         let mut s = OverlayState::new();
         s.set_theme(ThemeName::BladeRunner);
         s.show_help = true;
-        assert!(s.handle_key(key(KeyCode::Char('c'))));
+        assert!(s.handle_key(key(KeyCode::Char('z'))));
         assert!(s.theme_chooser.active);
         assert!(!s.show_help);
         let idx = ThemeName::ALL
@@ -1425,11 +1429,22 @@ mod tests {
         assert_eq!(s.theme_chooser.selected, idx);
     }
 
+    /// htop owns `c` (tag children) and `C` (setup); the overlay must NOT
+    /// consume them — they fall through to htop's key map.
     #[test]
-    fn capital_c_opens_editor_with_current_palette() {
+    fn c_and_capital_c_pass_through_to_htop() {
+        let mut s = OverlayState::new();
+        assert!(!s.handle_key(key(KeyCode::Char('c'))));
+        assert!(!s.handle_key(key(KeyCode::Char('C'))));
+        assert!(!s.theme_chooser.active);
+        assert!(!s.theme_edit.active);
+    }
+
+    #[test]
+    fn tilde_opens_editor_with_current_palette() {
         let mut s = OverlayState::new();
         s.set_theme(ThemeName::BladeRunner);
-        assert!(s.handle_key(key(KeyCode::Char('C'))));
+        assert!(s.handle_key(key(KeyCode::Char('~'))));
         assert!(s.theme_edit.active);
         assert_eq!(
             s.theme_edit.colors,
@@ -1533,7 +1548,7 @@ mod tests {
     #[test]
     fn unhandled_key_returns_false() {
         let mut s = OverlayState::new();
-        assert!(!s.handle_key(key(KeyCode::Char('z'))));
+        assert!(!s.handle_key(key(KeyCode::Char('n'))));
     }
 
     // ── Chooser navigation ──
@@ -1567,10 +1582,10 @@ mod tests {
     }
 
     #[test]
-    fn chooser_c_closes() {
+    fn chooser_z_closes() {
         let mut s = OverlayState::new();
         s.theme_chooser.open(ThemeName::default());
-        s.handle_key(key(KeyCode::Char('c')));
+        s.handle_key(key(KeyCode::Char('z')));
         assert!(!s.theme_chooser.active);
     }
 
@@ -1783,7 +1798,7 @@ mod tests {
     fn engaging_theme_sets_themed_flag() {
         let mut s = OverlayState::new();
         assert!(!s.themed);
-        s.handle_ncurses_key(b'c' as i32);
+        s.handle_ncurses_key(b'z' as i32);
         assert!(s.themed);
         assert!(s.theme_chooser.active);
     }
@@ -1842,7 +1857,7 @@ mod tests {
     fn thread_local_dispatch_consumes_hotkey() {
         // Runs on its own test thread → fresh OVERLAY.
         assert!(!overlay_active());
-        assert!(dispatch_key(b'c' as i32)); // theme chooser opens, consumed
+        assert!(dispatch_key(b'z' as i32)); // theme chooser opens, consumed
         assert!(overlay_active());
         assert!(dispatch_key(27)); // Esc closes the chooser
         assert!(!overlay_active());
@@ -1850,7 +1865,7 @@ mod tests {
 
     #[test]
     fn thread_local_non_hotkey_not_consumed_when_idle() {
-        assert!(!dispatch_key(b'z' as i32));
+        assert!(!dispatch_key(b'n' as i32));
         assert!(!overlay_active());
     }
 
@@ -1859,7 +1874,7 @@ mod tests {
         // End-to-end through the thread-local state: open the theme chooser
         // (h/? now fall through to actionHelp), render+blit. Confirms the
         // thread-local pipeline emits the modal when an overlay is open.
-        assert!(dispatch_key(b'c' as i32));
+        assert!(dispatch_key(b'z' as i32));
         assert!(overlay_active());
         let mut out: Vec<u8> = Vec::new();
         draw_active(&mut out);
