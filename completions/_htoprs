@@ -1,42 +1,35 @@
 #compdef htoprs
 
+# htoprs — a faithful Rust port of htop. The options below mirror the getopt
+# table in src/ported/commandline.rs (i.e. `htoprs --help`).
+#
 # Notes:
-# - htop allows long options to be passed with a single dash; we don't account
-#   for this
-# - htop parses optional arguments to -H and -u 'cleverly' by allowing the next
-#   word to be the optarg if it doesn't begin with a '-'; this should work here
-# - There is a special version of htop designed to be used with PCP (Performance
-#   CoPilot); we don't fully account for this
-# - Some of the ranges and defaults listed here had to be found in the source
+# - htoprs, like htop, accepts long options with a single dash; not modeled here.
+# - The optional-argument options (-H, -t, -u) also grab the next word as their
+#   optarg when it does not begin with '-', matching htop's parsing.
+# - htoprs does NOT implement htop's Linux-only --drop-capabilities.
+# - Some ranges/defaults below come from htop's documented behaviour.
 
 local MATCH MBEGIN MEND ret=1
 local -a context line state state_descr args tmp
 
 args=(
-  '(-d --delay)'{-d+,--delay=}'[specify update frequency]:delay (tenths of seconds) (1-100) [15]'
-  '(-C --no-color --no-colour)'{-C,--no-colo{,u}r}'[use monochrome colour scheme]'
-  '(-F --filter)'{-F+,--filter=}'[show only commands matching specified filter]:case-insensitive command-line sub-string:_process_names -a'
-  '(-)'{-h,--help}'[display usage information]'
-  '(-H --highlight-changes)'{-H+,--highlight-changes=}'[highlight new and old processes (optionally specify delay)]::delay (seconds) (1-86400) [5]'
-  '(-M --no-mouse)'{-M,--no-mouse}'[disable mouse]'
-  \*{-p+,--pid=}'[show only specified PIDs]: : _sequence _pids'
+  '(-C --no-color --no-colour)'{-C,--no-colo{,u}r}'[use a monochrome color scheme]'
+  '(-d --delay)'{-d+,--delay=}'[set the delay between updates, in tenths of seconds]:delay (tenths of seconds) (1-100) [15]'
+  '(-F --filter)'{-F+,--filter=}'[show only the commands matching the given filter]:case-insensitive command-line sub-string:_process_names -a'
+  '(--no-function-bar --no-functionbar)'--no-function{-,}bar'[hide the function bar]'
+  '(-)'{-h,--help}'[print the help screen]'
+  '(-H --highlight-changes)'{-H+,--highlight-changes=}'[highlight new and old processes]::delay (seconds) (1-86400) [5]'
+  '(-M --no-mouse)'{-M,--no-mouse}'[disable the mouse]'
+  '--no-meters[hide the meters (header)]'
+  '(-n --max-iterations)'{-n+,--max-iterations=}'[exit after the given number of frame updates]:iterations (positive integer)'
+  \*{-p+,--pid=}'[show only the given PIDs]: : _sequence _pids'
   '--readonly[disable all system and process changing features]'
-  '(-s --sort-key)'{-s+,--sort-key=}'[sort by specified column]: :->sort-keys'
-  '(-t --tree)'{-t,--tree}'[show tree view of processes]'
-  '(-u --user)'{-u+,--user=}'[show only processes of current or specified user]:: : _users'
-  '(-U --no-unicode)'{-U,--no-unicode}'[disable Unicode]'
-  '(-)'{-V,--version}'[display version information]'
-)
-
-[[ $OSTYPE == linux* ]] &&
-(( ! EUID || $+_comp_priv_prefix )) &&
-_pick_variant libcap=drop-capabilities $OSTYPE --help &&
-args+=(
-  '--drop-capabilities=-[drop specified capabilities]::mode [basic]:((
-    off\:"do not drop capabilities"
-    basic\:"drop capabilities not needed for standard functionality (retains kill, renice, etc.)"
-    strict\:"drop capabilities not needed for core functionality"
-  ))'
+  '(-s --sort-key)'{-s+,--sort-key=}'[sort the process list by the given column]: :->sort-keys'
+  '(-t --tree)'{-t-,--tree=-}'[show the tree view (can be combined with -s)]:: :->sort-keys'
+  '(-u --user)'{-u+,--user=}'[show only processes for a given user (or $USER)]:: : _users'
+  '(-U --no-unicode)'{-U,--no-unicode}'[do not use unicode but plain ASCII]'
+  '(-)'{-V,--version}'[print version information]'
 )
 
 _arguments -s -S : $args && ret=0
