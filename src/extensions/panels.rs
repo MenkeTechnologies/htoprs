@@ -780,11 +780,28 @@ pub fn alert_attr(pid: u32) -> Option<i32> {
     PANELS.with(|p| {
         let s = p.borrow();
         if s.firing.contains(&pid) {
-            Some(ColorElements::FAILED_SEARCH.packed(ColorScheme::active()))
+            Some(hot_row_attr())
         } else {
             None
         }
     })
+}
+
+/// The full-row color for a firing (over-threshold) process: bold white on a
+/// red background. Deliberately NOT the cyan of `PANEL_SELECTION_FOCUS`, so a
+/// hot row can never be mistaken for the cursor, and high-contrast so the text
+/// stays legible over the fill — unlike htop's `FAILED_SEARCH` (red-on-cyan),
+/// which both collides with the selection color and reads poorly. `Panel_draw`
+/// still lets the cursor's selection highlight win on the selected row, so the
+/// cursor stays visible even over a hot row. Falls back to reverse+bold on the
+/// monochrome scheme, where no colors exist.
+fn hot_row_attr() -> i32 {
+    use crate::ported::crt::{ColorPair, Red, White, A_BOLD, A_REVERSE};
+    if matches!(ColorScheme::active(), ColorScheme::COLORSCHEME_MONOCHROME) {
+        A_REVERSE | A_BOLD
+    } else {
+        A_BOLD | ColorPair(White, Red)
+    }
 }
 
 /// Overdraw the CPU sparkline column at the right edge of a process row, when
@@ -896,6 +913,13 @@ mod tests {
         }
         assert!(alert_attr(999).is_some());
         assert!(alert_attr(1).is_none());
+        // Regression: the firing-row recolor must NOT be the cursor's selection
+        // color. It previously used FAILED_SEARCH (red-on-cyan), whose cyan
+        // background matched PANEL_SELECTION_FOCUS, so hot rows looked like the
+        // cursor and hid it. The hot color must stay distinct.
+        let selection = ColorElements::PANEL_SELECTION_FOCUS.packed(ColorScheme::active());
+        assert_ne!(alert_attr(999), Some(selection));
+        assert_eq!(alert_attr(999), Some(hot_row_attr()));
     }
 
     #[test]

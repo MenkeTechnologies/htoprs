@@ -752,17 +752,19 @@ pub fn Panel_draw(
             }
             let item_len = RichString_sizeVal(&item);
             let amt = (item_len - scrollH).min(w);
-            if highlightSelected && i == this.selected {
-                item.highlightAttr = selection_color;
-                highlight_attr = selection_color;
-            }
-            // htoprs extension: a firing threshold-alert row is recolored, over
-            // the selection highlight (safety visibility wins). No-op otherwise.
+            // htoprs extension: a firing threshold-alert row gets a distinct hot
+            // color (bold white-on-red). No-op otherwise. Applied BEFORE the
+            // selection so the cursor highlight below wins on the selected row —
+            // the cursor must stay visible even over a hot row.
             if let Some(pid) = row_pid {
                 if let Some(attr) = crate::extensions::panels::alert_attr(pid) {
                     item.highlightAttr = attr;
                     highlight_attr = attr;
                 }
+            }
+            if highlightSelected && i == this.selected {
+                item.highlightAttr = selection_color;
+                highlight_attr = selection_color;
             }
             if item.highlightAttr != 0 {
                 Ncurses::attrset(&mut out, item.highlightAttr);
@@ -798,13 +800,27 @@ pub fn Panel_draw(
         // (Panel.c:341/343/353/356), not the topPad-adjusted `first`.
         let scroll_v = this.scrollV;
         let old_selected = this.oldSelected;
+        let old_pid: Option<u32>;
         {
             let old_obj: &dyn Object = this.items[old_selected as usize].object();
+            old_pid = old_obj
+                .as_process()
+                .map(|p| Process_getPid(p).max(0) as u32);
             let sz = RichString_size(&item);
             RichString_rewind(&mut item, sz);
+            item.highlightAttr = 0;
             old_obj.display(&mut item);
         }
         let old_len = RichString_sizeVal(&item);
+        // htoprs extension: if the row the cursor is leaving is still a firing
+        // (hot) row, repaint it in its hot color rather than clearing it to
+        // normal — otherwise moving off a hot row would drop its highlight until
+        // the next full redraw.
+        let old_hot = old_pid.and_then(crate::extensions::panels::alert_attr);
+        if let Some(attr) = old_hot {
+            Ncurses::attrset(&mut out, attr);
+            RichString_setAttr(&mut item, attr);
+        }
         Ncurses::mvhline(&mut out, y + old_selected - scroll_v, x, ' ', w);
         if scrollH < old_len {
             Panel::print_offset(
@@ -814,6 +830,12 @@ pub fn Panel_draw(
                 &item,
                 scrollH,
                 (old_len - scrollH).min(w),
+            );
+        }
+        if old_hot.is_some() {
+            Ncurses::attrset(
+                &mut out,
+                ColorElements::RESET_COLOR.packed(ColorScheme::active()),
             );
         }
 
