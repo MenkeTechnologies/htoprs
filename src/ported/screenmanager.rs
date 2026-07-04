@@ -724,6 +724,13 @@ pub fn ScreenManager_run(
 
     this.name = name.map(|s| s.to_string());
 
+    // htoprs extension: a border toggle restored from prefs (init_from_prefs)
+    // shrinks the usable area, so inset the panels once before the first frame —
+    // the panels were laid out full-width during setup, before prefs loaded.
+    if crate::extensions::overlay::take_layout_dirty() {
+        ScreenManager_resize(this);
+    }
+
     'main: while !quit {
         // Sample the machine BEFORE opening the synchronized-update region.
         // checkRecalculation's Machine_scan / Machine_scanTables are slow
@@ -916,10 +923,22 @@ pub fn ScreenManager_run(
         }
 
         redraw = true;
+        // htoprs extension: a confirmation toast for the ported htop action keys
+        // (priority `[`/`]`, sorts, tree, thread toggles, tag/untag, follow, …),
+        // matching the toasts the htoprs-original hotkeys emit. Looked up from the
+        // key the user pressed, before the handler can rewrite `ch` via SYNTH_KEY.
+        let action_label = crate::extensions::overlay::action_key_label(ch);
         // C: if (Panel_eventHandlerFn(panelFocus)) result = Panel_eventHandler(...).
         // Every `Box<dyn PanelClass>` has an `event_handler` (the base returns
         // IGNORED, the C NULL-slot no-op), so the guard is always taken.
         let result = this.panels[focus].event_handler(ch);
+        if let Some(label) = action_label {
+            // Only when the key actually ran an action (the bound-key arm sets
+            // HANDLED in MainPanel_eventHandler), so navigation/no-ops stay quiet.
+            if result.contains(HandlerResult::HANDLED) {
+                crate::extensions::overlay::set_status(label);
+            }
+        }
         if result.contains(HandlerResult::SYNTH_KEY) {
             ch = (result.0 >> 16) as i32;
         }

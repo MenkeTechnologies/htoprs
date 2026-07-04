@@ -12,9 +12,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::barstyle::BarStyle;
+use super::panels::SparkMode;
 use super::theme::{CustomThemeColors, ThemeName};
 
-/// The persisted htoprs preferences.
+/// The persisted htoprs preferences. Every htoprs-original toggle is saved here
+/// so the UI comes back exactly as the user left it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Prefs {
     /// The selected built-in theme.
@@ -34,6 +36,15 @@ pub struct Prefs {
     /// the default: on.
     #[serde(default)]
     pub alert_hl: Option<bool>,
+    /// Whether the themed UI border is shown (toggled with `B`).
+    #[serde(default)]
+    pub show_border: bool,
+    /// Whether the themed header chrome is shown (toggled with `g`).
+    #[serde(default)]
+    pub show_header: bool,
+    /// The `v`-cycled per-PID CPU sparkline mode.
+    #[serde(default)]
+    pub spark: SparkMode,
 }
 
 /// `~/.config/htoprs/prefs.json` (honoring `$XDG_CONFIG_HOME`), matching the
@@ -162,12 +173,20 @@ mod tests {
             custom_themes: HashMap::new(),
             bar_style: BarStyle::Thin,
             alert_hl: Some(false),
+            show_border: true,
+            show_header: true,
+            spark: SparkMode::Double,
+            ..Default::default()
         };
         save(&p);
         let back = load().expect("prefs should load back");
         assert_eq!(back.theme, ThemeName::GlitchPop);
         assert_eq!(back.bar_style, BarStyle::Thin);
         assert_eq!(back.alert_hl, Some(false));
+        // Every toggle round-trips through the shared prefs file.
+        assert!(back.show_border);
+        assert!(back.show_header);
+        assert_eq!(back.spark, SparkMode::Double);
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("XDG_CONFIG_HOME");
     }

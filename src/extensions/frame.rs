@@ -89,57 +89,175 @@ pub fn frame_out() -> FrameOut {
 /// `Begin` + buffered bytes + `End`, then a single flush. A no-op when no frame
 /// is open or the frame is empty.
 pub fn present() {
-    FRAME.with(|f| {
-        let taken = f.borrow_mut().take();
-        if let Some(buf) = taken {
-            if !buf.is_empty() {
-                let mut out = io::stdout().lock();
-                let _ = out.write_all(BEGIN_SYNC);
-                let _ = out.write_all(&buf);
-                let _ = out.write_all(END_SYNC);
-                let _ = out.flush();
-            }
+    let mut out = io::stdout().lock();
+    if present_to(&mut out) {
+        let _ = out.flush();
+    }
+}
+
+/// Take the open frame and, if non-empty, write `Begin` + bytes + `End` to
+/// `out` in that order. Returns `true` if anything was written. The frame is
+/// always closed (taken) if one was open, empty or not. Split out from
+/// [`present`] so the wrapping/atomicity contract is testable against an
+/// in-memory writer without touching the real terminal.
+fn present_to<W: Write>(out: &mut W) -> bool {
+    let taken = FRAME.with(|f| f.borrow_mut().take());
+    match taken {
+        Some(buf) if !buf.is_empty() => {
+            let _ = out.write_all(BEGIN_SYNC);
+            let _ = out.write_all(&buf);
+            let _ = out.write_all(END_SYNC);
+            true
         }
-    });
+        _ => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// While a frame is open, writes are buffered (not sent) and `present`
+    /// Each test runs on its own thread → fresh (`None`) thread-local FRAME.
+    /// Belt-and-suspenders: close any stray frame before asserting.
+    fn reset() {
+        FRAME.with(|f| *f.borrow_mut() = None);
+    }
+
+    /// While a frame is open, writes are buffered (not sent) and `present_to`
     /// wraps them in the 2026 begin/end sequences in a single burst.
     #[test]
     fn frame_buffers_then_present_wraps_atomically() {
+        reset();
         begin_frame();
         let mut o = frame_out();
         o.write_all(b"hello").unwrap();
         o.flush().unwrap(); // must be a no-op while the frame is open
         // Nothing is emitted until present; the buffer still holds the bytes.
-        FRAME.with(|f| {
-            assert_eq!(f.borrow().as_deref(), Some(&b"hello"[..]));
-        });
-        present();
-        // After present the frame is closed.
+        FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b"hello"[..])));
+
+        let mut sink = Vec::new();
+        assert!(present_to(&mut sink));
+        // Exact bytes: Begin + content + End, in one contiguous region.
+        assert_eq!(sink, b"\x1b[?2026hhello\x1b[?2026l");
+        // Frame is closed afterward.
+        FRAME.with(|f| assert!(f.borrow().is_none()));
+    }
+
+    /// The begin sequence precedes and the end sequence follows ALL content —
+    /// nothing leaks outside the synchronized-update region.
+    #[test]
+    fn content_is_fully_enclosed_by_sync_region() {
+        reset();
+        begin_frame();
+        // Simulate several draw calls (header, rows, function bar, overlay).
+        for chunk in [&b"HEADER"[..], b"row1", b"row2", b"FnBar", b"toast"] {
+            frame_out().write_all(chunk).unwrap();
+        }
+        let mut sink = Vec::new();
+        present_to(&mut sink);
+        let begin = sink.windows(BEGIN_SYNC.len()).position(|w| w == BEGIN_SYNC);
+        let end = sink.windows(END_SYNC.len()).position(|w| w == END_SYNC);
+        assert_eq!(begin, Some(0), "Begin must be at the very start");
+        // End is the last thing written.
+        assert_eq!(end, Some(sink.len() - END_SYNC.len()));
+        // The concatenated content sits between them, in draw order.
+        let inner = &sink[BEGIN_SYNC.len()..sink.len() - END_SYNC.len()];
+        assert_eq!(inner, b"HEADERrow1row2FnBartoast");
+        // And there is only ONE begin and ONE end (single atomic region).
+        assert_eq!(sink.windows(BEGIN_SYNC.len()).filter(|w| *w == BEGIN_SYNC).count(), 1);
+        assert_eq!(sink.windows(END_SYNC.len()).filter(|w| *w == END_SYNC).count(), 1);
+    }
+
+    /// Multiple `frame_out()` handles append to the same buffer in call order.
+    #[test]
+    fn multiple_writes_accumulate_in_order() {
+        reset();
+        begin_frame();
+        frame_out().write_all(b"a").unwrap();
+        frame_out().write_all(b"bc").unwrap();
+        frame_out().write_all(b"def").unwrap();
+        FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b"abcdef"[..])));
+        reset();
+    }
+
+    /// `write` reports the full length consumed (buffered path).
+    #[test]
+    fn write_reports_full_length() {
+        reset();
+        begin_frame();
+        let n = frame_out().write(b"twelve bytes").unwrap();
+        assert_eq!(n, 12);
+        reset();
+    }
+
+    /// An empty frame presents nothing — no stray 2026 codes on a no-op redraw.
+    #[test]
+    fn empty_frame_emits_nothing() {
+        reset();
+        begin_frame(); // opened but never written to
+        let mut sink = Vec::new();
+        assert!(!present_to(&mut sink));
+        assert!(sink.is_empty());
+        // Frame is still closed (taken) even though empty.
         FRAME.with(|f| assert!(f.borrow().is_none()));
     }
 
     /// `begin_frame` clears any un-presented bytes (reused allocation).
     #[test]
     fn begin_frame_clears_stale_bytes() {
+        reset();
         begin_frame();
         frame_out().write_all(b"stale").unwrap();
         begin_frame(); // should clear, not append
         FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b""[..])));
-        present();
+        reset();
     }
 
-    /// `present` with no open frame does nothing (no panic, no take).
+    /// `present_to` with no open frame writes nothing and returns false.
     #[test]
     fn present_without_frame_is_noop() {
-        // Ensure closed first.
-        present();
-        present();
+        reset();
+        let mut sink = Vec::new();
+        assert!(!present_to(&mut sink));
+        assert!(sink.is_empty());
         FRAME.with(|f| assert!(f.borrow().is_none()));
+    }
+
+    /// A large frame (many small writes, as a full process list produces)
+    /// accumulates fully and presents as one region — the load-bearing case for
+    /// the flicker fix, since a big slow frame is exactly what tripped the old
+    /// incremental-flush timeout.
+    #[test]
+    fn large_frame_accumulates_and_presents_once() {
+        reset();
+        begin_frame();
+        let mut expected = Vec::new();
+        for i in 0..5000u32 {
+            let cell = format!("\x1b[38;5;{}m#", i % 256);
+            frame_out().write_all(cell.as_bytes()).unwrap();
+            expected.extend_from_slice(cell.as_bytes());
+        }
+        let mut sink = Vec::new();
+        assert!(present_to(&mut sink));
+        assert_eq!(&sink[..BEGIN_SYNC.len()], BEGIN_SYNC);
+        assert_eq!(&sink[sink.len() - END_SYNC.len()..], END_SYNC);
+        assert_eq!(&sink[BEGIN_SYNC.len()..sink.len() - END_SYNC.len()], &expected[..]);
+        reset();
+    }
+
+    /// `flush()` inside an open frame is a no-op (does not close or present it);
+    /// the buffered bytes survive to the eventual `present`.
+    #[test]
+    fn flush_during_frame_does_not_present() {
+        reset();
+        begin_frame();
+        let mut o = frame_out();
+        o.write_all(b"kept").unwrap();
+        o.flush().unwrap();
+        o.flush().unwrap();
+        FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b"kept"[..])));
+        let mut sink = Vec::new();
+        present_to(&mut sink);
+        assert_eq!(sink, b"\x1b[?2026hkept\x1b[?2026l");
     }
 }

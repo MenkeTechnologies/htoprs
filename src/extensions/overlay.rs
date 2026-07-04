@@ -437,6 +437,7 @@ impl OverlayState {
             KeyCode::Char('B') => {
                 self.show_border = !self.show_border;
                 self.layout_dirty = true; // the usable area changed → re-layout
+                self.dirty = true; // persist the border toggle
                 self.set_status(if self.show_border {
                     "Border: on"
                 } else {
@@ -445,6 +446,7 @@ impl OverlayState {
             }
             KeyCode::Char('g') => {
                 self.show_header = !self.show_header;
+                self.dirty = true; // persist the header toggle
                 self.set_status(if self.show_header {
                     "Header: on"
                 } else {
@@ -579,11 +581,13 @@ pub fn dispatch_key(ch: i32) -> bool {
         if s.dirty {
             s.dirty = false;
             // Read-modify-write so a concurrent bar-style choice in the shared
-            // prefs.json is preserved (only the theme fields are touched here).
+            // prefs.json is preserved (only the overlay's fields are touched).
             super::prefs::update(|p| {
                 p.theme = s.theme_name;
                 p.active_custom_theme = s.active_custom_theme.clone();
                 p.custom_themes = s.custom_themes.clone();
+                p.show_border = s.show_border;
+                p.show_header = s.show_header;
             });
         }
         consumed
@@ -603,6 +607,12 @@ pub fn init_from_prefs() {
         s.theme_name = p.theme;
         s.custom_themes = p.custom_themes;
         s.active_custom_theme = p.active_custom_theme;
+        // Restore the persisted chrome toggles so the border/header come back as
+        // the user left them. `layout_dirty` makes the first frame re-inset the
+        // panels for a restored border.
+        s.show_border = p.show_border;
+        s.show_header = p.show_header;
+        s.layout_dirty = p.show_border;
         s.themed = true;
         let palette = s.current_palette();
         s.theme = Theme::from_palette_raw(
@@ -693,6 +703,40 @@ pub fn draw_chrome<W: Write>(out: &mut W) {
 /// the toast paints on top immediately.
 pub fn set_status(msg: impl Into<String>) {
     OVERLAY.with(|o| o.borrow_mut().set_status(msg));
+}
+
+/// The confirmation-toast label for a ported htop action key, or `None` for keys
+/// that aren't a state-changing action (navigation, digits), that surface their
+/// own UI (modals, screens, text input), or that already toast via their own
+/// handler (the extension hotkeys — `b`/`B`/`g`/`f`/`v`/…). Keyed off the raw key
+/// byte / `KEY_F(n)`. `ScreenManager_run` toasts it only when the key actually
+/// ran an action (`HANDLED`), so read-only no-ops and navigation stay quiet.
+pub fn action_key_label(ch: i32) -> Option<&'static str> {
+    use crate::ported::crt::KEY_F;
+    let label = match ch {
+        c if c == b'[' as i32 => "Lower priority (nice +1)",
+        c if c == b']' as i32 => "Raise priority (nice -1)",
+        c if c == b' ' as i32 => "Tagged process",
+        c if c == b'U' as i32 => "Untagged all",
+        c if c == b't' as i32 => "Toggle tree view",
+        c if c == b'F' as i32 => "Toggle follow process",
+        c if c == b'H' as i32 => "Toggle user threads",
+        c if c == b'K' as i32 => "Toggle kernel threads",
+        c if c == b'O' as i32 => "Toggle containers only",
+        c if c == b'm' as i32 => "Toggle merged command",
+        c if c == b'p' as i32 => "Toggle program path",
+        c if c == b'Z' as i32 => "Toggle pause updates",
+        c if c == b'I' as i32 => "Invert sort order",
+        c if c == b'M' as i32 => "Sort by memory",
+        c if c == b'N' as i32 => "Sort by PID",
+        c if c == b'P' as i32 => "Sort by CPU",
+        c if c == b'T' as i32 => "Sort by time",
+        _ if ch == KEY_F(5) => "Toggle tree view",
+        _ if ch == KEY_F(7) => "Raise priority (nice -1)",
+        _ if ch == KEY_F(8) => "Lower priority (nice +1)",
+        _ => return None,
+    };
+    Some(label)
 }
 
 /// The current (non-expired) status-toast text, or `None`. Test hook used to
@@ -1394,15 +1438,43 @@ mod tests {
     }
 
     #[test]
+    fn action_key_label_covers_priority_and_toggles_only() {
+        use crate::ported::crt::KEY_F;
+        // The keys the user named plus the other action keys get a label.
+        assert_eq!(action_key_label(b'[' as i32), Some("Lower priority (nice +1)"));
+        assert_eq!(action_key_label(b']' as i32), Some("Raise priority (nice -1)"));
+        assert_eq!(action_key_label(b't' as i32), Some("Toggle tree view"));
+        assert_eq!(action_key_label(KEY_F(8)), Some("Lower priority (nice +1)"));
+        // Navigation, digits, and modal/extension keys must NOT toast here
+        // (arrows are navigation; `b`/`f` toast via their own handlers).
+        assert_eq!(action_key_label(b'j' as i32), None);
+        assert_eq!(action_key_label(b'0' as i32), None);
+        assert_eq!(action_key_label(b'b' as i32), None);
+        assert_eq!(action_key_label(b'f' as i32), None);
+    }
+
+    #[test]
     fn capital_b_toggles_border_with_status() {
         let mut s = OverlayState::new();
         assert!(!s.show_border); // off by default (htop-like)
         assert!(s.handle_key(key(KeyCode::Char('B'))));
         assert!(s.show_border);
+        // The toggle must mark the state dirty so dispatch_key persists it to
+        // prefs — otherwise the border does not survive a restart.
+        assert!(s.dirty);
         assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Border: on"));
         s.handle_key(key(KeyCode::Char('B')));
         assert!(!s.show_border);
         assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Border: off"));
+    }
+
+    #[test]
+    fn g_header_toggle_marks_dirty_for_persistence() {
+        let mut s = OverlayState::new();
+        let before = s.show_header;
+        assert!(s.handle_key(key(KeyCode::Char('g'))));
+        assert_eq!(s.show_header, !before);
+        assert!(s.dirty); // persisted by dispatch_key
     }
 
     #[test]

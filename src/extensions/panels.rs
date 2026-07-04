@@ -135,6 +135,9 @@ struct PanelState {
 
 impl PanelState {
     fn new() -> Self {
+        // Restore the persisted extension toggles once (spark mode, hot-row
+        // highlight); absent (first run) falls back to each field's default.
+        let saved = super::prefs::load();
         PanelState {
             ring: ProcRing::new(HISTORY),
             alerts: AlertEngine::new(default_rules()),
@@ -148,11 +151,9 @@ impl PanelState {
             cpu_peak: 100.0,
             tick: 0,
             modal: Modal::None,
-            spark: SparkMode::Off,
+            spark: saved.as_ref().map(|p| p.spark).unwrap_or_default(),
             // Restore the saved hot-row-highlight toggle; absent (first run) = on.
-            alert_hl: super::prefs::load()
-                .and_then(|p| p.alert_hl)
-                .unwrap_or(true),
+            alert_hl: saved.as_ref().and_then(|p| p.alert_hl).unwrap_or(true),
             pending_select: None,
             finder_query: String::new(),
             finder_hits: Vec::new(),
@@ -459,6 +460,8 @@ impl PanelState {
             SparkMode::Column => "CPU graph: column",
             SparkMode::Double => "CPU graph: inline (taller = busier)",
         });
+        let spark = self.spark;
+        super::prefs::update(|p| p.spark = spark);
     }
 
     // ── rendering ─────────────────────────────────────────────────────────
@@ -1138,6 +1141,22 @@ mod tests {
         let mut empty: Vec<u8> = Vec::new();
         draw_spark_row(&mut empty, 4, 0, 120, SPARK_GRAPH_H, 200);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn hotkeys_emit_confirmation_toasts() {
+        use crate::extensions::overlay::status_text;
+        // Every idle monitoring hotkey sets a confirmation toast, like `b`.
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Off);
+        dispatch_key(0x76); // 'v' — spark cycle
+        assert_eq!(status_text().as_deref(), Some("CPU graph: column"));
+        dispatch_key(0x47); // 'G' — graph
+        assert_eq!(status_text().as_deref(), Some("CPU history graph"));
+        dispatch_key(27); // close modal
+        dispatch_key(0x6f); // 'o' — export (succeeds or fails by env, but toasts)
+        assert!(status_text().is_some(), "export must toast");
+        dispatch_key(27);
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Off); // reset shared state
     }
 
     #[test]
