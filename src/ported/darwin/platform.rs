@@ -671,16 +671,22 @@ pub fn Platform_setSwapValues(mtr: &mut Meter) {
     mtr.values[SWAP_METER_USED] = (swapused.xsu_used / 1024) as f64;
 }
 
-/// TODO: port of `void Platform_setZfsArcValues(Meter* this)` from
-/// `Platform.c:465`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setZfsArcValues() {
-    todo!("port of Platform.c:465")
+/// Port of `void Platform_setZfsArcValues(Meter* this)` from `Platform.c:465`.
+/// Casts the host to the concrete [`DarwinMachine`] and hands its `zfs` snapshot
+/// to [`ZfsArcMeter_readStats`].
+pub fn Platform_setZfsArcValues(this: &mut Meter) {
+    let dhost = unsafe { &*(this.host as *const DarwinMachine) };
+
+    crate::ported::zfsarcmeter::ZfsArcMeter_readStats(this, &dhost.zfs);
 }
 
-/// TODO: port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
-/// `Platform.c:471`. Blocked: `Meter::host` typed as `LinuxMachine`.
-pub fn Platform_setZfsCompressedArcValues() {
-    todo!("port of Platform.c:471")
+/// Port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
+/// `Platform.c:471`. Casts the host to the concrete [`DarwinMachine`] and hands
+/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
+pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
+    let dhost = unsafe { &*(this.host as *const DarwinMachine) };
+
+    crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats(this, &dhost.zfs);
 }
 
 /// Port of `char* Platform_getProcessEnv(pid_t pid)` (`Platform.c:477`).

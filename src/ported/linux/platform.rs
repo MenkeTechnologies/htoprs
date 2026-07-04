@@ -871,14 +871,22 @@ pub fn Platform_setZramValues(this: &mut Meter) {
     this.values[1] = h.zram.usedZramOrig.wrapping_sub(h.zram.usedZramComp) as f64;
 }
 
-/// TODO: port of `void Platform_setZfsArcValues(Meter* this` from `Platform.c:507`.
-pub fn Platform_setZfsArcValues() {
-    todo!("port of Platform.c:507")
+/// Port of `void Platform_setZfsArcValues(Meter* this)` from `Platform.c:507`.
+/// Casts the host to the concrete [`LinuxMachine`] and hands its `zfs` snapshot
+/// to [`ZfsArcMeter_readStats`].
+pub fn Platform_setZfsArcValues(this: &mut Meter) {
+    let lhost = unsafe { &*(this.host as *const LinuxMachine) };
+
+    crate::ported::zfsarcmeter::ZfsArcMeter_readStats(this, &lhost.zfs);
 }
 
-/// TODO: port of `void Platform_setZfsCompressedArcValues(Meter* this` from `Platform.c:513`.
-pub fn Platform_setZfsCompressedArcValues() {
-    todo!("port of Platform.c:513")
+/// Port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
+/// `Platform.c:513`. Casts the host to the concrete [`LinuxMachine`] and hands
+/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
+pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
+    let lhost = unsafe { &*(this.host as *const LinuxMachine) };
+
+    crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats(this, &lhost.zfs);
 }
 
 /// Port of `char* Platform_getProcessEnv(pid_t pid)` from `Platform.c:519`.

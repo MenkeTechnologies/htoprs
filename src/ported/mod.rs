@@ -79,6 +79,8 @@ pub mod uptimemeter;
 pub mod userstable;
 pub mod vector;
 pub mod xutils;
+pub mod zfsarcmeter;
+pub mod zfscompressedarcmeter;
 
 // The Darwin platform layer binds mach / IOKit / darwin-only `sysctl`
 // symbols, so it is compiled only on macOS — mirroring htop's per-platform
