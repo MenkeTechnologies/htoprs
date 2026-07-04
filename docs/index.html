@@ -85,19 +85,30 @@
       </section>
 
       <section class="tutorial-section">
-        <h2>Ported so far &mdash; <code>XUtils.c</code></h2>
-        <p>htop's string and math utility layer. The pure string/math functions port faithfully; the C allocation wrappers, null-terminated helpers, varargs formatters, and <code>String_freeArray</code> have no faithful safe-Rust analog (Rust owns its allocation, bounds, and lifetimes) and are intentionally not ported.</p>
+        <h2>Ported so far &mdash; <code>891 / 1093</code> C functions (81.5%)</h2>
+        <p>121 of htop's 131 C files are started; 31 stubs remain. The authoritative per-file, per-function breakdown is the <a href="port_report.html">port report</a>, generated from source. By subsystem:</p>
         <table class="example-tbl">
           <tbody>
-            <tr><td><code>String_cat</code></td><td>concatenation</td></tr>
-            <tr><td><code>String_trim</code></td><td>trims leading/trailing space, tab, newline (only those three)</td></tr>
-            <tr><td><code>String_split</code></td><td>splits on a separator; interior empties kept, trailing empty dropped</td></tr>
-            <tr><td><code>String_splitFirst</code></td><td>splits on the first separator only</td></tr>
-            <tr><td><code>String_contains_i</code></td><td>case-insensitive substring; pipe-separated multi-needle mode</td></tr>
-            <tr><td><code>compareRealNumbers</code></td><td>NaN-aware ordering (NaN sorts first)</td></tr>
-            <tr><td><code>sumPositiveValues</code></td><td>sum of strictly-positive values, NaN skipped</td></tr>
-            <tr><td><code>countDigits</code></td><td>digit count in a given base, with overflow guard</td></tr>
-            <tr><td><code>countTrailingZeros</code></td><td>mod-37 lowest-set-bit table</td></tr>
+            <tr><td>Core model</td><td><code>Process</code> / <code>ProcessTable</code> / <code>Table</code> / <code>Row</code> / <code>Machine</code> / <code>Object</code> / <code>Settings</code></td></tr>
+            <tr><td>Containers &amp; utils</td><td><code>Vector</code>, <code>Hashtable</code>, <code>RichString</code>, <code>XUtils</code></td></tr>
+            <tr><td>Meters</td><td><code>Meter</code> + CPU / Memory / Swap / Load / Battery / Network / DiskIO / GPU / ZFS / dynamic</td></tr>
+            <tr><td>UI panels</td><td><code>Panel</code> / <code>ScreenManager</code> / <code>MainPanel</code> / <code>FunctionBar</code> / <code>Header</code> + setup panels</td></tr>
+            <tr><td>Screens &amp; input</td><td><code>Action</code>, <code>IncSet</code>, <code>LineEditor</code>, trace / env / open-files / process-locks screens</td></tr>
+            <tr><td>ncurses shim</td><td><code>CRT</code> &mdash; crossterm-backed colors, mouse, key decode</td></tr>
+            <tr><td>Platforms</td><td>darwin / linux / freebsd / netbsd / openbsd / dragonflybsd / solaris</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="tutorial-section">
+        <h2>htoprs-original extensions</h2>
+        <p>On top of the faithful port, an <code>src/extensions/</code> layer (18 modules, exempt from the port-purity gate) adds capabilities htop lacks &mdash; htoprs-original, not translations of htop C.</p>
+        <table class="example-tbl">
+          <tbody>
+            <tr><td>Theming</td><td>31 named color schemes, live chooser / editor overlay (<code>c</code> / <code>C</code>), 256-color UI recolor, persisted to prefs</td></tr>
+            <tr><td>Monitoring</td><td>Per-PID history rings, threshold alerts (<code>A</code>), fuzzy finder (<code>f</code>), regex filters (<code>r</code>), snapshot diffs (<code>d</code>), JSON/CSV export (<code>o</code>)</td></tr>
+            <tr><td>Braille graphs</td><td>Full CPU history graph (<code>G</code>) and an inline per-process CPU graph whose height scales with load (<code>v</code>)</td></tr>
+            <tr><td>Chrome</td><td>Themed help overlay (<code>h</code>/<code>?</code>), border toggle (<code>B</code>), bar-fill-glyph cycler (<code>b</code>)</td></tr>
           </tbody>
         </table>
       </section>

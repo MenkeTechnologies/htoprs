@@ -44,6 +44,7 @@ pub mod braille;
 pub mod bridge;
 pub mod export;
 pub mod filter;
+pub mod frame;
 pub mod finder;
 pub mod graph;
 pub mod help;

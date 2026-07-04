@@ -495,7 +495,7 @@ pub fn drawTab(y: i32, x: &mut i32, l: i32, name: &str, cur: bool) -> bool {
     }
     .packed(scheme);
 
-    let mut out = io::stdout().lock();
+    let mut out = crate::extensions::frame::frame_out();
 
     Ncurses::attrset(&mut out, border);
     Ncurses::mvaddch(&mut out, y, *x, '[');
@@ -569,7 +569,7 @@ pub fn ScreenManager_drawScreenTabs(this: &ScreenManager) {
 
     // end: attrset(CRT_colors[RESET_COLOR]);
     let scheme = ColorScheme::active();
-    let mut out = io::stdout().lock();
+    let mut out = crate::extensions::frame::frame_out();
     Ncurses::attrset(&mut out, ColorElements::RESET_COLOR.packed(scheme));
     let _ = out.flush();
 }
@@ -629,7 +629,7 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
     };
 
     let n_panels = this.panelCount as usize;
-    let mut out = io::stdout().lock();
+    let mut out = crate::extensions::frame::frame_out();
     for i in 0..n_panels {
         // C `Panel_draw` dispatches `Panel_printHeader(this)` through the
         // object vtable (`Panel.c:247-248`) to (re)build the column-name header
@@ -677,7 +677,7 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
     // vanishes" bug).
     if (focus) < n_panels && this.panels[focus].is_text_input_active() {
         this.panels[focus].draw_function_bar(hide_function_bar);
-        let mut out = io::stdout().lock();
+        let mut out = crate::extensions::frame::frame_out();
         let _ = out.flush();
     }
 }
@@ -756,15 +756,16 @@ pub fn ScreenManager_run(
             }
         }
 
-        // htoprs extension: bracket the frame's DRAWING in a synchronized-update
-        // region (DEC private mode 2026) so the terminal applies the full
-        // repaint atomically instead of flickering. htop avoids flicker via
-        // ncurses' doupdate (diff against a virtual screen); htoprs emits
-        // directly on crossterm. Ignored by terminals that don't support 2026.
-        {
-            let mut out = io::stdout().lock();
-            let _ = crossterm::execute!(out, crossterm::terminal::BeginSynchronizedUpdate);
-        }
+        // htoprs extension: open an in-memory frame. All drawing below writes to
+        // a thread-local buffer via `frame_out()` instead of stdout, so nothing
+        // reaches the terminal mid-repaint. `present()` (below) emits the whole
+        // frame wrapped in a DEC-2026 synchronized-update region in ONE write —
+        // `Begin` and `End` arrive together, so the terminal's 2026 timeout can
+        // never trip regardless of how slow the machine draws. This replaces the
+        // old approach of sending `Begin`, drawing incrementally (flushing as it
+        // went), then `End` — which flickered on slow machines whose repaint
+        // outran the timeout. See `extensions::frame`.
+        crate::extensions::frame::begin_frame();
 
         if redraw || force_redraw {
             // The Table_rebuildPanel + Header_draw that C runs at the tail of
@@ -782,7 +783,7 @@ pub fn ScreenManager_run(
                 // SAFETY: state aliases the caller-owned State.
                 if !unsafe { (*this.state).hideMeters } && !this.header.is_null() {
                     let header = unsafe { &mut *this.header };
-                    let mut out = io::stdout().lock();
+                    let mut out = crate::extensions::frame::frame_out();
                     Header_draw(header, &mut out);
                 }
             }
@@ -801,7 +802,7 @@ pub fn ScreenManager_run(
             // then the help/chooser/editor overlay over the freshly-drawn
             // panels (each a no-op when off/closed).
             {
-                let mut out = io::stdout().lock();
+                let mut out = crate::extensions::frame::frame_out();
                 crate::extensions::overlay::draw_chrome(&mut out);
                 crate::extensions::overlay::draw_active(&mut out);
                 // htoprs extension: the monitoring modal (finder/filter/diff/
@@ -819,17 +820,17 @@ pub fn ScreenManager_run(
                 host.iterationsRemaining -= 1;
                 if host.iterationsRemaining == 0 {
                     quit = true;
+                    // Present the final frame before quitting (don't leave the
+                    // thread-local frame buffer open for a parent run loop).
+                    crate::extensions::frame::present();
                     continue;
                 }
             }
         }
 
-        // End the synchronized-update frame before blocking on input, so the
-        // terminal renders everything drawn since Begin in one atomic update.
-        {
-            let mut out = io::stdout().lock();
-            let _ = crossterm::execute!(out, crossterm::terminal::EndSynchronizedUpdate);
-        }
+        // Present the buffered frame atomically (single write of
+        // Begin + frame + End) before blocking on input.
+        crate::extensions::frame::present();
 
         let prevCh = ch;
         ch = Panel_getCh(this.panels[focus].as_panel());

@@ -218,7 +218,7 @@ pub fn FunctionBar_drawExtra(
     let (cursorX, endX) = this.extra_layout(buffer);
 
     let line = Ncurses::lines() - 1;
-    let mut out = io::stdout().lock();
+    let mut out = crate::extensions::frame::frame_out();
 
     Ncurses::attrset(
         &mut out,
@@ -270,7 +270,7 @@ pub fn FunctionBar_drawExtra(
 pub fn FunctionBar_append(buffer: &str, attr: i32) {
     let cur = currentLen.load(Ordering::Relaxed);
     let line = Ncurses::lines() - 1;
-    let mut out = io::stdout().lock();
+    let mut out = crate::extensions::frame::frame_out();
 
     let a = if attr == -1 {
         ColorElements::FUNCTION_BAR.packed(ColorScheme::active())

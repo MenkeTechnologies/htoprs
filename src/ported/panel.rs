@@ -711,7 +711,10 @@ pub fn Panel_draw(
         ColorElements::PANEL_HEADER_UNFOCUS.packed(ColorScheme::active())
     };
 
-    let mut out = io::stdout().lock();
+    // htoprs extension: draw into the frame buffer (see `extensions::frame`) so
+    // the whole repaint is presented atomically; falls back to stdout when no
+    // frame is open (e.g. a direct draw outside the run loop).
+    let mut out = crate::extensions::frame::frame_out();
 
     if force_redraw {
         // Base Panel_class has no printHeader vtable slot -> the else branch.

@@ -98,17 +98,17 @@
 
       <h2 class="tutorial-title"><span class="step-hash">&gt;_</span>EXECUTIVE SUMMARY</h2>
       <p class="tutorial-subtitle"><strong>htoprs</strong> is a faithful Rust port of <a href="https://github.com/htop-dev/htop" target="_blank" rel="noopener noreferrer">htop</a> 3.5.1, the interactive process viewer. The upstream C source is the specification &mdash; the port is translated function-for-function, never reimplemented from scratch, the same precedent as <a href="https://github.com/MenkeTechnologies/zshrs" target="_blank" rel="noopener noreferrer">zshrs</a>.</p>
-      <p class="tutorial-subtitle">Fidelity is enforced mechanically: a build-time port-purity gate rejects any free <code>fn</code> under <code>src/ported/</code> whose name has no counterpart in the htop C source. The port is at an early stage &mdash; <code>XUtils.c</code>'s string/math utility layer is the first file landed.</p>
+      <p class="tutorial-subtitle">Fidelity is enforced mechanically: a build-time port-purity gate rejects any free <code>fn</code> under <code>src/ported/</code> whose name has no counterpart in the htop C source. The port now covers <strong>121 of the 131 C files</strong> &mdash; <strong>891 of 1093 C functions (81.5%)</strong>, with 31 remaining stubs. On top of the port sits an <strong>htoprs-original extensions layer</strong> (18 modules, exempt from the port-purity gate) providing a named color-theme system, a keyboard-help/theme overlay, and a live monitoring suite (per-PID history rings, threshold alerts, braille CPU graphs, a fuzzy finder, snapshot diffs, and exporters). Live coverage per file is in the <a href="port_report.html">port report</a>.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val">v0.1.0</div><div class="stat-label">Version</div></div>
+        <div class="stat-card"><div class="stat-val">v0.5.0</div><div class="stat-label">Version</div></div>
         <div class="stat-card"><div class="stat-val cyan">3.5.1</div><div class="stat-label">htop spec</div></div>
         <div class="stat-card"><div class="stat-val cyan">131</div><div class="stat-label">C source files</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val green">16</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val green">1.46%</div><div class="stat-label">Coverage</div></div>
-        <div class="stat-card"><div class="stat-val cyan">7</div><div class="stat-label">src .rs files</div></div>
-        <div class="stat-card"><div class="stat-val">797</div><div class="stat-label">Source lines</div></div>
+        <div class="stat-card"><div class="stat-val green">891</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val green">81.5%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">145</div><div class="stat-label">src .rs files</div></div>
+        <div class="stat-card"><div class="stat-val">88.9k</div><div class="stat-label">Source lines</div></div>
       </div>
 
       <hr class="section-rule">
@@ -127,18 +127,34 @@
       </table>
 
       <hr class="section-rule">
-      <h2 class="tutorial-title"><span class="step-hash">&amp;</span>PORTED FILES</h2>
-      <p>The pure-logic layers are ported first. The live per-function breakdown and coverage are in the <a href="port_report.html">port report</a>, derived from source at generation time; this table is the file-level summary.</p>
+      <h2 class="tutorial-title"><span class="step-hash">&amp;</span>PORTED SUBSYSTEMS</h2>
+      <p>121 of the 131 C files are started (81.5% of functions). The authoritative per-file, per-function breakdown is the <a href="port_report.html">port report</a>, generated from source; this table groups the port by subsystem.</p>
       <table class="arch-table">
-        <thead><tr><th>C file</th><th>Ported layer</th></tr></thead>
+        <thead><tr><th>Subsystem</th><th>Ported layer</th></tr></thead>
         <tbody>
-          <tr><td><code>XUtils.c</code></td><td>string / math utilities &mdash; <code>String_cat</code> / <code>_trim</code> / <code>_split</code> / <code>_splitFirst</code> / <code>_contains_i</code>, <code>compareRealNumbers</code>, <code>sumPositiveValues</code>, <code>countDigits</code>, <code>countTrailingZeros</code></td></tr>
-          <tr><td><code>Vector.c</code></td><td>container sort / search core &mdash; <code>swap</code>, <code>partition</code>, <code>quickSort</code>, <code>insertionSort</code>, <code>Vector_indexOf</code> (generics over a slice with a C-<code>int</code> comparator)</td></tr>
-          <tr><td><code>Hashtable.c</code></td><td>prime-table math &mdash; <code>nextPrime</code></td></tr>
-          <tr><td><code>Meter.c</code></td><td>value formatting &mdash; <code>Meter_humanUnit</code></td></tr>
+          <tr><td>Core model</td><td><code>Process</code> / <code>ProcessTable</code> / <code>Table</code> / <code>Row</code> / <code>Machine</code> / <code>Object</code> / <code>Settings</code> &mdash; the process model, table build, and settings</td></tr>
+          <tr><td>Containers &amp; utils</td><td><code>Vector</code>, <code>Hashtable</code>, <code>RichString</code>, <code>XUtils</code> &mdash; sort/search, prime-table, attributed strings, string/math helpers</td></tr>
+          <tr><td>Meters</td><td><code>Meter</code> plus CPU / Memory / Swap / Load / Battery / Network / DiskIO / GPU / ZFS / DateTime / Uptime / Tasks / dynamic meters</td></tr>
+          <tr><td>UI panels</td><td><code>Panel</code> / <code>ScreenManager</code> / <code>MainPanel</code> / <code>FunctionBar</code> / <code>Header</code> and the setup / columns / colors / display-options / affinity / signals panels</td></tr>
+          <tr><td>Screens &amp; input</td><td><code>Action</code> key dispatch, <code>IncSet</code>, <code>LineEditor</code>, and the trace / env / info / open-files / process-locks screens</td></tr>
+          <tr><td>ncurses shim</td><td><code>CRT</code> &mdash; the crossterm-backed terminal layer (colors, mouse, key decode)</td></tr>
+          <tr><td>Platforms</td><td>darwin / linux / freebsd / netbsd / openbsd / dragonflybsd / solaris machine &amp; process-table backends</td></tr>
         </tbody>
       </table>
-      <p>The C allocation / memory machinery (the <code>xMalloc</code> family and <code>String_freeArray</code>; the <code>Object**</code> dynamic array &mdash; <code>Vector_new</code> / <code>_insert</code> / <code>_resizeIfNecessary</code> …; the open-addressing bucket table &mdash; <code>Hashtable_new</code> / <code>_put</code> / <code>_get</code> …), the null-terminated-string helpers, and the varargs formatters have no faithful safe-Rust analog (Rust's <code>Vec</code> / <code>HashMap</code> / <code>String</code> own allocation, bounds, probing, and lifetimes) and are intentionally not ported.</p>
+      <p>The C allocation / memory machinery (the <code>xMalloc</code> family, the raw <code>Object**</code> dynamic array, the open-addressing bucket table), the null-terminated-string helpers, and the varargs formatters have no faithful safe-Rust analog (Rust's <code>Vec</code> / <code>HashMap</code> / <code>String</code> own allocation, bounds, probing, and lifetimes) and are intentionally not ported. The remaining 31 stubs and un-started files are tracked in the <a href="port_report.html">port report</a>.</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">+</span>HTOPRS-ORIGINAL EXTENSIONS</h2>
+      <p>Beyond the faithful port, an <code>src/extensions/</code> layer (18 modules, exempt from the port-purity gate) adds capabilities htop lacks. These are htoprs-original, not translations of htop C.</p>
+      <table class="arch-table">
+        <thead><tr><th>Area</th><th>Capability</th></tr></thead>
+        <tbody>
+          <tr><td>Theming</td><td>31 named color schemes with a live chooser / editor overlay (<code>c</code> / <code>C</code>), recoloring the ncurses UI in 256-color; persisted to <code>~/.config/htoprs/prefs.json</code></td></tr>
+          <tr><td>Monitoring</td><td>Per-PID CPU/mem history rings, debounced threshold alerts (<code>A</code>), a fuzzy process finder (<code>f</code>), regex filters (<code>r</code>), snapshot diffs (<code>d</code>), and JSON/CSV export (<code>o</code>)</td></tr>
+          <tr><td>Braille graphs</td><td>A full braille CPU history graph (<code>G</code>) and an inline per-process CPU graph whose height scales with load (<code>v</code>)</td></tr>
+          <tr><td>Chrome</td><td>A themed help overlay (<code>h</code>/<code>?</code>), a border toggle (<code>B</code>), and a bar-fill-glyph cycler (<code>b</code>)</td></tr>
+        </tbody>
+      </table>
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">$</span>CI GATES</h2>
@@ -156,7 +172,7 @@
       <table class="arch-table">
         <thead><tr><th>Item</th><th>Value</th></tr></thead>
         <tbody>
-          <tr><td>Version</td><td>0.1.0</td></tr>
+          <tr><td>Version</td><td>0.5.0</td></tr>
           <tr><td>License</td><td>GPL-2.0-or-later (matching htop)</td></tr>
           <tr><td>Spec</td><td>htop 3.5.1 &mdash; <a href="https://github.com/htop-dev/htop" target="_blank" rel="noopener noreferrer">github.com/htop-dev/htop</a></td></tr>
           <tr><td>Precedent</td><td><a href="https://github.com/MenkeTechnologies/zshrs" target="_blank" rel="noopener noreferrer">zshrs</a> &mdash; the faithful-port + port-purity-gate pattern</td></tr>

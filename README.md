@@ -117,23 +117,27 @@ enforced mechanically, following the same precedent as `zshrs`.
 
 ## Current state
 
-The pure-logic layers are ported — string/math utilities, the container
-sort/search algorithms, the prime table, and the human-readable unit
-formatter (detailed below). Partial ports also cover the faithfully-portable
-subset of eight more files: `Process.c` (cmdline/comm string parsing, process
-state char), `LineEditor.c` (text-buffer editing and cursor motion),
-`OptionItem.c` (`CheckItem`/`NumberItem` accessors and editing),
-`RichString.c` (`RichString_findChar`), `ListItem.c` (`ListItem_compare`),
-`Affinity.c` (`Affinity_add`), `History.c` (the command-history ring), and
-`Row.c` (`Row_printPercentage`). Functions that need still-unported substrate
-(ncurses/`RichString` drawing, `CRT` colors, `Panel`, `Object` vtables,
-syscalls) remain honest `todo!()` stubs; the rest of the C source is likewise
-scaffolded with stubs so the full surface is laid out. Further parallel passes
-have filled in the pure-logic functions of more files — meter sum/mode math,
-`FunctionBar` widths, `Object_isA`, and `Settings`/`Action`/`Scheduling`/
-`Machine`/`GPUMeter` helpers among them — each verified against the port gate
-and unit tests. Overall and per-file coverage — real ports vs stubs — lives in
-`docs/port_report.html` (derived from source at run time — nothing hardcoded).
+The port covers **891 of 1093 C functions (81.5%)** across **121 of the 131 C
+files**, with 31 stubs remaining — the TUI runs as a daily driver on macOS. The
+core is ported end-to-end: the process model and table build (`Process`,
+`ProcessTable`, `Table`, `Row`, `Machine`), the container/util layer (`Vector`,
+`Hashtable`, `RichString`, `XUtils`), the full meter set (CPU, Memory, Swap,
+Load, Battery, Network, DiskIO, GPU, ZFS, and the dynamic meters), the UI panels
+and main loop (`Panel`, `ScreenManager`, `MainPanel`, `FunctionBar`, `Header`,
+and the setup/columns/colors/display-options screens), key dispatch (`Action`,
+`IncSet`, `LineEditor`), the `CRT` terminal layer, and the per-OS machine /
+process-table backends (darwin / linux / freebsd / netbsd / openbsd /
+dragonflybsd / solaris). Functions that need genuinely unportable C substrate
+(the `xMalloc` family, raw `Object**`/bucket-table internals, varargs
+formatters) stay intentionally unported; a shrinking set of honest `todo!()`
+stubs marks work still in flight. Overall and per-file coverage — real ports vs
+stubs — lives in `docs/port_report.html` (derived from source at run time —
+nothing hardcoded).
+
+On top of the port sits an `src/extensions/` layer (18 modules, exempt from the
+port-purity gate) — the named color-theme system, the help/theme overlay, and
+the live monitoring suite (per-PID history, alerts, braille CPU graphs, finder,
+diffs, exporters) described above.
 
 ### Terminal backend & substrate
 
@@ -147,7 +151,8 @@ ported: `Object.c` (htop's vtable OOP → a Rust `Object` trait with a class-cha
 **color model** — the `ColorElements` enum and every `CRT_colorSchemes` entry
 transcribed verbatim so colors match htop exactly. The terminal-control fns
 (`CRT_init`/`readKey`, `Panel`/`ScreenManager` draw) and the platform
-data-collection layer (`Platform_*`, process scan) are the next phases.
+data-collection layer (`Platform_*`, process scan) are now ported and drive the
+live TUI; the remaining gaps are the un-started files tracked in the port report.
 
 **`XUtils.c`** — string / math utilities:
 
