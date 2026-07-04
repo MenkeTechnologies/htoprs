@@ -94,11 +94,13 @@ use crate::ported::crt::{
     KEY_RECLICK, KEY_RIGHT, KEY_UP,
 };
 use crate::ported::functionbar::{FunctionBar, FunctionBar_new};
-use crate::ported::header::Header_calculateHeight;
+use crate::ported::header::{Header, Header_calculateHeight};
 use crate::ported::listitem::ListItem;
-use crate::ported::meter::{Meter, Meter_nextSupportedMode, Meter_setMode, Meter_toListItem};
+use crate::ported::meter::{
+    Meter, Meter_class, Meter_nextSupportedMode, Meter_setMode, Meter_toListItem,
+};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_add, Panel_done, Panel_getSelectedIndex, Panel_insert,
+    HandlerResult, Panel, PanelClass, Panel_add, Panel_getSelectedIndex, Panel_insert,
     Panel_moveSelectedDown, Panel_moveSelectedUp, Panel_new, Panel_remove, Panel_set,
     Panel_setDefaultBar, Panel_setHeader, Panel_setSelected, Panel_setSelectionColor, Panel_size,
     EVENT_PANEL_LOST_FOCUS,
@@ -106,8 +108,8 @@ use crate::ported::panel::{
 use crate::ported::screenmanager::{ScreenManager, ScreenManager_resize};
 use crate::ported::settings::Settings;
 use crate::ported::vector::{
-    Vector, Vector_get, Vector_insert, Vector_moveDown, Vector_moveUp, Vector_remove, Vector_size,
-    Vector_take,
+    Vector, Vector_get, Vector_insert, Vector_moveDown, Vector_moveUp, Vector_new, Vector_remove,
+    Vector_size, Vector_take,
 };
 
 /// Port of `static const char* const MetersFunctions[]` from
@@ -162,16 +164,14 @@ pub fn MetersPanel_cleanup() {
 }
 
 /// Port of `static void MetersPanel_delete(Object* object)` from
-/// `MetersPanel.c:45`: `Panel_done(&this->super); free(this);`. Taking
-/// `this` by value consumes the panel; the embedded `super_` [`Panel`] is
-/// handed to [`Panel_done`] (mirroring the C call graph). The remaining
-/// fields drop with the struct free: the non-owning `settings`/`scr`/
-/// neighbor back-pointers and `moving` flag, plus the `meters` [`Vector`]
-/// (owned in this port — the C `Vector` is freed by its external owner, not
-/// here — so its `Drop` reclaims the Rust-owned copy).
+/// `MetersPanel.c:45`: `Panel_done(&this->super); free(this);`. Taking `this`
+/// by value consumes the panel; letting it drop here runs [`MetersPanel`]'s
+/// `Drop` (the header meter write-back) and then releases every owned field —
+/// the embedded `super_` [`Panel`] (whose owned `FunctionBar` drop is the
+/// `Panel_done` cleanup) and the owned `meters` [`Vector`]. `Drop` forbids the
+/// old field-destructure, so the by-value consume replaces it exactly.
 pub fn MetersPanel_delete(this: MetersPanel) {
-    let MetersPanel { super_, .. } = this;
-    Panel_done(super_);
+    drop(this);
 }
 
 /// Model of the C `MetersPanel` struct (`MetersPanel.h:21`). `super_` is the
@@ -204,6 +204,55 @@ pub struct MetersPanel {
     pub rightNeighbor: *mut MetersPanel,
     /// C `bool moving`.
     pub moving: bool,
+    /// htoprs bridge (no C field): the `Header` this panel's column was taken
+    /// from, and which index in `header.columns` to write the (edited) meters
+    /// back to on [`Drop`]. C shares one `Vector*` so the header sees edits
+    /// live; the owned-`Vector` port instead moves the column out into this
+    /// panel for the Setup session and restores it when the panel is dropped
+    /// (on page switch or Setup close). `NULL` when not wired to a header (the
+    /// unit-test panels), in which case `Drop` is a no-op.
+    pub header: *mut Header,
+    /// Index into [`header`](Self::header)`.columns` this panel owns while live.
+    pub column: usize,
+}
+
+impl Drop for MetersPanel {
+    fn drop(&mut self) {
+        // htoprs: move the (possibly edited) meters back into the header column
+        // they came from, so the Setup screen's edits survive the panel being
+        // dropped (a category switch or Setup close). A no-op for header-less
+        // panels (the unit tests).
+        if self.header.is_null() {
+            return;
+        }
+        // Recover the owned `Meter` values from the column's `Vector` (the
+        // inverse of makeMetersPage's `Box<Meter>` → `Box<dyn Object>`
+        // coercion). `Object: Any`, so each boxed object upcasts to `dyn Any`
+        // for the owned downcast back to the concrete `Meter`.
+        // The placeholder just needs to be a valid empty Vector (Vector_new
+        // asserts a positive capacity hint).
+        let mut meters =
+            core::mem::replace(&mut self.meters, Vector_new(&Meter_class.super_, true, 1));
+        let mut column: Vec<Meter> = Vec::with_capacity(meters.array.len());
+        for slot in meters.array.drain(..) {
+            if let Some(obj) = slot {
+                let any: Box<dyn Any> = obj;
+                if let Ok(meter) = any.downcast::<Meter>() {
+                    column.push(*meter);
+                }
+            }
+        }
+        // SAFETY: `header` outlives the Setup `ScreenManager` (Action_runSetup
+        // owns it and only drops the manager — hence these panels — before
+        // reading the header back). The column index was set by makeMetersPage
+        // and is bounded by the header's column count.
+        unsafe {
+            let h = &mut *self.header;
+            if self.column < h.columns.len() {
+                h.columns[self.column] = column;
+            }
+        }
+    }
 }
 
 /// Port of `MetersPanel.c`'s `const PanelClass MetersPanel_class` vtable
@@ -591,6 +640,10 @@ pub fn MetersPanel_new(
         leftNeighbor: core::ptr::null_mut(),
         rightNeighbor: core::ptr::null_mut(),
         moving: false,
+        // Wired by CategoriesPanel_makeMetersPage; NULL means no header
+        // write-back (the Drop is then a no-op).
+        header: core::ptr::null_mut(),
+        column: 0,
     };
 
     // Panel_setHeader(super, header);
@@ -694,6 +747,8 @@ mod tests {
             leftNeighbor: core::ptr::null_mut(),
             rightNeighbor: core::ptr::null_mut(),
             moving: false,
+            header: core::ptr::null_mut(),
+            column: 0,
         }
     }
 

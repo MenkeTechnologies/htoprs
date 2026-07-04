@@ -63,6 +63,9 @@
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
+use core::ffi::c_int;
+
+use crate::ported::availablemeterspanel::AvailableMetersPanel_new;
 use crate::ported::colorspanel::ColorsPanel_new;
 use crate::ported::crt::{KEY_CTRL, KEY_DOWN, KEY_END, KEY_HOME, KEY_NPAGE, KEY_PPAGE, KEY_UP};
 use crate::ported::displayoptionspanel::DisplayOptionsPanel_new;
@@ -71,6 +74,8 @@ use crate::ported::header::Header;
 use crate::ported::headeroptionspanel::HeaderOptionsPanel_new;
 use crate::ported::listitem::ListItem_new;
 use crate::ported::machine::Machine;
+use crate::ported::meter::{Meter, Meter_class};
+use crate::ported::meterspanel::{MetersPanel, MetersPanel_new};
 use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_add, Panel_getSelectedIndex, Panel_new, Panel_onKey,
     Panel_selectByTyping, Panel_setHeader, EVENT_SET_SELECTED,
@@ -79,7 +84,8 @@ use crate::ported::screenmanager::{
     ScreenManager, ScreenManager_add, ScreenManager_remove, ScreenManager_size,
 };
 use crate::ported::screenspanel::ScreensPanel_new;
-use crate::ported::settings::Settings;
+use crate::ported::settings::{HeaderLayout_getColumns, Settings};
+use crate::ported::vector::{Vector_add, Vector_new};
 
 // The two Ctrl-key codes `CategoriesPanel_eventHandler` matches in its
 // navigation arm (`KEY_CTRL('P')` / `KEY_CTRL('N')`). `KEY_CTRL` is a
@@ -137,11 +143,12 @@ type CategoriesPanel_makePageFunc = fn(&mut CategoriesPanel);
 /// a category name plus its page-builder ctor.
 ///
 /// `available` is an htoprs addition (no C analog): the C builds every page, but
-/// some page ctors here are still `todo!()` stubs (e.g. the Meters page, blocked
-/// on the header/meters shared-ownership bridge). Navigating to such a category
+/// a page ctor here may still be a `todo!()` stub. Navigating to such a category
 /// must not panic the TUI, so an unavailable page is skipped — its right pane
-/// stays empty until the ctor is ported. This flag is the guard, not a port:
-/// the underlying ctor keeps its `todo!()` body so coverage stays honest.
+/// stays empty until the ctor is ported. This flag is the guard, not a port: an
+/// unported ctor keeps its `todo!()` body so coverage stays honest. Every page
+/// in the current non-PCP table is ported, so all are `available = true`; the
+/// flag remains as a safety net for future stubs.
 struct CategoriesPanelPage {
     name: &'static str,
     ctor: CategoriesPanel_makePageFunc,
@@ -167,9 +174,7 @@ static categoriesPanelPages: [CategoriesPanelPage; 5] = [
     CategoriesPanelPage {
         name: "Meters",
         ctor: CategoriesPanel_makeMetersPage,
-        // Blocked on the header/meters shared-ownership bridge (`makeMetersPage`
-        // is still a `todo!()`); skip it instead of panicking the TUI.
-        available: false,
+        available: true,
     },
     CategoriesPanelPage {
         name: "Screens",
@@ -211,18 +216,83 @@ impl CategoriesPanel {
     }
 }
 
-/// TODO: port of `static void CategoriesPanel_makeMetersPage(CategoriesPanel*
-/// this)` from `CategoriesPanel.c:43`. Blocked: the C builds one
-/// `MetersPanel_new(settings, title, this->header->columns[i], this->scr)` per
-/// header column, sharing the header's `Vector*` meter store with the panel.
-/// The ported [`Header`] models `columns` as an owned `Vec<Vec<Meter>>` and
-/// [`crate::ported::meterspanel::MetersPanel`] *owns* its `Vector` meters, so
-/// the panel can't alias the header's column — building it would move the
-/// header's meters out (breaking the header). Missing substrate: a
-/// shared-ownership bridge between `Header.columns[i]` and `MetersPanel.meters`.
+/// Port of `static void CategoriesPanel_makeMetersPage(CategoriesPanel* this)`
+/// from `CategoriesPanel.c:43`. Builds one [`MetersPanel`] per header column,
+/// cross-links left/right neighbors, and appends the [`AvailableMetersPanel`].
+///
+/// The C shares each `this->header->columns[i]` `Vector*` between the header and
+/// the panel, so edits are live. The ported [`Header`] owns its columns
+/// (`Vec<Vec<Meter>>`) and [`MetersPanel`] owns its `Vector`, so the bridge is:
+/// **move** the column's meters into the panel here (converting the `Vec<Meter>`
+/// into a `Vector` of `Meter`-as-`Object`), and have [`MetersPanel`]'s `Drop`
+/// **move them back** into `header.columns[i]` when the panel is dropped — on a
+/// category switch (`CategoriesPanel_eventHandler` removes the page) or on Setup
+/// close (`Action_runSetup` drops the manager before `Header_writeBackToSettings`
+/// reads the columns). While the Meters page is open the header's own copy of
+/// that column is therefore empty; it is restored the moment the page closes.
+///
+/// [`AvailableMetersPanel`]: crate::ported::availablemeterspanel::AvailableMetersPanel
 pub fn CategoriesPanel_makeMetersPage(this: &mut CategoriesPanel) {
-    let _ = this;
-    todo!("port of CategoriesPanel.c:43 — Header.columns is Vec<Vec<Meter>> (owned) but MetersPanel_new needs the shared Vector* meter store the header and panel co-own; no shared-ownership bridge")
+    // C: size_t columns = HeaderLayout_getColumns(this->scr->header->headerLayout);
+    let header = this.header;
+    let scr = this.scr;
+    let host = this.host;
+    let settings = this.host_settings();
+    // SAFETY: `header` is the non-owning back-pointer set at construction; it
+    // outlives the Setup session (Action_runSetup owns it).
+    let columns = HeaderLayout_getColumns(unsafe { &*header }.headerLayout);
+
+    // C: MetersPanel** meterPanels = xMallocArray(columns, sizeof(MetersPanel*));
+    let mut meterPanels: Vec<*mut MetersPanel> = Vec::with_capacity(columns);
+
+    for i in 0..columns {
+        // C: xSnprintf(titleBuffer, sizeof(titleBuffer), "Column %zu", i + 1);
+        let title = format!("Column {}", i + 1);
+
+        // Bridge: move header.columns[i] (Vec<Meter>) into a `Vector` of Meters
+        // boxed as `Object` — the store MetersPanel_new takes ownership of. The
+        // header's copy is left empty until the panel's Drop restores it.
+        // SAFETY: `header` valid for the session; `i < columns == columns.len()`
+        // (the `Header` invariant). Deref explicitly to avoid an implicit
+        // autoref on the raw pointer.
+        let col_meters: Vec<Meter> = {
+            let h = unsafe { &mut *header };
+            core::mem::take(&mut h.columns[i])
+        };
+        let mut meters = Vector_new(&Meter_class.super_, true, col_meters.len().max(1) as c_int);
+        for m in col_meters {
+            Vector_add(&mut meters, Box::new(m));
+        }
+
+        // C: meterPanels[i] = MetersPanel_new(settings, titleBuffer, ..., this->scr);
+        let mut boxed: Box<MetersPanel> = Box::new(MetersPanel_new(settings, &title, meters, scr));
+        // Wire the header write-back target (see the fn/Drop docs).
+        boxed.header = header;
+        boxed.column = i;
+        // Stable heap pointer to the panel; survives the move into `scr` below.
+        let ptr: *mut MetersPanel = boxed.as_mut();
+
+        // C: if (i != 0) { meterPanels[i]->leftNeighbor = meterPanels[i-1];
+        //                  meterPanels[i-1]->rightNeighbor = meterPanels[i]; }
+        if i != 0 {
+            // SAFETY: both pointers reference live, `scr`-owned MetersPanels.
+            unsafe {
+                (*ptr).leftNeighbor = meterPanels[i - 1];
+                (*meterPanels[i - 1]).rightNeighbor = ptr;
+            }
+        }
+        meterPanels.push(ptr);
+
+        // C: ScreenManager_add(this->scr, (Panel*) meterPanels[i], 20);
+        // SAFETY: `scr` owns this panel for the Setup session.
+        ScreenManager_add(unsafe { &mut *scr }, boxed, 20);
+    }
+
+    // C: Panel* availableMeters = AvailableMetersPanel_new(this->host, this->header,
+    //        columns, meterPanels, this->scr);
+    //    ScreenManager_add(this->scr, availableMeters, -1);
+    let available = AvailableMetersPanel_new(host, header, columns, meterPanels, scr);
+    ScreenManager_add(unsafe { &mut *scr }, Box::new(available), -1);
 }
 
 /// Port of `static void CategoriesPanel_makeDisplayOptionsPage(CategoriesPanel*
@@ -604,21 +674,58 @@ mod tests {
     }
 
     #[test]
-    fn navigating_to_meters_skips_the_unported_page_without_panicking() {
-        // Regression: the Meters page ctor is a `todo!()` (header/meters
-        // shared-ownership bridge). Arrowing to it (index 2) used to panic the
-        // whole TUI. It must now be skipped — HANDLED, selection moves, but no
-        // page panel is added for the unavailable category.
+    fn navigating_to_meters_builds_the_page_without_panicking() {
+        // Regression: the Meters page ctor used to be a `todo!()` and arrowing
+        // to it panicked the TUI. It is now ported (header column moved into a
+        // MetersPanel, restored on Drop). Navigating to it (index 2) builds one
+        // MetersPanel per header column plus the AvailableMetersPanel — HANDLED,
+        // no panic.
         let mut scr = scr_wired();
         let mut host = host_wired();
         let mut c = cat_with(categories_panel(), &mut scr, &mut host);
+        // The real CategoriesPanel_new wires `header`; cat_with leaves it null,
+        // and the Meters page needs it. `scr.header` is the wired test header.
+        c.header = scr.header;
         CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // 0 -> 1 Header (built)
-        let r = CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // 1 -> 2 Meters (skipped)
+        let r = CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // 1 -> 2 Meters (built)
         assert_eq!(r, HandlerResult::HANDLED);
         assert_eq!(Panel_getSelectedIndex(&c.super_), 2);
+        // 1 placeholder + 1 column MetersPanel + 1 AvailableMetersPanel.
+        assert_eq!(scr.panelCount, 3, "the Meters page must build its panels");
+    }
+
+    #[test]
+    fn meters_page_moves_column_out_and_drop_restores_it() {
+        // The header→panel→header meter round-trip: a header column with one
+        // meter is moved into the MetersPanel (header column emptied while the
+        // page is open), then restored by the panel's Drop when the page closes.
+        use crate::ported::meter::Meter;
+        let mut scr = scr_wired();
+        let header = scr.header;
+        // Seed the wired header's single column with one meter.
+        unsafe {
+            let h = &mut *header;
+            h.columns = vec![vec![Meter {
+                uiName: "CPU",
+                ..Meter::empty()
+            }]];
+        }
+        let mut host = host_wired();
+        let mut c = cat_with(categories_panel(), &mut scr, &mut host);
+        c.header = header;
+
+        // Walk to Meters and back off it, exercising build + Drop-restore.
+        CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // Header (index 1)
+        CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // Meters (index 2) — column moved out
+        assert!(
+            unsafe { &*header }.columns[0].is_empty(),
+            "the column is moved into the MetersPanel while the page is open"
+        );
+        CategoriesPanel_eventHandler(&mut c, KEY_UP); // back to Header — Meters page dropped
         assert_eq!(
-            scr.panelCount, 1,
-            "the unavailable Meters page must be skipped, leaving no page panel"
+            unsafe { &*header }.columns[0].len(),
+            1,
+            "MetersPanel Drop must restore the column into the header"
         );
     }
 
