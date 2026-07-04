@@ -200,6 +200,12 @@ impl PanelClass for MainPanel {
     fn as_panel_mut(&mut self) -> &mut Panel {
         &mut self.super_
     }
+    /// The incremental search/filter owns the keyboard while it is active, so
+    /// `ScreenManager_run` bypasses the extension hotkey hooks and hands every
+    /// key to `MainPanel_eventHandler` -> `IncSet_handleKey`.
+    fn is_text_input_active(&self) -> bool {
+        self.inc.active.is_some()
+    }
     fn event_handler(&mut self, ev: i32) -> HandlerResult {
         MainPanel_eventHandler(self, ev)
     }

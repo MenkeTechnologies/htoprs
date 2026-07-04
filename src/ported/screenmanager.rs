@@ -664,6 +664,22 @@ pub fn ScreenManager_drawPanels(this: &mut ScreenManager, focus: usize, force_re
         );
     }
     let _ = out.flush();
+    drop(out);
+
+    // htoprs: the base `Panel_draw` above draws each panel's static
+    // `currentBar` (the F-key bar). When the focused panel is capturing text
+    // input (the MainPanel's incremental search/filter), its live query bar
+    // lives behind the `draw_function_bar` vtable override
+    // (`MainPanel_drawFunctionBar` -> `IncSet_drawBar`), which `Panel_draw`
+    // (a free fn over a base `&mut Panel`) cannot dispatch. Redraw it here, last,
+    // so the search bar and its typed text are painted over the default bar
+    // instead of being clobbered by it every frame (the "text flickers then
+    // vanishes" bug).
+    if (focus) < n_panels && this.panels[focus].is_text_input_active() {
+        this.panels[focus].draw_function_bar(hide_function_bar);
+        let mut out = io::stdout().lock();
+        let _ = out.flush();
+    }
 }
 
 /// Port of `void ScreenManager_run(ScreenManager* this, Panel** lastFocus,
@@ -827,11 +843,19 @@ pub fn ScreenManager_run(
             continue;
         }
 
+        // htoprs extension: while the focused panel is capturing text input
+        // (the MainPanel's incremental search/filter), the keyboard belongs to
+        // that field — route every key straight to the panel's event_handler
+        // below and skip the monitoring/theme overlay hotkey hooks, so typing
+        // `h`, `f`, `/zsh`, etc. into the search box enters the query instead of
+        // firing global actions.
+        let text_input_active = this.panels[focus].is_text_input_active();
+
         // htoprs extension: the monitoring layer gets first refusal. When a
         // monitoring modal is open it consumes every key; when idle it consumes
         // only its own hotkeys (f/r/d/o/A/G/v) and yields everything else — it
         // internally defers to the theme overlay when that is the open modal.
-        if crate::extensions::panels::dispatch_key(ch) {
+        if !text_input_active && crate::extensions::panels::dispatch_key(ch) {
             // The finder's Enter picks a pid; move the panel's cursor to it.
             if let Some(pid) = crate::extensions::panels::take_pending_select() {
                 // SAFETY: activeTable / its panel are the caller-owned Table and
@@ -858,7 +882,7 @@ pub fn ScreenManager_run(
         // htoprs extension: give the theme/help overlay first refusal on the
         // key. It consumes its hotkeys (h/? c C x g) and, while open, every
         // key — repainting panels + overlay in the (possibly new) theme.
-        if crate::extensions::overlay::dispatch_key(ch) {
+        if !text_input_active && crate::extensions::overlay::dispatch_key(ch) {
             // A border toggle changed the usable area → re-lay-out the panels
             // (same path as a terminal resize) so content insets/expands.
             if crate::extensions::overlay::take_layout_dirty() {

@@ -330,6 +330,16 @@ pub trait PanelClass {
     fn event_handler(&mut self, _ev: i32) -> HandlerResult {
         HandlerResult::IGNORED
     }
+    /// htoprs extension hook: whether this panel is currently capturing raw
+    /// text input (e.g. the `MainPanel`'s incremental search/filter is active).
+    /// While true, `ScreenManager_run` must route keys straight to
+    /// [`PanelClass::event_handler`] and NOT let the monitoring/theme overlays
+    /// consume their hotkeys — otherwise typing `h`, `f`, etc. into the search
+    /// box would fire global actions instead of entering the query. Default
+    /// `false` (no text field); `MainPanel` overrides it.
+    fn is_text_input_active(&self) -> bool {
+        false
+    }
     /// C `PanelClass.drawFunctionBar` slot. Default = NULL slot (no-op); the
     /// caller draws `panel->currentBar` itself.
     fn draw_function_bar(&mut self, _hide_function_bar: bool) {}
