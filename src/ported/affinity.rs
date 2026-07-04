@@ -49,8 +49,6 @@ use crate::ported::machine::Machine;
 use crate::ported::object::{Arg, Object, Object_isA};
 #[cfg(target_os = "linux")]
 use crate::ported::process::{Process, Process_class, Process_getPid};
-#[cfg(target_os = "linux")]
-use core::any::Any;
 
 /// A growable set of CPU ids. Faithful to `struct Affinity_` in
 /// `Affinity.h:26`. `host` is the borrowed `Machine*` (raw pointer — the
@@ -186,14 +184,18 @@ pub fn Affinity_set(p: &Process, arg: Arg) -> bool {
 /// Signature mapping: the C downcast `(Process*) row` + the
 /// `Object_isA(..., &Process_class)` assert becomes `row: &dyn Object`
 /// (the actual object implements [`Object`]), the ported [`Object_isA`]
-/// guard, and an `Any` downcast to `Process` — the safe-Rust analog of the
-/// C pointer cast validated by the same assert.
+/// guard, and the `as_process()` upcast — panel items are platform `Process`
+/// subclasses, so an exact-type `Any` downcast to `Process` would miss and
+/// panic; `as_process()` is the safe-Rust analog of the C pointer cast.
 #[cfg(target_os = "linux")]
 pub fn Affinity_rowSet(row: &dyn Object, arg: Arg) -> bool {
     // Process* p = (Process*) row;
     assert!(Object_isA(Some(row), &Process_class));
-    let p = (row as &dyn Any)
-        .downcast_ref::<Process>()
+    // Panel items are platform subclasses (DarwinProcess/LinuxProcess); reach
+    // the embedded `Process` via the `as_process()` upcast, not an exact-type
+    // `Any` downcast (which fails on the concrete subclass and would panic).
+    let p = row
+        .as_process()
         .expect("Affinity_rowSet: row is not a Process");
     Affinity_set(p, arg)
 }
@@ -207,8 +209,9 @@ pub fn Affinity_rowSet(row: &dyn Object, arg: Arg) -> bool {
 pub fn Affinity_rowGet(row: &dyn Object, host: *mut Machine) -> Option<Affinity> {
     // const Process* p = (const Process*) row;
     assert!(Object_isA(Some(row), &Process_class));
-    let p = (row as &dyn Any)
-        .downcast_ref::<Process>()
+    // Reach the embedded `Process` via `as_process()` (see `Affinity_rowSet`).
+    let p = row
+        .as_process()
         .expect("Affinity_rowGet: row is not a Process");
     Affinity_get(p, host)
 }

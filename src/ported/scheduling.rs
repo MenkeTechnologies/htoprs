@@ -368,18 +368,20 @@ pub fn Scheduling_setPolicy(p: &Process, arg: &SchedulingArg) -> bool {
 /// Port of `bool Scheduling_rowSetPolicy(Row* row, Arg arg)` from
 /// `Scheduling.c:124`. The C `Process* p = (Process*) row` cast (safe
 /// because `Row` is the first member of `Process`) is modeled as an
-/// `Object_isA(&Process_class)` guard followed by an `Any` downcast to
-/// `&Process` — the same `(&dyn Object as &dyn Any).downcast_ref` idiom
-/// `Process_compare` uses for its `const void*` cast. The C `assert(...)`
+/// `Object_isA(&Process_class)` guard followed by the `as_process()` upcast
+/// (panel items are platform `Process` subclasses, so an exact-type `Any`
+/// downcast to `Process` would miss and panic). The C `assert(...)`
 /// becomes `debug_assert!` (matching `vector.rs`). Delegates to
 /// [`Scheduling_setPolicy`].
 pub fn Scheduling_rowSetPolicy(row: &dyn Object, arg: &SchedulingArg) -> bool {
     // Process* p = (Process*) row;
     // assert(Object_isA((const Object*) p, (const ObjectClass*) &Process_class));
     debug_assert!(Object_isA(Some(row), &Process_class));
-    let any: &dyn Any = row;
-    let p = any
-        .downcast_ref::<Process>()
+    // Panel items are platform subclasses (DarwinProcess/LinuxProcess); reach
+    // the embedded `Process` via `as_process()`, not an exact-type `Any`
+    // downcast (which fails on the concrete subclass and would panic).
+    let p = row
+        .as_process()
         .expect("Scheduling_rowSetPolicy: row is not a Process");
     Scheduling_setPolicy(p, arg)
 }

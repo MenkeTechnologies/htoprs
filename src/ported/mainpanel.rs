@@ -42,9 +42,10 @@
 //!   incremental PID search: builds a running id from typed digits,
 //!   selects the first row whose `id` matches, and rolls the accumulator
 //!   over at 10000000. Uses the ported `Panel_size`/`Panel_get`/
-//!   `Panel_setSelected`; each item is downcast to [`Row`] via the `Any`
-//!   supertrait (the safe-Rust analog of the C `(Row*)Panel_get(...)`
-//!   cast).
+//!   `Panel_setSelected`; each item's embedded `Row` is reached via the
+//!   `as_row()` vtable accessor (the safe-Rust analog of the C
+//!   `(Row*)Panel_get(...)` upcast — panel items are platform `Process`
+//!   objects, so an exact-type `Any` downcast to `Row` would miss).
 //! - [`MainPanel_selectedRow`] (`MainPanel.c:175`) — the selected row's
 //!   `id`, or `-1` when the list is empty (`Panel_getSelected` → `Row`).
 //! - [`MainPanel_foreachRow`] (`MainPanel.c:180`) — applies `fn` to every
@@ -104,8 +105,6 @@
 #![allow(non_camel_case_types)] // `MainPanel_foreachRowFn` mirrors the C typedef name
 #![allow(dead_code)]
 
-use core::any::Any;
-
 use crate::ported::action::{
     Action_setBindings, Action_setScreenTab, Action_setSortKey, Htop_Action, Htop_Reaction, State,
     HTOP_KEEP_FOLLOWING, HTOP_OK, HTOP_QUIT, HTOP_RECALCULATE, HTOP_REDRAW_BAR, HTOP_REFRESH,
@@ -125,7 +124,7 @@ use crate::ported::panel::{
     HandlerResult, Panel, PanelClass, Panel_get, Panel_getSelected, Panel_new, Panel_setSelected,
     Panel_setSelectionColor, Panel_size,
 };
-use crate::ported::row::{Row, RowField_keyAt};
+use crate::ported::row::RowField_keyAt;
 use crate::ported::settings::{
     ScreenSettings_getActiveSortKey, ScreenSettings_invertSortOrder, Settings_isReadonly,
 };
@@ -278,16 +277,18 @@ pub fn MainPanel_updateLabels(this: &mut MainPanel, list: bool, filter: bool) {
 /// The C `pid_t id = ch - 48 + this->idSearch;` mixes `int` and
 /// `unsigned int`; for the digit-key range (`idSearch` bounded by the
 /// rollover, `ch` an ASCII digit) the values stay small and non-negative,
-/// so `i32` arithmetic reproduces it. Each `Panel_get` result is downcast
-/// to [`Row`] (the C `(const Row*)` cast); a non-`Row` item is skipped
-/// (unreachable — a `MainPanel` holds only rows).
+/// so `i32` arithmetic reproduces it. Each `Panel_get` result's embedded
+/// `Row` is reached via `as_row()` (the C `(const Row*)` upcast); a non-row
+/// item is skipped (unreachable — a `MainPanel` holds only process rows).
 fn MainPanel_idSearch(this: &mut MainPanel, ch: i32) {
     let id: i32 = ch - 48 + this.idSearch as i32;
     let size = Panel_size(&this.super_);
     for i in 0..size {
         let matches = {
-            let obj: &dyn Any = Panel_get(&this.super_, i);
-            obj.downcast_ref::<Row>().is_some_and(|row| row.id == id)
+            // mainPanel items are platform `Process` objects; reach the embedded
+            // `Row` via `as_row()`, not an exact-type `Any` downcast (which misses).
+            let obj: &dyn Object = Panel_get(&this.super_, i);
+            obj.as_row().is_some_and(|row| row.id == id)
         };
         if matches {
             Panel_setSelected(&mut this.super_, i);
@@ -586,14 +587,14 @@ pub fn MainPanel_eventHandler(this: &mut MainPanel, ch: i32) -> HandlerResult {
 /// Port of `int MainPanel_selectedRow(MainPanel* this)` from
 /// `MainPanel.c:175`. Returns the selected row's `id`, or `-1` when the
 /// list is empty (`Panel_getSelected` returns `None`) or the selected item
-/// is not a [`Row`] (the C `(const Row*)` cast; a `MainPanel` holds only
-/// rows).
+/// has no embedded `Row` (reached via `as_row()`, the C `(const Row*)`
+/// upcast; a `MainPanel` holds only process rows).
 pub fn MainPanel_selectedRow(this: &MainPanel) -> i32 {
     match Panel_getSelected(&this.super_) {
-        Some(obj) => {
-            let any: &dyn Any = obj;
-            any.downcast_ref::<Row>().map_or(-1, |row| row.id)
-        }
+        // mainPanel items are platform `Process` objects; reach the embedded
+        // `Row` via `as_row()`, not an exact-type `Any` downcast (which misses,
+        // returning -1 for every real row).
+        Some(obj) => obj.as_row().map_or(-1, |row| row.id),
         None => -1,
     }
 }
@@ -835,6 +836,7 @@ mod tests {
     use crate::ported::incset::IncSet_new;
     use crate::ported::panel::Panel_new;
     use crate::ported::row::Row;
+    use core::any::Any;
 
     /// A zeroed `MainPanel` for tests — not a C function; `MainPanel_new`
     /// (the real constructor) is stubbed on `Action_setBindings`/

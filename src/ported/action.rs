@@ -141,7 +141,7 @@ use crate::ported::process::{
     Process, ProcessField, Process_rowChangePriorityBy, Process_rowSendSignal,
 };
 use crate::ported::processlocksscreen::{ProcessLocksScreen_delete, ProcessLocksScreen_new};
-use crate::ported::row::{Row, Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
+use crate::ported::row::{Row_getGroupOrParent, Row_isChildOf, Row_toggleTag};
 use crate::ported::screenmanager::{
     ScreenManager_add, ScreenManager_delete, ScreenManager_new, ScreenManager_remove,
     ScreenManager_run,
@@ -377,10 +377,11 @@ pub fn Action_pickFromVector(
             // C: const Row* selected = (const Row*)Panel_getSelected((Panel*)mainPanel);
             //    if (selected && selected->id == row) return Panel_getSelected(list);
             let matches = match Panel_getSelected(unsafe { &(*mainPanel).super_ }) {
-                Some(o) => {
-                    let any: &dyn core::any::Any = o;
-                    any.downcast_ref::<Row>().is_some_and(|r| r.id == row)
-                }
+                // The mainPanel's items are concrete platform `Process` objects
+                // (e.g. `DarwinProcess`), not bare `Row`s, so reach the embedded
+                // `Row` through the `as_row()` vtable accessor. An `Any` downcast
+                // to `Row` would fail the exact-type check and always miss.
+                Some(o) => o.as_row().is_some_and(|r| r.id == row),
                 None => false,
             };
             // C beep()s here on mismatch; the bell is unported (see the fn docs),
@@ -534,16 +535,18 @@ pub fn Action_setUserOnly(userName: &str, userId: &mut libc::uid_t) -> bool {
 /// hold that `&mut Row` while it also mutably walks `panel`, so — exactly
 /// as `expandCollapse`/`collapseIntoParent` model `Panel_getSelected`'s
 /// `(Row*)` — the parent is identified by its `panel.items` index and the
-/// two `(Row*)` casts become scoped `Any` downcasts, keeping the borrows
+/// two `(Row*)` upcasts go through `as_row`/`as_row_mut` (panel items are
+/// platform `Process` objects, not bare `Row`s), keeping the borrows
 /// non-overlapping while preserving the C recursion order verbatim.
 pub fn tagAllChildren(panel: &mut Panel, parent_idx: i32) {
     // C `parent->tag = true; int parent_id = parent->id;`
     let parent_id = {
         let obj: &mut dyn Object = panel.items[parent_idx as usize].object_mut();
-        let any: &mut dyn core::any::Any = obj;
-        let parent = any
-            .downcast_mut::<Row>()
-            .expect("tagAllChildren operates on the mainPanel, whose items are Rows");
+        // mainPanel items are platform `Process` objects; reach the embedded
+        // `Row` via `as_row_mut()`, not an exact-type `Any` downcast.
+        let parent = obj
+            .as_row_mut()
+            .expect("tagAllChildren operates on the mainPanel, whose items are process rows");
         parent.tag = true;
         parent.id
     };
@@ -554,10 +557,9 @@ pub fn tagAllChildren(panel: &mut Panel, parent_idx: i32) {
         //    if (!row->tag && Row_isChildOf(row, parent_id))`
         let recurse = {
             let obj: &dyn Object = panel.items[i as usize].object();
-            let any: &dyn core::any::Any = obj;
-            let row = any
-                .downcast_ref::<Row>()
-                .expect("tagAllChildren operates on the mainPanel, whose items are Rows");
+            let row = obj
+                .as_row()
+                .expect("tagAllChildren operates on the mainPanel, whose items are process rows");
             !row.tag && Row_isChildOf(row, parent_id)
         };
         if recurse {
@@ -573,8 +575,8 @@ pub fn tagAllChildren(panel: &mut Panel, parent_idx: i32) {
 /// list). The C `(Row*) Panel_getSelected(panel)` casts the base
 /// `Object*`; the ported `Panel_getSelected` returns an immutable
 /// `&dyn Object`, so the mutating analog indexes `panel.items` at the
-/// selected position and downcasts to `&mut Row` through the `Any`
-/// supertrait (same idiom as `columnspanel.rs`).
+/// selected position and reaches the embedded `&mut Row` via `as_row_mut()`
+/// (panel items are platform `Process` objects, not bare `Row`s).
 pub fn expandCollapse(panel: &mut Panel) -> bool {
     if panel.items.is_empty() {
         return false;
@@ -582,10 +584,9 @@ pub fn expandCollapse(panel: &mut Panel) -> bool {
 
     let idx = panel.selected as usize;
     let obj: &mut dyn Object = panel.items[idx].object_mut();
-    let any: &mut dyn core::any::Any = obj;
-    let row = any
-        .downcast_mut::<Row>()
-        .expect("expandCollapse operates on the mainPanel, whose items are Rows");
+    let row = obj
+        .as_row_mut()
+        .expect("expandCollapse operates on the mainPanel, whose items are process rows");
     row.showChildren = !row.showChildren;
     true
 }
@@ -596,9 +597,9 @@ pub fn expandCollapse(panel: &mut Panel) -> bool {
 /// matches: on a hit it clears that row's `showChildren`, moves the
 /// selection there via [`Panel_setSelected`], and returns `true`;
 /// otherwise `false` (also `false` when the panel is empty — the C
-/// `if (!r) return false`). The two `(Row*)` casts become `Any`
-/// downcasts of `panel.items`; the read of the selected row (immutable)
-/// is scoped before the mutating scan so the borrows never overlap.
+/// `if (!r) return false`). The two `(Row*)` upcasts go through
+/// `as_row`/`as_row_mut` on `panel.items`; the read of the selected row
+/// (immutable) is scoped before the mutating scan so the borrows never overlap.
 pub fn collapseIntoParent(panel: &mut Panel) -> bool {
     if panel.items.is_empty() {
         return false;
@@ -606,10 +607,9 @@ pub fn collapseIntoParent(panel: &mut Panel) -> bool {
 
     let parent_id = {
         let obj: &dyn Object = panel.items[panel.selected as usize].object();
-        let any: &dyn core::any::Any = obj;
-        let r = any
-            .downcast_ref::<Row>()
-            .expect("collapseIntoParent operates on the mainPanel, whose items are Rows");
+        let r = obj
+            .as_row()
+            .expect("collapseIntoParent operates on the mainPanel, whose items are process rows");
         Row_getGroupOrParent(r)
     };
 
@@ -617,16 +617,18 @@ pub fn collapseIntoParent(panel: &mut Panel) -> bool {
     for i in 0..size {
         let id = {
             let obj: &dyn Object = panel.items[i as usize].object();
-            let any: &dyn core::any::Any = obj;
-            any.downcast_ref::<Row>()
-                .expect("collapseIntoParent operates on the mainPanel, whose items are Rows")
+            obj.as_row()
+                .expect(
+                    "collapseIntoParent operates on the mainPanel, whose items are process rows",
+                )
                 .id
         };
         if id == parent_id {
             let obj: &mut dyn Object = panel.items[i as usize].object_mut();
-            let any: &mut dyn core::any::Any = obj;
-            any.downcast_mut::<Row>()
-                .expect("collapseIntoParent operates on the mainPanel, whose items are Rows")
+            obj.as_row_mut()
+                .expect(
+                    "collapseIntoParent operates on the mainPanel, whose items are process rows",
+                )
                 .showChildren = false;
             Panel_setSelected(panel, i);
             return true;
@@ -1706,7 +1708,7 @@ pub fn actionStrace(st: &mut State) -> Htop_Reaction {
 /// selection one row down ([`Panel_onKey`] with [`KEY_DOWN`]); a no-op when the
 /// panel has no selectable row (the C `if (!r) return HTOP_OK`). The C
 /// `(Row*)Panel_getSelected` cast becomes an index into the panel's items with
-/// an `Any` downcast to `&mut Row` (the `expandCollapse` idiom).
+/// an `as_row_mut()` upcast to `&mut Row` (the `expandCollapse` idiom).
 pub fn actionTag(st: &mut State) -> Htop_Reaction {
     // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
     let panel = unsafe { &mut (*st.mainPanel).super_ };
@@ -2320,15 +2322,18 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
 /// Port of `static Htop_Reaction actionUntagAll(State* st)` from
 /// `Action.c:894`. Clears the `tag` flag on every row of the main panel and
 /// requests a refresh. The C `(Row*)Panel_get(...)` cast becomes a per-index
-/// `Any` downcast of the panel's items (the `MainPanel_foreachRow` idiom).
+/// `as_row_mut()` upcast of the panel's items (panel items are platform
+/// `Process` objects, so an exact-type `Any` downcast to `Row` would miss).
 pub fn actionUntagAll(st: &mut State) -> Htop_Reaction {
     // SAFETY: st->mainPanel is a valid, non-null MainPanel* (C precondition).
     let panel = unsafe { &mut (*st.mainPanel).super_ };
     let size = Panel_size(panel);
     for i in 0..size {
         let obj: &mut dyn Object = panel.items[i as usize].object_mut();
-        let any: &mut dyn core::any::Any = obj;
-        if let Some(row) = any.downcast_mut::<Row>() {
+        // mainPanel items are platform `Process` objects; clear the tag on the
+        // embedded `Row` via `as_row_mut()`. An `Any` downcast to `Row` would
+        // miss every item (exact-type check) and untag nothing.
+        if let Some(row) = obj.as_row_mut() {
             row.tag = false;
         }
     }
@@ -2512,6 +2517,7 @@ pub fn Action_setBindings(keys: &mut [Option<Htop_Action>]) {
 mod tests {
     use super::*;
     use crate::ported::panel::{Panel_add, Panel_get, Panel_getSelectedIndex, Panel_new};
+    use crate::ported::row::Row;
 
     /// A `Row` with the given `id`/`group`/`parent`, all else defaulted.
     /// Mirrors the fields `expandCollapse`/`collapseIntoParent` read.

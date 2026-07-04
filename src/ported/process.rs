@@ -2549,6 +2549,27 @@ mod tests {
     }
 
     #[test]
+    fn process_reaches_row_and_process_via_accessors_not_any_downcast() {
+        // Regression: panel items are platform `Process` objects (a bare
+        // `Process` here; `DarwinProcess`/`LinuxProcess` in the app), so an
+        // exact-type `Any` downcast to `Row`/`Process` MISSES the concrete
+        // type. That silently broke kill-signal delivery, untag-all, tree
+        // tag/expand/collapse, MainPanel_selectedRow, affinity, and scheduling.
+        // The `as_row()`/`as_process()` vtable accessors are the correct upcast;
+        // existing tests only used bare `Row` fixtures, so they never caught it.
+        use core::any::Any;
+        let mut p = Process::default();
+        p.super_.id = 4242;
+        let obj: &dyn Object = &p;
+        assert!(
+            (obj as &dyn Any).downcast_ref::<Row>().is_none(),
+            "exact-type Any downcast to Row must miss a Process"
+        );
+        assert_eq!(obj.as_row().map(|r| r.id), Some(4242));
+        assert!(obj.as_process().is_some());
+    }
+
+    #[test]
     fn process_init_runs_row_init_and_sets_defaults() {
         let mut p = Process::default();
         let host = 0xBEEF_usize as *const c_void;
