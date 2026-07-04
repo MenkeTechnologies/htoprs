@@ -929,6 +929,9 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
 /// wrapped in a `File` (`from_raw_fd`) and read whole, then iterated line by
 /// line — the C `fgets` loop that skips lines lacking a `'\n'` maps to
 /// `split_inclusive('\n')` keeping only newline-terminated lines.
+// `libc::makedev` is an `unsafe fn` on some targets (illumos) but a safe `fn`
+// on others (linux/darwin), so its `unsafe {}` wrapper reads as unused there.
+#[allow(unused_unsafe)]
 pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessData> {
     use std::io::Read;
     use std::os::unix::io::FromRawFd;
