@@ -868,8 +868,8 @@ pub(crate) fn draw_box(
 /// — rather than iftop's network-flow keys.
 pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
     let t = &state.theme;
-    let bw = 90u16.min(area.width.saturating_sub(4));
-    let bh = 31u16.min(area.height.saturating_sub(4));
+    let bw = 92u16.min(area.width.saturating_sub(4));
+    let bh = 40u16.min(area.height.saturating_sub(4));
     let bg = tr(t.help_bg);
     let bs = Style::default().fg(tr(t.help_border));
     let bgs = Style::default().fg(Color::White).bg(bg);
@@ -906,62 +906,99 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
         bw - 2,
     );
 
-    let entries: [(&str, &[(&str, &str)]); 7] = [
+    // Two groups: the ported htop bindings (the full `actionHelp` legend) and
+    // the htoprs-original extensions. Everything the shell supports is listed.
+    let entries: [(&str, &[(&str, &str)]); 9] = [
         (
             "GENERAL",
-            &[("F1 h ?", "Help"), ("F2 S", "Setup"), ("F10 q", "Quit")],
+            &[
+                ("F1 h ?", "Help"),
+                ("F2 S", "Setup"),
+                ("F10 q", "Quit"),
+                ("#", "Hide meters"),
+                ("Tab", "Next tab"),
+                ("S-Tab", "Prev tab"),
+            ],
         ),
         (
             "SEARCH",
-            &[("F3 /", "Search"), ("F4 \\", "Filter"), ("Esc", "Clear")],
+            &[
+                ("F3 /", "Search"),
+                ("F4 \\", "Filter"),
+                ("Digits", "PID search"),
+                ("Esc", "Clear"),
+            ],
         ),
         (
             "SORT",
             &[
                 ("F6 >", "Sort by"),
-                ("<", "Sort column"),
+                (".", "Sort column"),
                 ("I", "Invert order"),
+                ("N", "Sort PID"),
                 ("P", "Sort CPU%"),
                 ("M", "Sort MEM%"),
                 ("T", "Sort TIME+"),
             ],
         ),
         (
-            "NAV",
+            "NAVIGATE",
             &[
-                ("k ↑", "Move up"),
-                ("j ↓", "Move down"),
-                ("^U", "Half page up"),
-                ("^D", "Half page down"),
-                ("Home", "Jump to top"),
-                ("End", "Jump to end"),
+                ("↑ ↓", "Move up/down"),
+                ("^U ^D", "Half page"),
+                ("Home End", "Jump top/end"),
+                ("← →", "Scroll"),
+            ],
+        ),
+        (
+            "VIEW",
+            &[
+                ("F5 t", "Tree view"),
+                ("p", "Program path"),
+                ("m", "Merged cmd"),
+                ("Z", "Pause updates"),
+                ("F", "Follow proc"),
+                ("+ - *", "Expand/collapse"),
+            ],
+        ),
+        (
+            "THREADS",
+            &[
+                ("u", "Filter by user"),
+                ("H", "User threads"),
+                ("K", "Kernel threads"),
+                ("O", "In containers"),
             ],
         ),
         (
             "PROCESS",
             &[
-                ("F9", "Kill"),
-                ("F7", "Nice -"),
-                ("F8", "Nice +"),
+                ("F9 k", "Kill"),
+                ("F7 ]", "Nice -"),
+                ("F8 [", "Nice +"),
                 ("Space", "Tag"),
                 ("U", "Untag all"),
-                ("F5 t", "Tree view"),
+                ("e", "Environment"),
+                ("i", "IO priority"),
+                ("l", "Open files"),
+                ("x", "File locks"),
+                ("s", "Trace syscalls"),
+                ("w", "Wrap command"),
             ],
         ),
         (
-            "THEME",
+            "htoprs THEME",
             &[
                 ("c", "Theme chooser"),
                 ("C", "Theme editor"),
                 ("B", "Toggle border"),
                 ("g", "Toggle header"),
-                ("h ?", "Toggle help"),
-                ("q", "Quit"),
             ],
         ),
         (
-            "MONITOR",
+            "htoprs MONITOR",
             &[
+                ("b", "Bar fill style"),
                 ("f", "Find (fuzzy)"),
                 ("r", "Filter (regex)"),
                 ("d", "Snapshot/diff"),
@@ -969,7 +1006,6 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
                 ("A", "Alerts"),
                 ("G", "CPU graph"),
                 ("v", "Sparkline col"),
-                ("b", "Bar fill style"),
             ],
         ),
     ];
@@ -1019,9 +1055,9 @@ pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
     );
     set_str(
         buf,
-        x0 + (bw.saturating_sub(16)) / 2,
+        x0 + (bw.saturating_sub(23)) / 2,
         y0 + bh - 2,
-        "press h to close",
+        "press h or Esc to close",
         Style::default().fg(Color::Indexed(240)).bg(bg),
         bw - 4,
     );
@@ -1541,11 +1577,19 @@ mod tests {
         let joined: String = b.content().iter().map(|c| c.symbol()).collect();
         assert!(joined.contains("HTOPRS"));
         assert!(joined.contains("KEYBOARD SHORTCUTS"));
-        assert!(joined.contains("THEME"));
-        // The monitoring extensions must stay listed here — the help is the
-        // discoverability surface for the f/r/d/o/A/G/v hotkeys.
-        assert!(joined.contains("MONITOR"));
+        // Both groups are present: the ported htop legend and the htoprs extras.
+        assert!(joined.contains("htoprs THEME"));
+        assert!(joined.contains("htoprs MONITOR"));
+        // The monitoring extensions must stay listed — the help is the
+        // discoverability surface for the f/r/d/o/A/G/v/b hotkeys.
         assert!(joined.contains("CPU graph"));
+        assert!(joined.contains("Bar fill style"));
+        // htop-original bindings that were previously missing from this overlay.
+        assert!(joined.contains("Kernel threads")); // K
+        assert!(joined.contains("Open files")); // l (lsof)
+        assert!(joined.contains("Environment")); // e
+        assert!(joined.contains("Program path")); // p
+        assert!(joined.contains("Hide meters")); // #
     }
 
     #[test]
