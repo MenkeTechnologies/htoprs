@@ -50,6 +50,19 @@ const SPARK_W: usize = 12;
 /// Rows of matches a list modal shows at once.
 const LIST_ROWS: usize = 16;
 
+/// How the per-PID CPU sparkline is shown, cycled by `v`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SparkMode {
+    /// No sparkline.
+    Off,
+    /// A narrow `SPARK_W`-cell sparkline overdrawn at each row's right edge,
+    /// keeping the 1-item-1-line layout.
+    Column,
+    /// Each process occupies two physical lines: the normal row plus a
+    /// full-width CPU sparkline beneath it (the panel's `rowHeight` is 2).
+    Double,
+}
+
 /// Which modal (if any) is currently visible.
 #[derive(Clone, Copy, PartialEq)]
 enum Modal {
@@ -81,7 +94,7 @@ struct PanelState {
 
     // ── UI ────────────────────────────────────────────────────────────────
     modal: Modal,
-    spark_col: bool,
+    spark: SparkMode,
     /// Whether firing (over-threshold) rows get the hot-row recolor. Toggled
     /// from the Alerts modal (`A`, then `t`); the alert engine keeps evaluating
     /// either way, so the modal's firing counts stay live when this is off.
@@ -121,7 +134,7 @@ impl PanelState {
             cpu_peak: 100.0,
             tick: 0,
             modal: Modal::None,
-            spark_col: false,
+            spark: SparkMode::Off,
             // Restore the saved hot-row-highlight toggle; absent (first run) = on.
             alert_hl: super::prefs::load()
                 .and_then(|p| p.alert_hl)
@@ -383,8 +396,13 @@ impl PanelState {
         self.modal = Modal::Export;
     }
 
+    /// Cycle the sparkline display: Off → side column → double-height → Off.
     fn toggle_spark(&mut self) {
-        self.spark_col = !self.spark_col;
+        self.spark = match self.spark {
+            SparkMode::Off => SparkMode::Column,
+            SparkMode::Column => SparkMode::Double,
+            SparkMode::Double => SparkMode::Off,
+        };
     }
 
     // ── rendering ─────────────────────────────────────────────────────────
@@ -827,14 +845,29 @@ fn hot_row_attr() -> i32 {
     }
 }
 
+/// Physical lines a process row occupies, driven by the `v` spark mode: `2` in
+/// double-height mode, `1` otherwise. `Panel_draw`/`Panel_onKey` read this to
+/// scale their screen-Y projection and page steps; the process panel's
+/// `rowHeight` is synced from it each frame.
+pub fn row_height() -> i32 {
+    PANELS.with(|p| {
+        if p.borrow().spark == SparkMode::Double {
+            2
+        } else {
+            1
+        }
+    })
+}
+
 /// Overdraw the CPU sparkline column at the right edge of a process row, when
-/// the `v` toggle is on. Called by `Panel_draw` after it prints the row, with
-/// the row's htop-space `(y, x)` and panel width `w` (the `Ncurses` shim adds
-/// the border margin). A no-op when the column is off or the PID has no history.
+/// the `v` cycle is in its side-column state. Called by `Panel_draw` after it
+/// prints the row, with the row's htop-space `(y, x)` and panel width `w` (the
+/// `Ncurses` shim adds the border margin). A no-op when the column is off or the
+/// PID has no history.
 pub fn draw_spark_col<W: Write>(out: &mut W, y: i32, x: i32, w: i32, pid: u32) {
     PANELS.with(|p| {
         let s = p.borrow();
-        if !s.spark_col || w as usize <= SPARK_W + 2 {
+        if s.spark != SparkMode::Column || w as usize <= SPARK_W + 2 {
             return;
         }
         // `cpu_sparkline` already returns exactly `SPARK_W` glyphs, so print the
@@ -847,6 +880,33 @@ pub fn draw_spark_col<W: Write>(out: &mut W, y: i32, x: i32, w: i32, pid: u32) {
             ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()),
         );
         Ncurses::mvaddstr(out, y, sx, &spark);
+        Ncurses::attrset(
+            out,
+            ColorElements::RESET_COLOR.packed(ColorScheme::active()),
+        );
+    });
+}
+
+/// Draw the full-width CPU sparkline on a process row's second physical line
+/// (double-height mode). Called by `Panel_draw` at `(y2, x)` after it fills the
+/// line's background. Spans the panel width `w`, newest sample at the right
+/// edge, scaled to 100%. A no-op when not in double-height mode or the PID has
+/// no history.
+pub fn draw_spark_row<W: Write>(out: &mut W, y2: i32, x: i32, w: i32, pid: u32) {
+    PANELS.with(|p| {
+        let s = p.borrow();
+        if s.spark != SparkMode::Double || w <= 0 {
+            return;
+        }
+        // A left-padded, right-aligned sparkline exactly `w` glyphs wide so the
+        // newest sample sits at the panel's right edge and older history scrolls
+        // left as it ages.
+        let spark = s.ring.cpu_sparkline(pid, w as usize, 100.0);
+        Ncurses::attrset(
+            out,
+            ColorElements::PROCESS_MEGABYTES.packed(ColorScheme::active()),
+        );
+        Ncurses::mvaddstr(out, y2, x, &spark);
         Ncurses::attrset(
             out,
             ColorElements::RESET_COLOR.packed(ColorScheme::active()),
@@ -915,11 +975,18 @@ mod tests {
 
     #[test]
     fn spark_toggle_and_alert_attr() {
-        // 'v' toggles the column flag.
+        // 'v' cycles Off → Column → Double → Off; `row_height()` tracks it.
+        assert_eq!(PANELS.with(|p| p.borrow().spark), SparkMode::Off);
+        assert_eq!(row_height(), 1);
         dispatch_key(0x76);
-        assert!(PANELS.with(|p| p.borrow().spark_col));
+        assert_eq!(PANELS.with(|p| p.borrow().spark), SparkMode::Column);
+        assert_eq!(row_height(), 1); // side column keeps single-height rows
         dispatch_key(0x76);
-        assert!(!PANELS.with(|p| p.borrow().spark_col));
+        assert_eq!(PANELS.with(|p| p.borrow().spark), SparkMode::Double);
+        assert_eq!(row_height(), 2); // double-height inline sparkline
+        dispatch_key(0x76);
+        assert_eq!(PANELS.with(|p| p.borrow().spark), SparkMode::Off);
+        assert_eq!(row_height(), 1);
         // A sustained 90%+ pid fires after for_ticks and yields a recolor.
         let hot = Proc {
             pid: 999,
@@ -957,7 +1024,7 @@ mod tests {
         // Regression: the braille sparkline is 3-byte glyphs; a byte-length
         // `mvaddnstr` slice landed mid-char and panicked. Enable the column,
         // build up history, and render into a sink — must not panic.
-        dispatch_key(0x76); // 'v' on
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Column);
         for t in 0..40 {
             PANELS.with(|p| p.borrow_mut().ingest(synthetic_table(t), Some(200)));
         }
@@ -965,6 +1032,25 @@ mod tests {
         // pid 200 has ~40 samples -> a full-width multi-byte sparkline.
         draw_spark_col(&mut sink, 3, 0, 80, 200);
         assert!(!sink.is_empty());
-        dispatch_key(0x76); // 'v' off (leave state clean)
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Off); // leave state clean
+    }
+
+    #[test]
+    fn spark_row_full_width_never_panics() {
+        // The double-height second line renders a full panel-width sparkline;
+        // multi-byte braille + a wide `w` must not panic or mis-slice.
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Double);
+        for t in 0..40 {
+            PANELS.with(|p| p.borrow_mut().ingest(synthetic_table(t), Some(200)));
+        }
+        assert_eq!(row_height(), 2);
+        let mut sink: Vec<u8> = Vec::new();
+        draw_spark_row(&mut sink, 4, 0, 120, 200);
+        assert!(!sink.is_empty());
+        // Off mode draws nothing on the second line.
+        PANELS.with(|p| p.borrow_mut().spark = SparkMode::Off);
+        let mut empty: Vec<u8> = Vec::new();
+        draw_spark_row(&mut empty, 4, 0, 120, 200);
+        assert!(empty.is_empty());
     }
 }

@@ -270,6 +270,14 @@ pub struct Panel {
     pub defaultBar: Option<FunctionBar>,
     pub header: RichString,
     pub selectionColorId: ColorElements,
+    /// htoprs extension (no C analog): terminal lines consumed per list item.
+    /// `1` (the default) is the faithful htop 1-item-1-line model; the process
+    /// panel sets `2` for the inline double-height sparkline mode, where line 1
+    /// is the normal row and line 2 is a full-width per-PID CPU sparkline. All
+    /// screen-Y projection, page-step, and visible-capacity math in
+    /// [`Panel_draw`]/[`Panel_onKey`] scales by this; at `1` every formula is
+    /// byte-identical to the port so non-process panels are unaffected.
+    pub rowHeight: i32,
 }
 
 impl Panel {
@@ -302,6 +310,7 @@ impl Panel {
             defaultBar: None,
             header: RichString::new(),
             selectionColorId: ColorElements::PANEL_SELECTION_FOCUS,
+            rowHeight: 1,
         }
     }
 }
@@ -471,7 +480,9 @@ pub fn Panel_done(this: Panel) {
 /// `(int)this->selectedLen` truncates the `size_t` to `int`; `as i32`
 /// reproduces that, and the surrounding arithmetic stays in `i32`.
 pub fn Panel_setCursorToSelection(this: &mut Panel) {
-    this.cursorY = this.y + this.selected - this.scrollV + 1;
+    // htoprs: `* rowHeight` projects the item index to its top physical line
+    // (identity at the default `rowHeight == 1`, the C form).
+    this.cursorY = this.y + (this.selected - this.scrollV) * this.rowHeight.max(1) + 1;
     this.cursorX = this.x + (this.selectedLen as i32) - this.scrollH;
 }
 
@@ -721,13 +732,19 @@ pub fn Panel_draw(
         h -= 1;
     }
 
-    this.ensure_scroll(size, h);
+    // htoprs: physical lines per item (1 = the faithful htop model). `vis` is
+    // how many *items* fit in the `h` remaining lines — the double-height
+    // process panel shows half as many as its line count.
+    let rh = this.rowHeight.max(1);
+    let vis = (h / rh).max(1);
+
+    this.ensure_scroll(size, vis);
 
     // topPad: empty screen lines above the first row (non-zero only when
     // allowExcessScrollV left scrollV negative). C: Panel.c:293-296.
     let top_pad = if this.scrollV < 0 { -this.scrollV } else { 0 };
     let first = this.scrollV + top_pad;
-    let up_to = (first + h - top_pad).min(size);
+    let up_to = (first + vis - top_pad).min(size);
 
     let selection_color = if focus {
         this.selectionColorId.packed(ColorScheme::active())
@@ -738,8 +755,9 @@ pub fn Panel_draw(
     let mut item = RichString::new();
     if this.needsRedraw || force_redraw {
         let mut line = 0i32;
-        // Blank pad lines above the first row (C: Panel.c:305-308).
-        while line < top_pad {
+        // Blank pad lines above the first row (C: Panel.c:305-308). `top_pad`
+        // counts items, so `* rh` gives the screen lines to blank.
+        while line < top_pad * rh {
             Ncurses::mvhline(&mut out, y + line, x, ' ', w);
             line += 1;
         }
@@ -788,9 +806,23 @@ pub fn Panel_draw(
                 Panel::print_offset(&mut out, y + line, x, &item, scrollH, amt);
             }
             // htoprs extension: overdraw the per-PID CPU sparkline column at the
-            // row's right edge when the `v` toggle is on (no-op otherwise).
+            // row's right edge when the `v` toggle is on the side-column state
+            // (no-op in Off / double-height states).
             if let Some(pid) = row_pid {
                 crate::extensions::panels::draw_spark_col(&mut out, y + line, x, w, pid);
+            }
+            // htoprs extension: in double-height mode (`rh >= 2`) a process row
+            // owns a second physical line carrying a full-width CPU sparkline.
+            // Fill it with the row's highlight background first so a selected or
+            // hot row's spark line matches, then let the extension paint glyphs.
+            if rh >= 2 && line + 1 < h {
+                if highlight_attr != 0 {
+                    Ncurses::attrset(&mut out, highlight_attr);
+                }
+                Ncurses::mvhline(&mut out, y + line + 1, x, ' ', w);
+                if let Some(pid) = row_pid {
+                    crate::extensions::panels::draw_spark_row(&mut out, y + line + 1, x, w, pid);
+                }
             }
             if highlight_attr != 0 {
                 Ncurses::attrset(
@@ -798,7 +830,7 @@ pub fn Panel_draw(
                     ColorElements::RESET_COLOR.packed(ColorScheme::active()),
                 );
             }
-            line += 1;
+            line += rh;
             i += 1;
         }
         while line < h {
@@ -831,16 +863,29 @@ pub fn Panel_draw(
             Ncurses::attrset(&mut out, attr);
             RichString_setAttr(&mut item, attr);
         }
-        Ncurses::mvhline(&mut out, y + old_selected - scroll_v, x, ' ', w);
+        // htoprs: `* rh` projects the item index to its top physical line.
+        let old_y = y + (old_selected - scroll_v) * rh;
+        Ncurses::mvhline(&mut out, old_y, x, ' ', w);
         if scrollH < old_len {
             Panel::print_offset(
                 &mut out,
-                y + old_selected - scroll_v,
+                old_y,
                 x,
                 &item,
                 scrollH,
                 (old_len - scrollH).min(w),
             );
+        }
+        // htoprs: repaint the leaving row's second line (sparkline) in
+        // double-height mode, keeping its hot background if still firing.
+        if rh >= 2 {
+            if let Some(attr) = old_hot {
+                Ncurses::attrset(&mut out, attr);
+            }
+            Ncurses::mvhline(&mut out, old_y + 1, x, ' ', w);
+            if let Some(pid) = old_pid {
+                crate::extensions::panels::draw_spark_row(&mut out, old_y + 1, x, w, pid);
+            }
         }
         if old_hot.is_some() {
             Ncurses::attrset(
@@ -850,8 +895,12 @@ pub fn Panel_draw(
         }
 
         let selected = this.selected;
+        let new_pid: Option<u32>;
         {
             let new_obj: &dyn Object = this.items[selected as usize].object();
+            new_pid = new_obj
+                .as_process()
+                .map(|p| Process_getPid(p).max(0) as u32);
             let sz = RichString_size(&item);
             RichString_rewind(&mut item, sz);
             item.highlightAttr = 0;
@@ -860,17 +909,28 @@ pub fn Panel_draw(
         let new_len = RichString_sizeVal(&item);
         this.selectedLen = new_len as usize;
         Ncurses::attrset(&mut out, selection_color);
-        Ncurses::mvhline(&mut out, y + selected - scroll_v, x, ' ', w);
+        // htoprs: `* rh` projects the item index to its top physical line.
+        let new_y = y + (selected - scroll_v) * rh;
+        Ncurses::mvhline(&mut out, new_y, x, ' ', w);
         RichString_setAttr(&mut item, selection_color);
         if scrollH < new_len {
             Panel::print_offset(
                 &mut out,
-                y + selected - scroll_v,
+                new_y,
                 x,
                 &item,
                 scrollH,
                 (new_len - scrollH).min(w),
             );
+        }
+        // htoprs: paint the newly-selected row's second line (sparkline) with
+        // the selection background so both of its lines read as the cursor.
+        if rh >= 2 {
+            Ncurses::attrset(&mut out, selection_color);
+            Ncurses::mvhline(&mut out, new_y + 1, x, ' ', w);
+            if let Some(pid) = new_pid {
+                crate::extensions::panels::draw_spark_row(&mut out, new_y + 1, x, w, pid);
+            }
         }
         Ncurses::attrset(
             &mut out,
@@ -915,7 +975,11 @@ pub fn Panel_headerHeight(this: &Panel) -> i32 {
 /// the default (unhandled) case.
 pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
     let size = this.items.len() as i32;
-    let available_height = this.h - Panel_headerHeight(this); // C: Panel.c:384
+    // htoprs: `available_height` is a count of *visible items*, so in
+    // double-height mode (`rowHeight > 1`) the visible line span is divided by
+    // the per-item height. Identity at the default `rowHeight == 1`.
+    let rh = this.rowHeight.max(1);
+    let available_height = ((this.h - Panel_headerHeight(this)) / rh).max(1); // C: Panel.c:384
     let max_scroll = (size - available_height).max(0); // C: Panel.c:385
     let scroll_h_amount = crt::CRT_scrollHAmount.load(Ordering::Relaxed);
 
@@ -937,12 +1001,12 @@ pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
             this.needsRedraw = true;
         }
         KEY_PPAGE => {
-            let amt = this.h - Panel_headerHeight(this);
-            this.panel_scroll(-amt, size);
+            // htoprs: page by visible *items* (`available_height` already
+            // accounts for `rowHeight`).
+            this.panel_scroll(-available_height, size);
         }
         KEY_NPAGE => {
-            let amt = this.h - Panel_headerHeight(this);
-            this.panel_scroll(amt, size);
+            this.panel_scroll(available_height, size);
         }
         KEY_WHEELUP => {
             let amt = crt::CRT_scrollWheelVAmount.load(Ordering::Relaxed);
@@ -1229,6 +1293,42 @@ mod tests {
         Panel_setCursorToSelection(&mut p);
         assert_eq!(p.cursorY, 11); // 5 + 7 - 2 + 1
         assert_eq!(p.cursorX, 19); // 3 + 20 - 4
+    }
+
+    #[test]
+    fn set_cursor_to_selection_scales_by_row_height() {
+        // htoprs double-height mode: the item index projects to its top physical
+        // line via `(selected - scrollV) * rowHeight`, so row 7 with 2 lines each
+        // and scrollV=2 lands twice as far down as the single-height case.
+        let mut p = blank();
+        p.x = 3;
+        p.y = 5;
+        p.selected = 7;
+        p.scrollV = 2;
+        p.scrollH = 4;
+        p.selectedLen = 20;
+        p.rowHeight = 2;
+        Panel_setCursorToSelection(&mut p);
+        assert_eq!(p.cursorY, 16); // 5 + (7 - 2) * 2 + 1
+        assert_eq!(p.cursorX, 19); // 3 + 20 - 4 (horizontal is unaffected)
+    }
+
+    #[test]
+    fn on_key_page_step_halves_at_double_height() {
+        // A page (NPAGE) advances the selection by the number of *visible items*,
+        // which halves when each item is two lines tall.
+        let mut single = blank();
+        single.h = 20; // no header -> headerHeight 0
+        fill(&mut single, 100);
+        assert!(Panel_onKey(&mut single, KEY_NPAGE));
+        assert_eq!(single.selected, 20); // full 20-line page at rowHeight 1
+
+        let mut dbl = blank();
+        dbl.h = 20;
+        dbl.rowHeight = 2;
+        fill(&mut dbl, 100);
+        assert!(Panel_onKey(&mut dbl, KEY_NPAGE));
+        assert_eq!(dbl.selected, 10); // 20 lines / 2 = 10 visible items
     }
 
     #[test]

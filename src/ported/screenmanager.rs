@@ -786,6 +786,16 @@ pub fn ScreenManager_run(
                     Header_draw(header, &mut out);
                 }
             }
+            // htoprs extension: sync the process panel's per-item line height
+            // to the `v` spark mode (2 in double-height mode, 1 otherwise) so
+            // Panel_draw/Panel_onKey scale their screen-Y and page math. Only
+            // the active table's panel opts in; every other panel stays 1-line.
+            if let Some(table) = unsafe { (*this.host).activeTable } {
+                let panel_ptr = unsafe { (*table).panel };
+                if !panel_ptr.is_null() {
+                    unsafe { (*panel_ptr).rowHeight = crate::extensions::panels::row_height() };
+                }
+            }
             ScreenManager_drawPanels(this, focus, force_redraw);
             // htoprs extension: paint the themed border chrome (if `B`-toggled)
             // then the help/chooser/editor overlay over the freshly-drawn

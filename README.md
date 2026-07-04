@@ -66,12 +66,19 @@ enforced mechanically, following the same precedent as `zshrs`.
   | `o` | Export the current table to JSON + CSV under `~/.config/htoprs/` |
   | `A` | Threshold alerts — the rule set and every currently-firing PID |
   | `G` | Braille CPU history graph (system total plus the selected PID) |
-  | `v` | Toggle the per-PID CPU sparkline column on the process rows |
+  | `v` | Cycle the per-PID CPU sparkline: off → narrow right-edge column → full-width double-height rows |
 
   Two of these reach the rows themselves rather than a modal, injected at the
   per-row draw site in `Panel_draw` (the same extension-hook pattern the theme
   border uses, so no new ported `fn`): a firing-alert PID's row is recolored,
-  and the `v` sparkline column is overdrawn at the row's right edge.
+  and the `v` sparkline is drawn on the rows. `v` cycles three states — off, a
+  narrow sparkline overdrawn at each row's right edge, and a double-height mode
+  where every process occupies two lines (the normal row plus a full-width CPU
+  sparkline beneath it). The double-height mode sets the process panel's
+  `rowHeight` to 2; `Panel_draw`/`Panel_onKey` scale their screen-Y projection,
+  page steps, and visible-item capacity by it, so the cursor, paging, and
+  scrolling all track whole processes. Non-process panels keep `rowHeight = 1`
+  and are unaffected.
 - **Bar fill-glyph cycler (`extensions::barstyle`, ported from storageshower):**
   `b` cycles the character every bar meter (CPU, Memory, Swap, …) fills with,
   through five styles — Classic (`|`, htop's default), Gradient (position-shaded

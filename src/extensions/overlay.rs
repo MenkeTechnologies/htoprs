@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::Instant;
 
 use crossterm::cursor::MoveTo;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -138,6 +139,30 @@ impl ThemeEditState {
 
 // ─── Overlay subsystem state ───────────────────────────────────────────────────
 
+/// A transient status message with auto-dismiss. Port of iftoprs's `StatusMsg`
+/// (`ui/app.rs:322`): the text plus the instant it was set; [`expired`] is true
+/// after 3 seconds so [`draw_status`] stops drawing it.
+///
+/// [`expired`]: StatusMsg::expired
+pub struct StatusMsg {
+    pub text: String,
+    pub since: Instant,
+}
+
+impl StatusMsg {
+    pub fn new(text: String) -> Self {
+        Self {
+            text,
+            since: Instant::now(),
+        }
+    }
+
+    /// Port of iftoprs `StatusMsg::expired` (`ui/app.rs:338`): dismiss after 3s.
+    pub fn expired(&self) -> bool {
+        self.since.elapsed().as_secs() >= 3
+    }
+}
+
 /// The theme/help subsystem state extracted from iftoprs's `AppState`. Holds
 /// only the fields the overlays and their key handling touch; the rest of
 /// iftoprs's `AppState` (flows, interfaces, capture toggles) has no htoprs
@@ -161,8 +186,9 @@ pub struct OverlayState {
     pub custom_themes: HashMap<String, CustomThemeColors>,
     /// The name of the applied custom theme, if any.
     pub active_custom_theme: Option<String>,
-    /// Last status line set by a toggle/save (iftoprs `set_status` analog).
-    pub status: Option<String>,
+    /// Last transient status message set by a toggle/save/style change, shown
+    /// as a centered toast until it expires (iftoprs `status_msg` + `draw_status`).
+    pub status: Option<StatusMsg>,
     /// True once the user has engaged the theme UI (`c`/`C`). While set, the
     /// live palette is pushed to [`super::colors`] so the htoprs UI recolors.
     pub themed: bool,
@@ -229,9 +255,10 @@ impl OverlayState {
         );
     }
 
-    /// Set the transient status line. Port of `AppState::set_status`.
+    /// Set the transient status toast. Port of `AppState::set_status`
+    /// (`ui/app.rs:685`).
     pub fn set_status(&mut self, msg: impl Into<String>) {
-        self.status = Some(msg.into());
+        self.status = Some(StatusMsg::new(msg.into()));
     }
 
     /// Dispatch a key while an overlay is active or for the overlay hotkeys.
