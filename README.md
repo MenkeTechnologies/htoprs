@@ -47,9 +47,11 @@ enforced mechanically, following the same precedent as `zshrs`.
   palette remap consulted at the single `Ncurses::to_color` choke point, and
   `extensions::prefs` persists the selection to `~/.config/htoprs/prefs.json`.
   The overlay is wired into `ScreenManager_run`: `c` opens the theme chooser,
-  `C` the editor, `h`/`?` the help overlay, `g` toggles the header, `B` toggles
-  the border (`B`, since lowercase `b` is the bar fill-style cycler below and
-  `x` is htop's file-locks screen).
+  `C` the editor, `h`/`?`/F1 the themed help overlay (`Esc` closes it), `g`
+  toggles the header, `B` toggles the border (`B`, since lowercase `b` is the
+  bar fill-style cycler below and `x` is htop's file-locks screen). Toggles and
+  the bar-style change surface a transient status toast (`overlay::draw_status`,
+  ported from iftoprs).
   `extensions::bridge` materializes the live ported `Process` rows as the
   `Proc` model (via `Object::as_process`), and `extensions::panels` is the
   running-TUI wiring for the htoprs-original monitoring capabilities — the
@@ -83,12 +85,13 @@ enforced mechanically, following the same precedent as `zshrs`.
   `b` cycles the character every bar meter (CPU, Memory, Swap, …) fills with,
   through five styles — Classic (`|`, htop's default), Gradient (position-shaded
   `█▓▒░` with a `▸` tip), Solid (`█`), Thin (`▬`/`▸`), and Ascii (`#`/`>`) —
-  keeping each segment's semantic color. The selection persists to
-  `~/.config/htoprs/prefs.json` and is restored on launch. It is consulted by
-  the ported `BarMeterMode_draw` fill loop (`barstyle::fill_glyph`, `None` ⇒
-  htop's native glyph) and wired into the keybinding table (`Action_setBindings`
-  binds the `keys['b']` slot htop leaves free unless `HAVE_BACKTRACE_SCREEN` is
-  set) as an `Htop_Action`.
+  keeping each segment's semantic color. Each press shows the iftoprs-style
+  status toast (`overlay::draw_status`, e.g. `Bar style: solid`) centered near
+  the bottom for 3s. The selection persists to `~/.config/htoprs/prefs.json` and
+  is restored on launch. It is consulted by the ported `BarMeterMode_draw` fill
+  loop (`barstyle::fill_glyph`, `None` ⇒ htop's native glyph) and wired into the
+  keybinding table (`Action_setBindings` binds the `keys['b']` slot htop leaves
+  free unless `HAVE_BACKTRACE_SCREEN` is set) as an `Htop_Action`.
 - **Port-purity gate (`build.rs`):** on every `cargo build` / `cargo test` /
   `cargo check` that touches `src/ported/`, every free `fn` name is checked
   against the htop C-function snapshot at `tests/data/htop_c_fn_names.txt`. A

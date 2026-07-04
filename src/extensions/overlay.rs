@@ -38,6 +38,7 @@ const KEY_LEFT: i32 = 0o404;
 const KEY_RIGHT: i32 = 0o405;
 const KEY_BACKSPACE: i32 = 0o407;
 const KEY_ENTER: i32 = 0o527;
+const KEY_F1: i32 = 0o411; // KEY_F(1) == 265; htop's F1 = Help
 
 /// Convert a [`Theme`] color (`crossterm::style::Color`) into the
 /// `ratatui::style::Color` the buffer styling API expects. `Theme` only ever
@@ -397,12 +398,13 @@ impl OverlayState {
         }
 
         // Top-level overlay hotkeys (iftoprs main.rs, theme-relevant subset).
-        // `h`/`?`/F1 are intentionally NOT handled here: they fall through to
-        // htop's ported `actionHelp`, which paints the full key-binding legend
-        // (bar/state legends + the two-column table). The overlay's own
-        // `show_help` panel was a stopgap from when `actionHelp` was a
-        // `todo!()`; it is now superseded.
         match key.code {
+            // `h`/`?`/F1 toggle the themed help overlay (the one htoprs uses);
+            // Esc closes it when it is up (matching the chooser/editor). When
+            // help is not shown, Esc is not ours — htop uses it to clear the
+            // selection — so it falls through to `_ => return false`.
+            KeyCode::Char('h') | KeyCode::Char('?') => self.show_help = !self.show_help,
+            KeyCode::Esc if self.show_help => self.show_help = false,
             KeyCode::Char('c') => {
                 self.show_help = false;
                 self.themed = true;
@@ -464,9 +466,10 @@ impl OverlayState {
     /// Route a raw ncurses key int (as read by `Panel_getCh`) into
     /// [`OverlayState::handle_key`]. Returns `true` if consumed.
     pub fn handle_ncurses_key(&mut self, ch: i32) -> bool {
-        // F1 (like `h`/`?`) is left for htop's ported `actionHelp` — the overlay
-        // no longer shadows the help key (its themed `show_help` panel was a
-        // stopgap from when `actionHelp` was a `todo!()`).
+        // htop's F1 = Help; route it to the themed help overlay like `h`/`?`.
+        if ch == KEY_F1 {
+            return self.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        }
         match ncurses_to_keycode(ch) {
             Some(code) => self.handle_key(KeyEvent::new(code, KeyModifiers::NONE)),
             None => false,
@@ -673,6 +676,55 @@ pub fn draw_chrome<W: Write>(out: &mut W) {
             );
         }
         let _ = queue!(out, SetAttribute(Attribute::Reset), ResetColor);
+    });
+    let _ = out.flush();
+}
+
+/// Set the live status toast from outside the overlay (e.g. the bar-style
+/// cycler in [`super::barstyle`]). Shown centered by [`draw_status`] until it
+/// auto-dismisses. The run loop redraws the header/panels on the same key, so
+/// the toast paints on top immediately.
+pub fn set_status(msg: impl Into<String>) {
+    OVERLAY.with(|o| o.borrow_mut().set_status(msg));
+}
+
+/// Draw the transient status toast — port of iftoprs `draw_status`
+/// (`render.rs:1620`): a centered ` text ` in the theme's help-key highlight,
+/// two rows above the bottom (clear of the function bar). A no-op when no
+/// status is set or it has expired. Called from the run loop after the panels
+/// and the other overlays, so it lands on top.
+pub fn draw_status<W: Write>(out: &mut W) {
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    if cols < 4 || rows < 3 {
+        return;
+    }
+    OVERLAY.with(|o| {
+        let s = o.borrow();
+        let Some(msg) = s.status.as_ref() else {
+            return;
+        };
+        if msg.expired() {
+            return;
+        }
+        let text = format!(" {} ", msg.text);
+        let tw = text.chars().count() as u16;
+        if tw >= cols {
+            return;
+        }
+        let x = (cols - tw) / 2;
+        let y = rows.saturating_sub(3);
+        // iftoprs uses black text on the help-key highlight color.
+        let _ = queue!(
+            out,
+            SetAttribute(Attribute::Reset),
+            SetForegroundColor(crossterm::style::Color::Black),
+            SetBackgroundColor(s.theme.help_key),
+            SetAttribute(Attribute::Bold),
+            MoveTo(x, y),
+            Print(&text),
+            SetAttribute(Attribute::Reset),
+            ResetColor
+        );
     });
     let _ = out.flush();
 }
@@ -1233,14 +1285,29 @@ mod tests {
     // ── Top-level hotkeys ──
 
     #[test]
-    fn help_keys_fall_through_to_actionhelp() {
-        // The overlay no longer intercepts h/?/F1 — they fall through to the
-        // ported `actionHelp`. `handle_key` must report them unconsumed and
-        // never open the (superseded) themed help panel.
+    fn help_keys_toggle_themed_help_and_esc_closes() {
+        // The overlay owns h/?/F1: they toggle its themed help panel, and Esc
+        // closes it when open (Esc otherwise passes through — see below).
         let mut s = OverlayState::new();
-        assert!(!s.handle_key(key(KeyCode::Char('h'))));
-        assert!(!s.handle_key(key(KeyCode::Char('?'))));
+        assert!(s.handle_key(key(KeyCode::Char('h'))));
+        assert!(s.show_help);
+        // Esc closes the open help overlay (consumed).
+        assert!(s.handle_key(key(KeyCode::Esc)));
         assert!(!s.show_help);
+        // `?` also toggles it.
+        assert!(s.handle_key(key(KeyCode::Char('?'))));
+        assert!(s.show_help);
+        assert!(s.handle_key(key(KeyCode::Char('?'))));
+        assert!(!s.show_help);
+    }
+
+    #[test]
+    fn esc_not_consumed_when_help_closed() {
+        // With no help overlay open, Esc is htop's (clear selection) — the
+        // overlay must let it pass through.
+        let mut s = OverlayState::new();
+        assert!(!s.show_help);
+        assert!(!s.handle_key(key(KeyCode::Esc)));
     }
 
     #[test]
@@ -1276,10 +1343,10 @@ mod tests {
         assert!(!s.show_border); // off by default (htop-like)
         assert!(s.handle_key(key(KeyCode::Char('B'))));
         assert!(s.show_border);
-        assert_eq!(s.status.as_deref(), Some("Border: on"));
+        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Border: on"));
         s.handle_key(key(KeyCode::Char('B')));
         assert!(!s.show_border);
-        assert_eq!(s.status.as_deref(), Some("Border: off"));
+        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Border: off"));
     }
 
     #[test]
@@ -1306,6 +1373,20 @@ mod tests {
     }
 
     #[test]
+    fn draw_status_emits_toast_when_set_and_not_expired() {
+        // Fresh thread → fresh OVERLAY (no status): nothing emitted.
+        let mut out: Vec<u8> = Vec::new();
+        draw_status(&mut out);
+        assert!(out.is_empty());
+        // Set a status via the module-level setter, then it must emit the text.
+        set_status("Bar style: solid");
+        let mut out2: Vec<u8> = Vec::new();
+        draw_status(&mut out2);
+        let s = String::from_utf8_lossy(&out2);
+        assert!(s.contains("Bar style: solid"), "emitted: {s:?}");
+    }
+
+    #[test]
     fn x_is_not_consumed_by_overlay_when_idle() {
         // htop binds `x` (file locks); the overlay must let it pass through.
         let mut s = OverlayState::new();
@@ -1318,7 +1399,7 @@ mod tests {
         assert!(!s.show_header); // off by default
         assert!(s.handle_key(key(KeyCode::Char('g'))));
         assert!(s.show_header);
-        assert_eq!(s.status.as_deref(), Some("Header: on"));
+        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Header: on"));
     }
 
     #[test]
@@ -1419,7 +1500,7 @@ mod tests {
             [10, 20, 30, 40, 50, 60]
         );
         assert_eq!(s.active_custom_theme.as_deref(), Some("cool"));
-        assert_eq!(s.status.as_deref(), Some("Saved theme: cool"));
+        assert_eq!(s.status.as_ref().map(|m| m.text.as_str()), Some("Saved theme: cool"));
     }
 
     #[test]
@@ -1552,13 +1633,14 @@ mod tests {
     }
 
     #[test]
-    fn handle_ncurses_key_leaves_help_for_actionhelp() {
-        // h and F1 are no longer overlay hotkeys; they pass through unconsumed
-        // to htop's ported `actionHelp`.
+    fn handle_ncurses_key_routes_help_keys_to_overlay() {
+        // h and F1 are overlay hotkeys: both open the themed help panel.
         let mut s = OverlayState::new();
-        assert!(!s.handle_ncurses_key(b'h' as i32));
-        assert!(!s.handle_ncurses_key(0o411)); // KEY_F(1)
-        assert!(!s.show_help);
+        assert!(s.handle_ncurses_key(b'h' as i32));
+        assert!(s.show_help);
+        s.show_help = false;
+        assert!(s.handle_ncurses_key(0o411)); // KEY_F(1)
+        assert!(s.show_help);
     }
 
     #[test]

@@ -807,6 +807,9 @@ pub fn ScreenManager_run(
                 // htoprs extension: the monitoring modal (finder/filter/diff/
                 // export/alerts/graph) over the panels, above the theme overlay.
                 crate::extensions::panels::draw_active(&mut out);
+                // htoprs extension: the transient status toast (bar-style change,
+                // border/header toggles, theme save), painted on top of all.
+                crate::extensions::overlay::draw_status(&mut out);
             }
             force_redraw = false;
             // SAFETY: `host` aliases the caller-owned `Machine` for the run

@@ -55,6 +55,17 @@ impl BarStyle {
             BarStyle::Ascii => BarStyle::Classic,
         }
     }
+
+    /// Lower-case display name, matching storageshower's `-b`/config spelling.
+    pub fn label(self) -> &'static str {
+        match self {
+            BarStyle::Classic => "classic",
+            BarStyle::Gradient => "gradient",
+            BarStyle::Solid => "solid",
+            BarStyle::Thin => "thin",
+            BarStyle::Ascii => "ascii",
+        }
+    }
 }
 
 thread_local! {
@@ -110,6 +121,8 @@ pub fn cycle_bar_style(_st: &mut State) -> Htop_Reaction {
     let next = current().next();
     set(next);
     crate::extensions::prefs::update(|p| p.bar_style = next);
+    // Show the iftoprs-style status toast naming the new style.
+    crate::extensions::overlay::set_status(format!("Bar style: {}", next.label()));
     HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING
 }
 
