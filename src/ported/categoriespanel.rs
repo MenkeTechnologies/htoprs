@@ -135,9 +135,17 @@ type CategoriesPanel_makePageFunc = fn(&mut CategoriesPanel);
 
 /// Port of the file-local `CategoriesPanelPage` struct (`CategoriesPanel.c:104`):
 /// a category name plus its page-builder ctor.
+///
+/// `available` is an htoprs addition (no C analog): the C builds every page, but
+/// some page ctors here are still `todo!()` stubs (e.g. the Meters page, blocked
+/// on the header/meters shared-ownership bridge). Navigating to such a category
+/// must not panic the TUI, so an unavailable page is skipped — its right pane
+/// stays empty until the ctor is ported. This flag is the guard, not a port:
+/// the underlying ctor keeps its `todo!()` body so coverage stays honest.
 struct CategoriesPanelPage {
     name: &'static str,
     ctor: CategoriesPanel_makePageFunc,
+    available: bool,
 }
 
 /// Port of `static CategoriesPanelPage categoriesPanelPages[]`
@@ -149,22 +157,29 @@ static categoriesPanelPages: [CategoriesPanelPage; 5] = [
     CategoriesPanelPage {
         name: "Display options",
         ctor: CategoriesPanel_makeDisplayOptionsPage,
+        available: true,
     },
     CategoriesPanelPage {
         name: "Header layout",
         ctor: CategoriesPanel_makeHeaderOptionsPage,
+        available: true,
     },
     CategoriesPanelPage {
         name: "Meters",
         ctor: CategoriesPanel_makeMetersPage,
+        // Blocked on the header/meters shared-ownership bridge (`makeMetersPage`
+        // is still a `todo!()`); skip it instead of panicking the TUI.
+        available: false,
     },
     CategoriesPanelPage {
         name: "Screens",
         ctor: CategoriesPanel_makeScreensPage,
+        available: true,
     },
     CategoriesPanelPage {
         name: "Colors",
         ctor: CategoriesPanel_makeColorsPage,
+        available: true,
     },
 ];
 
@@ -358,8 +373,13 @@ pub fn CategoriesPanel_eventHandler(this: &mut CategoriesPanel, ch: i32) -> Hand
         }
         // C: if (selected >= 0 && selected < ARRAYSIZE(categoriesPanelPages))
         //       categoriesPanelPages[selected].ctor(this);
+        // htoprs: skip pages whose ctor is not yet ported (`available == false`)
+        // so navigating to them leaves an empty pane instead of panicking.
         if selected >= 0 && (selected as usize) < categoriesPanelPages.len() {
-            (categoriesPanelPages[selected as usize].ctor)(this);
+            let page = &categoriesPanelPages[selected as usize];
+            if page.available {
+                (page.ctor)(this);
+            }
         }
     }
 
@@ -414,7 +434,12 @@ pub fn CategoriesPanel_new(scr: *mut ScreenManager, header: *mut Header, host: *
     // `this` now lives in `scr->panels`; dispatch the first page through the
     // still-valid raw pointer (the C `categoriesPanelPages[0].ctor(this)`).
     // SAFETY: `self_ptr` points at the just-added, `scr`-owned panel.
-    (categoriesPanelPages[0].ctor)(unsafe { &mut *self_ptr });
+    // htoprs: guard on `available` for the same reason as the eventHandler — a
+    // not-yet-ported first page must not panic on open (page[0] is Display
+    // options today, so this is defensive).
+    if categoriesPanelPages[0].available {
+        (categoriesPanelPages[0].ctor)(unsafe { &mut *self_ptr });
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +601,25 @@ mod tests {
         assert_eq!(r, HandlerResult::HANDLED);
         assert_eq!(Panel_getSelectedIndex(&c.super_), 1); // Header layout
         assert_eq!(scr.panelCount, 2, "the Header page was added");
+    }
+
+    #[test]
+    fn navigating_to_meters_skips_the_unported_page_without_panicking() {
+        // Regression: the Meters page ctor is a `todo!()` (header/meters
+        // shared-ownership bridge). Arrowing to it (index 2) used to panic the
+        // whole TUI. It must now be skipped — HANDLED, selection moves, but no
+        // page panel is added for the unavailable category.
+        let mut scr = scr_wired();
+        let mut host = host_wired();
+        let mut c = cat_with(categories_panel(), &mut scr, &mut host);
+        CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // 0 -> 1 Header (built)
+        let r = CategoriesPanel_eventHandler(&mut c, KEY_DOWN); // 1 -> 2 Meters (skipped)
+        assert_eq!(r, HandlerResult::HANDLED);
+        assert_eq!(Panel_getSelectedIndex(&c.super_), 2);
+        assert_eq!(
+            scr.panelCount, 1,
+            "the unavailable Meters page must be skipped, leaving no page panel"
+        );
     }
 
     #[test]

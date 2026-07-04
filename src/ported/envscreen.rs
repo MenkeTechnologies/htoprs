@@ -60,7 +60,34 @@ use crate::ported::infoscreen::{
     InfoScreen, InfoScreenClass, InfoScreen_addLine, InfoScreen_done, InfoScreen_drawTitled,
     InfoScreen_init,
 };
+// Environment retrieval is per-OS (htop links the target's `Platform.c`). The
+// TUI runs on darwin, which reads the env via `sysctl(KERN_PROCARGS2)`; the
+// import was hardcoded to the linux `/proc/<pid>/environ` reader, so `e` always
+// failed on macOS ("Could not read process environment"). Select per target.
+#[cfg(target_os = "linux")]
 use crate::ported::linux::platform::Platform_getProcessEnv;
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_getProcessEnv;
+#[cfg(target_os = "freebsd")]
+use crate::ported::freebsd::platform::Platform_getProcessEnv;
+#[cfg(target_os = "dragonfly")]
+use crate::ported::dragonflybsd::platform::Platform_getProcessEnv;
+#[cfg(target_os = "netbsd")]
+use crate::ported::netbsd::platform::Platform_getProcessEnv;
+#[cfg(target_os = "openbsd")]
+use crate::ported::openbsd::platform::Platform_getProcessEnv;
+#[cfg(target_os = "solaris")]
+use crate::ported::solaris::platform::Platform_getProcessEnv;
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris"
+)))]
+use crate::ported::unsupported::platform::Platform_getProcessEnv;
 use crate::ported::listitem::ListItem_new;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{Panel_getSelectedIndex, Panel_new, Panel_prune, Panel_setSelected};
@@ -341,5 +368,37 @@ mod tests {
             assert!(prev <= cur, "panel items must be sorted");
             prev = cur;
         }
+    }
+
+    /// Regression: on macOS the env came from the linux `/proc/<pid>/environ`
+    /// reader (nonexistent on darwin), so every `e` press yielded a single
+    /// "Could not read process environment." line. This scans the test process
+    /// itself and asserts a real `KEY=VALUE` entry is present — which only holds
+    /// once the darwin `sysctl(KERN_PROCARGS2)` reader is wired in. `n > 0`
+    /// alone would pass even on the bug (the error line counts), so we check for
+    /// an actual `=` and the absence of the failure string.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scan_self_reads_real_env_on_darwin() {
+        let mut p = Process::default();
+        Process_setPid(&mut p, std::process::id() as i32);
+        let mut es = EnvScreen_new(&p);
+
+        EnvScreen_scan(&mut es.super_);
+
+        let n = Panel_size(&es.super_.display);
+        assert!(n > 0, "scan recorded no lines");
+        let mut saw_kv = false;
+        for i in 0..n {
+            let line = panel_value(&es.super_.display, i);
+            assert_ne!(
+                line, "Could not read process environment.",
+                "darwin env read failed"
+            );
+            if line.contains('=') {
+                saw_kv = true;
+            }
+        }
+        assert!(saw_kv, "expected at least one KEY=VALUE env entry");
     }
 }

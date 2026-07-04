@@ -89,7 +89,32 @@ enum Modal {
     Alerts,
     Graph,
     Aggregate,
+    Palette,
 }
+
+/// The command-palette action registry (`:`): a searchable name paired with the
+/// key it injects into the run loop. Injection flows through the whole dispatch
+/// pipeline, so both htoprs-extension actions and htop's own keys are reachable.
+const CMDS: &[(&str, i32)] = &[
+    ("finder — fuzzy process search", b'f' as i32),
+    ("filter — regex / saved filters", b'r' as i32),
+    ("snapshot / diff process table", b'd' as i32),
+    ("export table to JSON / CSV", b'o' as i32),
+    ("alerts — threshold rules", b'A' as i32),
+    ("cpu history graph", b'G' as i32),
+    ("aggregate / pivot totals", b'y' as i32),
+    ("sparkline — cycle per-PID CPU graph", b'v' as i32),
+    ("bar style — cycle fill glyph", b'b' as i32),
+    ("border — toggle", b'B' as i32),
+    ("header — toggle", b'g' as i32),
+    ("theme — chooser", b'c' as i32),
+    ("theme — editor", b'C' as i32),
+    ("help", b'h' as i32),
+    ("kill process", b'k' as i32),
+    ("tree view — toggle", b't' as i32),
+    ("search", b'/' as i32),
+    ("setup", b'S' as i32),
+];
 
 /// The complete live state for the monitoring extensions.
 struct PanelState {
@@ -119,11 +144,19 @@ struct PanelState {
     /// either way, so the modal's firing counts stay live when this is off.
     alert_hl: bool,
     pending_select: Option<u32>,
+    /// A key the command palette (`:`) picked, injected into the run loop's
+    /// key read so it flows through the normal dispatch pipeline.
+    pending_key: Option<i32>,
 
     // finder
     finder_query: String,
     finder_hits: Vec<finder::Match>,
     finder_sel: usize,
+
+    // command palette (`:`)
+    palette_query: String,
+    palette_hits: Vec<finder::Match>,
+    palette_sel: usize,
 
     // filter
     filter_query: String,
@@ -161,9 +194,13 @@ impl PanelState {
             // Restore the saved hot-row-highlight toggle; absent (first run) = on.
             alert_hl: saved.as_ref().and_then(|p| p.alert_hl).unwrap_or(true),
             pending_select: None,
+            pending_key: None,
             finder_query: String::new(),
             finder_hits: Vec::new(),
             finder_sel: 0,
+            palette_query: String::new(),
+            palette_hits: Vec::new(),
+            palette_sel: 0,
             filter_query: String::new(),
             filter_field: Field::Any,
             filter_regex: false,
@@ -266,6 +303,7 @@ impl PanelState {
                 self.modal = Modal::Aggregate;
                 toast(format!("Aggregate by {}", self.agg_by.label()));
             }
+            0x3a => self.open_palette(), // ':' — command palette
             _ => return false,
         }
         true
@@ -279,6 +317,7 @@ impl PanelState {
         }
         match self.modal {
             Modal::Finder => self.finder_key(code),
+            Modal::Palette => self.palette_key(code),
             Modal::Filter => self.filter_key(code),
             Modal::Diff => self.diff_key(code),
             Modal::Alerts => {
@@ -347,6 +386,54 @@ impl PanelState {
                 if let Some(m) = self.finder_hits.get(self.finder_sel) {
                     if let Some(p) = self.table.get(m.idx) {
                         self.pending_select = Some(p.pid);
+                    }
+                }
+                self.modal = Modal::None;
+            }
+            _ => {}
+        }
+    }
+
+    fn open_palette(&mut self) {
+        self.modal = Modal::Palette;
+        self.palette_query.clear();
+        self.palette_sel = 0;
+        self.recompute_palette();
+        toast("Command palette");
+    }
+
+    /// Fuzzy-match the query against the [`CMDS`] action names.
+    fn recompute_palette(&mut self) {
+        let names: Vec<String> = CMDS.iter().map(|(n, _)| n.to_string()).collect();
+        self.palette_hits = finder::fuzzy(&self.palette_query, &names);
+        if self.palette_sel >= self.palette_hits.len() {
+            self.palette_sel = self.palette_hits.len().saturating_sub(1);
+        }
+    }
+
+    fn palette_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char(c) => {
+                self.palette_query.push(c);
+                self.palette_sel = 0;
+                self.recompute_palette();
+            }
+            KeyCode::Backspace => {
+                self.palette_query.pop();
+                self.palette_sel = 0;
+                self.recompute_palette();
+            }
+            KeyCode::Down => {
+                if self.palette_sel + 1 < self.palette_hits.len() {
+                    self.palette_sel += 1;
+                }
+            }
+            KeyCode::Up => self.palette_sel = self.palette_sel.saturating_sub(1),
+            KeyCode::Enter => {
+                // Queue the selected action's key for the run loop to inject.
+                if let Some(m) = self.palette_hits.get(self.palette_sel) {
+                    if let Some((_, key)) = CMDS.get(m.idx) {
+                        self.pending_key = Some(*key);
                     }
                 }
                 self.modal = Modal::None;
@@ -508,8 +595,38 @@ impl PanelState {
             Modal::Alerts => self.render_alerts(buf, area, &s),
             Modal::Graph => self.render_graph(buf, area, &s),
             Modal::Aggregate => self.render_aggregate(buf, area, &s),
+            Modal::Palette => self.render_palette(buf, area, &s),
             Modal::None => {}
         }
+    }
+
+    /// The command palette (`:`): a fuzzy-searchable list of actions, each
+    /// executed by injecting its key into the run loop on Enter.
+    fn render_palette(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
+        let mut lines = Vec::new();
+        lines.push((
+            format!("> {}▏", self.palette_query),
+            s.body.add_modifier(Modifier::BOLD),
+        ));
+        lines.push((
+            format!(
+                "{} commands · ↑/↓ move · Enter run · Esc cancel",
+                self.palette_hits.len()
+            ),
+            s.dim,
+        ));
+        for (row, m) in self.palette_hits.iter().take(LIST_ROWS).enumerate() {
+            let Some((name, _)) = CMDS.get(m.idx) else {
+                continue;
+            };
+            let st = if row == self.palette_sel {
+                s.sel
+            } else {
+                s.body
+            };
+            lines.push((format!("  {name}"), st));
+        }
+        self.render_lines(buf, area, s, "Command palette", lines);
     }
 
     /// The aggregation/pivot modal (`y`): the live table rolled up on the
@@ -923,6 +1040,13 @@ pub fn take_pending_select() -> Option<u32> {
     PANELS.with(|p| p.borrow_mut().pending_select.take())
 }
 
+/// A key the command palette (`:`) picked, consumed once. The run loop injects
+/// it in place of the next `Panel_getCh`, so the action runs through the normal
+/// dispatch pipeline (extension + htop) as if the user had typed it.
+pub fn take_pending_key() -> Option<i32> {
+    PANELS.with(|p| p.borrow_mut().pending_key.take())
+}
+
 /// Draw the active modal (if any) over the current screen, then flush.
 pub fn draw_active<W: Write>(out: &mut W) {
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
@@ -1125,6 +1249,40 @@ mod tests {
         assert_eq!(second, first.next()); // cycles in order, and persists
         dispatch_key(27); // Esc closes
         assert!(!panel_active());
+    }
+
+    #[test]
+    fn palette_matches_and_injects_action_key() {
+        ingest_ticks(1);
+        assert!(dispatch_key(0x3a)); // ':' opens the command palette
+        assert!(panel_active());
+        for b in b"aggreg" {
+            dispatch_key(*b as i32);
+        }
+        // The aggregate command is the top fuzzy hit for "aggreg".
+        let top = PANELS.with(|p| p.borrow().palette_hits.first().map(|m| CMDS[m.idx].1));
+        assert_eq!(top, Some(b'y' as i32));
+        dispatch_key(13); // Enter runs it: queues the key, closes the modal
+        assert!(!panel_active());
+        assert_eq!(take_pending_key(), Some(b'y' as i32));
+        // Consumed once.
+        assert_eq!(take_pending_key(), None);
+    }
+
+    #[test]
+    fn palette_reaches_htop_actions_too() {
+        // "kill" resolves to htop's own 'k'; injection isn't limited to
+        // extension actions.
+        ingest_ticks(1);
+        dispatch_key(0x3a);
+        for b in b"kill" {
+            dispatch_key(*b as i32);
+        }
+        let top = PANELS.with(|p| p.borrow().palette_hits.first().map(|m| CMDS[m.idx].1));
+        assert_eq!(top, Some(b'k' as i32));
+        dispatch_key(27); // Esc cancels (no injection)
+        assert!(!panel_active());
+        assert_eq!(take_pending_key(), None);
     }
 
     #[test]

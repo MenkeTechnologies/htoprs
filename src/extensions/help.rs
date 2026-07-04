@@ -147,6 +147,10 @@ pub fn print_help(name: &str) {
     );
     println!(
         "{}",
+        opt(":", "Command palette — fuzzy-search and run any action")
+    );
+    println!(
+        "{}",
         opt("v", "Cycle per-PID CPU sparkline: off / column / inline graph (taller = busier)")
     );
     println!("{}", opt("b", "Cycle bar fill style (classic/gradient/solid/thin/ascii)"));
