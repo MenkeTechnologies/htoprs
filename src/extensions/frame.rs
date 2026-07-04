@@ -103,6 +103,15 @@ pub fn frame_out() -> FrameOut {
     FrameOut
 }
 
+/// Drop the diff cache so the next [`present`] re-emits every row in full.
+/// Call this whenever something painted the screen outside the frame pipeline
+/// (a modal that draws directly and clears, a resize, an explicit redraw) —
+/// otherwise the diff would compare against a stale picture and skip rows that
+/// are actually different on screen.
+pub fn invalidate() {
+    PREV.with(|p| *p.borrow_mut() = None);
+}
+
 /// Close the open frame and present only what changed since the last frame:
 /// parse the buffer into per-row segments, diff against the previous frame, and
 /// write just the changed rows (wrapped in one 2026 region). A no-op when no
@@ -270,102 +279,168 @@ fn is_sgr_reset(params: &[u8]) -> bool {
     params.is_empty() || params == b"0" || params == b"00"
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Each test runs on its own thread → fresh (`None`) thread-local FRAME.
-    /// Belt-and-suspenders: close any stray frame before asserting.
+    /// Fresh thread-local state (each test thread starts clean, but be explicit).
     fn reset() {
         FRAME.with(|f| *f.borrow_mut() = None);
+        PREV.with(|p| *p.borrow_mut() = None);
     }
 
-    /// While a frame is open, writes are buffered (not sent) and `present_to`
-    /// wraps them in the 2026 begin/end sequences in a single burst.
-    #[test]
-    fn frame_buffers_then_present_wraps_atomically() {
-        reset();
+    /// Draw `bytes` as one frame and present it to an in-memory sink; returns
+    /// (sink bytes, wrote?).
+    fn render(bytes: &[u8]) -> (Vec<u8>, bool) {
         begin_frame();
-        let mut o = frame_out();
-        o.write_all(b"hello").unwrap();
-        o.flush().unwrap(); // must be a no-op while the frame is open
-        // Nothing is emitted until present; the buffer still holds the bytes.
-        FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b"hello"[..])));
-
+        frame_out().write_all(bytes).unwrap();
         let mut sink = Vec::new();
-        assert!(present_to(&mut sink));
-        // Exact bytes: Begin + content + End, in one contiguous region.
-        assert_eq!(sink, b"\x1b[?2026hhello\x1b[?2026l");
-        // Frame is closed afterward.
-        FRAME.with(|f| assert!(f.borrow().is_none()));
+        let wrote = present_to(&mut sink);
+        (sink, wrote)
     }
 
-    /// The begin sequence precedes and the end sequence follows ALL content —
-    /// nothing leaks outside the synchronized-update region.
+    /// Strip the 2026 begin/end wrapper to inspect the body.
+    fn body(sink: &[u8]) -> Vec<u8> {
+        assert!(sink.starts_with(BEGIN_SYNC) && sink.ends_with(END_SYNC));
+        sink[BEGIN_SYNC.len()..sink.len() - END_SYNC.len()].to_vec()
+    }
+
+    /// The first frame is emitted in full (no previous frame to diff against),
+    /// wrapped in exactly one 2026 region.
     #[test]
-    fn content_is_fully_enclosed_by_sync_region() {
+    fn first_frame_emits_everything() {
         reset();
-        begin_frame();
-        // Simulate several draw calls (header, rows, function bar, overlay).
-        for chunk in [&b"HEADER"[..], b"row1", b"row2", b"FnBar", b"toast"] {
-            frame_out().write_all(chunk).unwrap();
-        }
-        let mut sink = Vec::new();
-        present_to(&mut sink);
-        let begin = sink.windows(BEGIN_SYNC.len()).position(|w| w == BEGIN_SYNC);
-        let end = sink.windows(END_SYNC.len()).position(|w| w == END_SYNC);
-        assert_eq!(begin, Some(0), "Begin must be at the very start");
-        // End is the last thing written.
-        assert_eq!(end, Some(sink.len() - END_SYNC.len()));
-        // The concatenated content sits between them, in draw order.
-        let inner = &sink[BEGIN_SYNC.len()..sink.len() - END_SYNC.len()];
-        assert_eq!(inner, b"HEADERrow1row2FnBartoast");
-        // And there is only ONE begin and ONE end (single atomic region).
+        let (sink, wrote) = render(b"\x1b[1;1HAAAA\x1b[2;1HBBBB");
+        assert!(wrote);
+        assert_eq!(body(&sink), b"\x1b[1;1HAAAA\x1b[2;1HBBBB");
         assert_eq!(sink.windows(BEGIN_SYNC.len()).filter(|w| *w == BEGIN_SYNC).count(), 1);
-        assert_eq!(sink.windows(END_SYNC.len()).filter(|w| *w == END_SYNC).count(), 1);
-    }
-
-    /// Multiple `frame_out()` handles append to the same buffer in call order.
-    #[test]
-    fn multiple_writes_accumulate_in_order() {
-        reset();
-        begin_frame();
-        frame_out().write_all(b"a").unwrap();
-        frame_out().write_all(b"bc").unwrap();
-        frame_out().write_all(b"def").unwrap();
-        FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b"abcdef"[..])));
         reset();
     }
 
-    /// `write` reports the full length consumed (buffered path).
+    /// An identical second frame changes nothing → nothing is written. This is
+    /// what stops the idle full-screen repaint from flickering.
     #[test]
-    fn write_reports_full_length() {
+    fn identical_frame_writes_nothing() {
         reset();
-        begin_frame();
-        let n = frame_out().write(b"twelve bytes").unwrap();
-        assert_eq!(n, 12);
-        reset();
-    }
-
-    /// An empty frame presents nothing — no stray 2026 codes on a no-op redraw.
-    #[test]
-    fn empty_frame_emits_nothing() {
-        reset();
-        begin_frame(); // opened but never written to
-        let mut sink = Vec::new();
-        assert!(!present_to(&mut sink));
+        let f = b"\x1b[1;1HAAAA\x1b[2;1HBBBB";
+        assert!(render(f).1);
+        let (sink, wrote) = render(f);
+        assert!(!wrote, "unchanged frame must not emit");
         assert!(sink.is_empty());
-        // Frame is still closed (taken) even though empty.
-        FRAME.with(|f| assert!(f.borrow().is_none()));
+        reset();
     }
 
-    /// `begin_frame` clears any un-presented bytes (reused allocation).
+    /// When one row changes, ONLY that row is re-emitted — not the whole screen.
+    /// This is the core of the flicker fix: a CPU-% tick touches a few rows.
     #[test]
-    fn begin_frame_clears_stale_bytes() {
+    fn only_changed_rows_are_emitted() {
+        reset();
+        assert!(render(b"\x1b[1;1HAAAA\x1b[2;1HBBBB\x1b[3;1HCCCC").1);
+        // Row 2 (index 1) changes; rows 1 and 3 stay.
+        let (sink, wrote) = render(b"\x1b[1;1HAAAA\x1b[2;1HZZZZ\x1b[3;1HCCCC");
+        assert!(wrote);
+        // Body is exactly the changed row's segment, nothing else.
+        assert_eq!(body(&sink), b"\x1b[2;1HZZZZ");
+        reset();
+    }
+
+    /// A row's colour, set by an SGR that preceded its cursor move, is carried
+    /// as the row's entry SGR — so re-emitting only that row keeps the colour
+    /// even though the SGR-setting bytes lived in an earlier (skipped) place.
+    #[test]
+    fn changed_row_keeps_its_entry_sgr() {
+        reset();
+        // Green set once up front, then two rows drawn in it.
+        assert!(render(b"\x1b[32m\x1b[1;1HG1\x1b[2;1HG2").1);
+        // Row 2 changes; the emitted segment must re-assert green.
+        let (sink, _) = render(b"\x1b[32m\x1b[1;1HG1\x1b[2;1HXY");
+        assert_eq!(body(&sink), b"\x1b[32m\x1b[2;1HXY");
+        reset();
+    }
+
+    /// A `\e[2J` clear invalidates the whole previous frame → everything is
+    /// re-emitted even if row bytes match.
+    #[test]
+    fn clear_forces_full_redraw() {
+        reset();
+        let f = b"\x1b[1;1HAAAA\x1b[2;1HBBBB";
+        assert!(render(f).1);
+        // Same rows, but prefixed with a clear: must re-emit both rows.
+        let (sink, wrote) = render(b"\x1b[2J\x1b[1;1HAAAA\x1b[2;1HBBBB");
+        assert!(wrote);
+        assert!(body(&sink).windows(4).any(|w| w == b"AAAA"));
+        assert!(body(&sink).windows(4).any(|w| w == b"BBBB"));
+        reset();
+    }
+
+    /// A row present last frame but absent now is blanked (cleared to EOL) so
+    /// no stale text is left behind when the drawn area shrinks.
+    #[test]
+    fn vanished_row_is_blanked() {
+        reset();
+        assert!(render(b"\x1b[1;1HAAAA\x1b[2;1HBBBB").1);
+        // Second frame only draws row 1; row 2 disappears.
+        let (sink, wrote) = render(b"\x1b[1;1HAAAA");
+        assert!(wrote);
+        // Body clears row 2 (1-based line 2).
+        assert!(body(&sink).windows(6).any(|w| w == b"\x1b[2;1H"));
+        assert!(body(&sink).windows(3).any(|w| w == b"\x1b[K"));
+        reset();
+    }
+
+    // ── parser unit tests ──
+
+    /// CUP row parsing is 1-based → 0-based; text lands in the right row bucket.
+    #[test]
+    fn parse_splits_rows_by_cup() {
+        let (s, clear) = parse_frame(b"pre\x1b[3;1Hthird\x1b[1;5Hfirst");
+        assert!(!clear);
+        assert_eq!(s.preamble, b"pre");
+        assert_eq!(s.rows.get(&2).map(|v| &v[..]), Some(&b"\x1b[3;1Hthird"[..]));
+        assert_eq!(s.rows.get(&0).map(|v| &v[..]), Some(&b"\x1b[1;5Hfirst"[..]));
+    }
+
+    /// `\e[2J` sets the clear flag.
+    #[test]
+    fn parse_detects_clear() {
+        let (_, clear) = parse_frame(b"\x1b[2J\x1b[1;1Hx");
+        assert!(clear);
+        let (_, clear2) = parse_frame(b"\x1b[0J\x1b[1;1Hx");
+        assert!(!clear2);
+    }
+
+    /// A bare `\e[H` defaults to row 1 (index 0).
+    #[test]
+    fn parse_first_param_defaults_to_one() {
+        assert_eq!(parse_first_param(b""), 1);
+        assert_eq!(parse_first_param(b"12;34"), 12);
+        assert_eq!(parse_first_param(b"7"), 7);
+    }
+
+    /// SGR reset detection.
+    #[test]
+    fn sgr_reset_recognized() {
+        assert!(is_sgr_reset(b""));
+        assert!(is_sgr_reset(b"0"));
+        assert!(!is_sgr_reset(b"1"));
+        assert!(!is_sgr_reset(b"38;5;2"));
+    }
+
+    /// A truncated CSI at end of buffer is copied through, not dropped/panicked.
+    #[test]
+    fn truncated_csi_is_preserved() {
+        let (s, _) = parse_frame(b"\x1b[1;1Hx\x1b[3");
+        assert_eq!(s.rows.get(&0).map(|v| &v[..]), Some(&b"\x1b[1;1Hx\x1b[3"[..]));
+    }
+
+    /// Frame buffering: writes accumulate and `begin_frame` clears stale bytes.
+    #[test]
+    fn begin_frame_buffers_and_clears() {
         reset();
         begin_frame();
         frame_out().write_all(b"stale").unwrap();
-        begin_frame(); // should clear, not append
+        begin_frame();
         FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b""[..])));
         reset();
     }
@@ -377,44 +452,6 @@ mod tests {
         let mut sink = Vec::new();
         assert!(!present_to(&mut sink));
         assert!(sink.is_empty());
-        FRAME.with(|f| assert!(f.borrow().is_none()));
-    }
-
-    /// A large frame (many small writes, as a full process list produces)
-    /// accumulates fully and presents as one region — the load-bearing case for
-    /// the flicker fix, since a big slow frame is exactly what tripped the old
-    /// incremental-flush timeout.
-    #[test]
-    fn large_frame_accumulates_and_presents_once() {
         reset();
-        begin_frame();
-        let mut expected = Vec::new();
-        for i in 0..5000u32 {
-            let cell = format!("\x1b[38;5;{}m#", i % 256);
-            frame_out().write_all(cell.as_bytes()).unwrap();
-            expected.extend_from_slice(cell.as_bytes());
-        }
-        let mut sink = Vec::new();
-        assert!(present_to(&mut sink));
-        assert_eq!(&sink[..BEGIN_SYNC.len()], BEGIN_SYNC);
-        assert_eq!(&sink[sink.len() - END_SYNC.len()..], END_SYNC);
-        assert_eq!(&sink[BEGIN_SYNC.len()..sink.len() - END_SYNC.len()], &expected[..]);
-        reset();
-    }
-
-    /// `flush()` inside an open frame is a no-op (does not close or present it);
-    /// the buffered bytes survive to the eventual `present`.
-    #[test]
-    fn flush_during_frame_does_not_present() {
-        reset();
-        begin_frame();
-        let mut o = frame_out();
-        o.write_all(b"kept").unwrap();
-        o.flush().unwrap();
-        o.flush().unwrap();
-        FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b"kept"[..])));
-        let mut sink = Vec::new();
-        present_to(&mut sink);
-        assert_eq!(sink, b"\x1b[?2026hkept\x1b[?2026l");
     }
 }

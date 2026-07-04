@@ -773,6 +773,14 @@ pub fn ScreenManager_run(
         // went), then `End` — which flickered on slow machines whose repaint
         // outran the timeout. See `extensions::frame`.
         crate::extensions::frame::begin_frame();
+        // A forced redraw means the screen was (or must be) fully repainted —
+        // after a resize, an explicit Ctrl+L, or a modal that drew directly to
+        // the terminal and cleared it (e.g. the help screen). Drop the diff
+        // cache so this frame re-emits every row instead of diffing against a
+        // now-stale picture.
+        if force_redraw {
+            crate::extensions::frame::invalidate();
+        }
 
         if redraw || force_redraw {
             // The Table_rebuildPanel + Header_draw that C runs at the tail of
