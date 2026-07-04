@@ -35,7 +35,20 @@ thread_local! {
     /// of the flicker fix (a CPU-% tick repaints a handful of rows, not the
     /// whole ~150 KB screen). `None` until the first frame or after a clear.
     static PREV: RefCell<Option<Screen>> = const { RefCell::new(None) };
+    /// Set by [`request_clear`] when the physical screen must be wiped before
+    /// the next frame (a terminal resize reflowed/scrolled it out from under the
+    /// diff). Consumed by the next [`begin_frame`], which prepends a `\e[2J` to
+    /// the buffer so the whole terminal — including rows this frame won't draw —
+    /// is cleared.
+    static CLEAR_PENDING: RefCell<bool> = const { RefCell::new(false) };
 }
+
+/// DEC private mode 2026 (synchronized update) begin/end.
+const BEGIN_SYNC: &[u8] = b"\x1b[?2026h";
+const END_SYNC: &[u8] = b"\x1b[?2026l";
+
+/// Erase the whole display (`\e[2J`).
+const ERASE_DISPLAY: &[u8] = b"\x1b[2J";
 
 /// A presented frame decomposed for row-level diffing: a `preamble` (bytes
 /// before the first cursor move — usually an initial SGR / cursor toggle) and
@@ -49,20 +62,38 @@ struct Screen {
     rows: BTreeMap<usize, Vec<u8>>,
 }
 
-/// DEC private mode 2026 (synchronized update) begin/end.
-const BEGIN_SYNC: &[u8] = b"\x1b[?2026h";
-const END_SYNC: &[u8] = b"\x1b[?2026l";
-
 /// Open a frame: subsequent [`frame_out`] writes are buffered until [`present`].
 /// Idempotent — reusing the allocation and clearing any un-presented bytes.
+///
+/// If a full clear was requested (see [`request_clear`]), the buffer opens with
+/// a `\e[2J` erase and the diff cache is dropped, so this frame wipes the whole
+/// terminal and repaints every row — the recovery path after a resize reflowed
+/// the screen out from under the row diff.
 pub fn begin_frame() {
+    let clear = CLEAR_PENDING.with(|c| c.replace(false));
     FRAME.with(|f| {
         let mut slot = f.borrow_mut();
         match slot.as_mut() {
             Some(buf) => buf.clear(),
             None => *slot = Some(Vec::with_capacity(64 * 1024)),
         }
+        if clear {
+            slot.as_mut().unwrap().extend_from_slice(ERASE_DISPLAY);
+        }
     });
+    if clear {
+        invalidate();
+    }
+}
+
+/// Request that the next [`begin_frame`] wipe the whole physical screen (emit a
+/// `\e[2J`) before drawing. Call this after a terminal resize: the emulator may
+/// have reflowed or scrolled the old image, so rows the next frame does not
+/// redraw would otherwise keep stale content — the "data above the header"
+/// artifact on SIGWINCH. A plain [`invalidate`] only re-emits the rows the frame
+/// *does* draw; this also clears the ones it doesn't.
+pub fn request_clear() {
+    CLEAR_PENDING.with(|c| *c.borrow_mut() = true);
 }
 
 /// A [`Write`] sink for all frame drawing. While a frame is open it appends to
@@ -296,6 +327,7 @@ mod tests {
     fn reset() {
         FRAME.with(|f| *f.borrow_mut() = None);
         PREV.with(|p| *p.borrow_mut() = None);
+        CLEAR_PENDING.with(|c| *c.borrow_mut() = false);
     }
 
     /// Draw `bytes` as one frame and present it to an in-memory sink; returns
@@ -477,6 +509,32 @@ mod tests {
         frame_out().write_all(b"stale").unwrap();
         begin_frame();
         FRAME.with(|f| assert_eq!(f.borrow().as_deref(), Some(&b""[..])));
+        reset();
+    }
+
+    /// After [`request_clear`] (the SIGWINCH recovery path), the next frame
+    /// opens with a `\e[2J`, drops the diff cache, and re-emits every row even
+    /// though the row bytes are byte-identical to the previous frame — so stale
+    /// content the terminal reflowed on resize is wiped instead of skipped.
+    #[test]
+    fn request_clear_wipes_and_repaints_next_frame() {
+        reset();
+        let f = b"\x1b[1;1HAAAA\x1b[2;1HBBBB";
+        assert!(render(f).1);
+        // Without a clear, an identical frame would emit nothing.
+        request_clear();
+        let (sink, wrote) = render(f);
+        assert!(wrote, "resize recovery frame must emit");
+        let out = body(&sink);
+        assert!(
+            out.windows(4).any(|w| w == ERASE_DISPLAY),
+            "must erase display"
+        );
+        assert!(out.windows(4).any(|w| w == b"AAAA"), "row 1 re-emitted");
+        assert!(out.windows(4).any(|w| w == b"BBBB"), "row 2 re-emitted");
+        // The flag is one-shot: the following identical frame goes quiet again.
+        let (_, wrote2) = render(f);
+        assert!(!wrote2, "clear must not persist past one frame");
         reset();
     }
 

@@ -989,6 +989,15 @@ pub fn ScreenManager_run(
             match ch {
                 KEY_RESIZE => {
                     ScreenManager_resize(this);
+                    // htoprs extension: unlike C htop (where ncurses marks the
+                    // whole screen touched on a resize), our frame diff still
+                    // believes the terminal shows the pre-resize picture. The
+                    // emulator has reflowed/scrolled it, so force a full repaint
+                    // and wipe the physical screen first — otherwise byte-
+                    // identical rows are skipped and stale content lingers above
+                    // the header. Mirrors the `HandlerResult::RESIZE` path.
+                    crate::extensions::frame::request_clear();
+                    force_redraw = true;
                     continue 'main;
                 }
                 KEY_FOCUS_IN | KEY_FOCUS_OUT => break 'sw,
