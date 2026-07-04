@@ -82,6 +82,10 @@ struct PanelState {
     // ── UI ────────────────────────────────────────────────────────────────
     modal: Modal,
     spark_col: bool,
+    /// Whether firing (over-threshold) rows get the hot-row recolor. Toggled
+    /// from the Alerts modal (`A`, then `t`); the alert engine keeps evaluating
+    /// either way, so the modal's firing counts stay live when this is off.
+    alert_hl: bool,
     pending_select: Option<u32>,
 
     // finder
@@ -118,6 +122,7 @@ impl PanelState {
             tick: 0,
             modal: Modal::None,
             spark_col: false,
+            alert_hl: true,
             pending_select: None,
             finder_query: String::new(),
             finder_hits: Vec::new(),
@@ -225,7 +230,16 @@ impl PanelState {
             Modal::Finder => self.finder_key(code),
             Modal::Filter => self.filter_key(code),
             Modal::Diff => self.diff_key(code),
-            Modal::Export | Modal::Alerts | Modal::Graph => {
+            Modal::Alerts => {
+                // 't' toggles the hot-row highlight in place; any other
+                // non-Esc key closes.
+                if code == KeyCode::Char('t') {
+                    self.alert_hl = !self.alert_hl;
+                } else {
+                    self.modal = Modal::None;
+                }
+            }
+            Modal::Export | Modal::Graph => {
                 // Info-only modals: any non-Esc key closes.
                 self.modal = Modal::None;
             }
@@ -556,7 +570,11 @@ impl PanelState {
     }
 
     fn render_alerts(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
-        let mut lines = vec![("rules:".to_string(), s.dim)];
+        let hl = if self.alert_hl { "on" } else { "off" };
+        let mut lines = vec![
+            (format!("row highlight: {hl}   (t: toggle)"), s.title),
+            ("rules:".to_string(), s.dim),
+        ];
         for r in self.alerts_rules_view() {
             lines.push((r, s.body));
         }
@@ -570,7 +588,7 @@ impl PanelState {
                 s.alert,
             ));
         }
-        lines.push(("Esc close".into(), s.dim));
+        lines.push(("t toggle highlight · Esc close".into(), s.dim));
         self.render_lines(buf, area, s, "Threshold alerts", lines);
     }
 
@@ -779,7 +797,7 @@ pub fn draw_active<W: Write>(out: &mut W) {
 pub fn alert_attr(pid: u32) -> Option<i32> {
     PANELS.with(|p| {
         let s = p.borrow();
-        if s.firing.contains(&pid) {
+        if s.alert_hl && s.firing.contains(&pid) {
             Some(hot_row_attr())
         } else {
             None
@@ -920,6 +938,13 @@ mod tests {
         let selection = ColorElements::PANEL_SELECTION_FOCUS.packed(ColorScheme::active());
         assert_ne!(alert_attr(999), Some(selection));
         assert_eq!(alert_attr(999), Some(hot_row_attr()));
+        // Toggling the highlight off (Alerts modal 't') suppresses the recolor
+        // while the engine keeps firing, then back on restores it.
+        PANELS.with(|p| p.borrow_mut().alert_hl = false);
+        assert!(alert_attr(999).is_none());
+        assert_eq!(PANELS.with(|p| p.borrow().firing.len()), 1);
+        PANELS.with(|p| p.borrow_mut().alert_hl = true);
+        assert!(alert_attr(999).is_some());
     }
 
     #[test]
