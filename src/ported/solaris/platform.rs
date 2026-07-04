@@ -229,20 +229,23 @@ pub fn Platform_setSwapValues(this: &mut Meter) {
     this.values[SWAP_METER_USED] = unsafe { (*host).usedSwap } as f64;
 }
 
-/// TODO: port of `void Platform_setZfsArcValues(Meter* this)` from
-/// `Platform.c:266`. Blocked: needs `ZfsArcMeter_readStats`
-/// (`zfs/ZfsArcMeter.c`), which is not yet ported and lives outside
-/// `solaris/`; the `SolarisMachine.zfs` source data is modeled.
-pub fn Platform_setZfsArcValues() {
-    todo!("port of Platform.c:266")
+/// Port of `void Platform_setZfsArcValues(Meter* this)` from `Platform.c:266`.
+/// Casts the host to the concrete [`SolarisMachine`] and hands its `zfs`
+/// snapshot (populated from the `zfs:0:arcstats` kstat) to
+/// [`ZfsArcMeter_readStats`].
+pub fn Platform_setZfsArcValues(this: &mut Meter) {
+    let shost = unsafe { &*(this.host as *const crate::ported::solaris::solarismachine::SolarisMachine) };
+
+    crate::ported::zfsarcmeter::ZfsArcMeter_readStats(this, &shost.zfs);
 }
 
-/// TODO: port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
-/// `Platform.c:272`. Blocked: needs `ZfsCompressedArcMeter_readStats`
-/// (`zfs/ZfsCompressedArcMeter.c`), which is not yet ported and lives outside
-/// `solaris/`; the `SolarisMachine.zfs` source data is modeled.
-pub fn Platform_setZfsCompressedArcValues() {
-    todo!("port of Platform.c:272")
+/// Port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
+/// `Platform.c:272`. Casts the host to the concrete [`SolarisMachine`] and hands
+/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
+pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
+    let shost = unsafe { &*(this.host as *const crate::ported::solaris::solarismachine::SolarisMachine) };
+
+    crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats(this, &shost.zfs);
 }
 
 /// Port of htop's `typedef struct envAccum_` (`Platform.h:47`) — the
@@ -357,11 +360,13 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
     Some(out)
 }
 
-/// TODO: port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
-/// from `Platform.c:323`. Blocked: `FileLocks_ProcessData` is unmodeled
-/// (Solaris's body returns `NULL` unconditionally; same as the linux port).
-pub fn Platform_getProcessLocks() {
-    todo!("port of Platform.c:323")
+/// Port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
+/// (`Platform.c:323`). Solaris's body is `(void)pid; return NULL;` — no
+/// per-process lock enumeration — so this returns `None`.
+pub fn Platform_getProcessLocks(
+    _pid: libc::pid_t,
+) -> Option<crate::ported::processlocksscreen::FileLocks_ProcessData> {
+    None
 }
 
 /// Port of `void Platform_getFileDescriptors(double* used, double* max)`

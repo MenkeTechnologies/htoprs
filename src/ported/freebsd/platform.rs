@@ -262,20 +262,22 @@ pub fn Platform_setSwapValues(mtr: &mut Meter) {
     mtr.values[SWAP_METER_USED] = unsafe { (*host).usedSwap } as f64;
 }
 
-/// TODO: port of `void Platform_setZfsArcValues(Meter* this)` from
-/// `Platform.c:281`. Blocked: `ZfsArcMeter_readStats` (`zfs/ZfsArcMeter.c`)
-/// is unported, so the ARC stats on `(FreeBSDMachine*)this->host->zfs`
-/// cannot be rendered into the meter (the darwin port is likewise deferred).
-pub fn Platform_setZfsArcValues() {
-    todo!("port of Platform.c:281")
+/// Port of `void Platform_setZfsArcValues(Meter* this)` from `Platform.c:281`.
+/// Casts the host to the concrete [`FreeBSDMachine`] and hands its `zfs`
+/// snapshot to [`ZfsArcMeter_readStats`].
+pub fn Platform_setZfsArcValues(this: &mut Meter) {
+    let fhost = unsafe { &*(this.host as *const FreeBSDMachine) };
+
+    crate::ported::zfsarcmeter::ZfsArcMeter_readStats(this, &fhost.zfs);
 }
 
-/// TODO: port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
-/// `Platform.c:287`. Blocked: `ZfsCompressedArcMeter_readStats`
-/// (`zfs/ZfsCompressedArcMeter.c`) is unported (the darwin port is likewise
-/// deferred).
-pub fn Platform_setZfsCompressedArcValues() {
-    todo!("port of Platform.c:287")
+/// Port of `void Platform_setZfsCompressedArcValues(Meter* this)` from
+/// `Platform.c:287`. Casts the host to the concrete [`FreeBSDMachine`] and hands
+/// its `zfs` snapshot to [`ZfsCompressedArcMeter_readStats`].
+pub fn Platform_setZfsCompressedArcValues(this: &mut Meter) {
+    let fhost = unsafe { &*(this.host as *const FreeBSDMachine) };
+
+    crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats(this, &fhost.zfs);
 }
 
 /// Port of `char* Platform_getProcessEnv(pid_t pid)` (`Platform.c:293`).

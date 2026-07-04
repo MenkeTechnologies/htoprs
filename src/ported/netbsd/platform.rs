@@ -369,11 +369,13 @@ pub fn Platform_getProcessEnv(pid: libc::pid_t) -> Option<String> {
     Some(String::from_utf8_lossy(&env).into_owned())
 }
 
-/// TODO: port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
-/// from `Platform.c:360`. Blocked: `FileLocks_ProcessData` is unmodeled
-/// (NetBSD's body returns `NULL` unconditionally).
-pub fn Platform_getProcessLocks() {
-    todo!("port of Platform.c:360")
+/// Port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
+/// (`Platform.c:360`). NetBSD's body is `(void)pid; return NULL;` — no
+/// per-process lock enumeration — so this returns `None`.
+pub fn Platform_getProcessLocks(
+    _pid: libc::pid_t,
+) -> Option<crate::ported::processlocksscreen::FileLocks_ProcessData> {
+    None
 }
 
 /// TODO: port of `void Platform_getFileDescriptors(double* used, double* max)`

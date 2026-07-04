@@ -1068,10 +1068,11 @@ pub fn Platform_getProcessLocks(pid: libc::pid_t) -> Option<FileLocks_ProcessDat
                 exclusive,
                 readwrite,
                 // C: data.dev = makedev(maj, min);
-                // `makedev` is a safe `const fn` in libc; its arg type differs by
-                // platform (`i32` on darwin, `c_uint` on linux), so `as _` lets
-                // inference pick, and `dev_t` (`i32`/`u64`) widens to `u64`.
-                dev: libc::makedev(maj as _, min as _) as u64,
+                // `makedev`'s arg type differs by platform (`i32` on darwin,
+                // `c_uint` on linux), so `as _` lets inference pick, and `dev_t`
+                // (`i32`/`u64`) widens to `u64`. It is an `unsafe fn` on some
+                // targets (illumos), so the call is wrapped for portability.
+                dev: unsafe { libc::makedev(maj as _, min as _) } as u64,
                 inode,
                 start,
                 // C: if (String_eq(lock_end, "EOF")) data.end = ULLONG_MAX;
