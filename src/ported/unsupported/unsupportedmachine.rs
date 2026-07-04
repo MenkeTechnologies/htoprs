@@ -16,7 +16,7 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use crate::ported::machine::{Machine, Machine_done};
+use crate::ported::machine::{Machine, Machine_done, Machine_init};
 
 /// Port of `typedef struct UnsupportedMachine_` (`UnsupportedMachine.h`). The
 /// fallback host embeds the base [`Machine`] and adds the two scalar memory
@@ -33,13 +33,24 @@ pub struct UnsupportedMachine {
     pub cachedMem: u64,
 }
 
-/// TODO: port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
-/// from `UnsupportedMachine.c:18`. Blocked: the C body calls `Machine_init`,
-/// which `machine.rs` defines only under `#[cfg(target_os = "macos")]`; this
-/// fallback module is compiled on all targets, so the call cannot be issued
-/// portably without breaking non-macos builds.
-pub fn Machine_new() {
-    todo!("port of UnsupportedMachine.c:18 — Machine_init is macos-gated; module is all-targets")
+/// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
+/// (`UnsupportedMachine.c:18`). Allocates the fallback host, runs the base
+/// [`Machine_init`], and reports a single always-online CPU. Returns
+/// `Box<UnsupportedMachine>`; the caller derives `*mut Machine` from
+/// `&mut box.super_` (the C returns `&this->super`).
+pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<UnsupportedMachine> {
+    let mut this = Box::new(UnsupportedMachine {
+        super_: Machine::default(),
+        usedMem: 0,
+        cachedMem: 0,
+    });
+
+    Machine_init(&mut this.super_, usersTable, userId);
+
+    this.super_.existingCPUs = 1;
+    this.super_.activeCPUs = 1;
+
+    this
 }
 
 /// Port of `void Machine_delete(Machine* super)` (`UnsupportedMachine.c:30`).

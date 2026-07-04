@@ -121,11 +121,13 @@ pub fn Platform_getProcessEnv(_pid: libc::pid_t) -> Option<String> {
     None
 }
 
-/// TODO: port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
-/// from `Platform.c:149`. Blocked: `FileLocks_ProcessData` is unmodeled
-/// (returns `NULL` unconditionally here).
-pub fn Platform_getProcessLocks() {
-    todo!("port of Platform.c:149")
+/// Port of `FileLocks_ProcessData* Platform_getProcessLocks(pid_t pid)`
+/// (`Platform.c:149`). The fallback platform's body is `(void)pid; return
+/// NULL;` — no per-process lock enumeration — so this returns `None`.
+pub fn Platform_getProcessLocks(
+    _pid: libc::pid_t,
+) -> Option<crate::ported::processlocksscreen::FileLocks_ProcessData> {
+    None
 }
 
 /// Port of `void Platform_getFileDescriptors(double* used, double* max)`
