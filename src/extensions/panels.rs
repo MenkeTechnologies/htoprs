@@ -122,7 +122,10 @@ impl PanelState {
             tick: 0,
             modal: Modal::None,
             spark_col: false,
-            alert_hl: true,
+            // Restore the saved hot-row-highlight toggle; absent (first run) = on.
+            alert_hl: super::prefs::load()
+                .and_then(|p| p.alert_hl)
+                .unwrap_or(true),
             pending_select: None,
             finder_query: String::new(),
             finder_hits: Vec::new(),
@@ -231,10 +234,12 @@ impl PanelState {
             Modal::Filter => self.filter_key(code),
             Modal::Diff => self.diff_key(code),
             Modal::Alerts => {
-                // 't' toggles the hot-row highlight in place; any other
-                // non-Esc key closes.
+                // 't' toggles the hot-row highlight in place (and persists it to
+                // prefs so it survives restarts); any other non-Esc key closes.
                 if code == KeyCode::Char('t') {
                     self.alert_hl = !self.alert_hl;
+                    let on = self.alert_hl;
+                    super::prefs::update(|p| p.alert_hl = Some(on));
                 } else {
                     self.modal = Modal::None;
                 }

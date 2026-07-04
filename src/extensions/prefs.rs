@@ -29,6 +29,11 @@ pub struct Prefs {
     /// The `b`-cycled bar meter fill style.
     #[serde(default)]
     pub bar_style: BarStyle,
+    /// Whether the over-threshold ("hot") process-row highlight is enabled
+    /// (toggled with `t` in the Alerts modal). `None` (absent / first run) means
+    /// the default: on.
+    #[serde(default)]
+    pub alert_hl: Option<bool>,
 }
 
 /// `~/.config/htoprs/prefs.json` (honoring `$XDG_CONFIG_HOME`), matching the
@@ -128,6 +133,8 @@ mod tests {
         assert_eq!(p.theme, ThemeName::NeonSprawl);
         assert!(p.active_custom_theme.is_none());
         assert!(p.custom_themes.is_empty());
+        // Absent alert_hl means "use the default" (on) — see PanelState::new.
+        assert!(p.alert_hl.is_none());
     }
 
     #[test]
@@ -154,11 +161,13 @@ mod tests {
             active_custom_theme: None,
             custom_themes: HashMap::new(),
             bar_style: BarStyle::Thin,
+            alert_hl: Some(false),
         };
         save(&p);
         let back = load().expect("prefs should load back");
         assert_eq!(back.theme, ThemeName::GlitchPop);
         assert_eq!(back.bar_style, BarStyle::Thin);
+        assert_eq!(back.alert_hl, Some(false));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("XDG_CONFIG_HOME");
     }
