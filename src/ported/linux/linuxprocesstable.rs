@@ -16,7 +16,7 @@
 //! Still stubbed (each fn's doc gives the precise blocker): the scan drivers
 //! `LinuxProcessTable_recurseProcTree` / `ProcessTable_goThroughEntries`
 //! (need the process-typed `ProcessTable_getProcess`/`_add`, still stubbed in
-//! `processtable.rs`); `updateUser` (opaque `usersTable`); `readMaps` +
+//! `processtable.rs`); `readMaps` +
 //! `calcLibSize_helper` (`Hashtable` is ported, but `Hashtable_get` is
 //! immutable so the in-place `libdata->size` aggregate can't be updated, and
 //! `LibraryData` isn't modeled as an `Object`);
@@ -46,6 +46,7 @@ use crate::ported::process::{
 use crate::ported::processtable::{ProcessTable, ProcessTable_init};
 use crate::ported::row::{spaceship_number, Row_updateFieldWidth};
 use crate::ported::settings::RowField;
+use crate::ported::userstable::{UsersTable, UsersTable_getRef};
 use crate::ported::xutils::{
     saturatingSub, String_eq, String_safeStrncpy, String_startsWith, String_strchrnul,
 };
@@ -871,17 +872,55 @@ fn LinuxProcessTable_readStatusFile(process: &mut LinuxProcess, procFd: openat_a
     true
 }
 
-/// TODO: port of `static bool LinuxProcessTable_updateUser(const Machine*
-/// host, Process* process, openat_arg_t procFd, const LinuxProcess* mainTask)`
-/// from `LinuxProcessTable.c:628`. Blocked: the non-`mainTask` path calls
-/// `UsersTable_getRef(host->usersTable, sb.st_uid)` to resolve the username,
-/// but [`Machine::usersTable`](crate::ported::machine::Machine) is the opaque
-/// `Option<usize>` handle (the `UsersTable` is not modeled as a reachable
-/// value), so the ported `UsersTable_getRef` (which needs `&mut UsersTable`)
-/// cannot be called. Stays stubbed until the machine exposes a real
-/// `UsersTable`.
-pub fn LinuxProcessTable_updateUser() {
-    todo!("port of LinuxProcessTable.c:628 — needs Machine::usersTable as a real UsersTable")
+/// Port of `static bool LinuxProcessTable_updateUser(const Machine* host,
+/// Process* process, openat_arg_t procFd, const LinuxProcess* mainTask)` from
+/// `LinuxProcessTable.c:628`.
+///
+/// A thread (`mainTask` present) copies its owning process's uid/user; a real
+/// process `fstat`s its `/proc/<pid>` handle (`procFd`) and, when the owner uid
+/// changed, resolves the name through the machine's `UsersTable` cache. `host->
+/// usersTable` is the opaque `Option<usize>` handle (a separately-leaked
+/// `UsersTable` reached by raw pointer, so the `&mut` never aliases `host` — the
+/// [`DarwinProcessTable_scanThreads`] precedent); `UsersTable_getRef`'s borrowed
+/// `&str` is cloned into the owned `Process::user`. `HAVE_OPENAT` is defined, so
+/// the `fstat(procFd, &sb)` branch is the compiled form.
+pub fn LinuxProcessTable_updateUser(
+    host: &Machine,
+    process: &mut Process,
+    procFd: openat_arg_t,
+    mainTask: Option<&LinuxProcess>,
+) -> bool {
+    // if (mainTask) { copy uid/user from the owning process; return true; }
+    if let Some(mainTask) = mainTask {
+        process.st_uid = mainTask.super_.st_uid;
+        process.user = mainTask.super_.user.clone();
+        return true;
+    }
+
+    // struct stat sb; int statok = fstat(procFd, &sb);
+    let mut sb: libc::stat = unsafe { std::mem::zeroed() };
+    let statok = unsafe { libc::fstat(procFd, &mut sb) };
+    if statok == -1 {
+        return false;
+    }
+
+    // if (process->st_uid != sb.st_uid) { update + resolve the user name }
+    if process.st_uid != sb.st_uid {
+        process.st_uid = sb.st_uid;
+        // process->user = UsersTable_getRef(host->usersTable, sb.st_uid);
+        process.user = match host.usersTable {
+            Some(ut) => {
+                // SAFETY: `usersTable` is the machine's leaked `*mut UsersTable`
+                // handle; it is a distinct allocation, so the `&mut` cannot
+                // alias `host`.
+                let ut = unsafe { &mut *(ut as *mut UsersTable) };
+                UsersTable_getRef(ut, sb.st_uid).map(str::to_owned)
+            }
+            None => None,
+        };
+    }
+
+    true
 }
 
 /// Port of `static void LinuxProcessTable_readIoFile(LinuxProcess* lp,
@@ -1986,11 +2025,11 @@ fn isOlderThan(proc: &Process, seconds: u32) -> bool {
 /// but the ported [`ProcessTable`]/`Table` store rows as `Row` values (not the
 /// polymorphic `Process*` htop holds), so `ProcessTable_getProcess`/`_add` are
 /// themselves stubbed (see `processtable.rs`) — there is no `Process` to fetch,
-/// mutate, or add. It also depends on several still-stubbed leaves
-/// (`updateUser`, `readIoFile`, `readMaps`, `readSmapsFile`, `readCGroupFile`,
-/// `readSecattrData`, `updateTtyDevice`) and on `GPU_readProcessData` /
-/// `Process_fillStarttimeBuffer`. Stays stubbed until the process-typed table
-/// lands.
+/// mutate, or add. It also depends on the still-stubbed leaf `readMaps` (the
+/// only remaining one — `updateUser`, `readIoFile`, `readSmapsFile`,
+/// `readCGroupFile`, `readSecattrData`, `updateTtyDevice` are now ported) and
+/// on `GPU_readProcessData` / `Process_fillStarttimeBuffer`. Stays stubbed
+/// until the process-typed table lands.
 pub fn LinuxProcessTable_recurseProcTree() {
     todo!("port of LinuxProcessTable.c:1588 — needs ProcessTable_getProcess/_add (process-typed table)")
 }
@@ -2120,6 +2159,72 @@ mod tests {
         // Unparsed start time (<= 0) is never "older than".
         proc.starttime_ctime = 0;
         assert!(!isOlderThan(&proc, 0));
+    }
+
+    #[test]
+    fn updateUser_mainTask_copies_owner_identity() {
+        use crate::ported::machine::Machine;
+        use crate::ported::process::Process;
+
+        let host = Machine::default();
+
+        // The owning process (mainTask) carries the resolved identity.
+        let mut main = LinuxProcess::default();
+        main.super_.st_uid = 4321;
+        main.super_.user = Some("owner".to_string());
+
+        // A thread starts with a different, stale identity.
+        let mut thread = Process::default();
+        thread.st_uid = 0;
+        thread.user = None;
+
+        // procFd is unused on the mainTask branch (-1 would fault if read).
+        let ok = LinuxProcessTable_updateUser(&host, &mut thread, -1, Some(&main));
+        assert!(ok);
+        assert_eq!(thread.st_uid, 4321);
+        assert_eq!(thread.user.as_deref(), Some("owner"));
+    }
+
+    #[test]
+    fn updateUser_real_process_fstats_and_resolves_name() {
+        use crate::ported::machine::Machine;
+        use crate::ported::process::Process;
+        use crate::ported::userstable::UsersTable_new;
+        use std::os::unix::io::AsRawFd;
+
+        // The machine's opaque usersTable handle: a leaked UsersTable reached
+        // by raw pointer, exactly as the real Machine holds it.
+        let ut = Box::into_raw(Box::new(UsersTable_new()));
+        let mut host = Machine::default();
+        host.usersTable = Some(ut as usize);
+
+        // /dev/null is deterministically owned by uid 0 (root) on every Unix,
+        // so fstat(procFd).st_uid == 0 and getpwuid(0) resolves to "root".
+        let f = std::fs::File::open("/dev/null").expect("open /dev/null");
+
+        let mut proc = Process::default();
+        proc.st_uid = u32::MAX; // force the "uid changed" branch
+        proc.user = None;
+
+        let ok = LinuxProcessTable_updateUser(&host, &mut proc, f.as_raw_fd(), None);
+        assert!(ok);
+        assert_eq!(proc.st_uid, 0);
+        assert_eq!(proc.user.as_deref(), Some("root"));
+
+        // SAFETY: reclaim the leaked table (test-only cleanliness).
+        unsafe { drop(Box::from_raw(ut)) };
+    }
+
+    #[test]
+    fn updateUser_returns_false_on_bad_fd() {
+        use crate::ported::machine::Machine;
+        use crate::ported::process::Process;
+
+        let host = Machine::default();
+        let mut proc = Process::default();
+        // fstat on a closed/invalid fd fails (EBADF) -> statok == -1 -> false.
+        let ok = LinuxProcessTable_updateUser(&host, &mut proc, -1, None);
+        assert!(!ok);
     }
 
     #[test]
