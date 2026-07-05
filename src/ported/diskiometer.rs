@@ -50,6 +50,13 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use crate::ported::crt::{ColorElements, ColorScheme};
+// DiskIOMeter.c calls `Platform_getDiskIO()`, resolved per-build to the linked
+// platform's reader: macOS uses the darwin IOKit `IOBlockStorageDriver`
+// statistics; every other host uses the linux `/proc/diskstats` reader.
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_getDiskIO;
+#[cfg(not(target_os = "macos"))]
+use crate::ported::linux::platform::Platform_getDiskIO;
 use crate::ported::meter::{
     Meter, MeterClass, MeterModeId, Meter_class, Meter_humanUnit, Meter_new, Meter_setMode,
     LED_METERMODE, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,
@@ -128,11 +135,10 @@ const ONE_K: f64 = 1024.0;
 static DISK_IO_UPDATE_CACHE: Mutex<(u64, u64, u64, u64)> = Mutex::new((0, 0, 0, 0));
 
 /// Port of `static void DiskIOUpdateCache(const Machine* host)` from
-/// `DiskIOMeter.c:47`. Throttled to once per >500ms; reads
-/// [`Platform_getDiskIO`](crate::ported::linux::platform::Platform_getDiskIO),
-/// sets the rate `status`, and (past the first sample) computes read/write
-/// B/s and disk utilisation into the shared state. `host` is the concrete
-/// `LinuxMachine`; `realtimeMs` lives on its `super_`.
+/// `DiskIOMeter.c:47`. Throttled to once per >500ms; reads the platform
+/// [`Platform_getDiskIO`], sets the rate `status`, and (past the first sample)
+/// computes read/write B/s and disk utilisation into the shared state. `host`
+/// is the concrete `LinuxMachine`; `realtimeMs` lives on its `super_`.
 pub fn DiskIOUpdateCache(host: &crate::ported::linux::linuxmachine::LinuxMachine) {
     let realtime_ms = host.super_.realtimeMs;
     let mut c = DISK_IO_UPDATE_CACHE.lock().unwrap();
@@ -144,7 +150,7 @@ pub fn DiskIOUpdateCache(host: &crate::ported::linux::linuxmachine::LinuxMachine
     }
 
     let mut data = DiskIOData::default();
-    let has_new_data = crate::ported::linux::platform::Platform_getDiskIO(&mut data);
+    let has_new_data = Platform_getDiskIO(&mut data);
 
     let mut st = DISK_IO_METER_STATE.lock().unwrap();
     st.status = if !has_new_data {

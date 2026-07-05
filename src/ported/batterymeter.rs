@@ -11,6 +11,12 @@
 #![allow(non_upper_case_globals)] // faithful C global names (BatteryMeter_class)
 
 use crate::ported::crt::ColorElements;
+// BatteryMeter.c calls `Platform_getBattery()`, resolved per-build to the
+// linked platform's reader: macOS uses the darwin IOKit power-sources API;
+// every other host uses the linux `/sys/class/power_supply` reader.
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_getBattery;
+#[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::Platform_getBattery;
 use crate::ported::meter::{
     Meter, MeterClass, Meter_class, METERMODE_DEFAULT_SUPPORTED, TEXT_METERMODE,

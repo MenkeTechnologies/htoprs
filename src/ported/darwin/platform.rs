@@ -19,6 +19,10 @@
 //!   `SystemVersion.plist` reader (ProductName + ProductVersion)
 //! - `Platform_getRelease` (`Platform.c:827`) — `Generic_unameRelease`
 //!   ([`crate::ported::generic::uname`]) with the CF OS-release fetch
+//! - `Platform_getDiskIO` (`Platform.c:537`) — IOKit `IOBlockStorageDriver`
+//!   statistics summed across all drives
+//! - `Platform_getBattery` (`Platform.c:684`) — IOKit `IOPowerSources`
+//!   internal-source capacity + AC state
 //!
 //! Still `todo!()` and blocked on unported substrate:
 //! - the `Platform_set*Values` meter setters — `Meter::host` (`meter.rs`)
@@ -28,10 +32,11 @@
 //!   (`generic/fdstat_sysctl.c`, unported).
 //! - `Platform_getProcessLocks` — `FileLocks_ProcessData` is unmodeled
 //!   (C returns `NULL` unconditionally on Darwin).
-//! - `Platform_getDiskIO` / `Platform_getBattery` — need CoreFoundation /
-//!   IOKit FFI bindings not yet established in this tree.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
+// The IOKit FFI aliases (`io_object_t`, `kern_return_t`, …) keep their C type
+// names, as the fn/const names do.
+#![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
 use std::mem::{size_of, zeroed};
@@ -792,11 +797,117 @@ pub fn Platform_getFileDescriptors(used: &mut f64, max: &mut f64) {
     crate::ported::generic::fdstat_sysctl::Generic_getFileDescriptors_sysctl(used, max);
 }
 
-/// TODO: port of `bool Platform_getDiskIO(DiskIOData* data)` from
-/// `Platform.c:537`. Blocked: needs CoreFoundation / IOKit FFI bindings
-/// not yet established in this tree.
-pub fn Platform_getDiskIO() {
-    todo!("port of Platform.c:537")
+/// Port of `bool Platform_getDiskIO(DiskIOData* data)` from `Platform.c:537`.
+///
+/// Sums the read/write byte and time counters across every `IOBlockStorageDriver`
+/// in the IOKit registry. `iokit_port` is a file-scope `static mach_port_t` the
+/// C never initializes (zero-filled BSS), so it is `MACH_PORT_NULL` (`0`) — the
+/// default main port that `IOServiceGetMatchingServices` accepts. Returns
+/// `false` on the two hard-failure paths (matching-service lookup fails, or a
+/// per-drive `IORegistryEntryCreateCFProperties` fails); a drive with no
+/// properties / no statistics dictionary is skipped, as in the C.
+pub fn Platform_getDiskIO(data: &mut crate::ported::diskiometer::DiskIOData) -> bool {
+    // static mach_port_t iokit_port; — zero-initialized BSS == MACH_PORT_NULL.
+    const IOKIT_PORT: libc::mach_port_t = 0;
+
+    unsafe {
+        let mut drive_list: io_iterator_t = 0;
+        // if (IOServiceGetMatchingServices(iokit_port, IOServiceMatching(
+        //        "IOBlockStorageDriver"), &drive_list)) return false;
+        if IOServiceGetMatchingServices(
+            IOKIT_PORT,
+            IOServiceMatching(c"IOBlockStorageDriver".as_ptr()),
+            &mut drive_list,
+        ) != 0
+        {
+            return false;
+        }
+
+        let mut read_sum: u64 = 0;
+        let mut write_sum: u64 = 0;
+        let mut time_spend_sum: u64 = 0;
+        let mut num_disks: u64 = 0;
+
+        // Reads a SInt64 statistic keyed by `key` from `statistics`, adding it
+        // to `acc` when present — the repeated C `CFDictionaryGetValue` +
+        // `CFNumberGetValue(..., kCFNumberSInt64Type, ...)` block. A closure
+        // (the C inlines it four times), like `Generic_unameRelease`'s `field`.
+        let add_stat = |statistics: CFDictionaryRef, key: &std::ffi::CStr, acc: &mut u64| {
+            let cfkey = CFStringCreateWithCString(ptr::null(), key.as_ptr(), kCFStringEncodingUTF8);
+            let number = CFDictionaryGetValue(statistics, cfkey);
+            if !cfkey.is_null() {
+                CFRelease(cfkey);
+            }
+            if !number.is_null() {
+                let mut value: u64 = 0;
+                CFNumberGetValue(
+                    number,
+                    kCFNumberSInt64Type,
+                    &mut value as *mut u64 as *mut c_void,
+                );
+                *acc += value;
+            }
+        };
+
+        loop {
+            // while ((drive = IOIteratorNext(drive_list)) != 0)
+            let drive = IOIteratorNext(drive_list);
+            if drive == 0 {
+                break;
+            }
+
+            let mut properties: CFMutableDictionaryRef = ptr::null();
+            // if (IORegistryEntryCreateCFProperties(drive, &properties, ...))
+            //    { IOObjectRelease(drive); IOObjectRelease(drive_list); return false; }
+            if IORegistryEntryCreateCFProperties(drive, &mut properties, ptr::null(), 0) != 0 {
+                IOObjectRelease(drive);
+                IOObjectRelease(drive_list);
+                return false;
+            }
+            if properties.is_null() {
+                IOObjectRelease(drive);
+                continue;
+            }
+
+            // statistics = CFDictionaryGetValue(properties, "Statistics");
+            let stat_key = CFStringCreateWithCString(
+                ptr::null(),
+                c"Statistics".as_ptr(),
+                kCFStringEncodingUTF8,
+            );
+            let statistics = CFDictionaryGetValue(properties, stat_key);
+            if !stat_key.is_null() {
+                CFRelease(stat_key);
+            }
+            if statistics.is_null() {
+                CFRelease(properties);
+                IOObjectRelease(drive);
+                continue;
+            }
+
+            num_disks += 1;
+
+            add_stat(statistics, c"Bytes (Read)", &mut read_sum);
+            add_stat(statistics, c"Bytes (Write)", &mut write_sum);
+            add_stat(statistics, c"Total Time (Read)", &mut time_spend_sum);
+            add_stat(statistics, c"Total Time (Write)", &mut time_spend_sum);
+
+            CFRelease(properties);
+            IOObjectRelease(drive);
+        }
+
+        data.totalBytesRead = read_sum;
+        data.totalBytesWritten = write_sum;
+        // C: totalMsTimeSpend = timeSpend_sum / 1e6 (ns -> ms), truncated to u64.
+        data.totalMsTimeSpend = (time_spend_sum as f64 / 1e6) as u64;
+        data.numDisks = num_disks;
+
+        if drive_list != 0 {
+            IOObjectRelease(drive_list);
+        }
+
+        true
+    }
 }
 
 /// Port of `bool Platform_getNetworkIO(NetworkIOData* data)`
@@ -895,11 +1006,127 @@ pub fn Platform_getNetworkIO(data: &mut NetworkIOData) -> bool {
     true
 }
 
-/// TODO: port of `void Platform_getBattery(double* percent, ACPresence*
-/// isOnAC)` from `Platform.c:684`. Blocked: needs CoreFoundation / IOKit
-/// (`IOPowerSources`) FFI bindings not yet established in this tree.
-pub fn Platform_getBattery() {
-    todo!("port of Platform.c:684")
+/// Port of `void Platform_getBattery(double* percent, ACPresence* isOnAC)`
+/// from `Platform.c:684`.
+///
+/// Averages the internal power sources' `Current Capacity` / `Max Capacity`
+/// into a battery percentage and reports AC presence. Starts at `NAN` /
+/// `AC_ERROR`; only internal (`kIOPSInternalType`) sources contribute. The C
+/// passes possibly-`NULL` `CFStringRef`s straight to `CFStringCompare` /
+/// `CFNumberGetValue`; the port guards each `NULL` (a missing key skips that
+/// source's field rather than dereferencing `NULL`), which cannot change the
+/// result on real power-source dictionaries where the keys are present.
+pub fn Platform_getBattery(
+    percent: &mut f64,
+    isOnAC: &mut crate::ported::batterymeter::ACPresence,
+) {
+    use crate::ported::batterymeter::ACPresence;
+
+    *percent = f64::NAN;
+    *isOnAC = ACPresence::AC_ERROR;
+
+    unsafe {
+        let power_sources = IOPSCopyPowerSourcesInfo();
+        if power_sources.is_null() {
+            return;
+        }
+
+        let list = IOPSCopyPowerSourcesList(power_sources);
+        if list.is_null() {
+            CFRelease(power_sources);
+            return;
+        }
+
+        // Builds a CFString from a C string literal, `CFStringCompare`s it
+        // against `s`, and equals-checks — the C `kCFCompareEqualTo ==
+        // CFStringCompare(s, CFSTR(lit), 0)` idiom. Returns false when `s` is
+        // NULL (missing key). A closure (inlined twice in the C).
+        let str_eq = |s: CFStringRef, lit: &std::ffi::CStr| -> bool {
+            if s.is_null() {
+                return false;
+            }
+            let cflit = CFStringCreateWithCString(ptr::null(), lit.as_ptr(), kCFStringEncodingUTF8);
+            let eq = CFStringCompare(s, cflit, 0) == kCFCompareEqualTo;
+            if !cflit.is_null() {
+                CFRelease(cflit);
+            }
+            eq
+        };
+
+        // Reads a Double keyed by `key` from `power_source`, returning 0.0 when
+        // the key is absent — the C `CFNumberGetValue(CFDictionaryGetValue(...,
+        // key), kCFNumberDoubleType, &tmp)` block.
+        let get_double = |power_source: CFDictionaryRef, key: &std::ffi::CStr| -> f64 {
+            let cfkey = CFStringCreateWithCString(ptr::null(), key.as_ptr(), kCFStringEncodingUTF8);
+            let number = CFDictionaryGetValue(power_source, cfkey);
+            if !cfkey.is_null() {
+                CFRelease(cfkey);
+            }
+            let mut tmp: f64 = 0.0;
+            if !number.is_null() {
+                CFNumberGetValue(
+                    number,
+                    kCFNumberDoubleType,
+                    &mut tmp as *mut f64 as *mut c_void,
+                );
+            }
+            tmp
+        };
+
+        let mut cap_current = 0.0;
+        let mut cap_max = 0.0;
+
+        let len = CFArrayGetCount(list);
+        for i in 0..len {
+            let power_source =
+                IOPSGetPowerSourceDescription(power_sources, CFArrayGetValueAtIndex(list, i));
+            if power_source.is_null() {
+                continue;
+            }
+
+            // power_type must be the internal battery type, else skip.
+            let key_transport = CFStringCreateWithCString(
+                ptr::null(),
+                c"Transport Type".as_ptr(),
+                kCFStringEncodingUTF8,
+            );
+            let power_type = CFDictionaryGetValue(power_source, key_transport);
+            if !key_transport.is_null() {
+                CFRelease(key_transport);
+            }
+            if !str_eq(power_type, c"Internal") {
+                continue;
+            }
+
+            // Determine the AC state (once AC_PRESENT, keep it).
+            if *isOnAC != ACPresence::AC_PRESENT {
+                let key_state = CFStringCreateWithCString(
+                    ptr::null(),
+                    c"Power Source State".as_ptr(),
+                    kCFStringEncodingUTF8,
+                );
+                let power_state = CFDictionaryGetValue(power_source, key_state);
+                if !key_state.is_null() {
+                    CFRelease(key_state);
+                }
+                *isOnAC = if str_eq(power_state, c"AC Power") {
+                    ACPresence::AC_PRESENT
+                } else {
+                    ACPresence::AC_ABSENT
+                };
+            }
+
+            cap_current += get_double(power_source, c"Current Capacity");
+            cap_max += get_double(power_source, c"Max Capacity");
+        }
+
+        if cap_max > 0.0 {
+            *percent = 100.0 * cap_current / cap_max;
+        }
+
+        CFRelease(list);
+        CFRelease(power_sources);
+    }
 }
 
 /// Port of `static inline void Platform_gettime_realtime(struct timeval*
@@ -960,10 +1187,21 @@ type CFOptionFlags = libc::c_ulong;
 type CFIndex = libc::c_long;
 type CFStringEncoding = u32;
 type CFBoolean = libc::c_uchar;
+// Additional CF aliases used by the IOKit disk/battery readers.
+type CFNumberRef = *const c_void;
+type CFArrayRef = *const c_void;
+type CFMutableDictionaryRef = *const c_void;
+type CFNumberType = CFIndex;
+type CFComparisonResult = CFIndex;
 
 const kCFStringEncodingUTF8: CFStringEncoding = 0x0800_0100;
 const kCFURLPOSIXPathStyle: CFIndex = 0;
 const kCFPropertyListImmutable: CFOptionFlags = 0;
+// `CFNumber.h`: kCFNumberSInt64Type = 4, kCFNumberDoubleType = 13.
+const kCFNumberSInt64Type: CFNumberType = 4;
+const kCFNumberDoubleType: CFNumberType = 13;
+// `CFBase.h`: kCFCompareEqualTo = 0.
+const kCFCompareEqualTo: CFComparisonResult = 0;
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -998,7 +1236,52 @@ extern "C" {
     fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
     fn CFDictionaryGetTypeID() -> CFTypeID;
     fn CFDictionaryGetValue(the_dict: CFDictionaryRef, key: *const c_void) -> *const c_void;
+    fn CFNumberGetValue(
+        number: CFNumberRef,
+        the_type: CFNumberType,
+        value_ptr: *mut c_void,
+    ) -> CFBoolean;
+    fn CFArrayGetCount(the_array: CFArrayRef) -> CFIndex;
+    fn CFArrayGetValueAtIndex(the_array: CFArrayRef, idx: CFIndex) -> *const c_void;
+    fn CFStringCompare(
+        s1: CFStringRef,
+        s2: CFStringRef,
+        compare_options: CFOptionFlags,
+    ) -> CFComparisonResult;
     fn CFRelease(cf: CFTypeRef);
+}
+
+// IOKit FFI — the storage-driver statistics (`Platform_getDiskIO`) and power
+// sources (`Platform_getBattery`) surface. `io_object_t`/`io_iterator_t`/
+// `io_registry_entry_t` are all `mach_port_t` (`IOTypes.h`); `IOOptionBits` is
+// `UInt32`; `kern_return_t` is `int`. The disk key strings are verified against
+// `IOKit/storage/IOBlockStorageDriver.h`, the power-source keys against
+// `IOKit/ps/IOPSKeys.h`.
+type io_object_t = libc::mach_port_t;
+type io_iterator_t = io_object_t;
+type io_registry_entry_t = io_object_t;
+type IOOptionBits = u32;
+type kern_return_t = c_int;
+
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    fn IOServiceMatching(name: *const libc::c_char) -> CFMutableDictionaryRef;
+    fn IOServiceGetMatchingServices(
+        main_port: libc::mach_port_t,
+        matching: CFDictionaryRef,
+        existing: *mut io_iterator_t,
+    ) -> kern_return_t;
+    fn IOIteratorNext(iterator: io_iterator_t) -> io_object_t;
+    fn IORegistryEntryCreateCFProperties(
+        entry: io_registry_entry_t,
+        properties: *mut CFMutableDictionaryRef,
+        allocator: CFAllocatorRef,
+        options: IOOptionBits,
+    ) -> kern_return_t;
+    fn IOObjectRelease(object: io_object_t) -> kern_return_t;
+    fn IOPSCopyPowerSourcesInfo() -> CFTypeRef;
+    fn IOPSCopyPowerSourcesList(blob: CFTypeRef) -> CFArrayRef;
+    fn IOPSGetPowerSourceDescription(blob: CFTypeRef, ps: CFTypeRef) -> CFDictionaryRef;
 }
 
 /// Port of `static void Platform_getOSRelease(char* buffer, size_t bufferLen)`
@@ -1008,8 +1291,8 @@ extern "C" {
 /// out-param becomes an owned `String`.
 ///
 /// The C builds the result with `CFStringCreateWithFormat("%@%@%@", productName,
-/// separator, productVersion)`; the port extracts each value with
-/// [`cfstring_to_string`] and joins them with the same separator rule
+/// separator, productVersion)`; the port extracts each value with the
+/// `cfstring_to_string` closure and joins them with the same separator rule
 /// (a space only when *both* keys are present), avoiding a varargs FFI. The
 /// `OSRELEASEFILE` test-override path is `#ifdef`-only (undefined by default),
 /// so only the canonical plist path is probed.
@@ -1229,6 +1512,50 @@ mod tests {
         assert!(release.starts_with("Darwin "));
         assert!(release.contains('['));
         assert!(release.contains(" @ macOS "));
+    }
+
+    #[test]
+    fn getDiskIO_reads_ioblockstoragedriver_stats() {
+        // Every running Mac has at least one IOBlockStorageDriver and has read
+        // bytes from it since boot. A wrong statistics key string (or a broken
+        // CFNumber/IOKit ABI) would leave the sums at zero, failing this.
+        let mut data = crate::ported::diskiometer::DiskIOData::default();
+        let ok = Platform_getDiskIO(&mut data);
+        assert!(ok, "Platform_getDiskIO returned false");
+        assert!(data.numDisks >= 1, "no disks enumerated");
+        assert!(data.totalBytesRead > 0, "no bytes read tallied");
+    }
+
+    #[test]
+    fn getBattery_matches_pmset_ground_truth() {
+        use crate::ported::batterymeter::ACPresence;
+
+        let mut percent = 0.0;
+        let mut on_ac = ACPresence::AC_ABSENT;
+        Platform_getBattery(&mut percent, &mut on_ac);
+
+        // `pmset -g batt` is the OS's own view of the same IOPS power sources.
+        let out = std::process::Command::new("pmset")
+            .args(["-g", "batt"])
+            .output()
+            .expect("pmset");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let has_internal_battery = text.contains("InternalBattery");
+
+        if has_internal_battery {
+            // A present internal source => a real percentage and a resolved AC
+            // state (never AC_ERROR, which is the no-source sentinel).
+            assert_ne!(on_ac, ACPresence::AC_ERROR, "battery present but AC_ERROR");
+            assert!(percent.is_finite(), "percent not finite: {percent}");
+            assert!(
+                (0.0..=100.0).contains(&percent),
+                "percent out of range: {percent}"
+            );
+        } else {
+            // No power sources => the NAN / AC_ERROR start state is unchanged.
+            assert!(percent.is_nan(), "no battery but percent = {percent}");
+            assert_eq!(on_ac, ACPresence::AC_ERROR);
+        }
     }
 
     #[test]
