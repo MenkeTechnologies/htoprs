@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-05T16:51:19Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-05T16:54:14Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">896</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val green">900</div><div class="stat-label">Fns ported</div></div>
         <div class="stat-card"><div class="stat-val">28</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">81.98%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">82.34%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">121</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -89,7 +89,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>BacktraceScreen.c</code></td><td>17</td><td>0</td><td>17</td><td>100%</td></tr>
           <tr><td><code>BatteryMeter.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>CPUMeter.c</code></td><td>18</td><td>0</td><td>18</td><td>100%</td></tr>
-          <tr><td><code>CRT.c</code></td><td>16</td><td>1</td><td>19</td><td>84%</td></tr>
+          <tr><td><code>CRT.c</code></td><td>18</td><td>1</td><td>19</td><td>95%</td></tr>
           <tr><td><code>CategoriesPanel.c</code></td><td>8</td><td>1</td><td>9</td><td>89%</td></tr>
           <tr><td><code>ColorsPanel.c</code></td><td>3</td><td>0</td><td>3</td><td>100%</td></tr>
           <tr><td><code>ColumnsPanel.c</code></td><td>7</td><td>0</td><td>7</td><td>100%</td></tr>
@@ -192,10 +192,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>pcp/PCPProcess.c</code></td><td>1</td><td>0</td><td>6</td><td>17%</td></tr>
           <tr><td><code>pcp/PCPProcessTable.c</code></td><td>3</td><td>0</td><td>28</td><td>11%</td></tr>
           <tr><td><code>pcp/Platform.c</code></td><td>37</td><td>0</td><td>49</td><td>76%</td></tr>
-          <tr><td><code>solaris/Platform.c</code></td><td>17</td><td>0</td><td>18</td><td>94%</td></tr>
+          <tr><td><code>solaris/Platform.c</code></td><td>18</td><td>0</td><td>18</td><td>100%</td></tr>
           <tr><td><code>solaris/SolarisMachine.c</code></td><td>10</td><td>0</td><td>10</td><td>100%</td></tr>
           <tr><td><code>solaris/SolarisProcess.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
-          <tr><td><code>solaris/SolarisProcessTable.c</code></td><td>7</td><td>0</td><td>8</td><td>88%</td></tr>
+          <tr><td><code>solaris/SolarisProcessTable.c</code></td><td>8</td><td>0</td><td>8</td><td>100%</td></tr>
           <tr><td><code>unsupported/Platform.c</code></td><td>17</td><td>0</td><td>17</td><td>100%</td></tr>
           <tr><td><code>unsupported/UnsupportedMachine.c</code></td><td>6</td><td>0</td><td>6</td><td>100%</td></tr>
           <tr><td><code>unsupported/UnsupportedProcess.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
@@ -208,12 +208,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-05T16:51:19Z",
+  "generated": "2026-07-05T16:54:14Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1093,
-  "ported": 896,
+  "ported": 900,
   "stubbed": 28,
-  "coverage_pct": 81.98,
+  "coverage_pct": 82.34,
   "files_started": 121,
   "per_file": [
     {
@@ -266,7 +266,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "CRT.c",
-      "ported": 16,
+      "ported": 18,
       "stubbed": 1,
       "defined": 19
     },
@@ -884,7 +884,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "solaris/Platform.c",
-      "ported": 17,
+      "ported": 18,
       "stubbed": 0,
       "defined": 18
     },
@@ -902,7 +902,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "solaris/SolarisProcessTable.c",
-      "ported": 7,
+      "ported": 8,
       "stubbed": 0,
       "defined": 8
     },
