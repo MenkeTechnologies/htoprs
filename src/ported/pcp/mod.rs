@@ -10,3 +10,4 @@
 //! and compile under `--features pcp`.
 
 pub mod pcpprocess;
+pub mod pmapi;
