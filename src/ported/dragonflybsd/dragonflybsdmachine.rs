@@ -1,21 +1,46 @@
 //! Port of `dragonflybsd/DragonFlyBSDMachine.c` + `.h` — the DragonFly BSD
 //! per-host state and its `sysctl`/`libkvm` scan layer.
 //!
-//! The struct model and the small pure accessors are ported here. The scan
-//! functions (`Machine_new`/`Machine_scan`/`DragonFlyBSDMachine_scan*`) drive
-//! `sysctl`/`kvm_*`, which exist only on DragonFly BSD; like the `linux/` scan
-//! layer they are ported-but-only-runnable on their platform. They are kept as
-//! faithful `todo!()` stubs (named after the C functions so the port gate
-//! accepts the module) until ported behind `#[cfg(target_os = "dragonfly")]`
-//! with the DragonFly `sys/sysctl.h` / `sys/user.h` bindings.
+//! The struct model, the small pure accessors, and the pure-`sysctl` scans are
+//! ported here. Compiled only under `#[cfg(target_os = "dragonfly")]` and, like
+//! the other BSD layers, verified by primary-source reading + the port-purity
+//! gate (not a cross-compile).
+//!
+//! Ported (kvm-free): [`DragonFlyBSDMachine_scanJails`] (`jail.list`
+//! sysctlbyname → the `jails` hashtable) and [`DragonFlyBSDMachine_readJailName`]
+//! (jailid → hostname lookup).
+//!
+//! Still stubbed — need `libkvm`, which `libc` does not expose for the DragonFly
+//! target: `Machine_new`/`Machine_delete` (`kvm_openfiles`), `Machine_scan`,
+//! `DragonFlyBSDMachine_scanCPUTime` (transitively — its `MIB_kern_cp_time*` are
+//! set in the kvm-gated `Machine_new`), and `scanMemoryInfo` (`kvm_getswapinfo`).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use core::ffi::c_void;
+use core::ptr;
 
-use crate::ported::hashtable::Hashtable;
+use crate::ported::crt::CRT_fatalError;
+use crate::ported::hashtable::{Hashtable, Hashtable_get, Hashtable_new, Hashtable_put};
 use crate::ported::machine::Machine;
+use crate::ported::object::{Object, ObjectClass};
+
+/// The `char*` hostname value stored in the `jails` [`Hashtable`] (jailid →
+/// hostname). The C stores a raw `xStrdup`'d `char*`; the ported `Hashtable`
+/// stores `Object`s, so the string is wrapped (no C struct — the value type is
+/// a bare `char*` in htop).
+struct JailName(String);
+
+/// Class identity for [`JailName`] (`extends: None`, as the file-local
+/// `LibraryData` accumulator elsewhere).
+static JailName_class: ObjectClass = ObjectClass { extends: None };
+
+impl Object for JailName {
+    fn klass(&self) -> &'static ObjectClass {
+        &JailName_class
+    }
+}
 
 /// Port of `typedef struct CPUData_` (`DragonFlyBSDMachine.h:26`) — the
 /// per-CPU load percentages computed each scan from the `kern.cp_time(s)`
@@ -137,8 +162,64 @@ pub fn DragonFlyBSDMachine_scanMemoryInfo() {
 /// TODO: port of `static void DragonFlyBSDMachine_scanJails(DragonFlyBSDMachine*
 /// this)` (`DragonFlyBSDMachine.c:294`). Enumerates jails via `kern.jail`
 /// sysctl into the `jails` hashtable. DragonFly sysctl.
-pub fn DragonFlyBSDMachine_scanJails() {
-    todo!("port of DragonFlyBSDMachine.c:294 — kern.jail sysctl (DragonFly-only)")
+pub fn DragonFlyBSDMachine_scanJails(this: &mut DragonFlyBSDMachine) {
+    // sysctlbyname("jail.list", NULL, &len, NULL, 0) — get the buffer length.
+    let name = c"jail.list";
+    let mut len: usize = 0;
+    if unsafe { libc::sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut len, ptr::null_mut(), 0) }
+        == -1
+    {
+        CRT_fatalError("initial sysctlbyname / jail.list failed");
+    }
+
+    // retry: on ENOMEM the list grew between the sizing and the read.
+    loop {
+        if len == 0 {
+            return;
+        }
+
+        let mut jails = vec![0u8; len];
+        let rc = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                jails.as_mut_ptr() as *mut c_void,
+                &mut len,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if rc == -1 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOMEM) {
+                continue; // goto retry
+            }
+            CRT_fatalError("sysctlbyname / jail.list failed");
+        }
+
+        // if (this->jails) Hashtable_delete(this->jails); this->jails = Hashtable_new(20, true);
+        this.jails = Some(Hashtable_new(20, true));
+        let ht = this.jails.as_mut().unwrap();
+
+        // Walk newline-separated "jailid hostname ..." records; the first two
+        // space-delimited tokens are the id and hostname (C strtok on " ").
+        let text = String::from_utf8_lossy(&jails[..len.min(jails.len())]);
+        for line in text.split('\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let mut tok = line.split(' ').filter(|s| !s.is_empty());
+            let jailid: i32 = match tok.next() {
+                Some(w) => w.parse().unwrap_or(0),
+                None => continue,
+            };
+            let hostname = tok.next().unwrap_or("");
+            // if (Hashtable_get(jails, jailid) == NULL) put xStrdup(hostname).
+            if Hashtable_get(ht, jailid as u32).is_none() {
+                Hashtable_put(ht, jailid as u32, Box::new(JailName(hostname.to_string())));
+            }
+        }
+
+        return;
+    }
 }
 
 /// TODO: port of `char* DragonFlyBSDMachine_readJailName(const
@@ -147,8 +228,19 @@ pub fn DragonFlyBSDMachine_scanJails() {
 /// [`DragonFlyBSDMachine_scanJails`]) and duplicates the hostname, else `"-"`.
 /// Blocked on the jails hashtable being populated (needs the sysctl scan) and
 /// on modeling its `char*` string values.
-pub fn DragonFlyBSDMachine_readJailName() {
-    todo!("port of DragonFlyBSDMachine.c:348 — needs DragonFlyBSDMachine_scanJails-populated jails + Hashtable string values")
+pub fn DragonFlyBSDMachine_readJailName(host: &DragonFlyBSDMachine, jailid: i32) -> String {
+    // if (jailid != 0 && host->jails && (hostname = Hashtable_get(jails, jailid)))
+    //    jname = xStrdup(hostname); else jname = xStrdup("-");
+    if jailid != 0 {
+        if let Some(ht) = &host.jails {
+            if let Some(obj) = Hashtable_get(ht, jailid as u32) {
+                if let Some(jn) = (obj as &dyn core::any::Any).downcast_ref::<JailName>() {
+                    return jn.0.clone();
+                }
+            }
+        }
+    }
+    "-".to_string()
 }
 
 /// TODO: port of `void Machine_scan(Machine* super)`
