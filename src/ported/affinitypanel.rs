@@ -61,16 +61,15 @@
 //! `PanelItem::Borrowed` pointers into the owning `cpuids` [`Vector`] (the C's
 //! non-owning-panel / owning-`cpuids` model), spliced by the now-ported
 //! [`Panel_splice`]:
+//! - [`AffinityPanel_new`] (`AffinityPanel.c:379`) — builds one `MaskItem` per
+//!   online CPU, marks the `affinity` set, then splices via `update`.
 //! - [`AffinityPanel_update`] (`AffinityPanel.c:177`) — prune + re-splice.
 //! - [`AffinityPanel_eventHandler`] (`AffinityPanel.c:203`) — toggles the
 //!   selected item's `value` through its borrowed pointer (visible via
 //!   `cpuids`), then re-runs `update` on `HANDLED`.
 //!
-//! Still stubbed:
-//! - [`AffinityPanel_new`] (`AffinityPanel.c:379`) — the shared-store aliasing
-//!   is available now; the remaining gap is the `AffinityPanelFunctions` /
-//!   `AffinityPanelKeys` / `AffinityPanelEvents` function-bar tables that
-//!   `Panel_init` + `FunctionBar_new` need.
+//! The whole non-hwloc `AffinityPanel` is now ported; only the five hwloc-only
+//! functions above remain stubbed (they need `libhwloc`, which htoprs omits).
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -79,15 +78,17 @@ use crate::ported::affinity::{Affinity, Affinity_add, Affinity_new};
 use crate::ported::crt::{
     ColorElements, ColorScheme, TreeStr, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK,
 };
-use crate::ported::functionbar::FunctionBar_setLabel;
+use crate::ported::functionbar::{FunctionBar_new, FunctionBar_setLabel};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{
-    HandlerResult, Panel, PanelClass, Panel_done, Panel_getSelectedIndex, Panel_prune,
-    Panel_setSelected, Panel_splice,
+    HandlerResult, Panel, PanelClass, Panel_done, Panel_getSelectedIndex, Panel_new, Panel_prune,
+    Panel_setHeader, Panel_setSelected, Panel_splice,
 };
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
-use crate::ported::vector::{Vector, Vector_delete, Vector_get, Vector_size};
+use crate::ported::vector::{
+    Vector, Vector_add, Vector_delete, Vector_get, Vector_new, Vector_size, VECTOR_DEFAULT_SIZE,
+};
 
 /// Model of the C `MaskItem` struct (`AffinityPanel.c:33`), non-hwloc
 /// variant. The C type embeds an `Object super` vtable as its first field;
@@ -370,15 +371,113 @@ pub fn AffinityPanel_buildTopology() {
     todo!("port of AffinityPanel.c:341 — hwloc-only (no libhwloc in htoprs)")
 }
 
-/// TODO: port of `Panel* AffinityPanel_new(Machine* host, const Affinity* affinity,
-/// int* width)` from `AffinityPanel.c:379`. Builds `cpuids` (one
-/// [`MaskItem_newSingleton`] per online CPU) then calls [`AffinityPanel_update`]
-/// (now ported) to splice them into the panel. The shared-store aliasing is no
-/// longer the blocker — the remaining gap is the `AffinityPanelFunctions` /
-/// `AffinityPanelKeys` / `AffinityPanelEvents` function-bar tables that
-/// `Panel_init(super, …, FunctionBar_new(…))` needs, which are not yet ported.
-pub fn AffinityPanel_new() {
-    todo!("port of AffinityPanel.c:379 — needs the AffinityPanel function-bar tables (Functions/Keys/Events)")
+/// Port of `static const char* const AffinityPanelFunctions[]`
+/// (`AffinityPanel.c:366`), non-hwloc variant. The `"All"`/`"Topology"`/blank
+/// entries are `#ifdef HAVE_LIBHWLOC`; only `"Set"`/`"Cancel"` remain (the C
+/// `NULL` terminator is the slice length here).
+static AffinityPanelFunctions: [&str; 2] = ["Set    ", "Cancel "];
+
+/// Port of `static const char* const AffinityPanelKeys[]` (`AffinityPanel.c:376`).
+static AffinityPanelKeys: [&str; 5] = ["Enter", "Esc", "F1", "F2", "F3"];
+
+/// Port of `static const int AffinityPanelEvents[]` (`AffinityPanel.c:377`).
+/// `13`/`27` are Enter/Esc; the `F1`/`F2`/`F3` events pair with the hwloc-only
+/// labels, so in the non-hwloc build `FunctionBar_new` binds only the first two
+/// (it stops at the 2-entry `AffinityPanelFunctions`).
+static AffinityPanelEvents: [i32; 5] = [13, 27, KEY_F(1), KEY_F(2), KEY_F(3)];
+
+/// Port of `Panel* AffinityPanel_new(Machine* host, const Affinity* affinity,
+/// int* width)` from `AffinityPanel.c:379`, non-hwloc branch.
+///
+/// Builds one [`MaskItem_newSingleton`] per online CPU into the owning `cpuids`
+/// [`Vector`], marking each set iff it appears in `affinity` (whose entries are
+/// sorted ascending, walked by `curCpu`), tracks the widest label into `width`,
+/// then [`AffinityPanel_update`]s to splice the items into the panel. Returned
+/// by value (the C `AllocThis` heap panel; the `ColumnsPanel_new` precedent) —
+/// the panel's `Borrowed` item pointers target the `cpuids` boxes' heap
+/// allocations, which survive the move. The `Class(MaskItem)`/`owner` args to
+/// the C `Panel_init` only typed its `Vector` and are dropped, as in every
+/// sibling `_new`.
+pub fn AffinityPanel_new(
+    host: *mut Machine,
+    affinity: &Affinity,
+    width: Option<&mut i32>,
+) -> AffinityPanel {
+    // Panel_init(super, 1,1,1,1, Class(MaskItem), false,
+    //     FunctionBar_new(AffinityPanelFunctions, AffinityPanelKeys, AffinityPanelEvents));
+    let fu_bar = FunctionBar_new(
+        Some(&AffinityPanelFunctions[..]),
+        Some(&AffinityPanelKeys[..]),
+        Some(&AffinityPanelEvents[..]),
+    );
+    let super_ = Panel_new(1, 1, 1, 1, Some(fu_bar));
+
+    let mut this = AffinityPanel {
+        super_,
+        host,            // this->host = host;
+        topoView: false, // #else: this->topoView = false;
+        cpuids: Vector_new(&MaskItem_class, true, VECTOR_DEFAULT_SIZE),
+        width: 14, // this->width = 14;
+    };
+
+    Panel_setHeader(&mut this.super_, "Use CPUs:");
+
+    // Settings_cpuId(settings, cpu) == countCPUsFromOne ? cpu+1 : cpu (macro).
+    // SAFETY: host is a live Machine* (C precondition); settings is set.
+    let count_from_one = unsafe { &*host }
+        .settings
+        .as_ref()
+        .is_some_and(|s| s.countCPUsFromOne);
+    let existing = unsafe { &*host }.existingCPUs;
+
+    let mut cur_cpu: u32 = 0;
+    for i in 0..existing {
+        // if (!Machine_isCPUonline(host, i)) continue; — the reader is
+        // per-platform (Linux takes a LinuxMachine), so select it by cfg.
+        #[cfg(target_os = "macos")]
+        let online =
+            crate::ported::darwin::darwinmachine::Machine_isCPUonline(unsafe { &*host }, i);
+        #[cfg(not(target_os = "macos"))]
+        let online = crate::ported::linux::linuxmachine::Machine_isCPUonline(
+            unsafe { &*(host as *const crate::ported::linux::linuxmachine::LinuxMachine) },
+            i,
+        );
+        if !online {
+            continue;
+        }
+
+        // xSnprintf(number, 9, "CPU %d", Settings_cpuId(host->settings, i));
+        let cpu_id = if count_from_one { i + 1 } else { i };
+        let number = format!("CPU {cpu_id}");
+        // cpu_width = 4 + strlen(number);
+        let cpu_width = 4 + number.len() as u32;
+        if cpu_width > this.width {
+            this.width = cpu_width;
+        }
+
+        // isSet = curCpu < affinity->used && affinity->cpus[curCpu] == i;
+        let is_set = cur_cpu < affinity.used && affinity.cpus[cur_cpu as usize] == i;
+        if is_set {
+            cur_cpu += 1;
+        }
+
+        // MaskItem* cpuItem = MaskItem_newSingleton(number, i, isSet);
+        // Vector_add(this->cpuids, (Object*) cpuItem);
+        Vector_add(
+            &mut this.cpuids,
+            Box::new(MaskItem_newSingleton(&number, i as i32, is_set)),
+        );
+    }
+
+    // if (width) *width = this->width;
+    if let Some(w) = width {
+        *w = this.width as i32;
+    }
+
+    // AffinityPanel_update(this, false);
+    AffinityPanel_update(&mut this, false);
+
+    this
 }
 
 /// Port of `Affinity* AffinityPanel_getAffinity(Panel* super, Machine* host)`
@@ -408,7 +507,6 @@ pub fn AffinityPanel_getAffinity(this: &AffinityPanel, host: *mut Machine) -> Af
 mod tests {
     use super::*;
     use crate::ported::panel::Panel_new;
-    use crate::ported::vector::{Vector_add, Vector_new};
 
     /// Visible characters of the valid `[0, chlen)` range.
     fn rendered(rs: &RichString) -> String {
@@ -596,6 +694,45 @@ mod tests {
             AffinityPanel_eventHandler(&mut ap, b'z' as i32),
             HandlerResult::IGNORED
         );
+    }
+
+    // ── AffinityPanel_new ─────────────────────────────────────────────
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn new_builds_cpuids_and_splices_marking_affinity() {
+        use crate::ported::darwin::darwinmachine::{DarwinMachine_freeCPULoadInfo, Machine_new};
+
+        // A real host: existingCPUs from host_processor_info; darwin reports
+        // every CPU online, so one MaskItem is built per CPU.
+        let mut dm = Machine_new(None, 0);
+        let host = &mut dm.super_ as *mut Machine;
+        let existing = dm.super_.existingCPUs;
+        assert!(existing >= 1);
+
+        // Affinity marks only CPU 0 (entries are ascending, walked by curCpu).
+        let aff = Affinity {
+            host,
+            size: existing,
+            used: 1,
+            cpus: vec![0],
+        };
+
+        let mut width = 0;
+        let ap = AffinityPanel_new(host, &aff, Some(&mut width));
+
+        // One item per online CPU, and the panel was spliced to match.
+        assert_eq!(Vector_size(&ap.cpuids) as u32, existing);
+        assert_eq!(ap.super_.items.len() as u32, existing);
+        // width starts at 14 and grows to fit the widest "CPU N" label.
+        assert!(width >= 14);
+        // Only CPU 0 is marked set → getAffinity returns exactly {0}.
+        let out = AffinityPanel_getAffinity(&ap, host);
+        assert_eq!(out.used, 1);
+        assert_eq!(out.cpus[0], 0);
+
+        DarwinMachine_freeCPULoadInfo(&mut dm.prev_load);
+        DarwinMachine_freeCPULoadInfo(&mut dm.curr_load);
     }
 
     #[test]
