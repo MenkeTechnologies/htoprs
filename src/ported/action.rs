@@ -1655,14 +1655,81 @@ pub fn actionShowLocks(st: &mut State) -> Htop_Reaction {
     HTOP_REFRESH | HTOP_REDRAW_BAR
 }
 
-/// TODO: port of `static Htop_Reaction actionBacktrace(State *st)` from
-/// `Action.c:616`. The whole function is `#if defined(HAVE_BACKTRACE_SCREEN)`
-/// (Linux-only, not compiled on the darwin-first target). Its body builds a
-/// `BacktracePanel` inside a `ScreenManager`; blocked on the
-/// `HAVE_BACKTRACE_SCREEN` gate (not compiled on darwin) plus the unported
-/// `BacktracePanel_new` / `Vector` backtrace substrate.
-pub fn actionBacktrace(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:616 — #if HAVE_BACKTRACE_SCREEN (Linux-only, not compiled on darwin) + unported BacktracePanel_new/Vector")
+/// Port of `static Htop_Reaction actionBacktrace(State *st)` from
+/// `Action.c:616` (`#if defined(HAVE_BACKTRACE_SCREEN)`). Collects the selected
+/// process (or, for a main-thread process, its whole thread group) into a
+/// non-owning `Vec<*const Process>`, builds a `BacktracePanel` from it, and runs
+/// it modally in a `ScreenManager` — the [`actionStrace`] modal precedent.
+/// Deviations: the ported `ScreenManager` owns its panels, so the C's separate
+/// `BacktracePanel_delete` is folded into `ScreenManager_delete` (freed once); a
+/// NULL selection is skipped (empty list) rather than pushed. The modal body is
+/// verified by primary-source reading (`ScreenManager_run` can't be driven
+/// headlessly); the null-`mainPanel` guard has a unit test.
+pub fn actionBacktrace(st: &mut State) -> Htop_Reaction {
+    use crate::ported::backtracescreen::BacktracePanel_new;
+    use crate::ported::process::{Process_getThreadGroup, Process_isUserlandThread};
+    use crate::ported::screenmanager::ScreenManager_run;
+    use crate::ported::settings::Settings;
+
+    // Process* selectedProcess = (Process*) Panel_getSelected(st->mainPanel);
+    // const Vector* allProcesses = st->mainPanel->super.items;
+    // SAFETY: `mainPanel` is the caller-owned process panel wired at startup.
+    let mainpanel = st.mainPanel;
+    if mainpanel.is_null() {
+        return HTOP_OK;
+    }
+    let panel = unsafe { &(*mainpanel).super_ };
+
+    let selected: Option<*const Process> = Panel_getSelected(panel)
+        .and_then(|o| o.as_process())
+        .map(|p| p as *const Process);
+
+    // Vector* processes = Vector_new(Class(Process), false, …) — a non-owning
+    // list of borrowed `Process*`, modeled as `Vec<*const Process>` (the type
+    // BacktracePanel_new takes).
+    let mut processes: Vec<*const Process> = Vec::new();
+    match selected {
+        // if (selected && !Process_isUserlandThread(selected)): the whole
+        // thread group of the selected main-thread process.
+        Some(sel) if !Process_isUserlandThread(unsafe { &*sel }) => {
+            let tg = Process_getThreadGroup(unsafe { &*sel });
+            for item in &panel.items {
+                if let Some(p) = item.object().as_process() {
+                    if Process_getThreadGroup(p) == tg {
+                        processes.push(p as *const Process);
+                    }
+                }
+            }
+        }
+        // else Vector_add(processes, selectedProcess): a thread adds itself.
+        Some(sel) => processes.push(sel),
+        // The C adds the (here NULL) selectedProcess; the port skips a NULL
+        // selection (empty list) to avoid a null deref when the panel populates
+        // its frames — the degenerate empty-panel case.
+        None => {}
+    }
+
+    // BacktracePanel* panel = BacktracePanel_new(processes, st->host->settings);
+    let settings = unsafe { (*st.host).settings.as_ref() }
+        .map(|s| s as *const Settings)
+        .unwrap_or(core::ptr::null());
+    let bt_panel = BacktracePanel_new(processes, settings);
+
+    // ScreenManager* sm = ScreenManager_new(NULL, st->host, st, false);
+    let host = st.host;
+    let st_ptr: *mut State = st;
+    let mut sm = ScreenManager_new(core::ptr::null_mut(), host, st_ptr);
+    // ScreenManager_add(sm, (Panel*)panel, 0);
+    ScreenManager_add(&mut sm, bt_panel, 0);
+    // ScreenManager_run(sm, NULL, NULL, NULL);
+    ScreenManager_run(&mut sm, None, None, None);
+    // C: BacktracePanel_delete(panel); ScreenManager_delete(sm). The ported
+    // ScreenManager owns its panels (`Vec<Box<dyn PanelClass>>`), unlike the
+    // C's `owner=false` manager, so the panel is freed once — by
+    // ScreenManager_delete — not separately.
+    ScreenManager_delete(sm);
+
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_UPDATE_PANELHDR
 }
 
 /// TODO: port of `static Htop_Reaction actionStrace(State* st)` from
@@ -2664,6 +2731,24 @@ mod tests {
         };
         assert_eq!(actionQuit(&mut st), HTOP_QUIT);
         assert_eq!(actionQuit(&mut st), 0x10);
+    }
+
+    /// `actionBacktrace` returns early (`HTOP_OK`) on a null `mainPanel` before
+    /// building the process list or entering the modal `ScreenManager_run` — the
+    /// only headless-drivable path (the modal body follows the `actionStrace`
+    /// precedent and is verified by primary-source reading).
+    #[test]
+    fn action_backtrace_null_mainpanel_is_a_noop() {
+        let mut st = State {
+            host: core::ptr::null_mut(),
+            mainPanel: core::ptr::null_mut(),
+            header: core::ptr::null_mut(),
+            failedUpdate: None,
+            pauseUpdate: false,
+            hideSelection: false,
+            hideMeters: false,
+        };
+        assert_eq!(actionBacktrace(&mut st), HTOP_OK);
     }
 
     /// `actionToggleHideMeters` flips `hideMeters` and returns
