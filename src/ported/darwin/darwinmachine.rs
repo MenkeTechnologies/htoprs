@@ -14,15 +14,12 @@
 //!   model in `linux/`.
 //!
 //! The mach helpers (`DarwinMachine_getHostInfo`, `_freeCPULoadInfo`,
-//! `_allocateCPULoadInfo`, `_getVMStats`) and `Machine_new` / `Machine_scan`
-//! are ported; `Machine_new` resolves `GPUService` via
-//! `IOServiceGetMatchingService(IOGPU)` (the ZFS ARC init is the only
-//! documented deviation, its substrate being unported).
-//!
-//! Still `todo!()` and blocked on unported substrate:
-//! - `Machine_delete` — a `free`/`Drop` teardown gated on `Machine_done`
-//!   (still a stub in `machine.rs`); the `IOObjectRelease(GPUService)` release
-//!   would live here too.
+//! `_allocateCPULoadInfo`, `_getVMStats`), `Machine_new` / `Machine_scan` /
+//! `Machine_delete` are all ported. `Machine_new` resolves `GPUService` via
+//! `IOServiceGetMatchingService(IOGPU)`; `Machine_delete` releases it with
+//! `IOObjectRelease`, `munmap`s `prev_load`, and runs `Machine_done`. The ZFS
+//! ARC init/teardown is the only documented deviation (its substrate is
+//! unported).
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
@@ -36,7 +33,7 @@ use std::ptr;
 
 use crate::ported::crt::CRT_fatalError;
 use crate::ported::linux::linuxmachine::ZfsArcStats;
-use crate::ported::machine::{Machine, Machine_init};
+use crate::ported::machine::{Machine, Machine_done, Machine_init};
 
 // `#define HOST_BASIC_INFO 1` (`mach/host_info.h`).
 const HOST_BASIC_INFO: c_int = 1;
@@ -53,6 +50,8 @@ extern "C" {
         main_port: libc::mach_port_t,
         matching: *const c_void,
     ) -> libc::mach_port_t;
+    // Releases an io_object_t (here the GPUService handle) at teardown.
+    fn IOObjectRelease(object: libc::mach_port_t) -> libc::kern_return_t;
 }
 
 extern "C" {
@@ -258,12 +257,28 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine>
     this
 }
 
-/// TODO: port of `void Machine_delete(Machine* super)` from
-/// `DarwinMachine.c:121`. Blocked: needs `Machine_done` (stub in
-/// `machine.rs`), the `DarwinMachine` struct and IOKit (`IOObjectRelease`)
-/// FFI.
-pub fn Machine_delete() {
-    todo!("port of DarwinMachine.c:121")
+/// Port of `void Machine_delete(Machine* super)` from `DarwinMachine.c:121`:
+/// `IOObjectRelease(GPUService); DarwinMachine_freeCPULoadInfo(&prev_load);
+/// Machine_done(super); free(this);`.
+///
+/// Takes the owning `Box<DarwinMachine>` (the [`Machine_new`] return) by value
+/// — the faithful analog of `free(this)`: the struct and its owned fields drop
+/// at end of scope. Note the C frees only `prev_load`, **not** `curr_load` (its
+/// mmap is leaked there); the port matches that — `curr_load`'s raw pointer
+/// drops without `munmap`, so no behavior is invented.
+pub fn Machine_delete(mut this: Box<DarwinMachine>) {
+    // IOObjectRelease(this->GPUService); — no-op on MACH_PORT_NULL.
+    unsafe {
+        IOObjectRelease(this.GPUService);
+    }
+
+    // DarwinMachine_freeCPULoadInfo(&this->prev_load); — munmaps the array.
+    DarwinMachine_freeCPULoadInfo(&mut this.prev_load);
+
+    // Machine_done(super); — Object_delete(processTable) + free(tables).
+    Machine_done(&mut this.super_);
+
+    // free(this) — `this` (Box) drops here.
 }
 
 /// Port of `bool Machine_isCPUonline(const Machine* host, unsigned int id)`
@@ -356,5 +371,18 @@ mod tests {
 
         DarwinMachine_freeCPULoadInfo(&mut m.prev_load);
         DarwinMachine_freeCPULoadInfo(&mut m.curr_load);
+    }
+
+    #[test]
+    fn machine_delete_tears_down_without_fault() {
+        // Full new → delete teardown exercises the real IOKit/mach frees:
+        // IOObjectRelease(GPUService), munmap(prev_load), Machine_done. A
+        // double-free or a bad handle would fault here. The C leaks curr_load
+        // (Machine_delete frees only prev_load), so free it first to keep the
+        // test itself leak-clean while the port stays faithful.
+        let mut dm = Machine_new(None, 0);
+        assert!(!dm.prev_load.is_null());
+        DarwinMachine_freeCPULoadInfo(&mut dm.curr_load);
+        Machine_delete(dm);
     }
 }
