@@ -15,6 +15,10 @@
 //! - `Platform_getProcessEnv` (`Platform.c:477`)
 //! - `Platform_getNetworkIO` (`Platform.c:626`)
 //! - `Platform_gettime_monotonic` (`Platform.c:739`, mach clock branch)
+//! - `Platform_getOSRelease` (`Platform.c:760`) — CoreFoundation
+//!   `SystemVersion.plist` reader (ProductName + ProductVersion)
+//! - `Platform_getRelease` (`Platform.c:827`) — `Generic_unameRelease`
+//!   ([`crate::ported::generic::uname`]) with the CF OS-release fetch
 //!
 //! Still `todo!()` and blocked on unported substrate:
 //! - the `Platform_set*Values` meter setters — `Meter::host` (`meter.rs`)
@@ -26,9 +30,6 @@
 //!   (C returns `NULL` unconditionally on Darwin).
 //! - `Platform_getDiskIO` / `Platform_getBattery` — need CoreFoundation /
 //!   IOKit FFI bindings not yet established in this tree.
-//! - `Platform_getOSRelease` / `Platform_getRelease` — need
-//!   `Generic_unameRelease` (`generic/uname.c`, unported) and a
-//!   CoreFoundation property-list reader.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -940,18 +941,212 @@ pub fn Platform_gettime_monotonic(msec: &mut u64) {
     *msec = (mts.tv_sec as u64 * 1000) + (mts.tv_nsec as u64 / 1000000);
 }
 
-/// TODO: port of `static void Platform_getOSRelease(char* buffer, size_t
-/// bufferLen)` from `Platform.c:760`. Blocked: needs a CoreFoundation
-/// property-list reader for `SystemVersion.plist`.
-pub fn Platform_getOSRelease() {
-    todo!("port of Platform.c:760")
+// CoreFoundation FFI — the minimal surface `Platform_getOSRelease` needs to
+// read `SystemVersion.plist`. Types are the LP64 aliases from `CFBase.h`
+// (`CFTypeID`/`CFOptionFlags` = `unsigned long`, `CFIndex` = `signed long`,
+// `CFStringEncoding` = `UInt32`, `Boolean` = `unsigned char`); every opaque
+// `CF*Ref` is a `const void*`. Values verified against the macOS SDK headers:
+// `kCFStringEncodingUTF8 = 0x08000100` (`CFString.h`), `kCFURLPOSIXPathStyle =
+// 0` (`CFURL.h`), `kCFPropertyListImmutable = 0` (`CFPropertyList.h`).
+type CFTypeRef = *const c_void;
+type CFStringRef = *const c_void;
+type CFURLRef = *const c_void;
+type CFReadStreamRef = *const c_void;
+type CFPropertyListRef = *const c_void;
+type CFDictionaryRef = *const c_void;
+type CFAllocatorRef = *const c_void;
+type CFTypeID = libc::c_ulong;
+type CFOptionFlags = libc::c_ulong;
+type CFIndex = libc::c_long;
+type CFStringEncoding = u32;
+type CFBoolean = libc::c_uchar;
+
+const kCFStringEncodingUTF8: CFStringEncoding = 0x0800_0100;
+const kCFURLPOSIXPathStyle: CFIndex = 0;
+const kCFPropertyListImmutable: CFOptionFlags = 0;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFStringCreateWithCString(
+        alloc: CFAllocatorRef,
+        c_str: *const libc::c_char,
+        encoding: CFStringEncoding,
+    ) -> CFStringRef;
+    fn CFStringGetCString(
+        the_string: CFStringRef,
+        buffer: *mut libc::c_char,
+        buffer_size: CFIndex,
+        encoding: CFStringEncoding,
+    ) -> CFBoolean;
+    fn CFURLCreateWithFileSystemPath(
+        allocator: CFAllocatorRef,
+        file_path: CFStringRef,
+        path_style: CFIndex,
+        is_directory: CFBoolean,
+    ) -> CFURLRef;
+    fn CFReadStreamCreateWithFile(alloc: CFAllocatorRef, file_url: CFURLRef) -> CFReadStreamRef;
+    fn CFReadStreamOpen(stream: CFReadStreamRef) -> CFBoolean;
+    fn CFReadStreamClose(stream: CFReadStreamRef);
+    fn CFPropertyListCreateWithStream(
+        allocator: CFAllocatorRef,
+        stream: CFReadStreamRef,
+        stream_length: CFIndex,
+        options: CFOptionFlags,
+        format: *mut c_void,
+        error: *mut c_void,
+    ) -> CFPropertyListRef;
+    fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
+    fn CFDictionaryGetTypeID() -> CFTypeID;
+    fn CFDictionaryGetValue(the_dict: CFDictionaryRef, key: *const c_void) -> *const c_void;
+    fn CFRelease(cf: CFTypeRef);
 }
 
-/// TODO: port of `const char* Platform_getRelease(void)` from
-/// `Platform.c:827`. Blocked: needs `Generic_unameRelease`
-/// (`generic/uname.c`, unported) + `Platform_getOSRelease`.
-pub fn Platform_getRelease() {
-    todo!("port of Platform.c:827")
+/// Port of `static void Platform_getOSRelease(char* buffer, size_t bufferLen)`
+/// from `Platform.c:760`. Reads `/System/Library/CoreServices/SystemVersion.plist`
+/// through CoreFoundation and returns `"<ProductName> <ProductVersion>"` (e.g.
+/// `"macOS 15.5"`), or the empty string on any failure — the C `char*`+len
+/// out-param becomes an owned `String`.
+///
+/// The C builds the result with `CFStringCreateWithFormat("%@%@%@", productName,
+/// separator, productVersion)`; the port extracts each value with
+/// [`cfstring_to_string`] and joins them with the same separator rule
+/// (a space only when *both* keys are present), avoiding a varargs FFI. The
+/// `OSRELEASEFILE` test-override path is `#ifdef`-only (undefined by default),
+/// so only the canonical plist path is probed.
+pub fn Platform_getOSRelease() -> String {
+    // static const CFStringRef osfiles[] = { "/System/.../SystemVersion.plist" };
+    let osfiles = [c"/System/Library/CoreServices/SystemVersion.plist"];
+
+    unsafe {
+        // Models the C `CFStringGetCString(str, buffer, bufferLen,
+        // kCFStringEncodingUTF8)`: copy a CFString into an owned Rust `String`,
+        // `None` on the C `ok == false` (does-not-fit) path. A local closure
+        // (the C's own inline conversion has no separate function), like
+        // `Generic_unameRelease`'s `field` helper. 512 bytes comfortably holds
+        // "macOS <version>".
+        let cfstring_to_string = |s: CFStringRef| -> Option<String> {
+            let mut buf = [0i8; 512];
+            let ok = CFStringGetCString(
+                s,
+                buf.as_mut_ptr(),
+                buf.len() as CFIndex,
+                kCFStringEncodingUTF8,
+            );
+            if ok == 0 {
+                return None;
+            }
+            Some(
+                std::ffi::CStr::from_ptr(buf.as_ptr())
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
+
+        let mut plist: CFPropertyListRef = ptr::null();
+        for path in osfiles {
+            let cfpath =
+                CFStringCreateWithCString(ptr::null(), path.as_ptr(), kCFStringEncodingUTF8);
+            if cfpath.is_null() {
+                continue;
+            }
+            let url = CFURLCreateWithFileSystemPath(
+                ptr::null(),
+                cfpath,
+                kCFURLPOSIXPathStyle,
+                /* isDirectory */ 0,
+            );
+            CFRelease(cfpath);
+            if url.is_null() {
+                continue;
+            }
+
+            let stream = CFReadStreamCreateWithFile(ptr::null(), url);
+            CFRelease(url);
+            if stream.is_null() {
+                continue;
+            }
+
+            let can_read = CFReadStreamOpen(stream) != 0;
+            if can_read {
+                plist = CFPropertyListCreateWithStream(
+                    ptr::null(),
+                    stream,
+                    0,
+                    kCFPropertyListImmutable,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                );
+                CFReadStreamClose(stream);
+            }
+            CFRelease(stream);
+
+            if can_read {
+                break;
+            }
+        }
+
+        if plist.is_null() {
+            return String::new();
+        }
+
+        let mut result = String::new();
+        if CFGetTypeID(plist) == CFDictionaryGetTypeID() {
+            let dict: CFDictionaryRef = plist;
+
+            let key_name = CFStringCreateWithCString(
+                ptr::null(),
+                c"ProductName".as_ptr(),
+                kCFStringEncodingUTF8,
+            );
+            let key_version = CFStringCreateWithCString(
+                ptr::null(),
+                c"ProductVersion".as_ptr(),
+                kCFStringEncodingUTF8,
+            );
+
+            // CFDictionaryGetValue returns a borrowed reference (owned by the
+            // dict) — do not release the returned CFStringRefs.
+            let product_name = CFDictionaryGetValue(dict, key_name);
+            let product_version = CFDictionaryGetValue(dict, key_version);
+
+            if !key_name.is_null() {
+                CFRelease(key_name);
+            }
+            if !key_version.is_null() {
+                CFRelease(key_version);
+            }
+
+            // C: separator is " " only when BOTH pointers are non-NULL;
+            // each missing value defaults to the empty string.
+            let name = if product_name.is_null() {
+                String::new()
+            } else {
+                cfstring_to_string(product_name).unwrap_or_default()
+            };
+            let version = if product_version.is_null() {
+                String::new()
+            } else {
+                cfstring_to_string(product_version).unwrap_or_default()
+            };
+            let sep = if !product_name.is_null() && !product_version.is_null() {
+                " "
+            } else {
+                ""
+            };
+            result = format!("{name}{sep}{version}");
+        }
+        CFRelease(plist);
+
+        result
+    }
+}
+
+/// Port of `const char* Platform_getRelease(void)` from `Platform.c:827`:
+/// `return Generic_unameRelease(Platform_getOSRelease);`. Darwin supplies its
+/// CoreFoundation-backed [`Platform_getOSRelease`] as the OS-release fetch,
+/// where Linux uses `parseOSRelease` (see [`crate::ported::generic::uname`]).
+pub fn Platform_getRelease() -> &'static str {
+    crate::ported::generic::uname::Generic_unameRelease(Platform_getOSRelease)
 }
 
 /// Port of `darwin/Platform.h:112`. Non-PCP build: no dynamic meters, so the
@@ -998,6 +1193,43 @@ pub fn Platform_addDynamicScreenAvailableColumns(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn getOSRelease_reads_systemversion_plist() {
+        // The CoreFoundation plist reader must return "<ProductName>
+        // <ProductVersion>" from /System/Library/CoreServices/SystemVersion.plist.
+        // Cross-check against `sw_vers`, which reads the same keys — this pins
+        // the CF FFI ABI (a mismatched CFIndex/Boolean width would corrupt the
+        // read and this would fail).
+        let out = std::process::Command::new("sw_vers")
+            .output()
+            .expect("sw_vers");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let field = |k: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(k))
+                .map(|v| v.trim())
+                .unwrap_or("")
+                .to_string()
+        };
+        let expected = format!("{} {}", field("ProductName:"), field("ProductVersion:"));
+
+        let got = Platform_getOSRelease();
+        assert_eq!(got, expected);
+        assert!(got.starts_with("macOS "));
+    }
+
+    #[test]
+    fn getRelease_embeds_os_release_via_generic_uname() {
+        // Platform_getRelease = Generic_unameRelease(Platform_getOSRelease):
+        // "<sysname> <release> [<machine>] @ <os-release>". On macOS uname's
+        // sysname is "Darwin", so the CF distro string is appended (not
+        // already contained).
+        let release = Platform_getRelease();
+        assert!(release.starts_with("Darwin "));
+        assert!(release.contains('['));
+        assert!(release.contains(" @ macOS "));
+    }
 
     #[test]
     fn setSwapValues_reads_system_swap() {

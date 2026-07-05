@@ -7,3 +7,4 @@
 
 pub mod fdstat_sysctl;
 pub mod gettime;
+pub mod uname;

@@ -7,6 +7,13 @@
 #![allow(dead_code)]
 
 use crate::ported::crt::ColorElements;
+// SysArchMeter.c calls `Platform_getRelease()`, resolved per-build to the
+// linked platform's implementation. On macOS that is the darwin
+// CoreFoundation-backed reader ("macOS <version>"); every other host uses the
+// generic `uname(2)` + `/etc/os-release` reader exposed by the linux module.
+#[cfg(target_os = "macos")]
+use crate::ported::darwin::platform::Platform_getRelease;
+#[cfg(not(target_os = "macos"))]
 use crate::ported::linux::platform::Platform_getRelease;
 use crate::ported::meter::{Meter, MeterClass, Meter_class, TEXT_METERMODE};
 use crate::ported::object::ObjectClass;

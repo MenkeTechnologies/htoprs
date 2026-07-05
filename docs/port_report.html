@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-04T03:15:19Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-05T16:51:19Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">891</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">31</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">896</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">28</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">81.52%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">81.98%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">121</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -90,10 +90,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>BatteryMeter.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>CPUMeter.c</code></td><td>18</td><td>0</td><td>18</td><td>100%</td></tr>
           <tr><td><code>CRT.c</code></td><td>16</td><td>1</td><td>19</td><td>84%</td></tr>
-          <tr><td><code>CategoriesPanel.c</code></td><td>7</td><td>2</td><td>9</td><td>78%</td></tr>
+          <tr><td><code>CategoriesPanel.c</code></td><td>8</td><td>1</td><td>9</td><td>89%</td></tr>
           <tr><td><code>ColorsPanel.c</code></td><td>3</td><td>0</td><td>3</td><td>100%</td></tr>
           <tr><td><code>ColumnsPanel.c</code></td><td>7</td><td>0</td><td>7</td><td>100%</td></tr>
-          <tr><td><code>CommandLine.c</code></td><td>3</td><td>0</td><td>5</td><td>60%</td></tr>
+          <tr><td><code>CommandLine.c</code></td><td>4</td><td>0</td><td>5</td><td>80%</td></tr>
           <tr><td><code>CommandScreen.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
           <tr><td><code>DateTimeMeter.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>DiskIOMeter.c</code></td><td>11</td><td>0</td><td>11</td><td>100%</td></tr>
@@ -149,7 +149,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>darwin/DarwinMachine.c</code></td><td>10</td><td>0</td><td>10</td><td>100%</td></tr>
           <tr><td><code>darwin/DarwinProcess.c</code></td><td>11</td><td>0</td><td>11</td><td>100%</td></tr>
           <tr><td><code>darwin/DarwinProcessTable.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
-          <tr><td><code>darwin/Platform.c</code></td><td>24</td><td>1</td><td>25</td><td>96%</td></tr>
+          <tr><td><code>darwin/Platform.c</code></td><td>25</td><td>0</td><td>25</td><td>100%</td></tr>
           <tr><td><code>darwin/PlatformHelpers.c</code></td><td>5</td><td>0</td><td>5</td><td>100%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDMachine.c</code></td><td>6</td><td>4</td><td>10</td><td>60%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDProcess.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
@@ -162,8 +162,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>generic/fdstat_sysctl.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>generic/gettime.c</code></td><td>2</td><td>0</td><td>2</td><td>100%</td></tr>
           <tr><td><code>generic/hostname.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
-          <tr><td><code>generic/uname.c</code></td><td>2</td><td>0</td><td>3</td><td>67%</td></tr>
-          <tr><td><code>htop.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
+          <tr><td><code>generic/uname.c</code></td><td>3</td><td>0</td><td>3</td><td>100%</td></tr>
+          <tr><td><code>htop.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>linux/CGroupUtils.c</code></td><td>11</td><td>0</td><td>11</td><td>100%</td></tr>
           <tr><td><code>linux/Compat.c</code></td><td>8</td><td>0</td><td>8</td><td>100%</td></tr>
           <tr><td><code>linux/GPU.c</code></td><td>3</td><td>0</td><td>3</td><td>100%</td></tr>
@@ -187,7 +187,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>openbsd/OpenBSDProcess.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
           <tr><td><code>openbsd/OpenBSDProcessTable.c</code></td><td>7</td><td>0</td><td>7</td><td>100%</td></tr>
           <tr><td><code>openbsd/Platform.c</code></td><td>16</td><td>0</td><td>16</td><td>100%</td></tr>
-          <tr><td><code>pcp-htop.c</code></td><td>0</td><td>1</td><td>1</td><td>0%</td></tr>
+          <tr><td><code>pcp-htop.c</code></td><td>1</td><td>0</td><td>1</td><td>100%</td></tr>
           <tr><td><code>pcp/PCPMachine.c</code></td><td>6</td><td>0</td><td>20</td><td>30%</td></tr>
           <tr><td><code>pcp/PCPProcess.c</code></td><td>1</td><td>0</td><td>6</td><td>17%</td></tr>
           <tr><td><code>pcp/PCPProcessTable.c</code></td><td>3</td><td>0</td><td>28</td><td>11%</td></tr>
@@ -208,12 +208,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-04T03:15:19Z",
+  "generated": "2026-07-05T16:51:19Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1093,
-  "ported": 891,
-  "stubbed": 31,
-  "coverage_pct": 81.52,
+  "ported": 896,
+  "stubbed": 28,
+  "coverage_pct": 81.98,
   "files_started": 121,
   "per_file": [
     {
@@ -272,8 +272,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "CategoriesPanel.c",
-      "ported": 7,
-      "stubbed": 2,
+      "ported": 8,
+      "stubbed": 1,
       "defined": 9
     },
     {
@@ -290,7 +290,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "CommandLine.c",
-      "ported": 3,
+      "ported": 4,
       "stubbed": 0,
       "defined": 5
     },
@@ -626,8 +626,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "darwin/Platform.c",
-      "ported": 24,
-      "stubbed": 1,
+      "ported": 25,
+      "stubbed": 0,
       "defined": 25
     },
     {
@@ -704,14 +704,14 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "generic/uname.c",
-      "ported": 2,
+      "ported": 3,
       "stubbed": 0,
       "defined": 3
     },
     {
       "cfile": "htop.c",
-      "ported": 0,
-      "stubbed": 1,
+      "ported": 1,
+      "stubbed": 0,
       "defined": 1
     },
     {
@@ -854,8 +854,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "pcp-htop.c",
-      "ported": 0,
-      "stubbed": 1,
+      "ported": 1,
+      "stubbed": 0,
       "defined": 1
     },
     {
