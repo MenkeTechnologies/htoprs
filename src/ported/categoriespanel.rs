@@ -44,20 +44,21 @@
 //!   [`ScreensPanel_new`] editor (which itself boxes the `columns` /
 //!   `availableColumns` sub-panels into `scr`) and registers it.
 //!
-//! # Stubbed (blocked on specific unported substrate)
+//! # Sub-panel ownership notes
 //!
-//! - [`CategoriesPanel_makeMetersPage`] (`CategoriesPanel.c:43`) — builds one
-//!   `MetersPanel_new(settings, title, this->header->columns[i], scr)` per
-//!   header column, but the C `MetersPanel*` **shares** the header's
-//!   `Vector*` meter store; the ported [`crate::ported::header::Header`]
-//!   models `columns` as an owned `Vec<Vec<Meter>>` and
-//!   [`crate::ported::meterspanel::MetersPanel`] *owns* its `Vector` meters —
-//!   there is no shared-ownership bridge, so the panel cannot be built without
-//!   moving the header's meters out (breaking the header).
-//! - [`CategoriesPanel_makeScreenTabsPage`] (`CategoriesPanel.c:78`) — PCP-only
-//!   in C (`#if defined(HTOP_PCP)`), and it hands the `ScreenTabsPanel`'s owned
-//!   `names` sub-panel to a separate `ScreenManager_add`, which the
-//!   owned-sub-panel model cannot split off. Not in the non-PCP page table.
+//! Every page builder is ported. The two that add a sub-panel owned by another
+//! panel resolve it the way htop does — the owner keeps a non-owning pointer
+//! and the `ScreenManager` frees it:
+//! - [`CategoriesPanel_makeMetersPage`] (`CategoriesPanel.c:43`) — moves each
+//!   header column's meters into a per-column `MetersPanel` (the header column
+//!   is emptied while the page is open) and restores them via the panel's
+//!   `Drop` when the page closes.
+//! - [`CategoriesPanel_makeScreenTabsPage`] (`CategoriesPanel.c:78`) — the
+//!   `ScreenTabsPanel`'s `names` sub-panel is `Box::into_raw`'d by
+//!   `ScreenTabsPanel_new`, reconstituted here, and handed to the same
+//!   `ScreenManager` (which owns both, as the C's owning setup manager does).
+//!   Only *registered* under `#if defined(HTOP_PCP)`, so it is never dispatched
+//!   in this build, but the C function is always defined and is ported.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -84,6 +85,7 @@ use crate::ported::screenmanager::{
     ScreenManager, ScreenManager_add, ScreenManager_remove, ScreenManager_size,
 };
 use crate::ported::screenspanel::ScreensPanel_new;
+use crate::ported::screentabspanel::ScreenTabsPanel_new;
 use crate::ported::settings::{HeaderLayout_getColumns, Settings};
 use crate::ported::vector::{Vector_add, Vector_new};
 
@@ -328,17 +330,45 @@ pub fn CategoriesPanel_makeColorsPage(this: &mut CategoriesPanel) {
     ScreenManager_add(unsafe { &mut *scr }, Box::new(colors), -1);
 }
 
-/// TODO: port of `static void CategoriesPanel_makeScreenTabsPage(CategoriesPanel*
-/// this)` from `CategoriesPanel.c:78`. PCP-only in C (`#if defined(HTOP_PCP)`)
-/// and absent from the non-PCP `categoriesPanelPages`, so it is never
-/// dispatched in this build. Blocked anyway: the C hands the
-/// `ScreenTabsPanel`'s owned `names` sub-panel (`((ScreenTabsPanel*)screenTabs)
-/// ->names`) to a separate `ScreenManager_add`, which the owned-sub-panel model
-/// (the `ScreenTabsPanel` owns `names`) cannot split into two independently
-/// added `Box<dyn PanelClass>`s.
+/// Port of `static void CategoriesPanel_makeScreenTabsPage(CategoriesPanel*
+/// this)` from `CategoriesPanel.c:78`.
+///
+/// Adds the `ScreenTabsPanel` and its `names` sub-panel to the setup
+/// `ScreenManager`. Only *registered* under `#if defined(HTOP_PCP)` (absent
+/// from the non-PCP `categoriesPanelPages`), so it is never dispatched in this
+/// build — but the C function is always defined, so it is ported.
+///
+/// The C hands the `ScreenTabsPanel`'s `names` sub-panel to a *second*
+/// `ScreenManager_add`: in htop `names` is created by `ScreenTabsPanel_new` but
+/// freed by the owning `ScreenManager` (`ScreenTabsPanel_delete` leaves it), so
+/// it is a non-owning pointer from the panel's side. The port mirrors that —
+/// `ScreenTabsPanel_new` stores `names` via `Box::into_raw`; here that box is
+/// reconstituted and given to the same manager, which then owns both panels.
 pub fn CategoriesPanel_makeScreenTabsPage(this: &mut CategoriesPanel) {
-    let _ = this;
-    todo!("port of CategoriesPanel.c:78 — PCP-only; also needs to split the ScreenTabsPanel's owned `names` sub-panel into a separately ScreenManager_add-able panel (owned-sub-panel model can't)")
+    // Settings* settings = this->host->settings;
+    let settings = this.host_settings();
+    let scr = this.scr;
+
+    // Panel* screenTabs = (Panel*) ScreenTabsPanel_new(settings);
+    // SAFETY: `settings` is the live host settings; `scr` is the
+    // self-referential back-pointer every sibling make*Page adds through.
+    let screenTabs = unsafe { ScreenTabsPanel_new(settings) };
+
+    // Panel* screenNames = (Panel*) ((ScreenTabsPanel*)screenTabs)->names;
+    // Capture the heap `names` pointer before `screenTabs` moves into the manager.
+    let names_ptr = screenTabs.names;
+
+    // ScreenManager_add(this->scr, screenTabs, 20);
+    ScreenManager_add(unsafe { &mut *scr }, Box::new(screenTabs), 20);
+
+    // ScreenManager_add(this->scr, screenNames, -1);
+    // SAFETY: `names_ptr` was `Box::into_raw`'d in `ScreenTabsPanel_new` and is
+    // not reclaimed elsewhere (`ScreenTabsPanel_delete` leaves it) — this is its
+    // sole owning reclaim. The now-boxed `screenTabs` keeps a non-owning pointer
+    // to the same `ScreenNamesPanel`; boxing does not relocate the heap object,
+    // so that pointer stays valid for the panel's interactions.
+    let screenNames = unsafe { Box::from_raw(names_ptr) };
+    ScreenManager_add(unsafe { &mut *scr }, screenNames, -1);
 }
 
 /// Port of `static void CategoriesPanel_makeScreensPage(CategoriesPanel* this)`
@@ -692,6 +722,33 @@ mod tests {
         assert_eq!(Panel_getSelectedIndex(&c.super_), 2);
         // 1 placeholder + 1 column MetersPanel + 1 AvailableMetersPanel.
         assert_eq!(scr.panelCount, 3, "the Meters page must build its panels");
+    }
+
+    #[test]
+    fn make_screen_tabs_page_adds_tabs_and_names_panels() {
+        // "Screen tabs" is #if HTOP_PCP in the page registry, so it is never
+        // reached via the eventHandler dispatch; call the always-defined ctor
+        // directly. It adds the ScreenTabsPanel (size 20) and its `names`
+        // sub-panel (size -1) to the manager — two panels.
+        use crate::ported::hashtable::Hashtable_new;
+        let mut scr = scr_wired();
+        let before = scr.panelCount;
+        // ScreenTabsPanel_new requires settings->dynamicScreens != NULL.
+        let ds = Box::into_raw(Box::new(Hashtable_new(10, true)));
+        let mut host = Machine {
+            existingCPUs: 1,
+            settings: Some(Settings {
+                dynamicScreens: Some(ds),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut c = cat_with(categories_panel(), &mut scr, &mut host);
+
+        CategoriesPanel_makeScreenTabsPage(&mut c);
+
+        assert_eq!(scr.panelCount, before + 2, "tabs + names panels were added");
+        assert_eq!(scr.panels.len(), (before + 2) as usize);
     }
 
     #[test]
