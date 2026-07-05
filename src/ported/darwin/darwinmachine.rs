@@ -13,14 +13,16 @@
 //!   `libc`; `ZfsArcStats` is reused from the (platform-independent) zfs
 //!   model in `linux/`.
 //!
+//! The mach helpers (`DarwinMachine_getHostInfo`, `_freeCPULoadInfo`,
+//! `_allocateCPULoadInfo`, `_getVMStats`) and `Machine_new` / `Machine_scan`
+//! are ported; `Machine_new` resolves `GPUService` via
+//! `IOServiceGetMatchingService(IOGPU)` (the ZFS ARC init is the only
+//! documented deviation, its substrate being unported).
+//!
 //! Still `todo!()` and blocked on unported substrate:
-//! - the mach helpers (`DarwinMachine_getHostInfo`, `_freeCPULoadInfo`,
-//!   `_allocateCPULoadInfo`, `_getVMStats`) need the `host_info`/
-//!   `host_processor_info` mach calls.
-//! - `Machine_scan` / `Machine_new` / `Machine_delete` additionally need
-//!   `Machine_init` / `Machine_done` (still stubs in `machine.rs`),
-//!   `openzfs_sysctl_*` (`generic/openzfs_sysctl.c`, unported) and IOKit
-//!   (`IOServiceGetMatchingService`) FFI bindings.
+//! - `Machine_delete` — a `free`/`Drop` teardown gated on `Machine_done`
+//!   (still a stub in `machine.rs`); the `IOObjectRelease(GPUService)` release
+//!   would live here too.
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
@@ -38,6 +40,20 @@ use crate::ported::machine::{Machine, Machine_init};
 
 // `#define HOST_BASIC_INFO 1` (`mach/host_info.h`).
 const HOST_BASIC_INFO: c_int = 1;
+
+// IOKit FFI — resolving the GPU service handle (`IOGPU`) that
+// `Platform_setGPUValues` reads. `IOServiceMatching` returns a matching dict
+// (`CFMutableDictionaryRef`, an opaque `*mut c_void`) that
+// `IOServiceGetMatchingService` consumes; the returned `io_service_t` is a
+// `mach_port_t` (`MACH_PORT_NULL`/0 on no match).
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    fn IOServiceMatching(name: *const libc::c_char) -> *const c_void;
+    fn IOServiceGetMatchingService(
+        main_port: libc::mach_port_t,
+        matching: *const c_void,
+    ) -> libc::mach_port_t;
+}
 
 extern "C" {
     // `kern_return_t host_info(host_t, host_flavor_t, host_info_t, mach_msg_type_number_t*)`
@@ -205,9 +221,9 @@ pub fn Machine_scan(host: &mut DarwinMachine) {
 ///
 /// Deviations (documented): `openzfs_sysctl_init`/`_updateArcStats` (ZFS ARC
 /// stats) are not run — the openzfs substrate is unported — so `zfs` stays
-/// zeroed. `GPUService` is left `MACH_PORT_NULL` (0) rather than resolved via
-/// `IOServiceGetMatchingService(IOGPU)`, as the IOKit FFI is not established;
-/// this only disables the GPU meter.
+/// zeroed. `GPUService` is resolved via `IOServiceGetMatchingService(IOGPU)`
+/// (the C's own call); the failure branch's `CRT_debug` log is a DEBUG-only
+/// no-op, so it is omitted.
 pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine> {
     let mut this = Box::new(DarwinMachine {
         super_: Machine::default(),
@@ -231,7 +247,13 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine>
     DarwinMachine_getVMStats(&mut this);
 
     // openzfs_sysctl_init / _updateArcStats — ZFS substrate unported.
-    // GPUService = IOServiceGetMatchingService(IOGPU) — IOKit FFI deferred.
+
+    // this->GPUService = IOServiceGetMatchingService(kIOMainPortDefault,
+    //     IOServiceMatching("IOGPU"));
+    // kIOMainPortDefault == MACH_PORT_NULL (0). On no match GPUService stays 0
+    // (the C's CRT_debug log is a DEBUG-only no-op).
+    this.GPUService =
+        unsafe { IOServiceGetMatchingService(0, IOServiceMatching(c"IOGPU".as_ptr())) };
 
     this
 }
@@ -324,8 +346,13 @@ mod tests {
         // Machine_init recorded the real uid and a realtime sample.
         assert_eq!(m.super_.htopUserId, unsafe { libc::getuid() });
         assert!(m.super_.realtimeMs > 0);
-        // GPUService is the deferred MACH_PORT_NULL.
-        assert_eq!(m.GPUService, 0);
+        // GPUService is resolved via IOServiceGetMatchingService(IOGPU). Each
+        // call returns a fresh handle for the same service, so compare presence
+        // (non-zero) rather than the handle value: on a Mac with a GPU both are
+        // non-zero, on a headless/VM host both are 0.
+        let direct =
+            unsafe { IOServiceGetMatchingService(0, IOServiceMatching(c"IOGPU".as_ptr())) };
+        assert_eq!(m.GPUService != 0, direct != 0);
 
         DarwinMachine_freeCPULoadInfo(&mut m.prev_load);
         DarwinMachine_freeCPULoadInfo(&mut m.curr_load);

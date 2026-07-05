@@ -23,15 +23,14 @@
 //!   statistics summed across all drives
 //! - `Platform_getBattery` (`Platform.c:684`) — IOKit `IOPowerSources`
 //!   internal-source capacity + AC state
+//! - `Platform_setGPUValues` (`Platform.c:363`) — IOKit `PerformanceStatistics`
+//!   "Device Utilization %" (the GPU service is resolved in
+//!   [`crate::ported::darwin::darwinmachine::Machine_new`])
 //!
-//! Still `todo!()` and blocked on unported substrate:
-//! - the `Platform_set*Values` meter setters — `Meter::host` (`meter.rs`)
-//!   is typed as the concrete `LinuxMachine`, so a `DarwinMachine`-backed
-//!   meter cannot be modeled until `meter.rs` generalizes that field.
-//! - `Platform_getFileDescriptors` — needs `Generic_getFileDescriptors_sysctl`
-//!   (`generic/fdstat_sysctl.c`, unported).
-//! - `Platform_getProcessLocks` — `FileLocks_ProcessData` is unmodeled
-//!   (C returns `NULL` unconditionally on Darwin).
+//! Every `Platform_*` hook in this module is now ported; the `Platform_set*Values`
+//! meter setters recover their `DarwinMachine` by reinterpreting the embedded
+//! `Meter::host` (`mtr.host as *const DarwinMachine`), so no `meter.rs` change is
+//! required.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 // The IOKit FFI aliases (`io_object_t`, `kern_return_t`, …) keep their C type
@@ -489,11 +488,93 @@ pub fn Platform_setCPUValues(mtr: &mut Meter, cpu: u32) -> f64 {
     total_pct.clamp(0.0, 100.0)
 }
 
-/// TODO: port of `void Platform_setGPUValues(Meter* mtr, double* totalUsage,
-/// unsigned long long* totalGPUTimeDiff)` from `Platform.c:363`. Blocked:
-/// `Meter::host` typed as `LinuxMachine` + IOKit FFI.
-pub fn Platform_setGPUValues() {
-    todo!("port of Platform.c:363")
+/// Port of `void Platform_setGPUValues(Meter* mtr, double* totalUsage,
+/// unsigned long long* totalGPUTimeDiff)` from `Platform.c:363`.
+///
+/// Reads the GPU's `Device Utilization %` from its IOKit `PerformanceStatistics`
+/// property and stores it in `mtr.values[0]`. Returns `NAN` when the machine
+/// resolved no `GPUService` (`Machine_new`'s `IOServiceGetMatchingService(IOGPU)`
+/// found nothing). Successive calls within one monotonic tick reuse the previous
+/// `totalUsage` (the C guard against "0%" readings from back-to-back CF property
+/// snapshots). `mtr.host` is the embedded `Machine`, reinterpreted as its outer
+/// `DarwinMachine` — the [`Platform_setCPUValues`] cast precedent.
+pub fn Platform_setGPUValues(mtr: &mut Meter, totalUsage: &mut f64, totalGPUTimeDiff: &mut u64) {
+    // C `static uint64_t prevMonotonicMs;` — function static, zero-init.
+    static PREV_MONOTONIC_MS: AtomicU64 = AtomicU64::new(0);
+
+    let host = mtr.host;
+    let dhost = mtr.host as *const DarwinMachine;
+
+    // assert(*totalGPUTimeDiff == -1ULL); (void)totalGPUTimeDiff;
+    debug_assert_eq!(*totalGPUTimeDiff, u64::MAX);
+
+    mtr.curItems = 1;
+    mtr.values[0] = f64::NAN;
+
+    unsafe {
+        // if (!dhost->GPUService) return;
+        if (*dhost).GPUService == 0 {
+            return;
+        }
+
+        let monotonic_ms = (*host).monotonicMs;
+
+        // Ensure a small interval between CF property snapshots; on a repeat
+        // within the same tick, reuse the previous total (avoids a spurious 0%).
+        if monotonic_ms <= PREV_MONOTONIC_MS.load(Ordering::Relaxed) {
+            mtr.values[0] = *totalUsage;
+            return;
+        }
+
+        // perfStats = IORegistryEntryCreateCFProperty(GPUService,
+        //     CFSTR("PerformanceStatistics"), kCFAllocatorDefault, kNilOptions);
+        let key_perf = CFStringCreateWithCString(
+            ptr::null(),
+            c"PerformanceStatistics".as_ptr(),
+            kCFStringEncodingUTF8,
+        );
+        let perf_stats = IORegistryEntryCreateCFProperty(
+            (*dhost).GPUService,
+            key_perf,
+            ptr::null(),
+            kNilOptions,
+        );
+        if !key_perf.is_null() {
+            CFRelease(key_perf);
+        }
+        if perf_stats.is_null() {
+            return;
+        }
+
+        debug_assert!(CFGetTypeID(perf_stats) == CFDictionaryGetTypeID());
+
+        // deviceUtil = CFDictionaryGetValue(perfStats, CFSTR("Device Utilization %"));
+        let key_util = CFStringCreateWithCString(
+            ptr::null(),
+            c"Device Utilization %".as_ptr(),
+            kCFStringEncodingUTF8,
+        );
+        let device_util = CFDictionaryGetValue(perf_stats, key_util);
+        if !key_util.is_null() {
+            CFRelease(key_util);
+        }
+
+        if !device_util.is_null() {
+            // int device = -1; CFNumberGetValue(deviceUtil, kCFNumberIntType, &device);
+            let mut device: c_int = -1;
+            CFNumberGetValue(
+                device_util,
+                kCFNumberIntType,
+                &mut device as *mut c_int as *mut c_void,
+            );
+            *totalUsage = device as f64;
+            PREV_MONOTONIC_MS.store(monotonic_ms, Ordering::Relaxed);
+        }
+
+        // cleanup: CFRelease(perfStats); mtr->values[0] = *totalUsage;
+        CFRelease(perf_stats);
+        mtr.values[0] = *totalUsage;
+    }
 }
 
 /// Port of `const MemoryClass Platform_memoryClasses[]`
@@ -1197,9 +1278,12 @@ type CFComparisonResult = CFIndex;
 const kCFStringEncodingUTF8: CFStringEncoding = 0x0800_0100;
 const kCFURLPOSIXPathStyle: CFIndex = 0;
 const kCFPropertyListImmutable: CFOptionFlags = 0;
-// `CFNumber.h`: kCFNumberSInt64Type = 4, kCFNumberDoubleType = 13.
+// `CFNumber.h`: kCFNumberSInt64Type = 4, kCFNumberIntType = 9, kCFNumberDoubleType = 13.
 const kCFNumberSInt64Type: CFNumberType = 4;
+const kCFNumberIntType: CFNumberType = 9;
 const kCFNumberDoubleType: CFNumberType = 13;
+// `IOKitLib.h`: kNilOptions = 0 (no IOOptionBits set).
+const kNilOptions: IOOptionBits = 0;
 // `CFBase.h`: kCFCompareEqualTo = 0.
 const kCFCompareEqualTo: CFComparisonResult = 0;
 
@@ -1278,6 +1362,12 @@ extern "C" {
         allocator: CFAllocatorRef,
         options: IOOptionBits,
     ) -> kern_return_t;
+    fn IORegistryEntryCreateCFProperty(
+        entry: io_registry_entry_t,
+        key: CFStringRef,
+        allocator: CFAllocatorRef,
+        options: IOOptionBits,
+    ) -> CFTypeRef;
     fn IOObjectRelease(object: io_object_t) -> kern_return_t;
     fn IOPSCopyPowerSourcesInfo() -> CFTypeRef;
     fn IOPSCopyPowerSourcesList(blob: CFTypeRef) -> CFArrayRef;
@@ -1556,6 +1646,42 @@ mod tests {
             assert!(percent.is_nan(), "no battery but percent = {percent}");
             assert_eq!(on_ac, ACPresence::AC_ERROR);
         }
+    }
+
+    #[test]
+    fn setGPUValues_reads_device_utilization() {
+        use crate::ported::darwin::darwinmachine::{DarwinMachine_freeCPULoadInfo, Machine_new};
+
+        // A real host resolves GPUService via IOServiceGetMatchingService(IOGPU).
+        let mut dm = Machine_new(None, 0);
+        // monotonicMs must exceed the function's PREV_MONOTONIC_MS start (0) so
+        // the "reuse previous within one tick" guard does not short-circuit.
+        dm.super_.monotonicMs = 1000;
+
+        let mut m = Meter::empty();
+        m.values = vec![f64::NAN]; // GPUMeter has one value slot
+        m.host = &dm.super_ as *const Machine;
+
+        let mut total_usage = 0.0;
+        let mut total_gpu_time_diff = u64::MAX; // C asserts == -1ULL
+        Platform_setGPUValues(&mut m, &mut total_usage, &mut total_gpu_time_diff);
+
+        assert_eq!(m.curItems, 1);
+        if dm.GPUService != 0 {
+            // GPU present: "Device Utilization %" is a real percentage (idle → 0).
+            assert!(m.values[0].is_finite(), "utilization not finite");
+            assert!(
+                (0.0..=100.0).contains(&m.values[0]),
+                "utilization out of range: {}",
+                m.values[0]
+            );
+        } else {
+            // No IOGPU service (headless/VM): the NAN start state is unchanged.
+            assert!(m.values[0].is_nan());
+        }
+
+        DarwinMachine_freeCPULoadInfo(&mut dm.prev_load);
+        DarwinMachine_freeCPULoadInfo(&mut dm.curr_load);
     }
 
     #[test]

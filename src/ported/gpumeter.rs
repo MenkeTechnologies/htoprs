@@ -4,13 +4,11 @@
 //! `non_snake_case` is allowed for the whole module — matching the
 //! spec name-for-name is the point of the port.
 //!
-//! `GPUMeter_display` is now ported: its substrate (`RichString`,
-//! `CRT_colors`, the `Meter` `values` field, and this module's own
-//! `GPUMeter_engineData`/`totalUsage`/`totalGPUTimeDiff` file-statics) is
-//! available. `GPUMeter_updateValues` stays a `todo!()` stub: it is driven
-//! by `Platform_setGPUValues(this, &totalUsage, &totalGPUTimeDiff)`, whose
-//! Rust port (`linux/platform.rs`) is still a no-arg stub with no output
-//! params, so there is no faithful way to populate the statics.
+//! `GPUMeter_display` and `GPUMeter_updateValues` are both ported. The latter
+//! drives the platform `Platform_setGPUValues(this, &totalUsage,
+//! &totalGPUTimeDiff)` — the Linux reader accumulates `GPUMeter_engineData`
+//! deltas; the macOS reader queries the IOKit `PerformanceStatistics` "Device
+//! Utilization %" — selected by `cfg` to match the linked machine type.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -156,15 +154,24 @@ pub fn humanTimeUnit(mut value: u64) -> String {
 }
 
 /// Port of `static void GPUMeter_updateValues(Meter* this)` from
-/// `GPUMeter.c:82`. Drives the ported
-/// [`Platform_setGPUValues`](crate::ported::linux::platform::Platform_setGPUValues)
-/// against the file-static `totalUsage`/`totalGPUTimeDiff` (which retain
-/// their prior values across unchanged samples), then writes `txtBuffer` as
-/// the aggregate usage `%.1f%%`, or `N/A` when usage is negative/NaN.
+/// `GPUMeter.c:82`. Drives the platform `Platform_setGPUValues` (macOS reads
+/// the IOKit `PerformanceStatistics` "Device Utilization %"; other hosts read
+/// the `GPUMeter_engineData` accumulators) against the file-static
+/// `totalUsage`/`totalGPUTimeDiff` (which retain their prior values across
+/// unchanged samples), then writes `txtBuffer` as the aggregate usage
+/// `%.1f%%`, or `N/A` when usage is negative/NaN.
 pub fn GPUMeter_updateValues(this: &mut Meter) {
+    // `Platform_setGPUValues` casts `this.host` to the platform machine type;
+    // select the reader whose cast matches the linked machine (macOS ->
+    // DarwinMachine; else -> LinuxMachine), as the DiskIO/Swap meters do.
+    #[cfg(target_os = "macos")]
+    use crate::ported::darwin::platform::Platform_setGPUValues;
+    #[cfg(not(target_os = "macos"))]
+    use crate::ported::linux::platform::Platform_setGPUValues;
+
     let mut tu = totalUsage.lock().unwrap();
     let mut td = totalGPUTimeDiff.lock().unwrap();
-    crate::ported::linux::platform::Platform_setGPUValues(this, &mut tu, &mut td);
+    Platform_setGPUValues(this, &mut tu, &mut td);
 
     // isNonnegative(totalUsage) — false for NaN.
     if !(*tu >= 0.0) {
@@ -342,6 +349,12 @@ mod tests {
         assert!(!GPUMeter_active());
     }
 
+    // Exercises the Linux GPU path: `GPUMeter_updateValues` dispatches to the
+    // platform `Platform_setGPUValues`, which casts `this.host` to that
+    // platform's machine type. This test builds a `LinuxMachine`, so it is only
+    // valid where the non-macOS reader is selected. The macOS (IOKit) path is
+    // covered by `darwin::platform::tests::setGPUValues_reads_device_utilization`.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn update_values_computes_usage_percentage() {
         use crate::ported::linux::linuxmachine::LinuxMachine;
