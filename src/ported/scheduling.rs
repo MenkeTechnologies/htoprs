@@ -60,7 +60,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ported::functionbar::FunctionBar_newEnterEsc;
 use crate::ported::listitem::ListItem;
-use crate::ported::object::{Object, Object_isA};
+use crate::ported::object::{Arg, Object, Object_isA};
 use crate::ported::panel::{Panel, Panel_add, Panel_new, Panel_setHeader, Panel_setSelected};
 use crate::ported::process::{Process, Process_class};
 
@@ -373,17 +373,23 @@ pub fn Scheduling_setPolicy(p: &Process, arg: &SchedulingArg) -> bool {
 /// downcast to `Process` would miss and panic). The C `assert(...)`
 /// becomes `debug_assert!` (matching `vector.rs`). Delegates to
 /// [`Scheduling_setPolicy`].
-pub fn Scheduling_rowSetPolicy(row: &dyn Object, arg: &SchedulingArg) -> bool {
+pub fn Scheduling_rowSetPolicy(row: &mut dyn Object, arg: Arg) -> bool {
     // Process* p = (Process*) row;
     // assert(Object_isA((const Object*) p, (const ObjectClass*) &Process_class));
-    debug_assert!(Object_isA(Some(row), &Process_class));
+    debug_assert!(Object_isA(Some(row as &dyn Object), &Process_class));
     // Panel items are platform subclasses (DarwinProcess/LinuxProcess); reach
     // the embedded `Process` via `as_process()`, not an exact-type `Any`
     // downcast (which fails on the concrete subclass and would panic).
-    let p = row
+    let p = (row as &dyn Object)
         .as_process()
         .expect("Scheduling_rowSetPolicy: row is not a Process");
-    Scheduling_setPolicy(p, arg)
+    // return Scheduling_setPolicy(p, arg); the C `Arg arg` carries `.v =
+    // &SchedulingArg` (the `MainPanel_foreachRow` callback ABI).
+    match arg {
+        // SAFETY: `actionSetSchedPolicy` passes `Arg::V(&mut SchedulingArg)`.
+        Arg::V(v) => Scheduling_setPolicy(p, unsafe { &*(v as *const SchedulingArg) }),
+        Arg::I(_) => false,
+    }
 }
 
 /// Port of `Scheduling.c:130`.
@@ -567,13 +573,16 @@ mod tests {
         // and control reaches the (cfg'd) syscall body. On non-Linux the
         // no-op body returns false; on Linux setting the current process to
         // its existing policy is exercised by the linux-only test below.
-        let p = Process::default();
-        let arg = SchedulingArg {
+        let mut p = Process::default();
+        let mut arg = SchedulingArg {
             policy: SCHED_OTHER,
             priority: 0,
         };
-        let obj: &dyn Object = &p;
-        let r = Scheduling_rowSetPolicy(obj, &arg);
+        let obj: &mut dyn Object = &mut p;
+        let r = Scheduling_rowSetPolicy(
+            obj,
+            Arg::V(&mut arg as *mut SchedulingArg as *mut core::ffi::c_void),
+        );
         #[cfg(not(target_os = "linux"))]
         assert!(!r);
         // On Linux the result depends on privileges; just require it ran.
@@ -586,17 +595,20 @@ mod tests {
     fn row_set_policy_rejects_non_process() {
         // A ListItem is not a Process; Object_isA(&Process_class) is false,
         // so the debug_assert fires (the C assert()).
-        let item = ListItem {
+        let mut item = ListItem {
             value: String::new(),
             key: 0,
             moving: false,
         };
-        let arg = SchedulingArg {
+        let mut arg = SchedulingArg {
             policy: SCHED_OTHER,
             priority: 0,
         };
-        let obj: &dyn Object = &item;
-        let _ = Scheduling_rowSetPolicy(obj, &arg);
+        let obj: &mut dyn Object = &mut item;
+        let _ = Scheduling_rowSetPolicy(
+            obj,
+            Arg::V(&mut arg as *mut SchedulingArg as *mut core::ffi::c_void),
+        );
     }
 
     // --- Linux-only: the real syscalls ------------------------------------

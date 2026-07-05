@@ -244,13 +244,13 @@ pub fn Platform_actionSetIOPriority(st: &mut State) -> Htop_Reaction {
     // C: Panel* ioprioPanel = IOPriorityPanel_new(ioprio1);
     //    const void* set = Action_pickFromVector(st, ioprioPanel, 20, true);
     let ioprio_panel = IOPriorityPanel_new(ioprio1);
-    let set = Action_pickFromVector(st, Box::new(ioprio_panel), 20, true);
+    let (set, panel) = Action_pickFromVector(st, Box::new(ioprio_panel), 20, true);
 
     // C: if (set) { IOPriority ioprio2 = IOPriorityPanel_getIOPriority(ioprioPanel);
     //       bool ok = MainPanel_foreachRow(st->mainPanel, LinuxProcess_rowSetIOPriority,
     //          (Arg){.i = ioprio2}, NULL); if (!ok) beep(); }
-    if let Some(obj) = set {
-        let any: &dyn Any = obj.as_ref();
+    if let Some(i) = set {
+        let any: &dyn Any = panel.as_panel().items[i].object();
         let ioprio2: IOPriority = any
             .downcast_ref::<ListItem>()
             .expect("Platform_actionSetIOPriority: picked item is not a ListItem")

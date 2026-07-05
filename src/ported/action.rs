@@ -67,8 +67,8 @@
 //! - **Column-sort picker (now ported):** `Action_pickFromVector`
 //!   (`Action.c:59`) builds a transient two-panel `ScreenManager` (the picker
 //!   `list` + the shared `mainPanel`), runs its modal loop with focus locked to
-//!   the picker, and returns the picked object — enabled now that
-//!   `ScreenManager_new`/`_add`/`_run` take `*mut` back-pointers. On it,
+//!   the picker, and returns the selected index + the reclaimed panel — enabled
+//!   now that `ScreenManager_new`/`_add`/`_run` take `*mut` back-pointers. On it,
 //!   `actionSetSortColumn` (`Action.c:192`) is ported: it builds the sortable-
 //!   column `ListItem` picker (`Process_fields[]` / `DynamicColumn` via
 //!   `Hashtable_get`) and applies the pick via `Action_setSortKey`. The single
@@ -240,20 +240,21 @@ pub struct State {
 /// bool follow)` from `Action.c:59`. Builds a transient two-panel
 /// `ScreenManager` — the picker `list` on the left (width `x`) and the shared
 /// `mainPanel` filling the rest — runs its modal loop with focus locked to the
-/// picker (`allowFocusChange = false`), and returns the picked object, or `None`.
+/// picker (`allowFocusChange = false`), and returns `(selected index, panel)`.
 ///
-/// The `ScreenManager` back-pointers are now raw pointers
-/// ([`ScreenManager_new`] takes `*mut Header`/`*mut Machine`/`*mut State`), so
-/// the earlier by-value ownership blocker is gone. Two ownership adaptations of
-/// the C `owner = false` manager remain:
+/// The C returns `Panel_getSelected(list)` — a **borrowed** pointer into the
+/// non-owned picker, leaving the panel intact so the caller can read it and
+/// (e.g. `actionSetSchedPolicy`) re-use it across picks. The port models that
+/// non-destructively: it returns the selected item's index (or `None`) together
+/// with the reclaimed picker `Box`, so the caller reads `panel.items[idx]` and
+/// keeps ownership of the panel. The `ScreenManager` back-pointers are raw
+/// pointers ([`ScreenManager_new`] takes `*mut Header`/`*mut Machine`/`*mut
+/// State`). Two ownership adaptations of the C `owner = false` manager remain:
 ///
-/// - `list` is taken as an owned `Box<dyn PanelClass>` (the boxed picker of any
-///   subclass, matching the manager's `Vec<Box<dyn PanelClass>>` element). C
-///   frees it via the caller's `Object_delete(sortPanel)` **after** reading the
-///   pick; here `Action_pickFromVector` owns it for the modal run, extracts the
-///   selected item as an owned `Box<dyn Object>` (the C `Object*` return), and
-///   drops the remainder on return — the same net "panel built, run, pick read,
-///   panel freed" effect.
+/// - `list` is taken as an owned `Box<dyn PanelClass>` (matching the manager's
+///   `Vec<Box<dyn PanelClass>>` element) for the modal run, then reclaimed with
+///   [`ScreenManager_remove`] and returned to the caller (which frees it — the
+///   C `Object_delete(sortPanel)`), rather than being consumed here.
 /// - `mainPanel` is the caller-owned `*mut MainPanel` shared with the main loop's
 ///   `ScreenManager` (which owns the real `Box<MainPanel>`; the address is
 ///   move-stable). It is re-boxed via [`Box::from_raw`], added for display, then
@@ -279,7 +280,7 @@ pub fn Action_pickFromVector(
     list: Box<dyn PanelClass>,
     x: i32,
     follow: bool,
-) -> Option<Box<dyn Object>> {
+) -> (Option<usize>, Box<dyn PanelClass>) {
     // C: MainPanel* mainPanel = st->mainPanel; Header* header = st->header;
     //    Machine* host = st->host;
     let mainPanel = st.mainPanel;
@@ -372,41 +373,44 @@ pub fn Action_pickFromVector(
     );
 
     // C: if (panelFocus == list && ch == 13) { ... }  (picker is panel index 0)
-    if panelFocus == 0 && ch == 13 {
+    let selected_idx: Option<usize> = if panelFocus == 0 && ch == 13 {
         let return_selection = if follow {
             // C: const Row* selected = (const Row*)Panel_getSelected((Panel*)mainPanel);
             //    if (selected && selected->id == row) return Panel_getSelected(list);
-            let matches = match Panel_getSelected(unsafe { &(*mainPanel).super_ }) {
-                // The mainPanel's items are concrete platform `Process` objects
-                // (e.g. `DarwinProcess`), not bare `Row`s, so reach the embedded
-                // `Row` through the `as_row()` vtable accessor. An `Any` downcast
-                // to `Row` would fail the exact-type check and always miss.
+            // The mainPanel's items are concrete platform `Process` objects, so
+            // reach the embedded `Row` through the `as_row()` vtable accessor.
+            match Panel_getSelected(unsafe { &(*mainPanel).super_ }) {
                 Some(o) => o.as_row().is_some_and(|r| r.id == row),
+                // C beep()s here on mismatch; the bell is unported (see the fn
+                // docs), so the mismatch path returns `None`.
                 None => false,
-            };
-            // C beep()s here on mismatch; the bell is unported (see the fn docs),
-            // so the mismatch path falls through to `None`.
-            matches
+            }
         } else {
             // C: else return Panel_getSelected(list);
             true
         };
         if return_selection {
-            // Panel_getSelected(list) as an owned Object, moved out of the
-            // reclaimed picker (the caller reads it, then drops it — the C
-            // read-then-Object_delete(sortPanel) sequence).
-            let panel = list.as_panel_mut();
+            let panel = list.as_panel();
             let sel = panel.selected;
             if sel >= 0 && (sel as usize) < panel.items.len() {
-                if let PanelItem::Owned(b) = panel.items.remove(sel as usize) {
-                    return Some(b);
-                }
+                Some(sel as usize)
+            } else {
+                None
             }
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
-    // C: return NULL;
-    None
+    // C returns `Panel_getSelected(list)` — a BORROWED pointer into the
+    // non-owned picker, leaving the panel (and item) intact. The port returns
+    // the selected index plus the reclaimed panel `Box` instead of destructively
+    // moving the item out, so the caller reads the item non-destructively and
+    // may re-use the panel (the `actionSetSchedPolicy` reset-on-fork re-pick loop
+    // depends on this).
+    (selected_idx, list)
 }
 
 /// Port of `static void Action_runSetup(State* st)` from `Action.c:101`.
@@ -700,9 +704,9 @@ pub fn Action_readableProcess(st: &State) -> bool {
 /// the field position). `Class(ListItem)` / `true` (owner) have no analog in the
 /// reduced [`Panel_new`]; the picker's owned `ListItem`s free with it.
 ///
-/// `Object_delete(sortPanel)` has no separate call: [`Action_pickFromVector`]
-/// consumes the boxed picker (owning it for the modal run and dropping the
-/// non-picked items on return). `host->activeTable->needsSort` is set through the
+/// `Object_delete(sortPanel)` maps to dropping the picker `Box`
+/// [`Action_pickFromVector`] returns after the modal run (owned by the modal for
+/// its duration, then handed back). `host->activeTable->needsSort` is set through the
 /// `*mut Table` back-pointer.
 pub fn actionSetSortColumn(st: &mut State) -> Htop_Reaction {
     // C: Htop_Reaction reaction = HTOP_OK;
@@ -782,10 +786,10 @@ pub fn actionSetSortColumn(st: &mut State) -> Htop_Reaction {
     }
 
     // C: const ListItem* field = (const ListItem*) Action_pickFromVector(st, sortPanel, 14, false);
-    let picked = Action_pickFromVector(st, Box::new(sortPanel), 14, false);
+    let (picked, panel) = Action_pickFromVector(st, Box::new(sortPanel), 14, false);
     // C: if (field) reaction |= Action_setSortKey(settings, field->key);
-    if let Some(obj) = picked {
-        let any: &dyn core::any::Any = &*obj;
+    if let Some(i) = picked {
+        let any: &dyn core::any::Any = panel.as_panel().items[i].object();
         if let Some(item) = any.downcast_ref::<ListItem>() {
             // SAFETY: host valid (C precondition); settings borrowed mutably here
             // only (no other live settings borrow).
@@ -798,7 +802,8 @@ pub fn actionSetSortColumn(st: &mut State) -> Htop_Reaction {
             reaction |= Action_setSortKey(settings, item.key);
         }
     }
-    // C: Object_delete(sortPanel);  — consumed by Action_pickFromVector.
+    // C: Object_delete(sortPanel);  — the `panel` Box returned by
+    // Action_pickFromVector drops at the end of this scope.
 
     // C: host->activeTable->needsSort = true;
     // SAFETY: host valid; activeTable is the non-null back-pointer.
@@ -1385,15 +1390,109 @@ pub fn actionSetAffinity(st: &mut State) -> Htop_Reaction {
     HTOP_OK
 }
 
-/// TODO: port of `static Htop_Reaction actionSetSchedPolicy(State* st)` from
-/// `Action.c:480`. The whole function is `#ifdef SCHEDULER_SUPPORT` (Linux
-/// scheduling only — not compiled on the darwin-first target), and its body
-/// drives the `Scheduling_*` policy/priority panels through
-/// [`Action_pickFromVector`] (itself now ported). Blocked on the
-/// `SCHEDULER_SUPPORT` gate: the whole function is not compiled on the
-/// darwin-first target, and its body needs the unported `Scheduling_*` substrate.
-pub fn actionSetSchedPolicy(_st: &mut State) -> Htop_Reaction {
-    todo!("port of Action.c:480 — #ifdef SCHEDULER_SUPPORT (Linux-only, not compiled on darwin) + unported Scheduling_* panels")
+/// Port of `static Htop_Reaction actionSetSchedPolicy(State* st)` from
+/// `Action.c:480` (`#ifdef SCHEDULER_SUPPORT`). Modally picks a scheduling
+/// policy (re-picking while the reset-on-fork toggle, `key == -1`, is chosen),
+/// then a priority, and applies both to every tagged/selected row via
+/// `MainPanel_foreachRow(Scheduling_rowSetPolicy)`. The re-pick loop relies on
+/// the non-destructive [`Action_pickFromVector`] (returns the selected index +
+/// the reclaimed panel, so `schedPanel` survives each pick). The modal body is
+/// verified by primary-source reading (the `actionKill`/`actionStrace`
+/// precedent — `ScreenManager_run` isn't headless-drivable); `Scheduling_setPolicy`
+/// is a no-op off Linux, so on the darwin build the `foreachRow` pass changes
+/// nothing.
+pub fn actionSetSchedPolicy(st: &mut State) -> Htop_Reaction {
+    use crate::ported::scheduling::{
+        SchedulingArg, Scheduling_newPolicyPanel, Scheduling_newPriorityPanel,
+        Scheduling_rowSetPolicy, Scheduling_togglePolicyPanelResetOnFork,
+    };
+    use std::sync::atomic::Ordering;
+
+    // if (!Action_writeableProcess(st)) return HTOP_KEEP_FOLLOWING;
+    if !Action_writeableProcess(st) {
+        return HTOP_KEEP_FOLLOWING;
+    }
+
+    // static int preSelectedPolicy = SCHED_OTHER; static int preSelectedPriority = 50;
+    static PRE_SELECTED_POLICY: std::sync::atomic::AtomicI32 =
+        std::sync::atomic::AtomicI32::new(libc::SCHED_OTHER);
+    static PRE_SELECTED_PRIORITY: std::sync::atomic::AtomicI32 =
+        std::sync::atomic::AtomicI32::new(50);
+
+    // Reads the `key` of the panel item at `idx` (all these panels hold ListItems).
+    let item_key = |panel: &dyn PanelClass, idx: usize| -> i32 {
+        (panel.as_panel().items[idx].object() as &dyn core::any::Any)
+            .downcast_ref::<ListItem>()
+            .expect("actionSetSchedPolicy: panel item is not a ListItem")
+            .key
+    };
+
+    // Panel* schedPanel = Scheduling_newPolicyPanel(preSelectedPolicy);
+    let mut sched_panel: Box<dyn PanelClass> = Box::new(Scheduling_newPolicyPanel(
+        PRE_SELECTED_POLICY.load(Ordering::Relaxed),
+    ));
+
+    // for (;;) { policy = pickFromVector(schedPanel, 18, true);
+    //   if (!policy || policy->key != -1) break;
+    //   Scheduling_togglePolicyPanelResetOnFork(schedPanel); }
+    let mut policy_key: Option<i32> = None;
+    loop {
+        let (sel, panel) = Action_pickFromVector(st, sched_panel, 18, true);
+        sched_panel = panel;
+        match sel {
+            None => break,
+            Some(i) => {
+                let key = item_key(sched_panel.as_ref(), i);
+                if key != -1 {
+                    policy_key = Some(key);
+                    break;
+                }
+                Scheduling_togglePolicyPanelResetOnFork(sched_panel.as_panel_mut());
+            }
+        }
+    }
+
+    if let Some(policy) = policy_key {
+        // preSelectedPolicy = policy->key;
+        PRE_SELECTED_POLICY.store(policy, Ordering::Relaxed);
+
+        // Panel* prioPanel = Scheduling_newPriorityPanel(policy->key, preSelectedPriority);
+        if let Some(prio_panel) =
+            Scheduling_newPriorityPanel(policy, PRE_SELECTED_PRIORITY.load(Ordering::Relaxed))
+        {
+            // const ListItem* prio = pickFromVector(prioPanel, 14, true);
+            let (prio_sel, prio_panel_back) =
+                Action_pickFromVector(st, Box::new(prio_panel), 14, true);
+            // if (prio) preSelectedPriority = prio->key;
+            if let Some(pi) = prio_sel {
+                PRE_SELECTED_PRIORITY
+                    .store(item_key(prio_panel_back.as_ref(), pi), Ordering::Relaxed);
+            }
+            // Panel_delete(prioPanel) — prio_panel_back drops here.
+        }
+
+        // SchedulingArg v = { .policy = …, .priority = … };
+        let mut v = SchedulingArg {
+            policy: PRE_SELECTED_POLICY.load(Ordering::Relaxed),
+            priority: PRE_SELECTED_PRIORITY.load(Ordering::Relaxed),
+        };
+        // bool ok = MainPanel_foreachRow(mainPanel, Scheduling_rowSetPolicy, (Arg){.v=&v}, NULL);
+        // SAFETY: st->mainPanel is the caller-owned MainPanel*.
+        let ok = MainPanel_foreachRow(
+            unsafe { &mut *st.mainPanel },
+            Scheduling_rowSetPolicy,
+            Arg::V(&mut v as *mut SchedulingArg as *mut core::ffi::c_void),
+            None,
+        );
+        // if (!ok) beep();
+        if !ok {
+            let mut out = std::io::stdout().lock();
+            Ncurses::beep(&mut out);
+        }
+    }
+
+    // Panel_delete(schedPanel) — sched_panel drops here.
+    HTOP_REFRESH | HTOP_REDRAW_BAR | HTOP_KEEP_FOLLOWING
 }
 
 /// TODO: port of `static Htop_Reaction actionKill(State* st)` from
@@ -1430,11 +1529,11 @@ pub fn actionKill(st: &mut State) -> Htop_Reaction {
     let signalsPanel = SignalsPanel_new(pre, signals);
 
     // C: const ListItem* sgn = (ListItem*) Action_pickFromVector(st, signalsPanel, 14, true);
-    let picked = Action_pickFromVector(st, Box::new(signalsPanel), 14, true);
+    let (picked, panel) = Action_pickFromVector(st, Box::new(signalsPanel), 14, true);
 
     // C: if (sgn && sgn->key != 0) { ... }
-    if let Some(obj) = picked {
-        let any: &dyn core::any::Any = obj.as_ref();
+    if let Some(i) = picked {
+        let any: &dyn core::any::Any = panel.as_panel().items[i].object();
         if let Some(sgn) = any.downcast_ref::<ListItem>() {
             if sgn.key != 0 {
                 PRE_SELECTED_SIGNAL.store(sgn.key, Ordering::Relaxed);
@@ -1529,9 +1628,11 @@ pub fn actionFilterByUser(st: &mut State) -> Htop_Reaction {
     Panel_insert(&mut usersPanel, 0, Box::new(ListItem_new("All users", -1)));
 
     // C: const ListItem* picked = (ListItem*) Action_pickFromVector(st, usersPanel, 19, false);
-    let picked = Action_pickFromVector(st, Box::new(usersPanel), 19, false);
-    if let Some(obj) = picked {
-        if let Some(li) = (obj.as_ref() as &dyn core::any::Any).downcast_ref::<ListItem>() {
+    let (picked, panel) = Action_pickFromVector(st, Box::new(usersPanel), 19, false);
+    if let Some(i) = picked {
+        if let Some(li) =
+            (panel.as_panel().items[i].object() as &dyn core::any::Any).downcast_ref::<ListItem>()
+        {
             // C: if (picked == allUsers) host->userId = (uid_t)-1;
             //    else Action_setUserOnly(ListItem_getRef(picked), &host->userId);
             if li.key == -1 {
