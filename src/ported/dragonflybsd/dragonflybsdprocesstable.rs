@@ -4,22 +4,39 @@
 //! reading + the port-purity gate (not a cross-compile, DragonFly being a
 //! tier-3 target with no prebuilt std here).
 //!
-//! Ported: [`DragonFlyBSDProcessTable_updateExe`] (`/proc/<pid>/file` readlink)
-//! and [`DragonFlyBSDProcessTable_updateCwd`] (`kern.proc.cwd` sysctl) — both
-//! use only confirmed DragonFly `libc` bindings (`kinfo_proc.kp_pid`,
-//! `KERN_PROC_CWD`).
+//! Ported: [`DragonFlyBSDProcessTable_updateExe`] (`/proc/<pid>/file` readlink),
+//! [`DragonFlyBSDProcessTable_updateCwd`] (`kern.proc.cwd` sysctl), and
+//! [`DragonFlyBSDProcessTable_updateProcessName`] (`kvm_getargv`). `kvm_getargv`
+//! is not exposed by `libc` for the DragonFly target, so it is hand-declared in
+//! an `extern` block — the NetBSD `kvm_getargv2` precedent.
 //!
-//! Still stubbed: `updateProcessName` / `goThroughEntries` / `ProcessTable_new`
-//! need `libkvm` (`kvm_getargv`/`kvm_getprocs`), which `libc` does not expose
-//! for the DragonFly target (as with `kvm_swap` in the machine layer).
+//! Still stubbed: `goThroughEntries` / `ProcessTable_new` need `kvm_openfiles` +
+//! `kvm_getprocs` (the whole scan driver), likewise hand-declarable when ported.
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 
-use crate::ported::process::{Process, Process_isKernelThread, Process_updateExe};
+use core::slice;
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int, c_void};
+
+use crate::ported::process::{
+    Process, Process_isKernelThread, Process_updateCmdline, Process_updateComm, Process_updateExe,
+};
 use crate::ported::processtable::ProcessTable;
+
+extern "C" {
+    /// `char** kvm_getargv(kvm_t*, const struct kinfo_proc*, int nchr)`
+    /// (DragonFly `kvm.h`). Not exposed by `libc` for the DragonFly target, so
+    /// it is declared here (the NetBSD `kvm_getargv2` precedent).
+    fn kvm_getargv(
+        kd: *mut c_void,
+        p: *const libc::kinfo_proc,
+        nchr: c_int,
+    ) -> *const *const c_char;
+}
 
 /// Port of `typedef struct DragonFlyBSDProcessTable_`
 /// (`DragonFlyBSDProcessTable.h`). "Extends" [`ProcessTable`] via the embedded
@@ -118,12 +135,62 @@ pub fn DragonFlyBSDProcessTable_updateCwd(kproc: &libc::kinfo_proc, proc: &mut P
     proc.procCwd = Some(String::from_utf8_lossy(&buffer[..end]).into_owned());
 }
 
-/// TODO: port of `static void DragonFlyBSDProcessTable_updateProcessName(kvm_t*
-/// kd, const struct kinfo_proc* kproc, Process* proc)`
-/// (`DragonFlyBSDProcessTable.c:100`). Builds the command line from
-/// `kvm_getargv` — DragonFly `libkvm`.
-pub fn DragonFlyBSDProcessTable_updateProcessName() {
-    todo!("port of DragonFlyBSDProcessTable.c:100 — kvm_getargv (DragonFly-only)")
+/// Port of `static void DragonFlyBSDProcessTable_updateProcessName(kvm_t* kd,
+/// const struct kinfo_proc* kproc, Process* proc)`
+/// (`DragonFlyBSDProcessTable.c:100`). Sets the short command from `kp_comm`,
+/// then rebuilds the full command line from `kvm_getargv` (joining args with
+/// spaces, `end` = length of `argv[0]`); any failure falls back to `kp_comm`.
+pub fn DragonFlyBSDProcessTable_updateProcessName(
+    kd: *mut c_void,
+    kproc: &libc::kinfo_proc,
+    proc: &mut Process,
+) {
+    // Read a NUL-terminated fixed C char buffer into an owned lossy String (the
+    // C treats `kp_comm` as an inline C string); nested so it stays a faithful
+    // translation without a module-level non-C function.
+    fn c_field_to_string(buf: &[c_char]) -> String {
+        let bytes: &[u8] = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len()) };
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+
+    // Process_updateComm(proc, kproc->kp_comm);
+    let comm = c_field_to_string(&kproc.kp_comm);
+    Process_updateComm(proc, Some(&comm));
+
+    // char** argv = kvm_getargv(kd, kproc, 0);
+    let argv = unsafe { kvm_getargv(kd, kproc as *const libc::kinfo_proc, 0) };
+    // if (!argv || !argv[0]) { Process_updateCmdline(proc, kp_comm, 0, strlen); return; }
+    if argv.is_null() || unsafe { (*argv).is_null() } {
+        Process_updateCmdline(proc, Some(&comm), 0, comm.len());
+        return;
+    }
+
+    // Join argv with spaces; `end` is the length of argv[0] (C `stpcpy` loop,
+    // recording `end` after the first arg, then dropping the trailing space).
+    let mut cmdline = String::new();
+    let mut end = 0usize;
+    let mut i: isize = 0;
+    loop {
+        let p = unsafe { *argv.offset(i) };
+        if p.is_null() {
+            break;
+        }
+        let arg = unsafe { CStr::from_ptr(p) }.to_string_lossy();
+        cmdline.push_str(&arg);
+        if end == 0 {
+            end = cmdline.len();
+        }
+        cmdline.push(' ');
+        i += 1;
+    }
+    // C: at--; *at = '\0';  — drop the trailing separator space.
+    if cmdline.ends_with(' ') {
+        cmdline.pop();
+    }
+
+    let end = end.min(cmdline.len());
+    Process_updateCmdline(proc, Some(&cmdline), 0, end);
 }
 
 /// TODO: port of `void ProcessTable_goThroughEntries(ProcessTable* super)`
