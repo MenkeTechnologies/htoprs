@@ -57,35 +57,37 @@
 //! - [`MaskItem_delete`] (`AffinityPanel.c:48`).
 //! - [`AffinityPanel_delete`] (`AffinityPanel.c:141`).
 //!
-//! panel/cpuids aliasing + unported substrate:
-//! - [`AffinityPanel_update`] (`AffinityPanel.c:177`) — the non-hwloc arm is
-//!   `Panel_splice(super, this->cpuids)`, and `Panel_splice` is itself
-//!   stubbed: htop's `AffinityPanel` uses a *non-owning* `Panel` that shares
-//!   the `MaskItem*` pointers held by the *owning* `cpuids` `Vector`, so a
-//!   toggle applied to a spliced item is seen through `cpuids`. htoprs's
-//!   `Panel` owns its items as `Vec<Box<dyn Object>>` and cannot alias
-//!   `cpuids`; reproducing the shared-pointer store needs either the
-//!   unported `Vector` (with its `owner` flag) or `Rc`/`RefCell` shared
-//!   ownership, neither of which the substrate provides.
+//! Ported via the shared `cpuids` store — the `super_` [`Panel`] holds
+//! `PanelItem::Borrowed` pointers into the owning `cpuids` [`Vector`] (the C's
+//! non-owning-panel / owning-`cpuids` model), spliced by the now-ported
+//! [`Panel_splice`]:
+//! - [`AffinityPanel_update`] (`AffinityPanel.c:177`) — prune + re-splice.
 //! - [`AffinityPanel_eventHandler`] (`AffinityPanel.c:203`) — toggles the
-//!   selected item's `value` in `super->items`, which must alias `cpuids`
-//!   (see [`AffinityPanel_update`]), and calls [`AffinityPanel_update`] on a
-//!   `HANDLED` result. `HandlerResult` is now modeled in `panel.rs`, so the
-//!   remaining block is the `cpuids` aliasing above plus the still-stubbed
-//!   [`AffinityPanel_update`] / `Panel_splice`.
-//! - [`AffinityPanel_new`] (`AffinityPanel.c:379`) — builds `cpuids` while
-//!   the `Panel` splices the same pointers, and its last statement calls
-//!   [`AffinityPanel_update`]; blocked transitively on the same aliasing.
+//!   selected item's `value` through its borrowed pointer (visible via
+//!   `cpuids`), then re-runs `update` on `HANDLED`.
+//!
+//! Still stubbed:
+//! - [`AffinityPanel_new`] (`AffinityPanel.c:379`) — the shared-store aliasing
+//!   is available now; the remaining gap is the `AffinityPanelFunctions` /
+//!   `AffinityPanelKeys` / `AffinityPanelEvents` function-bar tables that
+//!   `Panel_init` + `FunctionBar_new` need.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use crate::ported::affinity::{Affinity, Affinity_add, Affinity_new};
-use crate::ported::crt::{ColorElements, ColorScheme, TreeStr};
+use crate::ported::crt::{
+    ColorElements, ColorScheme, TreeStr, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK,
+};
+use crate::ported::functionbar::FunctionBar_setLabel;
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
-use crate::ported::panel::{HandlerResult, Panel, PanelClass, Panel_done};
+use crate::ported::panel::{
+    HandlerResult, Panel, PanelClass, Panel_done, Panel_getSelectedIndex, Panel_prune,
+    Panel_setSelected, Panel_splice,
+};
 use crate::ported::richstring::{RichString, RichString_appendAscii, RichString_appendWide};
+use crate::ported::vector::{Vector, Vector_delete, Vector_get, Vector_size};
 
 /// Model of the C `MaskItem` struct (`AffinityPanel.c:33`), non-hwloc
 /// variant. The C type embeds an `Object super` vtable as its first field;
@@ -213,24 +215,23 @@ pub fn MaskItem_newSingleton(text: &str, cpu: i32, isSet: bool) -> MaskItem {
 /// keyword); `host` is the borrowed `Machine*` (raw pointer — the `Affinity`
 /// `host` precedent, never dereferenced by ported code); `topoView` mirrors
 /// the C flag (always `false` without hwloc); `cpuids` is the C
-/// `Vector* cpuids` of flat-CPU items; `width` is the computed panel width.
-/// The hwloc-only fields (`topoRoot`, `allCpuset`, `workCpuset`) live inside
-/// `#ifdef HAVE_LIBHWLOC` and are omitted.
+/// `Vector* cpuids` of flat-CPU items — an owning [`Vector`] of `MaskItem`
+/// (`Box<dyn Object>`), whose element pointers the `super_` [`Panel`] borrows
+/// via [`Panel_splice`] (the C's non-owning-panel / owning-`cpuids` shared
+/// store); `width` is the computed panel width. The hwloc-only fields
+/// (`topoRoot`, `allCpuset`, `workCpuset`) live inside `#ifdef HAVE_LIBHWLOC`
+/// and are omitted.
 pub struct AffinityPanel {
     pub super_: Panel,
     pub host: *mut Machine,
     pub topoView: bool,
-    pub cpuids: Vec<MaskItem>,
+    pub cpuids: Vector,
     pub width: u32,
 }
 
 /// Port of `const PanelClass AffinityPanel_class` (`AffinityPanel.c:358`): sets
 /// only `.eventHandler = AffinityPanel_eventHandler`; `.drawFunctionBar` /
-/// `.printHeader` are NULL and inherit the `Panel` defaults. The ported
-/// [`AffinityPanel_eventHandler`] is a `todo!()` stub whose signature is `()`
-/// (not `(&mut AffinityPanel, i32) -> HandlerResult` — it awaits the
-/// panel/cpuids `Panel_splice` aliasing), so the `event_handler` slot cannot be
-/// wired without a signature mismatch and inherits the default here.
+/// `.printHeader` are NULL and inherit the `Panel` defaults.
 impl PanelClass for AffinityPanel {
     fn as_panel(&self) -> &Panel {
         &self.super_
@@ -246,16 +247,18 @@ impl PanelClass for AffinityPanel {
 /// Port of `static void AffinityPanel_delete(Object* cast)` from
 /// `AffinityPanel.c:141`: `Vector_delete(this->cpuids); Panel_done(&this->super);
 /// free(this);` (the `hwloc_bitmap_free`/`MaskItem_delete(topoRoot)` block is
-/// `#ifdef HAVE_LIBHWLOC`, not built here). Taking `this` by value consumes
-/// the panel; the owned `cpuids` `Vec<MaskItem>` (C's `Vector_delete`, its
-/// drop recursively running each `MaskItem` teardown) and the non-owning
-/// `host`/`topoView`/`width` fields drop, and the embedded `super_` [`Panel`]
-/// is handed to [`Panel_done`] (mirroring the C call graph).
+/// `#ifdef HAVE_LIBHWLOC`, not built here). Taking `this` by value consumes the
+/// panel; the owning `cpuids` [`Vector`] is handed to [`Vector_delete`] (which
+/// drops each `MaskItem` box) and the embedded `super_` [`Panel`] to
+/// [`Panel_done`] — the `super_` panel only *borrows* the `cpuids` items, so
+/// dropping it first (its `Borrowed` pointers) then the owner is a safe order.
 pub fn AffinityPanel_delete(this: AffinityPanel) {
     let AffinityPanel { super_, cpuids, .. } = this;
-    // C: Vector_delete(this->cpuids) — the owned Vec drop recurses per item.
-    let _ = cpuids;
+    // C: Panel_done(&this->super) then implicitly the cpuids Vector_delete;
+    // the panel holds only Borrowed pointers into cpuids, so releasing it
+    // before the owner cannot dangle.
     Panel_done(super_);
+    Vector_delete(cpuids);
 }
 
 /// TODO: port of `static void AffinityPanel_updateItem(AffinityPanel* this,
@@ -275,29 +278,77 @@ pub fn AffinityPanel_updateTopo() {
     todo!("port of AffinityPanel.c:165 — hwloc-only (no libhwloc in htoprs)")
 }
 
-/// TODO: port of `static void AffinityPanel_update(AffinityPanel* this,
-/// bool keepSelected)` from `AffinityPanel.c:177`. The non-hwloc arm is
-/// `Panel_splice(super, this->cpuids)`, and `Panel_splice` (`Panel.c:222`)
-/// is itself stubbed: htop's `AffinityPanel` uses a non-owning `Panel`
-/// that shares the `MaskItem*` pointers held by the owning `cpuids`
-/// `Vector`, so a toggle on a spliced item is seen through `cpuids`.
-/// htoprs's `Panel` owns its items as `Vec<Box<dyn Object>>` and cannot
-/// alias `cpuids`; reproducing the shared store needs the unported `Vector`
-/// (with its `owner` flag) or `Rc`/`RefCell`, neither in the substrate.
-pub fn AffinityPanel_update() {
-    todo!("port of AffinityPanel.c:177 — needs Panel_splice + panel/cpuids shared-pointer aliasing")
+/// Port of `static void AffinityPanel_update(AffinityPanel* this, bool
+/// keepSelected)` from `AffinityPanel.c:177`, non-hwloc branch.
+///
+/// Re-syncs the panel display with `cpuids`: sets the `F3` label (empty
+/// without `topoView`), prunes the panel's borrowed item list, then
+/// [`Panel_splice`]s the `cpuids` element pointers back in (the panel borrows,
+/// `cpuids` owns), optionally restoring the prior selection. `Panel_setSelected`
+/// clamps out-of-range indices, matching the C.
+pub fn AffinityPanel_update(this: &mut AffinityPanel, keepSelected: bool) {
+    // FunctionBar_setLabel(super->currentBar, KEY_F(3),
+    //     this->topoView ? "Collapse/Expand" : "");
+    if let Some(bar) = &mut this.super_.currentBar {
+        FunctionBar_setLabel(
+            bar,
+            KEY_F(3),
+            if this.topoView { "Collapse/Expand" } else { "" },
+        );
+    }
+
+    let old_selected = Panel_getSelectedIndex(&this.super_);
+    Panel_prune(&mut this.super_);
+
+    // #else: Panel_splice(super, this->cpuids);
+    Panel_splice(&mut this.super_, &this.cpuids);
+
+    if keepSelected {
+        Panel_setSelected(&mut this.super_, old_selected);
+    }
+
+    this.super_.needsRedraw = true;
 }
 
-/// TODO: port of `static HandlerResult AffinityPanel_eventHandler(Panel* super,
-/// int ch)` from `AffinityPanel.c:203`. `HandlerResult`
-/// (`IGNORED`/`HANDLED`/`BREAK_LOOP`) is now modeled in `panel.rs`, but the
-/// body toggles the selected item's `value` in `super->items` — which must
-/// alias `cpuids` (see [`AffinityPanel_update`]) — and calls
-/// `AffinityPanel_update` on a `HANDLED` result. Both still depend on the
-/// panel/cpuids shared-pointer aliasing, i.e. the stubbed `Panel_splice`.
+/// Port of `static HandlerResult AffinityPanel_eventHandler(Panel* super,
+/// int ch)` from `AffinityPanel.c:203`, non-hwloc branch.
+///
+/// On mouse click / re-click / space, toggles the selected item's `value`
+/// between 0 and 2 (`selected->value ? 0 : 2`); Enter breaks the picker loop.
+/// The toggle mutates the item through the panel's `Borrowed` pointer, which
+/// aliases the `cpuids`-owned `MaskItem` (so [`AffinityPanel_getAffinity`] sees
+/// it). A `HANDLED` result re-runs [`AffinityPanel_update`] (keeping the
+/// selection). The hwloc-only `F1`/`F2`/`F3`/`+`/`-` cases are compiled out.
 pub fn AffinityPanel_eventHandler(this: &mut AffinityPanel, ch: i32) -> HandlerResult {
-    let _ = (this, ch);
-    todo!("port of AffinityPanel.c:203 — needs panel/cpuids aliasing (Panel_splice) + AffinityPanel_update")
+    let mut result = HandlerResult::IGNORED;
+    let keep_selected = true;
+
+    // MaskItem* selected = (MaskItem*) Panel_getSelected(super);
+    let sel = Panel_getSelectedIndex(&this.super_);
+
+    // ' ' is 0x20; KEY_MOUSE / KEY_RECLICK share this arm.
+    if ch == KEY_MOUSE || ch == KEY_RECLICK || ch == b' ' as i32 {
+        // if (!selected) return result; (IGNORED)
+        if sel < 0 || sel as usize >= this.super_.items.len() {
+            return result;
+        }
+        // #else: selected->value = selected->value ? 0 : 2;
+        let obj = this.super_.items[sel as usize].object_mut();
+        let item = (obj as &mut dyn core::any::Any)
+            .downcast_mut::<MaskItem>()
+            .expect("AffinityPanel item is a MaskItem");
+        item.value = if item.value != 0 { 0 } else { 2 };
+        result = HandlerResult::HANDLED;
+    } else if ch == 0x0a || ch == 0x0d || ch == KEY_ENTER {
+        result = HandlerResult::BREAK_LOOP;
+    }
+
+    // if (HANDLED == result) AffinityPanel_update(this, keepSelected);
+    if result == HandlerResult::HANDLED {
+        AffinityPanel_update(this, keep_selected);
+    }
+
+    result
 }
 
 /// TODO: port of `static MaskItem* AffinityPanel_addObject(AffinityPanel* this,
@@ -321,13 +372,13 @@ pub fn AffinityPanel_buildTopology() {
 
 /// TODO: port of `Panel* AffinityPanel_new(Machine* host, const Affinity* affinity,
 /// int* width)` from `AffinityPanel.c:379`. Builds `cpuids` (one
-/// [`MaskItem_newSingleton`] per online CPU) while the `Panel` is meant to
-/// splice the same `MaskItem*` pointers, and its final statement calls
-/// [`AffinityPanel_update`]. Blocked on the same panel/cpuids shared-pointer
-/// aliasing as [`AffinityPanel_update`] (htoprs's `Panel` owns its items and
-/// cannot alias `cpuids`).
+/// [`MaskItem_newSingleton`] per online CPU) then calls [`AffinityPanel_update`]
+/// (now ported) to splice them into the panel. The shared-store aliasing is no
+/// longer the blocker — the remaining gap is the `AffinityPanelFunctions` /
+/// `AffinityPanelKeys` / `AffinityPanelEvents` function-bar tables that
+/// `Panel_init(super, …, FunctionBar_new(…))` needs, which are not yet ported.
 pub fn AffinityPanel_new() {
-    todo!("port of AffinityPanel.c:379 — needs panel/cpuids shared-pointer aliasing + AffinityPanel_update")
+    todo!("port of AffinityPanel.c:379 — needs the AffinityPanel function-bar tables (Functions/Keys/Events)")
 }
 
 /// Port of `Affinity* AffinityPanel_getAffinity(Panel* super, Machine* host)`
@@ -341,7 +392,11 @@ pub fn AffinityPanel_new() {
 /// to `u32`. Returns an owned [`Affinity`] (the C fn returns a pointer).
 pub fn AffinityPanel_getAffinity(this: &AffinityPanel, host: *mut Machine) -> Affinity {
     let mut affinity = Affinity_new(host);
-    for item in &this.cpuids {
+    // for (i = 0; i < Vector_size(this->cpuids); i++) { item = Vector_get(...) }
+    for i in 0..Vector_size(&this.cpuids) {
+        let item = (Vector_get(&this.cpuids, i as usize) as &dyn core::any::Any)
+            .downcast_ref::<MaskItem>()
+            .expect("cpuids holds MaskItem");
         if item.value != 0 {
             Affinity_add(&mut affinity, item.cpu as u32);
         }
@@ -353,6 +408,7 @@ pub fn AffinityPanel_getAffinity(this: &AffinityPanel, host: *mut Machine) -> Af
 mod tests {
     use super::*;
     use crate::ported::panel::Panel_new;
+    use crate::ported::vector::{Vector_add, Vector_new};
 
     /// Visible characters of the valid `[0, chlen)` range.
     fn rendered(rs: &RichString) -> String {
@@ -456,13 +512,90 @@ mod tests {
     // ── AffinityPanel_getAffinity ─────────────────────────────────────
 
     fn panel_with_cpuids(cpuids: Vec<MaskItem>) -> AffinityPanel {
+        // cpuids is the owning Vector (as AffinityPanel_new builds it).
+        let mut v = Vector_new(&MaskItem_class, true, cpuids.len() as core::ffi::c_int);
+        for it in cpuids {
+            Vector_add(&mut v, Box::new(it));
+        }
         AffinityPanel {
             super_: Panel_new(1, 1, 1, 1, None),
             host: core::ptr::null_mut(),
             topoView: false,
-            cpuids,
+            cpuids: v,
             width: 14,
         }
+    }
+
+    // ── AffinityPanel_update / _eventHandler ──────────────────────────
+
+    #[test]
+    fn update_splices_cpuids_into_the_panel() {
+        let mut ap = panel_with_cpuids(vec![
+            MaskItem_newSingleton("CPU 0", 0, true),
+            MaskItem_newSingleton("CPU 1", 1, false),
+        ]);
+        // The panel starts empty; update splices the cpuids' items in (as
+        // borrowed pointers) and they render their current state.
+        AffinityPanel_update(&mut ap, false);
+        assert_eq!(ap.super_.items.len(), 2);
+        let mut rs = RichString::new();
+        ap.super_.items[0].object().display(&mut rs);
+        assert_eq!(rendered(&rs), "[x] CPU 0");
+    }
+
+    #[test]
+    fn eventhandler_space_toggles_selected_visible_through_cpuids() {
+        let mut ap = panel_with_cpuids(vec![
+            MaskItem_newSingleton("CPU 0", 0, false), // value 0
+            MaskItem_newSingleton("CPU 1", 1, false),
+        ]);
+        AffinityPanel_update(&mut ap, false);
+        Panel_setSelected(&mut ap.super_, 0);
+
+        // Space toggles item 0's value 0 -> 2; HANDLED re-runs update. Because
+        // the panel item aliases the cpuids-owned MaskItem, getAffinity (which
+        // reads cpuids) sees the change — the whole point of the shared store.
+        let r = AffinityPanel_eventHandler(&mut ap, b' ' as i32);
+        assert_eq!(r, HandlerResult::HANDLED);
+        let aff = AffinityPanel_getAffinity(&ap, core::ptr::null_mut());
+        assert_eq!(aff.used, 1);
+        assert_eq!(aff.cpus[0], 0);
+
+        // Toggling the same item again clears it (2 -> 0).
+        Panel_setSelected(&mut ap.super_, 0);
+        assert_eq!(
+            AffinityPanel_eventHandler(&mut ap, b' ' as i32),
+            HandlerResult::HANDLED
+        );
+        assert_eq!(
+            AffinityPanel_getAffinity(&ap, core::ptr::null_mut()).used,
+            0
+        );
+    }
+
+    #[test]
+    fn eventhandler_enter_breaks_loop_without_toggling() {
+        let mut ap = panel_with_cpuids(vec![MaskItem_newSingleton("CPU 0", 0, false)]);
+        AffinityPanel_update(&mut ap, false);
+        Panel_setSelected(&mut ap.super_, 0);
+        assert_eq!(
+            AffinityPanel_eventHandler(&mut ap, KEY_ENTER),
+            HandlerResult::BREAK_LOOP
+        );
+        assert_eq!(
+            AffinityPanel_getAffinity(&ap, core::ptr::null_mut()).used,
+            0
+        );
+    }
+
+    #[test]
+    fn eventhandler_unhandled_key_is_ignored() {
+        let mut ap = panel_with_cpuids(vec![MaskItem_newSingleton("CPU 0", 0, false)]);
+        AffinityPanel_update(&mut ap, false);
+        assert_eq!(
+            AffinityPanel_eventHandler(&mut ap, b'z' as i32),
+            HandlerResult::IGNORED
+        );
     }
 
     #[test]
