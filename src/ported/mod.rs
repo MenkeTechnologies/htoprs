@@ -59,6 +59,13 @@ pub mod object;
 pub mod openfilesscreen;
 pub mod optionitem;
 pub mod panel;
+// Performance Co-Pilot platform backend (htop's `--enable-pcp` build variant).
+// Feature-gated (off by default): its pmapi/libpcp surface is hand-declared and
+// only links where PCP is present, so like the tier-3 BSD backends it is
+// verified by primary-source reading + the port-purity gate. The gate/report
+// scan source as text, so coverage is unaffected by the gate.
+#[cfg(feature = "pcp")]
+pub mod pcp;
 pub mod process;
 pub mod processlocksscreen;
 pub mod processtable;

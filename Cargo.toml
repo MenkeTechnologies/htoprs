@@ -45,6 +45,16 @@ serde_json = "1.0"
 # (extensions::filter). Foundational crate, vendorable and durable.
 regex = "1"
 
+[features]
+# Faithful analog of htop's `./configure --enable-pcp` (HAVE_PCP) build variant:
+# the Performance Co-Pilot platform backend (`src/ported/pcp/`). Off by default
+# — like the tier-3 BSD backends it is verified by primary-source reading + the
+# port-purity gate, not the default build. Its libpcp/pmapi surface is
+# hand-declared in `extern` blocks (the DragonFly-kvm precedent), so the FFI-free
+# leaf modules (PCPProcess) compile under `--features pcp` while the pmapi-linked
+# modules stay read-verified.
+pcp = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libmedium = "0.13.4"
 # Linux-only: pure-Rust generic-netlink client used by the delay-accounting
