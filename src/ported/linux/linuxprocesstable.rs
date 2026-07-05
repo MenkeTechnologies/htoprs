@@ -13,17 +13,20 @@
 //! `readSmapsFile` (with `skipEndOfLine`), `updateTtyDevice` (with glibc
 //! `major`/`minor`).
 //!
+//! `readMaps` + `calcLibSize_helper` are ported: `LibraryData` is modeled as an
+//! `Object` with `Cell` fields, so the per-inode aggregate is updated in place
+//! through the shared `&dyn Object` that `Hashtable_get` returns (the faithful
+//! analog of the C's `libdata->size += …` through the non-owning `void*`).
+//!
 //! Still stubbed (each fn's doc gives the precise blocker): the scan drivers
 //! `LinuxProcessTable_recurseProcTree` / `ProcessTable_goThroughEntries`
 //! (need the process-typed `ProcessTable_getProcess`/`_add`, still stubbed in
-//! `processtable.rs`); `readMaps` +
-//! `calcLibSize_helper` (`Hashtable` is ported, but `Hashtable_get` is
-//! immutable so the in-place `libdata->size` aggregate can't be updated, and
-//! `LibraryData` isn't modeled as an `Object`);
-//! `ProcessTable_delete` (pure `free()` teardown → `Drop`); and
-//! `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader needing the unmodeled
+//! `processtable.rs`); `ProcessTable_delete` (pure `free()` teardown → `Drop`);
+//! and `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader needing the unmodeled
 //! `ctid`/`vpid` fields).
 #![allow(non_snake_case)]
+// `LibraryData_class` and similar keep the C-style `Type_class` naming.
+#![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
 use core::ffi::CStr;
@@ -32,6 +35,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use libc::ssize_t;
 
+use crate::ported::hashtable::{
+    Hashtable_delete, Hashtable_foreach, Hashtable_get, Hashtable_new, Hashtable_put,
+};
 use crate::ported::linux::cgrouputils::{CGroup_filterContainer, CGroup_filterName};
 use crate::ported::linux::compat::{
     openat_arg_t, Compat_faccessat, Compat_openat, Compat_readfile, Compat_readfileat,
@@ -39,6 +45,7 @@ use crate::ported::linux::compat::{
 use crate::ported::linux::linuxmachine::LinuxMachine;
 use crate::ported::linux::linuxprocess::LinuxProcess;
 use crate::ported::machine::Machine;
+use crate::ported::object::{Object, ObjectClass};
 use crate::ported::process::{
     Process, ProcessField, ProcessState, Process_getPid, Process_setParent, Process_updateCmdline,
     Process_updateComm, Process_updateExe, Tristate,
@@ -1029,38 +1036,211 @@ fn LinuxProcessTable_readIoFile(
     lp.io_last_scan_time_ms = realtimeMs;
 }
 
-/// TODO: port of `static void LinuxProcessTable_calcLibSize_helper(
-/// ATTR_UNUSED ht_key_t key, void* value, void* data)` from
-/// `LinuxProcessTable.c:727`. This is a `Hashtable_foreach` callback
-/// (`Hashtable_PairFunction`) invoked by [`LinuxProcessTable_readMaps`] over a
-/// `Hashtable` of the file-local `LibraryData` (`{ uint64_t size; bool exec }`)
-/// type. `Hashtable` itself *is* ported now, but two pieces are still missing:
-/// (1) `LibraryData` is not modeled as an [`Object`](crate::ported::object::Object)
-/// (the value type the ported `Hashtable` stores), and (2) the ported
-/// `Hashtable_foreach` takes a `&mut dyn FnMut(u32, &dyn Object)` closure, so a
-/// free-standing `(ht_key_t, void*, void*)` callback has no matching slot —
-/// it is expressed as the closure body inside `readMaps` instead. Stays
-/// stubbed with `readMaps`.
-pub fn LinuxProcessTable_calcLibSize_helper() {
-    todo!("port of LinuxProcessTable.c:727 — foreach-closure model; LibraryData not an Object")
+/// Port of `typedef struct LibraryData_ { uint64_t size; bool exec; }` from
+/// `LinuxProcessTable.c:722`, the per-inode accumulator stored in the `readMaps`
+/// `Hashtable`. `size`/`exec` are [`Cell`]s so `readMaps` can update them in
+/// place through the shared `&dyn Object` that [`Hashtable_get`] returns — the
+/// faithful analog of the C's `libdata->size += …` through the non-owning
+/// `void*` (there is no `Hashtable_getMut` to port).
+#[derive(Default)]
+struct LibraryData {
+    size: std::cell::Cell<u64>,
+    exec: std::cell::Cell<bool>,
 }
 
-/// TODO: port of `static void LinuxProcessTable_readMaps(LinuxProcess*
-/// process, openat_arg_t procFd, const LinuxMachine* host, bool calcSize,
-/// bool checkDeletedLib)` from `LinuxProcessTable.c:745`. `Hashtable` *is*
-/// ported now, but the `calcSize` path still cannot be expressed faithfully:
-/// the C does `LibraryData* libdata = Hashtable_get(ht, inode); ...
-/// libdata->size += map_end - map_start;` — an in-place mutation through the
-/// pointer returned by `Hashtable_get`. The ported
-/// [`Hashtable_get`](crate::ported::hashtable::Hashtable_get) returns an
-/// *immutable* `&dyn Object` and there is no htop `Hashtable_getMut` to port
-/// (C mutates through the non-owning `void*` directly), so the aggregate
-/// cannot be updated in place; additionally the file-local `LibraryData` type
-/// is not modeled as an [`Object`](crate::ported::object::Object) (the value
-/// the ported table stores). Stays stubbed until a mutable accessor + an
-/// `Object`-modeled `LibraryData` exist.
-pub fn LinuxProcessTable_readMaps() {
-    todo!("port of LinuxProcessTable.c:745 — Hashtable_get is immutable; LibraryData not an Object")
+/// Port of `static const ObjectClass` identity for `LibraryData` (the C type
+/// has no `ObjectClass`, being a raw `xCalloc`'d struct, but the ported
+/// `Hashtable` stores `Object`s; `extends: None` gives it a stable class id).
+static LibraryData_class: ObjectClass = ObjectClass { extends: None };
+
+impl Object for LibraryData {
+    fn klass(&self) -> &'static ObjectClass {
+        &LibraryData_class
+    }
+}
+
+/// Port of `static void LinuxProcessTable_calcLibSize_helper(ATTR_UNUSED
+/// ht_key_t key, void* value, void* data)` from `LinuxProcessTable.c:727`. The
+/// `Hashtable_foreach` callback: adds an executable library's mapped `size` to
+/// the running `data` total (non-exec entries contribute nothing). The C
+/// `void* value`/`void* data` become `&dyn Object` (downcast to `LibraryData`)
+/// and `&mut u64`; the `ATTR_UNUSED` key is dropped.
+pub fn LinuxProcessTable_calcLibSize_helper(value: &dyn Object, data: &mut u64) {
+    // C: if (!data) return; if (!value) return; — both always present here.
+    let v = (value as &dyn core::any::Any)
+        .downcast_ref::<LibraryData>()
+        .expect("calcLibSize_helper: value is not a LibraryData");
+    // if (!v->exec) return;
+    if !v.exec.get() {
+        return;
+    }
+    // *d += v->size;
+    *data += v.size.get();
+}
+
+/// Port of `static void LinuxProcessTable_readMaps(LinuxProcess* process,
+/// openat_arg_t procFd, const LinuxMachine* host, bool calcSize, bool
+/// checkDeletedLib)` from `LinuxProcessTable.c:745`.
+///
+/// Parses `/proc/<pid>/maps`. When `calcSize`, accumulates each file-backed
+/// region's byte span into a per-inode `LibraryData` (in a `Hashtable`), then
+/// sets `m_lrs` to the total executable-library size in pages. When
+/// `checkDeletedLib`, sets `usesDeletedLib` if an executable mapping's path ends
+/// in ` (deleted)` (excluding `/memfd:` and the VirtualBox `/dev/zero` false
+/// positive). The C fixed `char buffer[1024]` is a full owned line here (the
+/// only deviation — a mapping line longer than 1023 bytes would be split by the
+/// C `fgets`); the byte-level parse and `fast_strtoull_*` cursor advance match.
+pub fn LinuxProcessTable_readMaps(
+    process: &mut LinuxProcess,
+    procFd: openat_arg_t,
+    host: &LinuxMachine,
+    calcSize: bool,
+    checkDeletedLib: bool,
+) {
+    use std::io::BufRead;
+
+    // proc->usesDeletedLib = false;
+    process.super_.usesDeletedLib = false;
+
+    // FILE* mapsfile = fopenat(procFd, "maps", "r"); if (!mapsfile) return;
+    let file = match fopenat(procFd, c"maps", "r") {
+        Some(f) => f,
+        None => return,
+    };
+    let mut reader = std::io::BufReader::new(file);
+
+    // Hashtable* ht = NULL; if (calcSize) ht = Hashtable_new(64, true);
+    let mut ht = calcSize.then(|| Hashtable_new(64, true));
+
+    let mut line: Vec<u8> = Vec::new();
+    // while (fgets(buffer, sizeof(buffer), mapsfile)) { ... }
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+
+        // Short circuit test: Look for a slash — if (!strchr(buffer, '/')) continue;
+        if !line.contains(&b'/') {
+            continue;
+        }
+
+        // Parse "%Lx-%Lx %4s %x %2x:%2x %Ld" via an advancing byte cursor.
+        let mut rp: &[u8] = &line;
+
+        let map_start = fast_strtoull_hex(&mut rp, 16);
+        if rp.first() != Some(&b'-') {
+            continue;
+        }
+        rp = &rp[1..];
+
+        let map_end = fast_strtoull_hex(&mut rp, 16);
+        if rp.first() != Some(&b' ') {
+            continue;
+        }
+        rp = &rp[1..];
+
+        // if (!readptr[0] || !readptr[1] || !readptr[2] || !readptr[3]) continue;
+        if rp.len() < 4 || rp[0] == 0 || rp[1] == 0 || rp[2] == 0 || rp[3] == 0 {
+            continue;
+        }
+        let map_execute = rp[2] == b'x';
+        rp = &rp[4..];
+        if rp.first() != Some(&b' ') {
+            continue;
+        }
+        rp = &rp[1..];
+
+        // while (*readptr > ' ') readptr++;  (skip the file offset hex)
+        while rp.first().is_some_and(|&c| c > b' ') {
+            rp = &rp[1..];
+        }
+        if rp.first() != Some(&b' ') {
+            continue;
+        }
+        rp = &rp[1..];
+
+        let map_devmaj = fast_strtoull_hex(&mut rp, 4);
+        if rp.first() != Some(&b':') {
+            continue;
+        }
+        rp = &rp[1..];
+
+        let map_devmin = fast_strtoull_hex(&mut rp, 4);
+        if rp.first() != Some(&b' ') {
+            continue;
+        }
+        rp = &rp[1..];
+
+        // Minor shortcut: no file for this region -> skip.
+        if map_devmaj == 0 && map_devmin == 0 {
+            continue;
+        }
+
+        let map_inode = fast_strtoull_dec(&mut rp, 0);
+        if map_inode == 0 {
+            continue;
+        }
+
+        if let Some(ht) = ht.as_mut() {
+            // LibraryData* libdata = Hashtable_get(ht, inode);
+            // if (!libdata) { libdata = xCalloc(...); Hashtable_put(ht, inode, libdata); }
+            let key = map_inode as u32;
+            if Hashtable_get(ht, key).is_none() {
+                Hashtable_put(ht, key, Box::new(LibraryData::default()));
+            }
+            // libdata->size += map_end - map_start; libdata->exec |= map_execute;
+            let lib = (Hashtable_get(ht, key).unwrap() as &dyn core::any::Any)
+                .downcast_ref::<LibraryData>()
+                .expect("readMaps: Hashtable holds LibraryData");
+            lib.size.set(lib.size.get() + (map_end - map_start));
+            lib.exec.set(lib.exec.get() | map_execute);
+        }
+
+        if checkDeletedLib && map_execute && !process.super_.usesDeletedLib {
+            // while (*readptr == ' ') readptr++;
+            while rp.first() == Some(&b' ') {
+                rp = &rp[1..];
+            }
+            // if (*readptr != '/') continue;
+            if rp.first() != Some(&b'/') {
+                continue;
+            }
+            // if (String_startsWith(readptr, "/memfd:")) continue;
+            if rp.starts_with(b"/memfd:") {
+                continue;
+            }
+            // Virtualbox maps /dev/zero — false positive, ignore.
+            if rp == b"/dev/zero (deleted)\n" {
+                continue;
+            }
+            // if (strstr(readptr, " (deleted)\n")) { usesDeletedLib = true; ... }
+            let needle = b" (deleted)\n";
+            if rp.windows(needle.len()).any(|w| w == needle) {
+                process.super_.usesDeletedLib = true;
+                if !calcSize {
+                    break;
+                }
+            }
+        }
+    }
+
+    // fclose(mapsfile) — the BufReader (and its File) drop here.
+    drop(reader);
+
+    if let Some(ht) = ht.take() {
+        // uint64_t total_size = 0;
+        // Hashtable_foreach(ht, LinuxProcessTable_calcLibSize_helper, &total_size);
+        let mut total_size: u64 = 0;
+        Hashtable_foreach(&ht, &mut |_key, value| {
+            LinuxProcessTable_calcLibSize_helper(value, &mut total_size);
+        });
+        // Hashtable_delete(ht);
+        Hashtable_delete(ht);
+        // process->m_lrs = total_size / host->pageSize;
+        process.m_lrs = (total_size / host.pageSize as u64) as i64;
+    }
 }
 
 /// Port of `LinuxProcessTable.c:840`. Reads `/proc/<pid>/statm`
@@ -2225,6 +2405,88 @@ mod tests {
         // fstat on a closed/invalid fd fails (EBADF) -> statok == -1 -> false.
         let ok = LinuxProcessTable_updateUser(&host, &mut proc, -1, None);
         assert!(!ok);
+    }
+
+    /// Opens `dir` as a dirfd (the `openat_arg_t` a real scan passes), so
+    /// `fopenat(procFd, "maps")` reads the synthetic file. Both work on macOS.
+    fn open_dirfd(dir: &std::path::Path) -> openat_arg_t {
+        let c = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY) };
+        assert!(fd >= 0, "open dirfd");
+        fd
+    }
+
+    #[test]
+    fn readMaps_calcsize_sums_executable_library_pages() {
+        // Two file-backed regions of inode 131074 (one exec, one not) and one
+        // exec region of inode 262145. calcLibSize sums only executable-tagged
+        // libraries' total mapped bytes: (0x1000 + 0x1000) + 0x10000 = 73728,
+        // / pageSize 4096 = 18 pages. The no-'/' anon line is skipped.
+        let dir = std::env::temp_dir().join("htoprs_readmaps_calcsize");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("maps"),
+            b"00400000-00401000 r-xp 00000000 08:01 131074 /usr/bin/cat\n\
+              00401000-00402000 r--p 00001000 08:01 131074 /usr/bin/cat\n\
+              7f0000000000-7f0000010000 r-xp 00000000 08:01 262145 /usr/lib/libc.so\n\
+              7f0000010000-7f0000020000 rw-p 00000000 00:00 0 \n"
+                .as_ref(),
+        )
+        .unwrap();
+        let fd = open_dirfd(&dir);
+
+        let mut lp = LinuxProcess::default();
+        let lhost = LinuxMachine {
+            pageSize: 4096,
+            ..Default::default()
+        };
+        LinuxProcessTable_readMaps(&mut lp, fd, &lhost, true, false);
+        unsafe { libc::close(fd) };
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(lp.m_lrs, 18);
+        assert!(!lp.super_.usesDeletedLib); // checkDeletedLib was false
+    }
+
+    #[test]
+    fn readMaps_checkdeleted_flags_deleted_executable_mapping() {
+        // An executable mapping whose path ends " (deleted)" sets usesDeletedLib;
+        // /memfd: and the VirtualBox /dev/zero false positive do not.
+        let dir = std::env::temp_dir().join("htoprs_readmaps_deleted");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("maps"),
+            b"7f1000000000-7f1000001000 r-xp 00000000 08:01 111 /memfd:foo (deleted)\n\
+              7f1000001000-7f1000002000 r-xp 00000000 00:05 222 /dev/zero (deleted)\n\
+              7f1000002000-7f1000003000 r-xp 00000000 08:01 333 /usr/lib/gone.so (deleted)\n"
+                .as_ref(),
+        )
+        .unwrap();
+        let fd = open_dirfd(&dir);
+
+        let mut lp = LinuxProcess::default();
+        let lhost = LinuxMachine::default();
+        LinuxProcessTable_readMaps(&mut lp, fd, &lhost, false, true);
+        unsafe { libc::close(fd) };
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(lp.super_.usesDeletedLib);
+    }
+
+    #[test]
+    fn readMaps_missing_file_is_a_noop() {
+        // fopenat fails on a dir with no "maps" -> early return, usesDeletedLib
+        // reset to false, m_lrs untouched.
+        let dir = std::env::temp_dir().join("htoprs_readmaps_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fd = open_dirfd(&dir);
+        let mut lp = LinuxProcess::default();
+        lp.m_lrs = 999;
+        let lhost = LinuxMachine::default();
+        LinuxProcessTable_readMaps(&mut lp, fd, &lhost, true, true);
+        unsafe { libc::close(fd) };
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(lp.m_lrs, 999); // untouched (early return before calcSize)
     }
 
     #[test]
