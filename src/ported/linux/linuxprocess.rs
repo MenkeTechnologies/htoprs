@@ -993,10 +993,23 @@ impl Object for LinuxProcess {
         Some(&self.super_.super_)
     }
 
+    /// C `(Row*)this` — the mutable embedded base, so `Table_add` /
+    /// `Table_cleanupRow` can stamp/flag a `LinuxProcess` row (as `DarwinProcess`).
+    fn as_row_mut(&mut self) -> Option<&mut crate::ported::row::Row> {
+        Some(&mut self.super_.super_)
+    }
+
     /// C `(const Process*)this` — the embedded `Process` (`super_`) of a
     /// `LinuxProcess`, so `Process`-level slots work on a `LinuxProcess`.
     fn as_process(&self) -> Option<&Process> {
         Some(&self.super_)
+    }
+
+    /// C `(Process*)this` — the mutable embedded `Process`, so
+    /// `ProcessTable_getProcess` and the `/proc` scan can mutate a
+    /// `LinuxProcess` row through a base-`Process` view (as `DarwinProcess`).
+    fn as_process_mut(&mut self) -> Option<&mut Process> {
+        Some(&mut self.super_)
     }
 
     /// C `As_Process(this)` — `LinuxProcess`'s [`ProcessClass`] vtable, whose

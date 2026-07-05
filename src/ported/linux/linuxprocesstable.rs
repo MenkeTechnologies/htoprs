@@ -35,23 +35,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use libc::ssize_t;
 
+use crate::ported::gpumeter::GPUMeter_active;
 use crate::ported::hashtable::{
     Hashtable_delete, Hashtable_foreach, Hashtable_get, Hashtable_new, Hashtable_put,
 };
 use crate::ported::linux::cgrouputils::{CGroup_filterContainer, CGroup_filterName};
 use crate::ported::linux::compat::{
-    openat_arg_t, Compat_faccessat, Compat_openat, Compat_readfile, Compat_readfileat,
+    openat_arg_t, Compat_faccessat, Compat_openat, Compat_openatArgClose, Compat_readfile,
+    Compat_readfileat,
 };
+use crate::ported::linux::gpu::GPU_readProcessData;
 use crate::ported::linux::linuxmachine::LinuxMachine;
-use crate::ported::linux::linuxprocess::LinuxProcess;
+use crate::ported::linux::linuxprocess::{
+    LinuxProcess, LinuxProcess_isAutogroupEnabled, LinuxProcess_new, LinuxProcess_updateIOPriority,
+    PROCESS_FLAG_LINUX_AUTOGROUP, PROCESS_FLAG_LINUX_CGROUP, PROCESS_FLAG_LINUX_CONTAINER,
+    PROCESS_FLAG_LINUX_CTXT, PROCESS_FLAG_LINUX_GPU, PROCESS_FLAG_LINUX_IOPRIO,
+    PROCESS_FLAG_LINUX_LRS_FIX, PROCESS_FLAG_LINUX_OOM, PROCESS_FLAG_LINUX_SECATTR,
+    PROCESS_FLAG_LINUX_SMAPS,
+};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::process::{
-    Process, ProcessField, ProcessState, Process_getPid, Process_setParent, Process_updateCmdline,
-    Process_updateComm, Process_updateExe, Tristate,
+    Process, ProcessField, ProcessState, Process_fillStarttimeBuffer, Process_getPid,
+    Process_isKernelThread, Process_isUserlandThread, Process_setParent, Process_setThreadGroup,
+    Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm, Process_updateExe,
+    Tristate, PROCESS_FLAG_CWD, PROCESS_FLAG_IO, PROCESS_FLAG_SCHEDPOL,
 };
 use crate::ported::processtable::{ProcessTable, ProcessTable_init};
 use crate::ported::row::{spaceship_number, Row_updateFieldWidth};
+use crate::ported::scheduling::Scheduling_readProcessPolicy;
 use crate::ported::settings::RowField;
 use crate::ported::userstable::{UsersTable, UsersTable_getRef};
 use crate::ported::xutils::{
@@ -2196,32 +2208,591 @@ fn isOlderThan(proc: &Process, seconds: u32) -> bool {
     realtime - proc.starttime_ctime as u64 > seconds as u64
 }
 
-/// TODO: port of `static bool LinuxProcessTable_recurseProcTree(
-/// LinuxProcessTable* this, openat_arg_t parentFd, const LinuxMachine* lhost,
-/// const char* dirname, const LinuxProcess* mainTask)` from
-/// `LinuxProcessTable.c:1588`. Blocked at its core: it obtains each process
-/// via `ProcessTable_getProcess(pt, pid, &preExisting, LinuxProcess_new)` and
-/// registers it with `ProcessTable_add(pt, proc)` / `ProcessTable_findProcess`,
-/// but the ported [`ProcessTable`]/`Table` store rows as `Row` values (not the
-/// polymorphic `Process*` htop holds), so `ProcessTable_getProcess`/`_add` are
-/// themselves stubbed (see `processtable.rs`) — there is no `Process` to fetch,
-/// mutate, or add. It also depends on the still-stubbed leaf `readMaps` (the
-/// only remaining one — `updateUser`, `readIoFile`, `readSmapsFile`,
-/// `readCGroupFile`, `readSecattrData`, `updateTtyDevice` are now ported) and
-/// on `GPU_readProcessData` / `Process_fillStarttimeBuffer`. Stays stubbed
-/// until the process-typed table lands.
-pub fn LinuxProcessTable_recurseProcTree() {
-    todo!("port of LinuxProcessTable.c:1588 — needs ProcessTable_getProcess/_add (process-typed table)")
+/// C `static ino_t rootPidNs` (`LinuxProcessTable.c:68`): the PID-namespace
+/// inode of the root, set at table init from `/proc/self/ns/pid`. That init is
+/// not ported, so this stays `-1` (unset) and the container-namespace check in
+/// [`LinuxProcessTable_recurseProcTree`] is inert — faithful where `/proc` is
+/// absent (macOS) and a no-op until the init lands.
+static ROOT_PID_NS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+/// Port of `static bool LinuxProcessTable_recurseProcTree(LinuxProcessTable*
+/// this, openat_arg_t parentFd, const LinuxMachine* lhost, const char* dirname,
+/// const LinuxProcess* mainTask)` from `LinuxProcessTable.c:1588`.
+///
+/// The recursive `/proc` (and per-process `task/`) directory walk: for each PID
+/// directory it fetches/constructs the process (`ProcessTable_getProcess`),
+/// runs the always-on readers (`readStatmFile`/`readStatFile`/`updateUser`/
+/// `readCmdlineFile`/`readComm`) plus each `ss.flags`-gated reader, recurses
+/// into `task/` for the thread list, and marks the row updated/shown.
+///
+/// `mainTask` is a raw `*const LinuxProcess` into the owning table's `rows` (the
+/// C's `const LinuxProcess*`); the current process is likewise reached as a
+/// `*mut LinuxProcess` via `rows[idx]` (the `DarwinProcessTable::goThroughEntries`
+/// precedent). The pointee is the `Box`'s heap allocation, so it stays valid
+/// across the thread recursion's `rows` growth. `this` (the table) and `lhost`
+/// (the machine) are disjoint objects, so the `&mut this` / `&lhost` borrows do
+/// not conflict; the only aliasing is `lp_ptr`/`mainTask` into `rows`, handled
+/// with raw pointers exactly as the C's `Process*` graph does.
+///
+/// Deviations: `ProcessTable_getProcess` already adds a new process, so the C's
+/// trailing `ProcessTable_add` is not repeated and the error path removes the
+/// just-added row; the Linux-only `SYS_capget` privilege probe is
+/// `#[cfg(target_os = "linux")]`; the `#ifdef HAVE_OPENVZ`/`HAVE_DELAYACCT`
+/// branches are compile-time-off in this build and omitted.
+pub fn LinuxProcessTable_recurseProcTree(
+    this: &mut LinuxProcessTable,
+    parentFd: openat_arg_t,
+    lhost: &LinuxMachine,
+    dirname: &std::ffi::CStr,
+    mainTask: Option<*const LinuxProcess>,
+) -> bool {
+    use std::sync::atomic::Ordering;
+
+    let host = &lhost.super_;
+    let settings = host
+        .settings
+        .as_ref()
+        .expect("recurseProcTree: host->settings is NULL");
+    let ss_flags = settings.screens[settings.ssIndex as usize].flags;
+    let hide_kernel = settings.hideKernelThreads;
+    let hide_userland = settings.hideUserlandThreads;
+    let hide_container = settings.hideRunningInContainer;
+    let highlight_deleted_exe = settings.highlightDeletedExe;
+    let update_process_names = settings.updateProcessNames;
+    let show_thread_names = settings.showThreadNames;
+
+    // pt->runningTasks = lhost->runningTasks;
+    this.super_.runningTasks = lhost.runningTasks;
+
+    // int dirFd = openat(parentFd, dirname, O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+    let dir_fd = Compat_openat(
+        parentFd,
+        dirname,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+    );
+    if dir_fd < 0 {
+        return false;
+    }
+    // DIR* dir = fdopendir(dirFd);
+    let dir = unsafe { libc::fdopendir(dir_fd) };
+    if dir.is_null() {
+        Compat_openatArgClose(dir_fd);
+        return false;
+    }
+
+    // Reach `mainTask` as an `Option<&LinuxProcess>` for the leaf readers.
+    let main_task_ref = || mainTask.map(|p| unsafe { &*p });
+
+    // while ((entry = readdir(dir)) != NULL)
+    loop {
+        let entry = unsafe { libc::readdir(dir) };
+        if entry.is_null() {
+            break;
+        }
+
+        // Ignore all non-directories.
+        let d_type = unsafe { (*entry).d_type };
+        if d_type != libc::DT_DIR && d_type != libc::DT_UNKNOWN {
+            continue;
+        }
+
+        let name_cstr = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        let name_bytes = name_cstr.to_bytes();
+        // The RedHat kernel hides threads with a dot.
+        let name = if name_bytes.first() == Some(&b'.') {
+            &name_bytes[1..]
+        } else {
+            name_bytes
+        };
+        // Just skip all non-number directories.
+        if name.first().is_none_or(|&c| !c.is_ascii_digit()) {
+            continue;
+        }
+        let name_str = match std::str::from_utf8(name) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // pid_t pid = strtopid(name);
+        let pid = strtopid(name_str);
+        if pid == 0 {
+            continue;
+        }
+        // Skip task directory of main thread.
+        if let Some(mt) = mainTask {
+            if pid == Process_getPid(unsafe { &(*mt).super_ }) {
+                continue;
+            }
+        }
+
+        // int procFd = openat(dirFd, entry->d_name, O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+        let procFd = Compat_openat(
+            dir_fd,
+            name_cstr,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        );
+        if procFd < 0 {
+            continue;
+        }
+
+        // Process* proc = ProcessTable_getProcess(pt, pid, &preExisting, LinuxProcess_new);
+        let (pre_existing, idx) =
+            crate::ported::processtable::ProcessTable_getProcess(&mut this.super_, pid, |h| {
+                Box::new(LinuxProcess_new(h)) as Box<dyn Object>
+            });
+        // Recover a `*mut LinuxProcess` for this row via a checked borrow that
+        // ends immediately. The row was built as a `LinuxProcess`.
+        let lp_ptr: *mut LinuxProcess = {
+            let obj: &mut dyn Object = this.super_.super_.rows[idx].as_mut().unwrap().as_mut();
+            (obj as &mut dyn core::any::Any)
+                .downcast_mut::<LinuxProcess>()
+                .unwrap()
+        };
+        let this_ptr: *mut LinuxProcessTable = this;
+
+        // Process_setThreadGroup(proc, mainTask ? getPid(mainTask) : pid);
+        let thread_group = match mainTask {
+            Some(mt) => Process_getPid(unsafe { &(*mt).super_ }),
+            None => pid,
+        };
+        unsafe {
+            Process_setThreadGroup(&mut (*lp_ptr).super_, thread_group);
+            (*lp_ptr).super_.isUserlandThread = Process_getPid(&(*lp_ptr).super_) != thread_group;
+        }
+
+        // As the tasks/threads are a flat view under the main entry, recurse
+        // only when this is the main thread.
+        if mainTask.is_none() {
+            LinuxProcessTable_recurseProcTree(
+                unsafe { &mut *this_ptr },
+                procFd,
+                lhost,
+                c"task",
+                Some(lp_ptr as *const LinuxProcess),
+            );
+        }
+
+        // Short-circuit subsequent scans of hidden threads/kthreads/containers.
+        if pre_existing && hide_kernel && Process_isKernelThread(unsafe { &(*lp_ptr).super_ }) {
+            unsafe {
+                (*lp_ptr).super_.super_.updated = true;
+                (*lp_ptr).super_.super_.show = false;
+                (*this_ptr).super_.kernelThreads += 1;
+                (*this_ptr).super_.totalTasks += 1;
+            }
+            Compat_openatArgClose(procFd);
+            continue;
+        }
+        if pre_existing && hide_userland && Process_isUserlandThread(unsafe { &(*lp_ptr).super_ }) {
+            unsafe {
+                (*lp_ptr).super_.super_.updated = true;
+                (*lp_ptr).super_.super_.show = false;
+                (*this_ptr).super_.userlandThreads += 1;
+                (*this_ptr).super_.totalTasks += 1;
+            }
+            Compat_openatArgClose(procFd);
+            continue;
+        }
+        if pre_existing
+            && hide_container
+            && unsafe { (*lp_ptr).super_.isRunningInContainer } == Tristate::TRI_ON
+        {
+            unsafe {
+                (*lp_ptr).super_.super_.updated = true;
+                (*lp_ptr).super_.super_.show = false;
+            }
+            Compat_openatArgClose(procFd);
+            continue;
+        }
+
+        let scan_main_thread = !hide_userland
+            && !Process_isKernelThread(unsafe { &(*lp_ptr).super_ })
+            && mainTask.is_none();
+
+        // A `goto errorReadingProcess` on a failed leaf read; the tail after the
+        // block runs the cleanup.
+        let mut stat_command = [0u8; MAX_NAME + 1];
+        let ok = 'body: {
+            if !LinuxProcessTable_readStatmFile(
+                unsafe { &mut *lp_ptr },
+                procFd,
+                lhost,
+                main_task_ref(),
+            ) {
+                break 'body false;
+            }
+
+            // M_LRS: recalculate (readMaps) or copy from the main task.
+            unsafe {
+                let prev = (*lp_ptr).super_.usesDeletedLib;
+                let is_kthread = (*lp_ptr).super_.isKernelThread;
+                let is_uthread = (*lp_ptr).super_.isUserlandThread;
+                if !is_kthread
+                    && !is_uthread
+                    && ((ss_flags & PROCESS_FLAG_LINUX_LRS_FIX) != 0
+                        || (highlight_deleted_exe
+                            && !(*lp_ptr).super_.procExeDeleted
+                            && isOlderThan(&(*lp_ptr).super_, 10)))
+                {
+                    let passed = host.realtimeMs - (*lp_ptr).last_mlrs_calctime;
+                    let recheck = (libc::rand() as u64) % 2048;
+                    if passed > recheck {
+                        (*lp_ptr).last_mlrs_calctime = host.realtimeMs;
+                        LinuxProcessTable_readMaps(
+                            &mut *lp_ptr,
+                            procFd,
+                            lhost,
+                            (ss_flags & PROCESS_FLAG_LINUX_LRS_FIX) != 0,
+                            highlight_deleted_exe,
+                        );
+                    }
+                } else {
+                    let from_main = is_uthread && mainTask.is_some();
+                    (*lp_ptr).super_.usesDeletedLib =
+                        from_main && (*mainTask.unwrap()).super_.usesDeletedLib;
+                    (*lp_ptr).m_lrs = if from_main {
+                        (*mainTask.unwrap()).m_lrs
+                    } else {
+                        0
+                    };
+                }
+                if prev != (*lp_ptr).super_.usesDeletedLib {
+                    (*lp_ptr).super_.mergedCommand.lastUpdate = 0;
+                }
+            }
+
+            let lasttimes = unsafe { (*lp_ptr).utime + (*lp_ptr).stime };
+            let last_tty_nr = unsafe { (*lp_ptr).super_.tty_nr };
+            if !LinuxProcessTable_readStatFile(
+                unsafe { &mut *lp_ptr },
+                procFd,
+                lhost,
+                scan_main_thread,
+                &mut stat_command,
+                MAX_NAME + 1,
+            ) {
+                break 'body false;
+            }
+
+            unsafe {
+                if (*lp_ptr).flags & PF_KTHREAD != 0 {
+                    (*lp_ptr).super_.isKernelThread = true;
+                }
+                if last_tty_nr != (*lp_ptr).super_.tty_nr {
+                    if let Some(drivers) = &(*this_ptr).ttyDrivers {
+                        (*lp_ptr).super_.tty_name = Some(LinuxProcessTable_updateTtyDevice(
+                            drivers,
+                            (*lp_ptr).super_.tty_nr,
+                        ));
+                    }
+                }
+
+                (*lp_ptr).super_.percent_cpu = f32::NAN;
+                if lhost.period > 0.0 {
+                    let pcpu = saturatingSub((*lp_ptr).utime + (*lp_ptr).stime, lasttimes) as f64
+                        / lhost.period
+                        * 100.0;
+                    (*lp_ptr).super_.percent_cpu =
+                        (pcpu as f32).min(host.activeCPUs as f32 * 100.0);
+                }
+                (*lp_ptr).super_.percent_mem =
+                    (*lp_ptr).super_.m_resident as f32 / host.totalMem as f32 * 100.0;
+                Process_updateCPUFieldWidths((*lp_ptr).super_.percent_cpu);
+            }
+
+            if !LinuxProcessTable_updateUser(
+                host,
+                unsafe { &mut (*lp_ptr).super_ },
+                procFd,
+                main_task_ref(),
+            ) {
+                break 'body false;
+            }
+
+            // Container / PID-namespace check.
+            unsafe {
+                if (*lp_ptr).super_.isRunningInContainer == Tristate::TRI_INITIAL
+                    && ROOT_PID_NS.load(Ordering::Relaxed) != -1
+                {
+                    let mut sb: libc::stat = std::mem::zeroed();
+                    if crate::ported::linux::compat::Compat_fstatat(
+                        procFd, c"ns/pid", c"ns/pid", &mut sb, 0,
+                    ) == 0
+                    {
+                        (*lp_ptr).super_.isRunningInContainer =
+                            if sb.st_ino as i64 != ROOT_PID_NS.load(Ordering::Relaxed) {
+                                Tristate::TRI_ON
+                            } else {
+                                Tristate::TRI_OFF
+                            };
+                    }
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_CTXT) != 0
+                    || ((hide_container || (ss_flags & PROCESS_FLAG_LINUX_CONTAINER) != 0)
+                        && (*lp_ptr).super_.isRunningInContainer == Tristate::TRI_INITIAL)
+                {
+                    (*lp_ptr).super_.isRunningInContainer = Tristate::TRI_OFF;
+                    if !LinuxProcessTable_readStatusFile(&mut *lp_ptr, procFd) {
+                        break 'body false;
+                    }
+                }
+            }
+
+            unsafe {
+                if !pre_existing {
+                    if (*lp_ptr).super_.isKernelThread {
+                        Process_updateCmdline(&mut (*lp_ptr).super_, None, 0, 0);
+                    } else {
+                        // statCommand as &str up to its NUL terminator.
+                        let sc_end = stat_command
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(stat_command.len());
+                        let sc = std::str::from_utf8(&stat_command[..sc_end]).unwrap_or("");
+                        if !LinuxProcessTable_readCmdlineFile(
+                            &mut (*lp_ptr).super_,
+                            procFd,
+                            main_task_ref(),
+                        ) {
+                            Process_updateCmdline(&mut (*lp_ptr).super_, Some(sc), 0, sc.len());
+                        }
+                        LinuxProcessList_readComm(&mut (*lp_ptr).super_, procFd);
+                    }
+                    Process_fillStarttimeBuffer(&mut (*lp_ptr).super_);
+                    // ProcessTable_add(pt, proc) — already added by getProcess.
+                } else if update_process_names && (*lp_ptr).super_.state != ProcessState::ZOMBIE {
+                    if (*lp_ptr).super_.isKernelThread {
+                        Process_updateCmdline(&mut (*lp_ptr).super_, None, 0, 0);
+                    } else {
+                        // statCommand as &str up to its NUL terminator.
+                        let sc_end = stat_command
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(stat_command.len());
+                        let sc = std::str::from_utf8(&stat_command[..sc_end]).unwrap_or("");
+                        if !LinuxProcessTable_readCmdlineFile(
+                            &mut (*lp_ptr).super_,
+                            procFd,
+                            main_task_ref(),
+                        ) {
+                            Process_updateCmdline(&mut (*lp_ptr).super_, Some(sc), 0, sc.len());
+                        }
+                        LinuxProcessList_readComm(&mut (*lp_ptr).super_, procFd);
+                    }
+                }
+            }
+
+            // Non-critical, independent information.
+            unsafe {
+                // Permitted capabilities for a non-root process (thread-specific).
+                // Linux-only `syscall(SYS_capget, &header, &data)`; `__user_cap_*`
+                // are declared inline (absent from `libc`) with the stable
+                // `_LINUX_CAPABILITY_VERSION_3` layout (two 32-bit data blocks).
+                #[cfg(target_os = "linux")]
+                if (*lp_ptr).super_.st_uid != 0
+                    && (*lp_ptr).super_.elevated_priv != Tristate::TRI_OFF
+                {
+                    #[repr(C)]
+                    struct CapHeader {
+                        version: u32,
+                        pid: i32,
+                    }
+                    #[repr(C)]
+                    #[derive(Clone, Copy)]
+                    struct CapData {
+                        effective: u32,
+                        permitted: u32,
+                        inheritable: u32,
+                    }
+                    let header = CapHeader {
+                        version: 0x2008_0522, // _LINUX_CAPABILITY_VERSION_3
+                        pid: Process_getPid(&(*lp_ptr).super_),
+                    };
+                    let mut data = [CapData {
+                        effective: 0,
+                        permitted: 0,
+                        inheritable: 0,
+                    }; 2];
+                    let res = libc::syscall(
+                        libc::SYS_capget,
+                        &header as *const CapHeader,
+                        data.as_mut_ptr(),
+                    );
+                    (*lp_ptr).super_.elevated_priv =
+                        if res == 0 && (data[0].permitted != 0 || data[1].permitted != 0) {
+                            Tristate::TRI_ON
+                        } else {
+                            Tristate::TRI_OFF
+                        };
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_CGROUP) != 0 {
+                    LinuxProcessTable_readCGroupFile(&mut *lp_ptr, procFd);
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_SMAPS) != 0
+                    && !Process_isKernelThread(&(*lp_ptr).super_)
+                {
+                    if mainTask.is_none() {
+                        // Read smaps every other pass for performance.
+                        static SMAPS_FLAG: std::sync::atomic::AtomicI32 =
+                            std::sync::atomic::AtomicI32::new(0);
+                        let flag = SMAPS_FLAG.load(Ordering::Relaxed);
+                        if (pid & 1) == flag {
+                            LinuxProcessTable_readSmapsFile(
+                                &mut *lp_ptr,
+                                procFd,
+                                (*this_ptr).haveSmapsRollup,
+                            );
+                        }
+                        if pid == 1 {
+                            SMAPS_FLAG.store(if flag == 0 { 1 } else { 0 }, Ordering::Relaxed);
+                        }
+                    } else {
+                        let mt = &*mainTask.unwrap();
+                        (*lp_ptr).m_pss = mt.m_pss;
+                        (*lp_ptr).m_swap = mt.m_swap;
+                        (*lp_ptr).m_psswp = mt.m_psswp;
+                    }
+                }
+
+                if (ss_flags & PROCESS_FLAG_IO) != 0 {
+                    LinuxProcessTable_readIoFile(&mut *lp_ptr, procFd, lhost, scan_main_thread);
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_OOM) != 0 {
+                    LinuxProcessTable_readOomData(&mut *lp_ptr, procFd, main_task_ref());
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_IOPRIO) != 0 {
+                    LinuxProcess_updateIOPriority(&mut *lp_ptr);
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_SECATTR) != 0 {
+                    LinuxProcessTable_readSecattrData(&mut *lp_ptr, procFd, main_task_ref());
+                }
+
+                if (ss_flags & PROCESS_FLAG_CWD) != 0 {
+                    LinuxProcessTable_readCwd(&mut *lp_ptr, procFd, main_task_ref());
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_AUTOGROUP) != 0 && (*this_ptr).haveAutogroup {
+                    LinuxProcessTable_readAutogroup(&mut *lp_ptr, procFd, main_task_ref());
+                }
+
+                if (ss_flags & PROCESS_FLAG_SCHEDPOL) != 0 {
+                    Scheduling_readProcessPolicy(&mut (*lp_ptr).super_);
+                }
+
+                if (ss_flags & PROCESS_FLAG_LINUX_GPU) != 0 || GPUMeter_active() {
+                    if let Some(mt) = mainTask {
+                        (*lp_ptr).gpu_time = (*mt).gpu_time;
+                    } else {
+                        GPU_readProcessData(&mut *this_ptr, &mut *lp_ptr, procFd);
+                    }
+                }
+            }
+
+            true
+        };
+
+        if !ok {
+            // errorReadingProcess:
+            Compat_openatArgClose(procFd);
+            if !pre_existing {
+                // A really short-lived process: remove the row getProcess added.
+                this.super_.super_.rows[idx] = None;
+                this.super_.super_.table.remove(&pid);
+            }
+            continue;
+        }
+
+        // Final section.
+        unsafe {
+            if (*lp_ptr).super_.cmdline.is_none()
+                && stat_command[0] != 0
+                && ((*lp_ptr).super_.state == ProcessState::ZOMBIE
+                    || Process_isKernelThread(&(*lp_ptr).super_)
+                    || show_thread_names)
+            {
+                let sc_end = stat_command
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(stat_command.len());
+                let sc = std::str::from_utf8(&stat_command[..sc_end]).unwrap_or("");
+                Process_updateCmdline(&mut (*lp_ptr).super_, Some(sc), 0, sc.len());
+            }
+
+            (*lp_ptr).super_.super_.updated = true;
+        }
+        Compat_openatArgClose(procFd);
+
+        unsafe {
+            if hide_container && (*lp_ptr).super_.isRunningInContainer == Tristate::TRI_ON {
+                (*lp_ptr).super_.super_.show = false;
+                continue;
+            }
+
+            if Process_isKernelThread(&(*lp_ptr).super_) {
+                (*this_ptr).super_.kernelThreads += 1;
+            } else if Process_isUserlandThread(&(*lp_ptr).super_) {
+                (*this_ptr).super_.userlandThreads += 1;
+            }
+
+            // Set show now that we know if the entry is a thread.
+            (*lp_ptr).super_.super_.show = !((hide_kernel
+                && Process_isKernelThread(&(*lp_ptr).super_))
+                || (hide_userland && Process_isUserlandThread(&(*lp_ptr).super_)));
+
+            (*this_ptr).super_.totalTasks += 1;
+        }
+    }
+
+    unsafe { libc::closedir(dir) };
+    true
 }
 
-/// TODO: port of `void ProcessTable_goThroughEntries(ProcessTable* super)`
-/// from `LinuxProcessTable.c:1951`. Blocked: its whole job is to kick off the
-/// `/proc` walk via [`LinuxProcessTable_recurseProcTree`] (stubbed above), and
-/// it also queries `LinuxProcess_isAutogroupEnabled()` (a stub in
-/// `linuxprocess.rs`) and shifts the `LinuxMachine` GPU-engine linked list.
-/// Cannot be ported faithfully until `recurseProcTree` is unblocked.
-pub fn ProcessTable_goThroughEntries() {
-    todo!("port of LinuxProcessTable.c:1951 — delegates to the stubbed recurseProcTree")
+/// Port of `void ProcessTable_goThroughEntries(ProcessTable* super)` from
+/// `LinuxProcessTable.c:1951`. Refreshes the autogroup-enabled flag, shifts the
+/// per-tick GPU counters, then kicks off the `/proc` walk via
+/// [`LinuxProcessTable_recurseProcTree`] from `AT_FDCWD` / `PROCDIR`. The C's
+/// `LinuxMachine*` is reached through the table's `host` back-pointer (a
+/// distinct object from the table, so the later `&mut this` / `&lhost` borrows
+/// are disjoint).
+pub fn ProcessTable_goThroughEntries(this: &mut LinuxProcessTable) {
+    // Machine* host = super->super.host; LinuxMachine* lhost = (LinuxMachine*)host;
+    // SAFETY: the table's `host` points to the owning LinuxMachine.
+    let host_ptr = this.super_.super_.host as *mut LinuxMachine;
+
+    let ss_flags = {
+        let s = unsafe { &*host_ptr }
+            .super_
+            .settings
+            .as_ref()
+            .expect("goThroughEntries: host->settings is NULL");
+        s.screens[s.ssIndex as usize].flags
+    };
+
+    // haveAutogroup = (flag set) ? LinuxProcess_isAutogroupEnabled() : false.
+    this.haveAutogroup =
+        (ss_flags & PROCESS_FLAG_LINUX_AUTOGROUP) != 0 && LinuxProcess_isAutogroupEnabled();
+
+    // Shift GPU values: prevGpuTime = curGpuTime; curGpuTime = 0; per-engine too.
+    unsafe {
+        let lhost = &mut *host_ptr;
+        lhost.prevGpuTime = lhost.curGpuTime;
+        lhost.curGpuTime = 0;
+        let mut engine = lhost.gpuEngineData.as_deref_mut();
+        while let Some(e) = engine {
+            e.prevTime = e.curTime;
+            e.curTime = 0;
+            engine = e.next.as_deref_mut();
+        }
+    }
+
+    // recurseProcTree(this, AT_FDCWD, lhost, PROCDIR, NULL).
+    let lhost_ref: &LinuxMachine = unsafe { &*host_ptr };
+    LinuxProcessTable_recurseProcTree(this, libc::AT_FDCWD, lhost_ref, c"/proc", None);
 }
 
 #[cfg(test)]
@@ -2487,6 +3058,82 @@ mod tests {
         unsafe { libc::close(fd) };
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(lp.m_lrs, 999); // untouched (early return before calcSize)
+    }
+
+    #[test]
+    fn recurseProcTree_scans_a_synthetic_proc_directory() {
+        use crate::ported::machine::{ScreenSettings, Settings};
+
+        // Build a synthetic /proc containing one PID directory "42" with the
+        // always-on files the core scan reads (ss.flags = 0 → no gated readers).
+        let root = std::env::temp_dir().join("htoprs_recurse_proc");
+        let _ = std::fs::remove_dir_all(&root);
+        let p = root.join("42");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(
+            p.join("stat"),
+            b"42 (testproc) R 1 42 42 0 -1 0 100 0 0 0 10 5 0 0 20 0 1 0 137 \
+              4194304 50 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+                .as_ref(),
+        )
+        .unwrap();
+        std::fs::write(p.join("statm"), b"1024 50 10 5 0 20 0\n".as_ref()).unwrap();
+        std::fs::write(p.join("cmdline"), b"testproc\0".as_ref()).unwrap();
+        std::fs::write(p.join("comm"), b"testproc\n".as_ref()).unwrap();
+        // scanMainThread reads task/<pid>/stat for the main thread's times.
+        let task = p.join("task/42");
+        std::fs::create_dir_all(&task).unwrap();
+        std::fs::write(
+            task.join("stat"),
+            b"42 (testproc) R 1 42 42 0 -1 0 100 0 0 0 10 5 0 0 20 0 1 0 137 \
+              4194304 50 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+                .as_ref(),
+        )
+        .unwrap();
+
+        let mut lm = LinuxMachine {
+            pageSize: 4096,
+            jiffies: 100,
+            period: 100.0,
+            runningTasks: 1,
+            super_: Machine {
+                existingCPUs: 1,
+                activeCPUs: 1,
+                totalMem: 1_000_000,
+                realtimeMs: 1_000_000,
+                settings: Some(Settings {
+                    screens: vec![ScreenSettings::default()],
+                    ssIndex: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let host_ptr = &mut lm.super_ as *mut Machine;
+        let mut pt = ProcessTable_new(host_ptr, None);
+
+        // recurseProcTree(this, AT_FDCWD, lhost, <abs root>, NULL).
+        let dir_c = std::ffi::CString::new(root.to_str().unwrap()).unwrap();
+        let ok = LinuxProcessTable_recurseProcTree(&mut pt, libc::AT_FDCWD, &lm, &dir_c, None);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(ok, "recurseProcTree returned false");
+
+        // PID 42 was enumerated into the table with its parsed identity.
+        assert!(
+            pt.super_.super_.table.contains_key(&42),
+            "pid 42 not in table"
+        );
+        let idx = pt.super_.super_.table[&42];
+        let proc = pt.super_.super_.rows[idx]
+            .as_ref()
+            .unwrap()
+            .as_process()
+            .unwrap();
+        assert_eq!(Process_getPid(proc), 42);
+        assert_eq!(pt.super_.totalTasks, 1, "one task counted");
+        // The row is shown and marked updated by the scan.
+        assert!(proc.super_.updated);
     }
 
     #[test]
