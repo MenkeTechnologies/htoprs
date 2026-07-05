@@ -121,8 +121,8 @@ enforced mechanically, following the same precedent as `zshrs`.
 
 ## Current state
 
-The port covers **1042 of 1093 C functions (95.3%)** across **127 of the 131 C
-files**, with 14 stubs remaining — the TUI runs as a daily driver on macOS. The
+The port covers **1054 of 1093 C functions (96.4%)** across **127 of the 131 C
+files**, with 10 stubs remaining — the TUI runs as a daily driver on macOS. The
 core is ported end-to-end: the process model and table build (`Process`,
 `ProcessTable`, `Table`, `Row`, `Machine`), the container/util layer (`Vector`,
 `Hashtable`, `RichString`, `XUtils`), the full meter set (CPU, Memory, Swap,

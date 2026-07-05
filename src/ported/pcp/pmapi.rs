@@ -252,4 +252,25 @@ extern "C" {
     /// `int pmsprintf(char*, size_t, const char*, ...)` (`pmapi.h:855`) — PCP's
     /// bounded, always-NUL-terminating `snprintf`.
     pub fn pmsprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
+    /// `int pmLookupDesc(pmID, pmDesc*)` (`pmapi.h:350`) — fetch one metric's
+    /// descriptor. Used by the htop `pmLookupDescs` fallback wrapper (the
+    /// `#ifndef HAVE_PMLOOKUPDESCS` branch) ported in `platform.rs`.
+    pub fn pmLookupDesc(pmid: pmID, desc: *mut pmDesc) -> c_int;
+    /// `const char* pmGetContextHostName(int)` (`pmapi.h:383`) — the hostname of
+    /// the metric source for a context (libpcp-owned static/thread buffer).
+    pub fn pmGetContextHostName(handle: c_int) -> *const c_char;
+    /// `int pmDestroyContext(int)` (`pmapi.h:394`) — tear down a PMAPI context.
+    pub fn pmDestroyContext(handle: c_int) -> c_int;
+    /// `const char* pmIDStr(pmID)` (`pmapi.h:786`; not thread-safe) — render a
+    /// PMID as text. Referenced only by the omitted `pmDebugOptions.appl0` debug
+    /// branch of the `pmLookupDescs` wrapper.
+    pub fn pmIDStr(pmid: pmID) -> *const c_char;
+    /// `int pmflush(void)` (`pmapi.h:849`) — flush the `pmprintf` message buffer.
+    pub fn pmflush() -> c_int;
+    /// `int pmprintf(const char*, ...)` (`pmapi.h:848`) — append to libpcp's
+    /// deferred message buffer (variadic).
+    pub fn pmprintf(fmt: *const c_char, ...) -> c_int;
+    /// `void pmtimevalDec(struct timeval*, const struct timeval*)`
+    /// (`pmapi.h:1358`) — subtract `*bp` from `*ap` in place.
+    pub fn pmtimevalDec(ap: *mut libc::timeval, bp: *const libc::timeval);
 }
