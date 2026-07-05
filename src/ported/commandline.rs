@@ -514,6 +514,44 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
     (CommandLineStatus::Ok, flags)
 }
 
+/// Port of `static void setCommFilter(State* state, char** commFilter)`
+/// (`CommandLine.c:328`). Applies the startup `--filter` (comm filter) to the
+/// active table's incremental filter: `IncSet_setFilter(inc, *commFilter)` then
+/// `table->incFilter = IncSet_filter(inc)`, mirroring the live
+/// `MainPanel_eventHandler` filter path. The C `free(*commFilter); *commFilter =
+/// NULL` becomes setting the owned `Option<String>` to `None`. macOS-gated,
+/// matching its only caller ([`CommandLine_run`]).
+#[cfg(target_os = "macos")]
+fn setCommFilter(state: *mut crate::ported::action::State, commFilter: &mut Option<String>) {
+    use crate::ported::incset::{IncSet_filter, IncSet_setFilter};
+
+    // Table* table = state->host->activeTable;
+    // SAFETY: state/host live for the program lifetime; activeTable is the
+    // non-null back-pointer (the MainPanel_eventHandler precedent).
+    let table = unsafe {
+        (*(*state).host)
+            .activeTable
+            .expect("setCommFilter: host->activeTable is NULL")
+    };
+    // IncSet* inc = state->mainPanel->inc;
+    let inc = unsafe { &mut (*(*state).mainPanel).inc };
+
+    // IncSet_setFilter(inc, *commFilter); — caller guarantees a filter is set.
+    let f = commFilter
+        .as_deref()
+        .expect("setCommFilter: called with no filter");
+    IncSet_setFilter(inc, f);
+
+    // table->incFilter = IncSet_filter(inc);
+    let filter = IncSet_filter(inc).map(|s| s.to_string());
+    unsafe {
+        (*table).incFilter = filter;
+    }
+
+    // free(*commFilter); *commFilter = NULL;
+    *commFilter = None;
+}
+
 /// Port of `int CommandLine_run(int argc, char** argv)` from `CommandLine.c:339`
 /// — htop's program entry proper. Parses the arguments ([`parseArguments`], the
 /// ported `getopt_long` half), and on a runnable parse assembles the shared
@@ -554,7 +592,7 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
     use crate::ported::userstable::{UsersTable, UsersTable_new};
 
     // C: getopt_long parse (STATUS_OK_EXIT → 0, STATUS_ERROR_EXIT → 1).
-    let flags = match parseArguments(program, argv) {
+    let mut flags = match parseArguments(program, argv) {
         (CommandLineStatus::OkExit, _) => return 0,
         (CommandLineStatus::ErrorExit, _) => return 1,
         (CommandLineStatus::Ok, flags) => flags,
@@ -684,6 +722,10 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
         hideMeters: false,
     }));
     MainPanel_setState(&mut panel_box, state_raw);
+    // C: if (flags.commFilter) setCommFilter(&state, &(flags.commFilter));
+    if flags.commFilter.is_some() {
+        setCommFilter(state_raw, &mut flags.commFilter);
+    }
 
     // ScreenManager_new(header, host, state); add the MainPanel (moves the box;
     // panel_ptr stays valid — a Box's pointee address is move-stable).
