@@ -507,6 +507,18 @@ impl Object for DragonFlyBSDProcess {
         Some(&self.super_)
     }
 
+    /// Mutable `(Row*)this` — required by `ProcessTable_getProcess`/`Table_add`
+    /// when the scan registers a fresh row (the darwin/linux precedent).
+    fn as_row_mut(&mut self) -> Option<&mut Row> {
+        Some(&mut self.super_.super_)
+    }
+
+    /// Mutable `(Process*)this` — required by `ProcessTable_getProcess` to hand
+    /// back the process for in-place field updates during the scan.
+    fn as_process_mut(&mut self) -> Option<&mut Process> {
+        Some(&mut self.super_)
+    }
+
     /// C `As_Process(this)` — `DragonFlyBSDProcess`'s [`ProcessClass`] vtable,
     /// whose `compareByKey` slot is `DragonFlyBSDProcess_compareByKey`.
     fn process_class(&self) -> Option<&'static ProcessClass> {
