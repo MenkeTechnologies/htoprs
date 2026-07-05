@@ -225,4 +225,7 @@ extern "C" {
     pub fn pmUseContext(handle: c_int) -> c_int;
     /// `int pmNewContext(int, const char*)` (`pmapi.h:400`).
     pub fn pmNewContext(type_: c_int, name: *const c_char) -> c_int;
+    /// `double pmtimevalToReal(const struct timeval*)` (`pmapi.h`) — a `timeval`
+    /// as fractional seconds.
+    pub fn pmtimevalToReal(tv: *const libc::timeval) -> f64;
 }

@@ -15,6 +15,7 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
+use crate::ported::machine::Machine;
 use crate::ported::pcp::pmapi::{pmDesc, pmID, pmResult};
 
 /// Port of `typedef struct Platform_` (`pcp/Platform.h:45`) — the PCP backend's
@@ -49,3 +50,22 @@ pub struct Platform {
 /// lives for the program's lifetime). Null until initialized; [`Metric`] loads
 /// and dereferences it. Modeled as an `AtomicPtr` (the `CRT_*` global pattern).
 pub static pcp: AtomicPtr<Platform> = AtomicPtr::new(ptr::null_mut());
+
+/// TODO: port of `unsigned int Platform_getMaxCPU(void)` (`pcp/Platform.c:508`).
+/// Caches the processor count into the (deferred) `pcp->ncpu` field; needs the
+/// PCP context setup the rest of `Platform.c` provides. Scaffolded here so
+/// [`PCPMachine`](super::pcpmachine)'s call site stays 1:1 until `Platform.c` is
+/// ported.
+pub fn Platform_getMaxCPU() -> u32 {
+    todo!("pcp/Platform.c:508 Platform_getMaxCPU — not yet ported (needs pcp->ncpu)")
+}
+
+/// TODO: port of `void Platform_updateTables(Machine* host)`
+/// (`pcp/Platform.c:997`). Rebuilds the PCP dynamic meter/column/screen tables
+/// (the deferred `Platform` fields). Scaffolded here so
+/// [`PCPMachine`](super::pcpmachine)'s `Machine_new` call site stays 1:1 until
+/// `Platform.c` is ported.
+pub fn Platform_updateTables(host: &mut Machine) {
+    let _ = host;
+    todo!("pcp/Platform.c:997 Platform_updateTables — not yet ported (dynamic tables)")
+}

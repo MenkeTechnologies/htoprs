@@ -10,6 +10,7 @@
 //! and compile under `--features pcp`.
 
 pub mod metric;
+pub mod pcpmachine;
 pub mod pcpprocess;
 pub mod platform;
 pub mod pmapi;
