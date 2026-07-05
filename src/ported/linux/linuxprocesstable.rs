@@ -881,7 +881,7 @@ fn LinuxProcessTable_readStatusFile(process: &mut LinuxProcess, procFd: openat_a
 /// changed, resolves the name through the machine's `UsersTable` cache. `host->
 /// usersTable` is the opaque `Option<usize>` handle (a separately-leaked
 /// `UsersTable` reached by raw pointer, so the `&mut` never aliases `host` — the
-/// [`DarwinProcessTable_scanThreads`] precedent); `UsersTable_getRef`'s borrowed
+/// `DarwinProcessTable_scanThreads` precedent); `UsersTable_getRef`'s borrowed
 /// `&str` is cloned into the owned `Process::user`. `HAVE_OPENAT` is defined, so
 /// the `fstat(procFd, &sb)` branch is the compiled form.
 pub fn LinuxProcessTable_updateUser(
