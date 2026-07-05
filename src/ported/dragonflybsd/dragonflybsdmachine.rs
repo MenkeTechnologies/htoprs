@@ -159,9 +159,10 @@ pub fn DragonFlyBSDMachine_scanMemoryInfo() {
     todo!("port of DragonFlyBSDMachine.c:223 — vm.stats sysctl (DragonFly-only)")
 }
 
-/// TODO: port of `static void DragonFlyBSDMachine_scanJails(DragonFlyBSDMachine*
-/// this)` (`DragonFlyBSDMachine.c:294`). Enumerates jails via `kern.jail`
-/// sysctl into the `jails` hashtable. DragonFly sysctl.
+/// Port of `static void DragonFlyBSDMachine_scanJails(DragonFlyBSDMachine*
+/// this)` (`DragonFlyBSDMachine.c:294`). Rebuilds the `jails` hashtable
+/// (jailid → hostname) from the `jail.list` sysctlbyname, retrying on `ENOMEM`
+/// (the list can grow between sizing and reading). Kvm-free.
 pub fn DragonFlyBSDMachine_scanJails(this: &mut DragonFlyBSDMachine) {
     // sysctlbyname("jail.list", NULL, &len, NULL, 0) — get the buffer length.
     let name = c"jail.list";
@@ -222,12 +223,11 @@ pub fn DragonFlyBSDMachine_scanJails(this: &mut DragonFlyBSDMachine) {
     }
 }
 
-/// TODO: port of `char* DragonFlyBSDMachine_readJailName(const
-/// DragonFlyBSDMachine* host, int jailid)` (`DragonFlyBSDMachine.c:348`).
-/// Looks up `jailid` in the `jails` hashtable (populated by the stubbed
-/// [`DragonFlyBSDMachine_scanJails`]) and duplicates the hostname, else `"-"`.
-/// Blocked on the jails hashtable being populated (needs the sysctl scan) and
-/// on modeling its `char*` string values.
+/// Port of `char* DragonFlyBSDMachine_readJailName(const DragonFlyBSDMachine*
+/// host, int jailid)` (`DragonFlyBSDMachine.c:348`). Looks up `jailid` in the
+/// [`DragonFlyBSDMachine_scanJails`]-populated `jails` hashtable and returns a
+/// copy of the hostname ([`JailName`]), or `"-"` when absent. The C `char*`
+/// return becomes an owned `String`.
 pub fn DragonFlyBSDMachine_readJailName(host: &DragonFlyBSDMachine, jailid: i32) -> String {
     // if (jailid != 0 && host->jails && (hostname = Hashtable_get(jails, jailid)))
     //    jname = xStrdup(hostname); else jname = xStrdup("-");
