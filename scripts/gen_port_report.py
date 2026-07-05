@@ -71,7 +71,12 @@ def walk_c_defs() -> dict[str, list[tuple[str, int]]]:
     return idx
 
 
-RE_RS_FN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)")
+# Matches a Rust fn definition. The `extern "<abi>"` group recognizes ported
+# C-callback shims declared `pub extern "C" fn ...` (signal handlers, libproc
+# walk callbacks); without it those real ports were miscounted as unported.
+RE_RS_FN = re.compile(
+    r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:async\s+)?(?:extern\s+"[^"]*"\s+)?fn\s+([A-Za-z_]\w*)'
+)
 RE_PORT_CITE = re.compile(r"Port of .*?`?([A-Za-z_][\w]*\.c):(\d+)`?")
 
 
