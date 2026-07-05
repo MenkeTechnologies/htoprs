@@ -1,16 +1,24 @@
 //! Port of `dragonflybsd/DragonFlyBSDProcessTable.c` + `.h` — the DragonFly BSD
-//! process-table scan layer.
+//! process-table scan layer. Compiled only under `#[cfg(target_os =
+//! "dragonfly")]`; like the other BSD layers it is verified by primary-source
+//! reading + the port-purity gate (not a cross-compile, DragonFly being a
+//! tier-3 target with no prebuilt std here).
 //!
-//! Every scan function reads `struct kinfo_proc` via `libkvm`
-//! (`kvm_getprocs`), which exists only on DragonFly BSD. Only the trivial
-//! struct is portable here; the scan functions are faithful `todo!()` stubs
-//! (named after the C functions so the port gate accepts the module) to be
-//! ported behind `#[cfg(target_os = "dragonfly")]` with the DragonFly
-//! `sys/user.h` / `libkvm` bindings — the same treatment the `linux/` scan
-//! layer gets for its Linux-only `/proc` reads.
+//! Ported: [`DragonFlyBSDProcessTable_updateExe`] (`/proc/<pid>/file` readlink)
+//! and [`DragonFlyBSDProcessTable_updateCwd`] (`kern.proc.cwd` sysctl) — both
+//! use only confirmed DragonFly `libc` bindings (`kinfo_proc.kp_pid`,
+//! `KERN_PROC_CWD`).
+//!
+//! Still stubbed: `updateProcessName` / `goThroughEntries` / `ProcessTable_new`
+//! need `libkvm` (`kvm_getargv`/`kvm_getprocs`), which `libc` does not expose
+//! for the DragonFly target (as with `kvm_swap` in the machine layer).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use std::os::raw::{c_char, c_int, c_void};
+use std::ptr;
+
+use crate::ported::process::{Process, Process_isKernelThread, Process_updateExe};
 use crate::ported::processtable::ProcessTable;
 
 /// Port of `typedef struct DragonFlyBSDProcessTable_`
@@ -40,18 +48,74 @@ pub fn ProcessTable_delete(mut this: DragonFlyBSDProcessTable) {
     crate::ported::processtable::ProcessTable_done(&mut this.super_);
 }
 
-/// TODO: port of `static void DragonFlyBSDProcessTable_updateExe(const struct
-/// kinfo_proc* kproc, Process* proc)` (`DragonFlyBSDProcessTable.c:64`). Reads
-/// the executable path via `kinfo_proc` — DragonFly `sys/user.h` struct.
-pub fn DragonFlyBSDProcessTable_updateExe() {
-    todo!("port of DragonFlyBSDProcessTable.c:64 — struct kinfo_proc (DragonFly-only)")
+/// Port of `static void DragonFlyBSDProcessTable_updateExe(const struct
+/// kinfo_proc* kproc, Process* proc)` (`DragonFlyBSDProcessTable.c:64`), the
+/// active (`readlink`) variant. Resolves the executable via
+/// `readlink("/proc/<pid>/file")`; kernel threads (and any read error) leave
+/// `procExe` untouched — the C's early `return`s.
+pub fn DragonFlyBSDProcessTable_updateExe(kproc: &libc::kinfo_proc, proc: &mut Process) {
+    // if (Process_isKernelThread(proc)) return;
+    if Process_isKernelThread(proc) {
+        return;
+    }
+
+    // xSnprintf(path, sizeof(path), "/proc/%d/file", kproc->kp_pid);
+    let path = std::ffi::CString::new(format!("/proc/{}/file", kproc.kp_pid)).unwrap();
+
+    // ssize_t ret = readlink(path, target, sizeof(target) - 1); if (ret <= 0) return;
+    let mut target = [0u8; libc::PATH_MAX as usize];
+    let ret = unsafe {
+        libc::readlink(
+            path.as_ptr(),
+            target.as_mut_ptr() as *mut c_char,
+            target.len() - 1,
+        )
+    };
+    if ret <= 0 {
+        return;
+    }
+
+    // target[ret] = '\0'; Process_updateExe(proc, target);
+    let s = String::from_utf8_lossy(&target[..ret as usize]);
+    Process_updateExe(proc, Some(&s));
 }
 
-/// TODO: port of `static void DragonFlyBSDProcessTable_updateCwd(const struct
+/// Port of `static void DragonFlyBSDProcessTable_updateCwd(const struct
 /// kinfo_proc* kproc, Process* proc)` (`DragonFlyBSDProcessTable.c:80`). Reads
-/// the working directory via `kinfo_proc` — DragonFly `sys/user.h` struct.
-pub fn DragonFlyBSDProcessTable_updateCwd() {
-    todo!("port of DragonFlyBSDProcessTable.c:80 — struct kinfo_proc (DragonFly-only)")
+/// the working directory via the `{ CTL_KERN, KERN_PROC, KERN_PROC_CWD, pid }`
+/// sysctl; a failed read or an empty buffer (kernel threads) clears `procCwd`.
+pub fn DragonFlyBSDProcessTable_updateCwd(kproc: &libc::kinfo_proc, proc: &mut Process) {
+    let mut mib: [c_int; 4] = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_CWD,
+        kproc.kp_pid,
+    ];
+    let mut buffer = [0u8; 2048];
+    let mut size = buffer.len();
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        proc.procCwd = None;
+        return;
+    }
+
+    // Kernel threads return an empty buffer.
+    if buffer[0] == 0 {
+        proc.procCwd = None;
+        return;
+    }
+
+    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+    proc.procCwd = Some(String::from_utf8_lossy(&buffer[..end]).into_owned());
 }
 
 /// TODO: port of `static void DragonFlyBSDProcessTable_updateProcessName(kvm_t*
