@@ -52,7 +52,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
             <a href="https://github.com/MenkeTechnologies/htoprs" target="_blank" rel="noopener noreferrer">GitHub</a>
           </nav>
           <p style="margin:0.35rem 0 0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text-dim);letter-spacing:0.03em;opacity:0.75;">
-            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-05T19:30:43Z
+            Coverage of the htop 3.5.1 C spec &middot; generated 2026-07-05T19:44:32Z
           </p>
         </div>
         <div class="tutorial-toolbar">
@@ -70,10 +70,10 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
       <p class="tutorial-subtitle">C-to-Rust coverage of the htop <strong>3.5.1</strong> port, derived from the C source at <code>/Users/wizard/forkedRepos/htop</code> and the Rust port under <code>src/ported/</code> at generation time. "Ported" = a <code>pub fn</code> whose name matches a function <em>defined</em> in the htop C source.</p>
 
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val green">916</div><div class="stat-label">Fns ported</div></div>
-        <div class="stat-card"><div class="stat-val">12</div><div class="stat-label">Fns stubbed</div></div>
+        <div class="stat-card"><div class="stat-val green">918</div><div class="stat-label">Fns ported</div></div>
+        <div class="stat-card"><div class="stat-val">10</div><div class="stat-label">Fns stubbed</div></div>
         <div class="stat-card"><div class="stat-val">1093</div><div class="stat-label">C fns defined</div></div>
-        <div class="stat-card"><div class="stat-val cyan">83.81%</div><div class="stat-label">Coverage</div></div>
+        <div class="stat-card"><div class="stat-val cyan">83.99%</div><div class="stat-label">Coverage</div></div>
         <div class="stat-card"><div class="stat-val cyan">121</div><div class="stat-label">Files started</div></div>
       </div>
 
@@ -151,7 +151,7 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
           <tr><td><code>darwin/DarwinProcessTable.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
           <tr><td><code>darwin/Platform.c</code></td><td>25</td><td>0</td><td>25</td><td>100%</td></tr>
           <tr><td><code>darwin/PlatformHelpers.c</code></td><td>5</td><td>0</td><td>5</td><td>100%</td></tr>
-          <tr><td><code>dragonflybsd/DragonFlyBSDMachine.c</code></td><td>8</td><td>2</td><td>10</td><td>80%</td></tr>
+          <tr><td><code>dragonflybsd/DragonFlyBSDMachine.c</code></td><td>10</td><td>0</td><td>10</td><td>100%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDProcess.c</code></td><td>4</td><td>0</td><td>4</td><td>100%</td></tr>
           <tr><td><code>dragonflybsd/DragonFlyBSDProcessTable.c</code></td><td>6</td><td>0</td><td>6</td><td>100%</td></tr>
           <tr><td><code>dragonflybsd/Platform.c</code></td><td>15</td><td>0</td><td>15</td><td>100%</td></tr>
@@ -208,12 +208,12 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
   </div>
   <script id="port-report-data" type="application/json">
 {
-  "generated": "2026-07-05T19:30:43Z",
+  "generated": "2026-07-05T19:44:32Z",
   "htop_source": "/Users/wizard/forkedRepos/htop",
   "c_functions_defined": 1093,
-  "ported": 916,
-  "stubbed": 12,
-  "coverage_pct": 83.81,
+  "ported": 918,
+  "stubbed": 10,
+  "coverage_pct": 83.99,
   "files_started": 121,
   "per_file": [
     {
@@ -638,8 +638,8 @@ Machine-readable dataset: <script id="port-report-data" type="application/json">
     },
     {
       "cfile": "dragonflybsd/DragonFlyBSDMachine.c",
-      "ported": 8,
-      "stubbed": 2,
+      "ported": 10,
+      "stubbed": 0,
       "defined": 10
     },
     {
