@@ -85,10 +85,10 @@ use crate::ported::pcp::pcpmachine::{
 use crate::ported::pcp::pcpprocess::PCPProcess;
 use crate::ported::pcp::pmapi::{
     pmAtomValue, pmDesc, pmDestroyContext, pmErrStr, pmFreeResult, pmGetContextHostName,
-    pmGetContextOptions, pmID, pmLookupDesc, pmLookupName, pmNewContext, pmOptions, pmResult,
-    pmflush, pmprintf, pmtimevalDec, pmGetProgname, PMOPTIONS_ZERO, PM_CONTEXT_ARCHIVE,
-    PM_CONTEXT_HOST, PM_CONTEXT_LOCAL, PM_ID_NULL, PM_TYPE_32, PM_TYPE_64, PM_TYPE_DOUBLE,
-    PM_TYPE_STRING, PM_TYPE_U32, PM_TYPE_U64,
+    pmGetContextOptions, pmGetProgname, pmID, pmLookupDesc, pmLookupName, pmNewContext, pmOptions,
+    pmResult, pmflush, pmprintf, pmtimevalDec, PMOPTIONS_ZERO, PM_CONTEXT_ARCHIVE, PM_CONTEXT_HOST,
+    PM_CONTEXT_LOCAL, PM_ID_NULL, PM_TYPE_32, PM_TYPE_64, PM_TYPE_DOUBLE, PM_TYPE_STRING,
+    PM_TYPE_U32, PM_TYPE_U64,
 };
 
 use Metric::*;
@@ -173,142 +173,142 @@ const PLATFORM_LONGOPT_HOSTZONE: c_int = 130;
 /// sentinel is omitted (the init loop only reads `0 .. PCP_METRIC_COUNT`), so
 /// this array is sized `PCP_METRIC_COUNT` exactly.
 static Platform_metricNames: [&str; PCP_METRIC_COUNT as usize] = [
-    "proc.control.perclient.threads", // PCP_CONTROL_THREADS
-    "hinv.ncpu",                      // PCP_HINV_NCPU
-    "hinv.ndisk",                     // PCP_HINV_NDISK
-    "hinv.cpu.clock",                 // PCP_HINV_CPUCLOCK
-    "kernel.uname.sysname",           // PCP_UNAME_SYSNAME
-    "kernel.uname.release",           // PCP_UNAME_RELEASE
-    "kernel.uname.machine",           // PCP_UNAME_MACHINE
-    "kernel.uname.distro",            // PCP_UNAME_DISTRO
-    "kernel.all.load",                // PCP_LOAD_AVERAGE
-    "kernel.all.pid_max",             // PCP_PID_MAX
-    "kernel.all.uptime",              // PCP_UPTIME
-    "kernel.all.boottime",            // PCP_BOOTTIME
-    "kernel.all.cpu.user",            // PCP_CPU_USER
-    "kernel.all.cpu.nice",            // PCP_CPU_NICE
-    "kernel.all.cpu.sys",             // PCP_CPU_SYSTEM
-    "kernel.all.cpu.idle",            // PCP_CPU_IDLE
-    "kernel.all.cpu.wait.total",      // PCP_CPU_IOWAIT
-    "kernel.all.cpu.intr",            // PCP_CPU_IRQ
-    "kernel.all.cpu.irq.soft",        // PCP_CPU_SOFTIRQ
-    "kernel.all.cpu.steal",           // PCP_CPU_STEAL
-    "kernel.all.cpu.guest",           // PCP_CPU_GUEST
-    "kernel.all.cpu.guest_nice",      // PCP_CPU_GUESTNICE
-    "kernel.percpu.cpu.user",         // PCP_PERCPU_USER
-    "kernel.percpu.cpu.nice",         // PCP_PERCPU_NICE
-    "kernel.percpu.cpu.sys",          // PCP_PERCPU_SYSTEM
-    "kernel.percpu.cpu.idle",         // PCP_PERCPU_IDLE
-    "kernel.percpu.cpu.wait.total",   // PCP_PERCPU_IOWAIT
-    "kernel.percpu.cpu.intr",         // PCP_PERCPU_IRQ
-    "kernel.percpu.cpu.irq.soft",     // PCP_PERCPU_SOFTIRQ
-    "kernel.percpu.cpu.steal",        // PCP_PERCPU_STEAL
-    "kernel.percpu.cpu.guest",        // PCP_PERCPU_GUEST
-    "kernel.percpu.cpu.guest_nice",   // PCP_PERCPU_GUESTNICE
-    "mem.physmem",                    // PCP_MEM_TOTAL
-    "mem.util.free",                  // PCP_MEM_FREE
-    "mem.util.active",                // PCP_MEM_ACTIVE
-    "mem.util.available",             // PCP_MEM_AVAILABLE
-    "mem.util.bufmem",                // PCP_MEM_BUFFERS
-    "mem.util.cached",                // PCP_MEM_CACHED
-    "mem.util.compressed",            // PCP_MEM_COMPRESSED
-    "mem.util.external",              // PCP_MEM_EXTERNAL
-    "mem.util.inactive",              // PCP_MEM_INACTIVE
-    "mem.util.shmem",                 // PCP_MEM_SHARED
-    "mem.util.purgeable",             // PCP_MEM_PURGEABLE
-    "mem.util.speculative",           // PCP_MEM_SPECULATIVE
-    "mem.util.slabReclaimable",       // PCP_MEM_SRECLAIM
-    "mem.util.wired",                 // PCP_MEM_WIRED
-    "mem.util.swapCached",            // PCP_MEM_SWAPCACHED
-    "mem.util.swapTotal",             // PCP_MEM_SWAPTOTAL
-    "mem.util.swapFree",              // PCP_MEM_SWAPFREE
-    "swap.length",                    // PCP_SWAP_LENGTH
-    "swap.free",                      // PCP_SWAP_FREE
-    "disk.all.read_bytes",            // PCP_DISK_READB
-    "disk.all.write_bytes",           // PCP_DISK_WRITEB
-    "disk.all.avactive",              // PCP_DISK_ACTIVE
-    "network.all.in.bytes",           // PCP_NET_RECVB
-    "network.all.out.bytes",          // PCP_NET_SENDB
-    "network.all.in.packets",         // PCP_NET_RECVP
-    "network.all.out.packets",        // PCP_NET_SENDP
-    "kernel.all.pressure.cpu.some.avg", // PCP_PSI_CPUSOME
-    "kernel.all.pressure.io.some.avg",  // PCP_PSI_IOSOME
-    "kernel.all.pressure.io.full.avg",  // PCP_PSI_IOFULL
-    "kernel.all.pressure.irq.full.avg", // PCP_PSI_IRQFULL
+    "proc.control.perclient.threads",      // PCP_CONTROL_THREADS
+    "hinv.ncpu",                           // PCP_HINV_NCPU
+    "hinv.ndisk",                          // PCP_HINV_NDISK
+    "hinv.cpu.clock",                      // PCP_HINV_CPUCLOCK
+    "kernel.uname.sysname",                // PCP_UNAME_SYSNAME
+    "kernel.uname.release",                // PCP_UNAME_RELEASE
+    "kernel.uname.machine",                // PCP_UNAME_MACHINE
+    "kernel.uname.distro",                 // PCP_UNAME_DISTRO
+    "kernel.all.load",                     // PCP_LOAD_AVERAGE
+    "kernel.all.pid_max",                  // PCP_PID_MAX
+    "kernel.all.uptime",                   // PCP_UPTIME
+    "kernel.all.boottime",                 // PCP_BOOTTIME
+    "kernel.all.cpu.user",                 // PCP_CPU_USER
+    "kernel.all.cpu.nice",                 // PCP_CPU_NICE
+    "kernel.all.cpu.sys",                  // PCP_CPU_SYSTEM
+    "kernel.all.cpu.idle",                 // PCP_CPU_IDLE
+    "kernel.all.cpu.wait.total",           // PCP_CPU_IOWAIT
+    "kernel.all.cpu.intr",                 // PCP_CPU_IRQ
+    "kernel.all.cpu.irq.soft",             // PCP_CPU_SOFTIRQ
+    "kernel.all.cpu.steal",                // PCP_CPU_STEAL
+    "kernel.all.cpu.guest",                // PCP_CPU_GUEST
+    "kernel.all.cpu.guest_nice",           // PCP_CPU_GUESTNICE
+    "kernel.percpu.cpu.user",              // PCP_PERCPU_USER
+    "kernel.percpu.cpu.nice",              // PCP_PERCPU_NICE
+    "kernel.percpu.cpu.sys",               // PCP_PERCPU_SYSTEM
+    "kernel.percpu.cpu.idle",              // PCP_PERCPU_IDLE
+    "kernel.percpu.cpu.wait.total",        // PCP_PERCPU_IOWAIT
+    "kernel.percpu.cpu.intr",              // PCP_PERCPU_IRQ
+    "kernel.percpu.cpu.irq.soft",          // PCP_PERCPU_SOFTIRQ
+    "kernel.percpu.cpu.steal",             // PCP_PERCPU_STEAL
+    "kernel.percpu.cpu.guest",             // PCP_PERCPU_GUEST
+    "kernel.percpu.cpu.guest_nice",        // PCP_PERCPU_GUESTNICE
+    "mem.physmem",                         // PCP_MEM_TOTAL
+    "mem.util.free",                       // PCP_MEM_FREE
+    "mem.util.active",                     // PCP_MEM_ACTIVE
+    "mem.util.available",                  // PCP_MEM_AVAILABLE
+    "mem.util.bufmem",                     // PCP_MEM_BUFFERS
+    "mem.util.cached",                     // PCP_MEM_CACHED
+    "mem.util.compressed",                 // PCP_MEM_COMPRESSED
+    "mem.util.external",                   // PCP_MEM_EXTERNAL
+    "mem.util.inactive",                   // PCP_MEM_INACTIVE
+    "mem.util.shmem",                      // PCP_MEM_SHARED
+    "mem.util.purgeable",                  // PCP_MEM_PURGEABLE
+    "mem.util.speculative",                // PCP_MEM_SPECULATIVE
+    "mem.util.slabReclaimable",            // PCP_MEM_SRECLAIM
+    "mem.util.wired",                      // PCP_MEM_WIRED
+    "mem.util.swapCached",                 // PCP_MEM_SWAPCACHED
+    "mem.util.swapTotal",                  // PCP_MEM_SWAPTOTAL
+    "mem.util.swapFree",                   // PCP_MEM_SWAPFREE
+    "swap.length",                         // PCP_SWAP_LENGTH
+    "swap.free",                           // PCP_SWAP_FREE
+    "disk.all.read_bytes",                 // PCP_DISK_READB
+    "disk.all.write_bytes",                // PCP_DISK_WRITEB
+    "disk.all.avactive",                   // PCP_DISK_ACTIVE
+    "network.all.in.bytes",                // PCP_NET_RECVB
+    "network.all.out.bytes",               // PCP_NET_SENDB
+    "network.all.in.packets",              // PCP_NET_RECVP
+    "network.all.out.packets",             // PCP_NET_SENDP
+    "kernel.all.pressure.cpu.some.avg",    // PCP_PSI_CPUSOME
+    "kernel.all.pressure.io.some.avg",     // PCP_PSI_IOSOME
+    "kernel.all.pressure.io.full.avg",     // PCP_PSI_IOFULL
+    "kernel.all.pressure.irq.full.avg",    // PCP_PSI_IRQFULL
     "kernel.all.pressure.memory.some.avg", // PCP_PSI_MEMSOME
     "kernel.all.pressure.memory.full.avg", // PCP_PSI_MEMFULL
-    "zfs.arc.anon_size",              // PCP_ZFS_ARC_ANON_SIZE
-    "zfs.arc.bonus_size",             // PCP_ZFS_ARC_BONUS_SIZE
-    "zfs.arc.compressed_size",        // PCP_ZFS_ARC_COMPRESSED_SIZE
-    "zfs.arc.uncompressed_size",      // PCP_ZFS_ARC_UNCOMPRESSED_SIZE
-    "zfs.arc.c_min",                  // PCP_ZFS_ARC_C_MIN
-    "zfs.arc.c_max",                  // PCP_ZFS_ARC_C_MAX
-    "zfs.arc.dbuf_size",              // PCP_ZFS_ARC_DBUF_SIZE
-    "zfs.arc.dnode_size",             // PCP_ZFS_ARC_DNODE_SIZE
-    "zfs.arc.hdr_size",               // PCP_ZFS_ARC_HDR_SIZE
-    "zfs.arc.mfu.size",               // PCP_ZFS_ARC_MFU_SIZE
-    "zfs.arc.mru.size",               // PCP_ZFS_ARC_MRU_SIZE
-    "zfs.arc.size",                   // PCP_ZFS_ARC_SIZE
-    "zram.capacity",                  // PCP_ZRAM_CAPACITY
-    "zram.mm_stat.data_size.original",   // PCP_ZRAM_ORIGINAL
-    "zram.mm_stat.data_size.compressed", // PCP_ZRAM_COMPRESSED
-    "mem.util.zswap",                 // PCP_MEM_ZSWAP
-    "mem.util.zswapped",              // PCP_MEM_ZSWAPPED
-    "vfs.files.count",                // PCP_VFS_FILES_COUNT
-    "vfs.files.max",                  // PCP_VFS_FILES_MAX
-    "proc.psinfo.pid",                // PCP_PROC_PID
-    "proc.psinfo.ppid",               // PCP_PROC_PPID
-    "proc.psinfo.tgid",               // PCP_PROC_TGID
-    "proc.psinfo.pgrp",               // PCP_PROC_PGRP
-    "proc.psinfo.session",            // PCP_PROC_SESSION
-    "proc.psinfo.sname",              // PCP_PROC_STATE
-    "proc.psinfo.tty",                // PCP_PROC_TTY
-    "proc.psinfo.tty_pgrp",           // PCP_PROC_TTYPGRP
-    "proc.psinfo.minflt",             // PCP_PROC_MINFLT
-    "proc.psinfo.maj_flt",            // PCP_PROC_MAJFLT
-    "proc.psinfo.cmin_flt",           // PCP_PROC_CMINFLT
-    "proc.psinfo.cmaj_flt",           // PCP_PROC_CMAJFLT
-    "proc.psinfo.utime",              // PCP_PROC_UTIME
-    "proc.psinfo.stime",              // PCP_PROC_STIME
-    "proc.psinfo.cutime",             // PCP_PROC_CUTIME
-    "proc.psinfo.cstime",             // PCP_PROC_CSTIME
-    "proc.psinfo.priority",           // PCP_PROC_PRIORITY
-    "proc.psinfo.nice",               // PCP_PROC_NICE
-    "proc.psinfo.threads",            // PCP_PROC_THREADS
-    "proc.psinfo.start_time",         // PCP_PROC_STARTTIME
-    "proc.psinfo.processor",          // PCP_PROC_PROCESSOR
-    "proc.psinfo.cmd",                // PCP_PROC_CMD
-    "proc.psinfo.psargs",             // PCP_PROC_PSARGS
-    "proc.psinfo.cgroups",            // PCP_PROC_CGROUPS
-    "proc.psinfo.oom_score",          // PCP_PROC_OOMSCORE
-    "proc.psinfo.vctxsw",             // PCP_PROC_VCTXSW
-    "proc.psinfo.nvctxsw",            // PCP_PROC_NVCTXSW
-    "proc.psinfo.labels",             // PCP_PROC_LABELS
-    "proc.psinfo.environ",            // PCP_PROC_ENVIRON
-    "proc.psinfo.ttyname",            // PCP_PROC_TTYNAME
-    "proc.psinfo.exe",                // PCP_PROC_EXE
-    "proc.psinfo.cwd",                // PCP_PROC_CWD
-    "proc.autogroup.id",              // PCP_PROC_AUTOGROUP_ID
-    "proc.autogroup.nice",            // PCP_PROC_AUTOGROUP_NICE
-    "proc.id.uid",                    // PCP_PROC_ID_UID
-    "proc.id.uid_nm",                 // PCP_PROC_ID_USER
-    "proc.io.rchar",                  // PCP_PROC_IO_RCHAR
-    "proc.io.wchar",                  // PCP_PROC_IO_WCHAR
-    "proc.io.syscr",                  // PCP_PROC_IO_SYSCR
-    "proc.io.syscw",                  // PCP_PROC_IO_SYSCW
-    "proc.io.read_bytes",             // PCP_PROC_IO_READB
-    "proc.io.write_bytes",            // PCP_PROC_IO_WRITEB
-    "proc.io.cancelled_write_bytes",  // PCP_PROC_IO_CANCELLED
-    "proc.memory.size",               // PCP_PROC_MEM_SIZE
-    "proc.memory.rss",                // PCP_PROC_MEM_RSS
-    "proc.memory.share",              // PCP_PROC_MEM_SHARE
-    "proc.memory.textrss",            // PCP_PROC_MEM_TEXTRS
-    "proc.memory.librss",             // PCP_PROC_MEM_LIBRS
-    "proc.memory.datrss",             // PCP_PROC_MEM_DATRS
-    "proc.memory.dirty",              // PCP_PROC_MEM_DIRTY
-    "proc.smaps.pss",                 // PCP_PROC_SMAPS_PSS
-    "proc.smaps.swap",                // PCP_PROC_SMAPS_SWAP
-    "proc.smaps.swappss",             // PCP_PROC_SMAPS_SWAPPSS
+    "zfs.arc.anon_size",                   // PCP_ZFS_ARC_ANON_SIZE
+    "zfs.arc.bonus_size",                  // PCP_ZFS_ARC_BONUS_SIZE
+    "zfs.arc.compressed_size",             // PCP_ZFS_ARC_COMPRESSED_SIZE
+    "zfs.arc.uncompressed_size",           // PCP_ZFS_ARC_UNCOMPRESSED_SIZE
+    "zfs.arc.c_min",                       // PCP_ZFS_ARC_C_MIN
+    "zfs.arc.c_max",                       // PCP_ZFS_ARC_C_MAX
+    "zfs.arc.dbuf_size",                   // PCP_ZFS_ARC_DBUF_SIZE
+    "zfs.arc.dnode_size",                  // PCP_ZFS_ARC_DNODE_SIZE
+    "zfs.arc.hdr_size",                    // PCP_ZFS_ARC_HDR_SIZE
+    "zfs.arc.mfu.size",                    // PCP_ZFS_ARC_MFU_SIZE
+    "zfs.arc.mru.size",                    // PCP_ZFS_ARC_MRU_SIZE
+    "zfs.arc.size",                        // PCP_ZFS_ARC_SIZE
+    "zram.capacity",                       // PCP_ZRAM_CAPACITY
+    "zram.mm_stat.data_size.original",     // PCP_ZRAM_ORIGINAL
+    "zram.mm_stat.data_size.compressed",   // PCP_ZRAM_COMPRESSED
+    "mem.util.zswap",                      // PCP_MEM_ZSWAP
+    "mem.util.zswapped",                   // PCP_MEM_ZSWAPPED
+    "vfs.files.count",                     // PCP_VFS_FILES_COUNT
+    "vfs.files.max",                       // PCP_VFS_FILES_MAX
+    "proc.psinfo.pid",                     // PCP_PROC_PID
+    "proc.psinfo.ppid",                    // PCP_PROC_PPID
+    "proc.psinfo.tgid",                    // PCP_PROC_TGID
+    "proc.psinfo.pgrp",                    // PCP_PROC_PGRP
+    "proc.psinfo.session",                 // PCP_PROC_SESSION
+    "proc.psinfo.sname",                   // PCP_PROC_STATE
+    "proc.psinfo.tty",                     // PCP_PROC_TTY
+    "proc.psinfo.tty_pgrp",                // PCP_PROC_TTYPGRP
+    "proc.psinfo.minflt",                  // PCP_PROC_MINFLT
+    "proc.psinfo.maj_flt",                 // PCP_PROC_MAJFLT
+    "proc.psinfo.cmin_flt",                // PCP_PROC_CMINFLT
+    "proc.psinfo.cmaj_flt",                // PCP_PROC_CMAJFLT
+    "proc.psinfo.utime",                   // PCP_PROC_UTIME
+    "proc.psinfo.stime",                   // PCP_PROC_STIME
+    "proc.psinfo.cutime",                  // PCP_PROC_CUTIME
+    "proc.psinfo.cstime",                  // PCP_PROC_CSTIME
+    "proc.psinfo.priority",                // PCP_PROC_PRIORITY
+    "proc.psinfo.nice",                    // PCP_PROC_NICE
+    "proc.psinfo.threads",                 // PCP_PROC_THREADS
+    "proc.psinfo.start_time",              // PCP_PROC_STARTTIME
+    "proc.psinfo.processor",               // PCP_PROC_PROCESSOR
+    "proc.psinfo.cmd",                     // PCP_PROC_CMD
+    "proc.psinfo.psargs",                  // PCP_PROC_PSARGS
+    "proc.psinfo.cgroups",                 // PCP_PROC_CGROUPS
+    "proc.psinfo.oom_score",               // PCP_PROC_OOMSCORE
+    "proc.psinfo.vctxsw",                  // PCP_PROC_VCTXSW
+    "proc.psinfo.nvctxsw",                 // PCP_PROC_NVCTXSW
+    "proc.psinfo.labels",                  // PCP_PROC_LABELS
+    "proc.psinfo.environ",                 // PCP_PROC_ENVIRON
+    "proc.psinfo.ttyname",                 // PCP_PROC_TTYNAME
+    "proc.psinfo.exe",                     // PCP_PROC_EXE
+    "proc.psinfo.cwd",                     // PCP_PROC_CWD
+    "proc.autogroup.id",                   // PCP_PROC_AUTOGROUP_ID
+    "proc.autogroup.nice",                 // PCP_PROC_AUTOGROUP_NICE
+    "proc.id.uid",                         // PCP_PROC_ID_UID
+    "proc.id.uid_nm",                      // PCP_PROC_ID_USER
+    "proc.io.rchar",                       // PCP_PROC_IO_RCHAR
+    "proc.io.wchar",                       // PCP_PROC_IO_WCHAR
+    "proc.io.syscr",                       // PCP_PROC_IO_SYSCR
+    "proc.io.syscw",                       // PCP_PROC_IO_SYSCW
+    "proc.io.read_bytes",                  // PCP_PROC_IO_READB
+    "proc.io.write_bytes",                 // PCP_PROC_IO_WRITEB
+    "proc.io.cancelled_write_bytes",       // PCP_PROC_IO_CANCELLED
+    "proc.memory.size",                    // PCP_PROC_MEM_SIZE
+    "proc.memory.rss",                     // PCP_PROC_MEM_RSS
+    "proc.memory.share",                   // PCP_PROC_MEM_SHARE
+    "proc.memory.textrss",                 // PCP_PROC_MEM_TEXTRS
+    "proc.memory.librss",                  // PCP_PROC_MEM_LIBRS
+    "proc.memory.datrss",                  // PCP_PROC_MEM_DATRS
+    "proc.memory.dirty",                   // PCP_PROC_MEM_DIRTY
+    "proc.smaps.pss",                      // PCP_PROC_SMAPS_PSS
+    "proc.smaps.swap",                     // PCP_PROC_SMAPS_SWAP
+    "proc.smaps.swappss",                  // PCP_PROC_SMAPS_SWAPPSS
 ];
 
 // CPUMeter.h `CPU_METER_*` indices into `Meter::values` (the shuffled htop
@@ -1287,8 +1287,12 @@ pub fn Platform_getFailedState() -> Option<&'static str> {
 /// `ATTR_UNUSED`).
 pub fn Platform_longOptionsUsage(_name: &str) {
     // C: one printf of a three-line concatenated string literal.
-    println!("   --host=HOSTSPEC              metrics source is PMCD at HOSTSPEC [see PCPIntro(1)]");
-    println!("   --hostzone                   set reporting timezone to local time of metrics source");
+    println!(
+        "   --host=HOSTSPEC              metrics source is PMCD at HOSTSPEC [see PCPIntro(1)]"
+    );
+    println!(
+        "   --hostzone                   set reporting timezone to local time of metrics source"
+    );
     println!("   --timezone=TZ                set reporting timezone");
 }
 

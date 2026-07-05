@@ -5,6 +5,10 @@
 //! which platform module is active.
 #![allow(non_snake_case)]
 
+// htop's `HAVE_DEMANGLING` build variant (libiberty `cplus_demangle`), behind
+// the `demangle` cargo feature — off by default, verified by reading + the gate.
+#[cfg(feature = "demangle")]
+pub mod demangle;
 pub mod fdstat_sysctl;
 pub mod gettime;
 pub mod uname;

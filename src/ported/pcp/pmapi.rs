@@ -355,10 +355,22 @@ pub const PMOPTIONS_ZERO: pmOptions = pmOptions {
     narchives: 0,
     hosts: core::ptr::null_mut(),
     archives: core::ptr::null_mut(),
-    start: libc::timespec { tv_sec: 0, tv_nsec: 0 },
-    finish: libc::timespec { tv_sec: 0, tv_nsec: 0 },
-    origin: libc::timespec { tv_sec: 0, tv_nsec: 0 },
-    interval: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+    start: libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    },
+    finish: libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    },
+    origin: libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    },
+    interval: libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    },
     align_optarg: core::ptr::null_mut(),
     start_optarg: core::ptr::null_mut(),
     finish_optarg: core::ptr::null_mut(),

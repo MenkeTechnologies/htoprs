@@ -54,6 +54,11 @@ regex = "1"
 # leaf modules (PCPProcess) compile under `--features pcp` while the pmapi-linked
 # modules stay read-verified.
 pcp = []
+# Faithful analog of htop's `HAVE_DEMANGLING` (`--enable-…` libiberty) build
+# variant: C++/Rust symbol demangling for the backtrace screen (`generic/
+# Demangle.c`). Off by default; its `cplus_demangle` (libiberty) surface is
+# hand-declared, verified by primary-source reading + the port gate.
+demangle = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libmedium = "0.13.4"
