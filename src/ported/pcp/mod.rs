@@ -12,5 +12,6 @@
 pub mod metric;
 pub mod pcpmachine;
 pub mod pcpprocess;
+pub mod pcpprocesstable;
 pub mod platform;
 pub mod pmapi;

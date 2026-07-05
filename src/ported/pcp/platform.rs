@@ -69,3 +69,12 @@ pub fn Platform_updateTables(host: &mut Machine) {
     let _ = host;
     todo!("pcp/Platform.c:997 Platform_updateTables — not yet ported (dynamic tables)")
 }
+
+/// TODO: port of `time_t Platform_getBootTime(void)` (`pcp/Platform.c`). Returns
+/// the boot time (seconds since epoch) read from the PCP context; needs the
+/// context setup the rest of `Platform.c` provides. Scaffolded here so
+/// [`PCPProcessTable`](super::pcpprocesstable)'s starttime call site stays 1:1
+/// until `Platform.c` is ported.
+pub fn Platform_getBootTime() -> libc::time_t {
+    todo!("pcp/Platform.c Platform_getBootTime — not yet ported (needs PCP context)")
+}
