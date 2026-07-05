@@ -228,4 +228,28 @@ extern "C" {
     /// `double pmtimevalToReal(const struct timeval*)` (`pmapi.h`) — a `timeval`
     /// as fractional seconds.
     pub fn pmtimevalToReal(tv: *const libc::timeval) -> f64;
+    /// `int pmConvScale(int, const pmAtomValue*, const pmUnits*, pmAtomValue*,
+    /// const pmUnits*)` (`pmapi.h:749`) — rescale a value between units.
+    pub fn pmConvScale(
+        type_: c_int,
+        ival: *const pmAtomValue,
+        iunit: *const pmUnits,
+        oval: *mut pmAtomValue,
+        ounit: *const pmUnits,
+    ) -> c_int;
+    /// `char* pmGetConfig(const char*)` (`pmapi.h:892`) — a PCP config value
+    /// (e.g. `PCP_SHARE_DIR`).
+    pub fn pmGetConfig(name: *const c_char) -> *mut c_char;
+    /// `char* pmGetProgname(void)` (`pmapi.h:1301`) — the program name.
+    pub fn pmGetProgname() -> *mut c_char;
+    /// `int pmRegisterDerivedMetric(const char*, const char*, char**)`
+    /// (`pmapi.h:1099`) — register a derived-metric expression.
+    pub fn pmRegisterDerivedMetric(
+        name: *const c_char,
+        expr: *const c_char,
+        errmsg: *mut *mut c_char,
+    ) -> c_int;
+    /// `int pmsprintf(char*, size_t, const char*, ...)` (`pmapi.h:855`) — PCP's
+    /// bounded, always-NUL-terminating `snprintf`.
+    pub fn pmsprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
 }

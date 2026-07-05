@@ -16,6 +16,7 @@ use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
 use crate::ported::machine::Machine;
+use crate::ported::pcp::metric::Metric;
 use crate::ported::pcp::pmapi::{pmDesc, pmID, pmResult};
 
 /// Port of `typedef struct Platform_` (`pcp/Platform.h:45`) — the PCP backend's
@@ -77,4 +78,15 @@ pub fn Platform_updateTables(host: &mut Machine) {
 /// until `Platform.c` is ported.
 pub fn Platform_getBootTime() -> libc::time_t {
     todo!("pcp/Platform.c Platform_getBootTime — not yet ported (needs PCP context)")
+}
+
+/// TODO: port of `size_t Platform_addMetric(Metric id, const char* name)`
+/// (`pcp/Platform.c:328`). Registers a metric name into the `pcp->names`/`pmids`
+/// registry and returns its result offset; needs the `Platform_init` context
+/// setup the rest of `Platform.c` provides. Scaffolded here so
+/// [`PCPDynamicColumn`](super::pcpdynamiccolumn)'s `addMetric` call site stays
+/// 1:1 until `Platform.c` is ported.
+pub fn Platform_addMetric(id: Metric, name: &str) -> usize {
+    let _ = (id, name);
+    todo!("pcp/Platform.c:328 Platform_addMetric — not yet ported (needs the metric registry)")
 }
