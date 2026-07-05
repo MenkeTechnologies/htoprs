@@ -14,6 +14,7 @@ pub mod instance;
 pub mod metric;
 pub mod pcpdynamiccolumn;
 pub mod pcpdynamicmeter;
+pub mod pcpdynamicscreen;
 pub mod pcpmachine;
 pub mod pcpprocess;
 pub mod pcpprocesstable;
