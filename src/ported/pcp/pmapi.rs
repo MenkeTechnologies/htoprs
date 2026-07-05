@@ -43,6 +43,13 @@ pub const PM_VAL_INSITU: c_int = 0;
 /// `#define PM_ID_NULL 0xffffffff` (`pmapi.h:87`) — a disabled/absent PMID.
 pub const PM_ID_NULL: pmID = 0xffff_ffff;
 
+// Context types (`pmapi.h:401-404`), the `pmNewContext`/`pmOptions.context`
+// values.
+pub const PM_CONTEXT_UNDEF: c_int = -1;
+pub const PM_CONTEXT_HOST: c_int = 1;
+pub const PM_CONTEXT_ARCHIVE: c_int = 2;
+pub const PM_CONTEXT_LOCAL: c_int = 3;
+
 // Space scale codes (`pmapi.h:128-129`), the `pmUnits.scaleSpace` values.
 pub const PM_SPACE_BYTE: c_int = 0;
 pub const PM_SPACE_KBYTE: c_int = 1;
@@ -190,6 +197,180 @@ pub struct pmDesc {
     pub units: pmUnits,
 }
 
+/// `typedef struct pmLongOptions` (`pmapi.h:1025`) — one CLI long-option
+/// descriptor in a `pmOptions.long_options` table (getopt-`long`-shaped, plus
+/// `argname`/`message` for `pmUsageMessage`).
+#[repr(C)]
+pub struct pmLongOptions {
+    /// `const char* long_opt` — the `--name` (NULL terminates the table).
+    pub long_opt: *const c_char,
+    /// `int has_arg` — `no_argument`/`required_argument`/`optional_argument`.
+    pub has_arg: c_int,
+    /// `int short_opt` — the equivalent short-option character / return value.
+    pub short_opt: c_int,
+    /// `const char* argname` — argument placeholder for the usage message.
+    pub argname: *const c_char,
+    /// `const char* message` — the help text for the usage message.
+    pub message: *const c_char,
+}
+
+/// `typedef int (*pmOptionOverride)(int, struct pmOptions*)` (`pmapi.h:1023`) —
+/// caller hook to override option handling. Nullable (`Option<fn>` ⇒ the C
+/// NULL function pointer).
+pub type pmOptionOverride = Option<unsafe extern "C" fn(c_int, *mut pmOptions) -> c_int>;
+
+/// `typedef struct pmOptions` (`pmapi.h:1033`, the current/v3 ABI) — the shared
+/// PMAPI command-line option-parsing state (`pmGetOptions`/
+/// `pmGetContextOptions` fill it, htop reads the parsed `context`/`hosts`/
+/// `archives`/`timezone`/`errors`). Transcribed field-for-field; the trailing
+/// `guiflag:1 | tzflag:1 | nsflag:1 | Lflag:1 | zeroes:28` bitfields are one
+/// `unsigned int` word ([`bitfields`](Self::bitfields)) with LSB-first packing
+/// (`HAVE_BITFIELDS_LTOR` undefined, matching [`pmUnits`]), read/written via the
+/// [`tzflag`](Self::tzflag)/[`guiflag`](Self::guiflag) accessors.
+#[repr(C)]
+pub struct pmOptions {
+    /// `int version`.
+    pub version: c_int,
+    /// `int flags` — `PM_OPTFLAG_*`.
+    pub flags: c_int,
+    /// `const char* short_options` — in: the getopt short-option string.
+    pub short_options: *const c_char,
+    /// `pmLongOptions* long_options` — in: the long-option table.
+    pub long_options: *mut pmLongOptions,
+    /// `const char* short_usage` — in: the one-line usage synopsis.
+    pub short_usage: *const c_char,
+    /// `pmOptionOverride override` — in: the general option-override hook.
+    pub override_: pmOptionOverride,
+    /// `int index` — out: getopt long-option index.
+    pub index: c_int,
+    /// `int optind` — out: getopt `optind`.
+    pub optind: c_int,
+    /// `int opterr` — out: getopt `opterr`.
+    pub opterr: c_int,
+    /// `int optopt` — out: getopt `optopt`.
+    pub optopt: c_int,
+    /// `char* optarg` — out: getopt `optarg`.
+    pub optarg: *mut c_char,
+    /// `int __initialized` — internal; do not access.
+    pub __initialized: c_int,
+    /// `char* __nextchar` — internal; do not access.
+    pub __nextchar: *mut c_char,
+    /// `int __ordering` — internal; do not access.
+    pub __ordering: c_int,
+    /// `int __posixly_correct` — internal; do not access.
+    pub __posixly_correct: c_int,
+    /// `int __first_nonopt` — internal; do not access.
+    pub __first_nonopt: c_int,
+    /// `int __last_nonopt` — internal; do not access.
+    pub __last_nonopt: c_int,
+    /// `int errors` — out: parse-error count.
+    pub errors: c_int,
+    /// `int context` — out: `PM_CONTEXT_{HOST,ARCHIVE,LOCAL}`.
+    pub context: c_int,
+    /// `int nhosts` — out: number of `hosts` entries.
+    pub nhosts: c_int,
+    /// `int narchives` — out: number of `archives` entries.
+    pub narchives: c_int,
+    /// `char** hosts` — out: the requested host specifications.
+    pub hosts: *mut *mut c_char,
+    /// `char** archives` — out: the requested archive paths.
+    pub archives: *mut *mut c_char,
+    /// `struct timespec start` — out: sample window start.
+    pub start: libc::timespec,
+    /// `struct timespec finish` — out: sample window finish.
+    pub finish: libc::timespec,
+    /// `struct timespec origin` — out: sample window origin.
+    pub origin: libc::timespec,
+    /// `struct timespec interval` — out: sample interval.
+    pub interval: libc::timespec,
+    /// `char* align_optarg`.
+    pub align_optarg: *mut c_char,
+    /// `char* start_optarg`.
+    pub start_optarg: *mut c_char,
+    /// `char* finish_optarg`.
+    pub finish_optarg: *mut c_char,
+    /// `char* origin_optarg`.
+    pub origin_optarg: *mut c_char,
+    /// `char* guiport_optarg`.
+    pub guiport_optarg: *mut c_char,
+    /// `char* timezone` — out: the requested reporting timezone (`-Z`).
+    pub timezone: *mut c_char,
+    /// `int samples`.
+    pub samples: c_int,
+    /// `int guiport`.
+    pub guiport: c_int,
+    /// `int padding`.
+    pub padding: c_int,
+    /// The `guiflag:1 | tzflag:1 | nsflag:1 | Lflag:1 | zeroes:28` bitfields
+    /// packed into one `unsigned int` word (LSB-first). Accessed via
+    /// [`tzflag`](Self::tzflag)/[`guiflag`](Self::guiflag)/
+    /// [`set_tzflag`](Self::set_tzflag).
+    pub bitfields: c_uint,
+}
+
+impl pmOptions {
+    /// `guiflag : 1` — bit 0 (LSB-first, see [`pmUnits::scaleSpace`]).
+    #[inline]
+    pub fn guiflag(&self) -> c_uint {
+        self.bitfields & 1
+    }
+
+    /// `tzflag : 1` — bit 1. Set when `--hostzone`/`-z` was requested.
+    #[inline]
+    pub fn tzflag(&self) -> c_uint {
+        (self.bitfields >> 1) & 1
+    }
+
+    /// Write `tzflag : 1` (bit 1) — the C `opts.tzflag = v`.
+    #[inline]
+    pub fn set_tzflag(&mut self, v: c_uint) {
+        self.bitfields = (self.bitfields & !(1u32 << 1)) | ((v & 1) << 1);
+    }
+}
+
+/// A fully zero-initialized [`pmOptions`] — the Rust analog of the C
+/// `pmOptions opts;` file-scope global (BSS zero-init). Used to seed the
+/// backend's `opts` global before `pmGetOptions` fills it.
+pub const PMOPTIONS_ZERO: pmOptions = pmOptions {
+    version: 0,
+    flags: 0,
+    short_options: core::ptr::null(),
+    long_options: core::ptr::null_mut(),
+    short_usage: core::ptr::null(),
+    override_: None,
+    index: 0,
+    optind: 0,
+    opterr: 0,
+    optopt: 0,
+    optarg: core::ptr::null_mut(),
+    __initialized: 0,
+    __nextchar: core::ptr::null_mut(),
+    __ordering: 0,
+    __posixly_correct: 0,
+    __first_nonopt: 0,
+    __last_nonopt: 0,
+    errors: 0,
+    context: 0,
+    nhosts: 0,
+    narchives: 0,
+    hosts: core::ptr::null_mut(),
+    archives: core::ptr::null_mut(),
+    start: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+    finish: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+    origin: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+    interval: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+    align_optarg: core::ptr::null_mut(),
+    start_optarg: core::ptr::null_mut(),
+    finish_optarg: core::ptr::null_mut(),
+    origin_optarg: core::ptr::null_mut(),
+    guiport_optarg: core::ptr::null_mut(),
+    timezone: core::ptr::null_mut(),
+    samples: 0,
+    guiport: 0,
+    padding: 0,
+    bitfields: 0,
+};
+
 #[link(name = "pcp")]
 extern "C" {
     /// `int pmFetch(int, pmID*, pmResult**)` (`pmapi.h:593`).
@@ -273,4 +454,15 @@ extern "C" {
     /// `void pmtimevalDec(struct timeval*, const struct timeval*)`
     /// (`pmapi.h:1358`) — subtract `*bp` from `*ap` in place.
     pub fn pmtimevalDec(ap: *mut libc::timeval, bp: *const libc::timeval);
+    /// `int pmGetOptions(int, char* const*, pmOptions*)` (`pmapi.h:1090`) — parse
+    /// the standard PCP command-line options into `opts`. (The header
+    /// `#define pmGetOptions pmGetOptions_v2` is the v2-ABI compat path; the
+    /// plain symbol targets the current ABI, matching the [`pmOptions`] layout.)
+    pub fn pmGetOptions(argc: c_int, argv: *const *mut c_char, opts: *mut pmOptions) -> c_int;
+    /// `int pmGetContextOptions(int, pmOptions*)` (`pmapi.h:1091`) — apply the
+    /// per-context options (timezones, time window) after `pmNewContext`.
+    pub fn pmGetContextOptions(ctx: c_int, opts: *mut pmOptions) -> c_int;
+    /// `void pmUsageMessage(pmOptions*)` (`pmapi.h:1092`) — print the standard
+    /// usage message built from `opts`.
+    pub fn pmUsageMessage(opts: *mut pmOptions);
 }

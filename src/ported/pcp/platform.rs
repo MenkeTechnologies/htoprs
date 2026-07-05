@@ -11,25 +11,27 @@
 //! non-null (a null deref is the faithful "not initialized" crash). Flexible /
 //! union access is under `unsafe`, mirroring the [`Metric`] layer.
 //!
-//! # CLI-options substrate (deferred)
+//! # CLI-options substrate
 //!
 //! `Platform_init`, `Platform_getLongOption`, and `Platform_longOptionsUsage`
-//! are ported as honest `todo!()` bodies: `Platform_init` and
-//! `Platform_getLongOption` need the `pmOptions` global (`opts`) plus
-//! `pmGetOptions`/`pmGetContextOptions`/`optind`/`optarg`/`__pmAddOptHost` CLI
-//! substrate — a large, version-dependent (`PMAPI_VERSION`) bitfield struct
-//! whose exact layout is unsafe to transcribe by hand. Rather than risk a wrong
-//! `pmOptions` layout (worse than a scaffolded stub), the `opts` global is not
-//! declared and the CLI-options trio is deferred as a group.
-//! `Platform_longOptionsUsage` is opts-free itself but is grouped with its
-//! siblings (the CLI path is otherwise unported, so printing partial help is
-//! pointless). Everything else in `Platform.c` is ported.
+//! are ported against the [`pmOptions`] CLI substrate (declared in
+//! [`pmapi`](super::pmapi)): the C file-scope global `pmOptions opts;` is
+//! modeled as `opts` — an [`UnsafeCell`]-wrapped [`pmOptions`] seeded with
+//! [`PMOPTIONS_ZERO`] (the C BSS zero-init) and mutated in place by
+//! `pmGetOptions`/`pmGetContextOptions`/`__pmAddOptHost`, exactly like the C
+//! unsynchronized global (the `AtomicPtr` [`pcp`] global's single-threaded-C
+//! sibling). `Platform_getLongOption` reads the POSIX getopt globals
+//! `optind`/`optarg` (declared `extern` here, as `libc` exposes neither) and
+//! the libpcp-internal `__pmAddOptHost` (a libpcp export without a public
+//! header, declared exactly as the C does). Everything in `Platform.c` is
+//! ported.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 
 use core::any::Any;
+use std::cell::UnsafeCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
@@ -56,20 +58,21 @@ use crate::ported::zfscompressedarcmeter::ZfsCompressedArcMeter_readStats;
 use crate::ported::linux::linuxmachine::ZramStats;
 
 use crate::ported::pcp::metric::{
-    Metric, Metric_enable, Metric_fromId, Metric_instance, Metric_instanceCount, Metric_values,
+    Metric, Metric_enable, Metric_enableThreads, Metric_fetch, Metric_fromId, Metric_instance,
+    Metric_instanceCount, Metric_values,
 };
 use crate::ported::pcp::pcpdynamiccolumn::{
     PCPDynamicColumn, PCPDynamicColumn_writeField, PCPDynamicColumns, PCPDynamicColumns_done,
-    PCPDynamicColumns_setupWidths,
+    PCPDynamicColumns_init, PCPDynamicColumns_setupWidths,
 };
 use crate::ported::pcp::pcpdynamicmeter::{
     PCPDynamicMeter, PCPDynamicMeter_display, PCPDynamicMeter_enable, PCPDynamicMeter_updateValues,
-    PCPDynamicMeters, PCPDynamicMeters_done,
+    PCPDynamicMeters, PCPDynamicMeters_done, PCPDynamicMeters_init,
 };
 use crate::ported::pcp::pcpdynamicscreen::{
     PCPDynamicScreen_addDynamicScreen, PCPDynamicScreen_appendScreens,
     PCPDynamicScreen_appendTables, PCPDynamicScreens, PCPDynamicScreens_addAvailableColumns,
-    PCPDynamicScreens_done,
+    PCPDynamicScreens_done, PCPDynamicScreens_init,
 };
 use crate::ported::pcp::pcpmachine::{
     PCPMachine, SystemName, CPU_FREQUENCY, CPU_GUEST_PERIOD, CPU_IOWAIT_PERIOD, CPU_IRQ_PERIOD,
@@ -81,9 +84,11 @@ use crate::ported::pcp::pcpmachine::{
 };
 use crate::ported::pcp::pcpprocess::PCPProcess;
 use crate::ported::pcp::pmapi::{
-    pmAtomValue, pmDesc, pmDestroyContext, pmFreeResult, pmGetContextHostName, pmID, pmLookupDesc,
-    pmResult, pmtimevalDec, PM_ID_NULL, PM_TYPE_32, PM_TYPE_64, PM_TYPE_DOUBLE, PM_TYPE_STRING,
-    PM_TYPE_U32, PM_TYPE_U64,
+    pmAtomValue, pmDesc, pmDestroyContext, pmErrStr, pmFreeResult, pmGetContextHostName,
+    pmGetContextOptions, pmID, pmLookupDesc, pmLookupName, pmNewContext, pmOptions, pmResult,
+    pmflush, pmprintf, pmtimevalDec, pmGetProgname, PMOPTIONS_ZERO, PM_CONTEXT_ARCHIVE,
+    PM_CONTEXT_HOST, PM_CONTEXT_LOCAL, PM_ID_NULL, PM_TYPE_32, PM_TYPE_64, PM_TYPE_DOUBLE,
+    PM_TYPE_STRING, PM_TYPE_U32, PM_TYPE_U64,
 };
 
 use Metric::*;
@@ -136,6 +141,175 @@ pub struct Platform {
 /// `Platform_*` functions load and dereference it. Modeled as an `AtomicPtr`
 /// (the `CRT_*` global pattern).
 pub static pcp: AtomicPtr<Platform> = AtomicPtr::new(ptr::null_mut());
+
+/// Newtype wrapping the [`pmOptions`] `opts` global in an [`UnsafeCell`] with
+/// an `unsafe impl Sync`. The C `opts` is an unsynchronized file-scope global
+/// filled by `pmGetOptions` and read by `Platform_init`/`Platform_getLongOption`
+/// on the (single) main thread; the `UnsafeCell` is the sound Rust analog of
+/// that mutable static (the same "faithful C global" role the [`pcp`]
+/// `AtomicPtr` plays), and `Sync` is asserted for the single-threaded CLI-parse
+/// access the C assumes.
+struct OptsCell(UnsafeCell<pmOptions>);
+// SAFETY: `opts` is touched only on the main thread during CLI parsing /
+// `Platform_init`, mirroring the C global's single-threaded use.
+unsafe impl Sync for OptsCell {}
+
+/// Port of `pmOptions opts;` (`pcp/Platform.c:347`) — the shared PMAPI
+/// command-line option state, zero-initialized ([`PMOPTIONS_ZERO`]) like the C
+/// BSS global. `pmGetOptions`/`pmGetContextOptions`/`__pmAddOptHost` mutate it
+/// in place through `opts.0.get()` (the C `&opts`).
+static opts: OptsCell = OptsCell(UnsafeCell::new(PMOPTIONS_ZERO));
+
+// PLATFORM_LONGOPT_* (`pcp/Platform.h:125`) — the PCP CLI long-option return
+// codes (the C `enum` begins at 128 so they do not collide with the ASCII
+// short-option characters).
+const PLATFORM_LONGOPT_HOST: c_int = 128;
+const PLATFORM_LONGOPT_TIMEZONE: c_int = 129;
+const PLATFORM_LONGOPT_HOSTZONE: c_int = 130;
+
+/// Port of `static const char* Platform_metricNames[]` (`Platform.c:149`) — the
+/// PCP metric name for each [`Metric`], in enum order (`PCP_CONTROL_THREADS` ..
+/// `PCP_PROC_SMAPS_SWAPPSS`). The C trailing `[PCP_METRIC_COUNT] = NULL`
+/// sentinel is omitted (the init loop only reads `0 .. PCP_METRIC_COUNT`), so
+/// this array is sized `PCP_METRIC_COUNT` exactly.
+static Platform_metricNames: [&str; PCP_METRIC_COUNT as usize] = [
+    "proc.control.perclient.threads", // PCP_CONTROL_THREADS
+    "hinv.ncpu",                      // PCP_HINV_NCPU
+    "hinv.ndisk",                     // PCP_HINV_NDISK
+    "hinv.cpu.clock",                 // PCP_HINV_CPUCLOCK
+    "kernel.uname.sysname",           // PCP_UNAME_SYSNAME
+    "kernel.uname.release",           // PCP_UNAME_RELEASE
+    "kernel.uname.machine",           // PCP_UNAME_MACHINE
+    "kernel.uname.distro",            // PCP_UNAME_DISTRO
+    "kernel.all.load",                // PCP_LOAD_AVERAGE
+    "kernel.all.pid_max",             // PCP_PID_MAX
+    "kernel.all.uptime",              // PCP_UPTIME
+    "kernel.all.boottime",            // PCP_BOOTTIME
+    "kernel.all.cpu.user",            // PCP_CPU_USER
+    "kernel.all.cpu.nice",            // PCP_CPU_NICE
+    "kernel.all.cpu.sys",             // PCP_CPU_SYSTEM
+    "kernel.all.cpu.idle",            // PCP_CPU_IDLE
+    "kernel.all.cpu.wait.total",      // PCP_CPU_IOWAIT
+    "kernel.all.cpu.intr",            // PCP_CPU_IRQ
+    "kernel.all.cpu.irq.soft",        // PCP_CPU_SOFTIRQ
+    "kernel.all.cpu.steal",           // PCP_CPU_STEAL
+    "kernel.all.cpu.guest",           // PCP_CPU_GUEST
+    "kernel.all.cpu.guest_nice",      // PCP_CPU_GUESTNICE
+    "kernel.percpu.cpu.user",         // PCP_PERCPU_USER
+    "kernel.percpu.cpu.nice",         // PCP_PERCPU_NICE
+    "kernel.percpu.cpu.sys",          // PCP_PERCPU_SYSTEM
+    "kernel.percpu.cpu.idle",         // PCP_PERCPU_IDLE
+    "kernel.percpu.cpu.wait.total",   // PCP_PERCPU_IOWAIT
+    "kernel.percpu.cpu.intr",         // PCP_PERCPU_IRQ
+    "kernel.percpu.cpu.irq.soft",     // PCP_PERCPU_SOFTIRQ
+    "kernel.percpu.cpu.steal",        // PCP_PERCPU_STEAL
+    "kernel.percpu.cpu.guest",        // PCP_PERCPU_GUEST
+    "kernel.percpu.cpu.guest_nice",   // PCP_PERCPU_GUESTNICE
+    "mem.physmem",                    // PCP_MEM_TOTAL
+    "mem.util.free",                  // PCP_MEM_FREE
+    "mem.util.active",                // PCP_MEM_ACTIVE
+    "mem.util.available",             // PCP_MEM_AVAILABLE
+    "mem.util.bufmem",                // PCP_MEM_BUFFERS
+    "mem.util.cached",                // PCP_MEM_CACHED
+    "mem.util.compressed",            // PCP_MEM_COMPRESSED
+    "mem.util.external",              // PCP_MEM_EXTERNAL
+    "mem.util.inactive",              // PCP_MEM_INACTIVE
+    "mem.util.shmem",                 // PCP_MEM_SHARED
+    "mem.util.purgeable",             // PCP_MEM_PURGEABLE
+    "mem.util.speculative",           // PCP_MEM_SPECULATIVE
+    "mem.util.slabReclaimable",       // PCP_MEM_SRECLAIM
+    "mem.util.wired",                 // PCP_MEM_WIRED
+    "mem.util.swapCached",            // PCP_MEM_SWAPCACHED
+    "mem.util.swapTotal",             // PCP_MEM_SWAPTOTAL
+    "mem.util.swapFree",              // PCP_MEM_SWAPFREE
+    "swap.length",                    // PCP_SWAP_LENGTH
+    "swap.free",                      // PCP_SWAP_FREE
+    "disk.all.read_bytes",            // PCP_DISK_READB
+    "disk.all.write_bytes",           // PCP_DISK_WRITEB
+    "disk.all.avactive",              // PCP_DISK_ACTIVE
+    "network.all.in.bytes",           // PCP_NET_RECVB
+    "network.all.out.bytes",          // PCP_NET_SENDB
+    "network.all.in.packets",         // PCP_NET_RECVP
+    "network.all.out.packets",        // PCP_NET_SENDP
+    "kernel.all.pressure.cpu.some.avg", // PCP_PSI_CPUSOME
+    "kernel.all.pressure.io.some.avg",  // PCP_PSI_IOSOME
+    "kernel.all.pressure.io.full.avg",  // PCP_PSI_IOFULL
+    "kernel.all.pressure.irq.full.avg", // PCP_PSI_IRQFULL
+    "kernel.all.pressure.memory.some.avg", // PCP_PSI_MEMSOME
+    "kernel.all.pressure.memory.full.avg", // PCP_PSI_MEMFULL
+    "zfs.arc.anon_size",              // PCP_ZFS_ARC_ANON_SIZE
+    "zfs.arc.bonus_size",             // PCP_ZFS_ARC_BONUS_SIZE
+    "zfs.arc.compressed_size",        // PCP_ZFS_ARC_COMPRESSED_SIZE
+    "zfs.arc.uncompressed_size",      // PCP_ZFS_ARC_UNCOMPRESSED_SIZE
+    "zfs.arc.c_min",                  // PCP_ZFS_ARC_C_MIN
+    "zfs.arc.c_max",                  // PCP_ZFS_ARC_C_MAX
+    "zfs.arc.dbuf_size",              // PCP_ZFS_ARC_DBUF_SIZE
+    "zfs.arc.dnode_size",             // PCP_ZFS_ARC_DNODE_SIZE
+    "zfs.arc.hdr_size",               // PCP_ZFS_ARC_HDR_SIZE
+    "zfs.arc.mfu.size",               // PCP_ZFS_ARC_MFU_SIZE
+    "zfs.arc.mru.size",               // PCP_ZFS_ARC_MRU_SIZE
+    "zfs.arc.size",                   // PCP_ZFS_ARC_SIZE
+    "zram.capacity",                  // PCP_ZRAM_CAPACITY
+    "zram.mm_stat.data_size.original",   // PCP_ZRAM_ORIGINAL
+    "zram.mm_stat.data_size.compressed", // PCP_ZRAM_COMPRESSED
+    "mem.util.zswap",                 // PCP_MEM_ZSWAP
+    "mem.util.zswapped",              // PCP_MEM_ZSWAPPED
+    "vfs.files.count",                // PCP_VFS_FILES_COUNT
+    "vfs.files.max",                  // PCP_VFS_FILES_MAX
+    "proc.psinfo.pid",                // PCP_PROC_PID
+    "proc.psinfo.ppid",               // PCP_PROC_PPID
+    "proc.psinfo.tgid",               // PCP_PROC_TGID
+    "proc.psinfo.pgrp",               // PCP_PROC_PGRP
+    "proc.psinfo.session",            // PCP_PROC_SESSION
+    "proc.psinfo.sname",              // PCP_PROC_STATE
+    "proc.psinfo.tty",                // PCP_PROC_TTY
+    "proc.psinfo.tty_pgrp",           // PCP_PROC_TTYPGRP
+    "proc.psinfo.minflt",             // PCP_PROC_MINFLT
+    "proc.psinfo.maj_flt",            // PCP_PROC_MAJFLT
+    "proc.psinfo.cmin_flt",           // PCP_PROC_CMINFLT
+    "proc.psinfo.cmaj_flt",           // PCP_PROC_CMAJFLT
+    "proc.psinfo.utime",              // PCP_PROC_UTIME
+    "proc.psinfo.stime",              // PCP_PROC_STIME
+    "proc.psinfo.cutime",             // PCP_PROC_CUTIME
+    "proc.psinfo.cstime",             // PCP_PROC_CSTIME
+    "proc.psinfo.priority",           // PCP_PROC_PRIORITY
+    "proc.psinfo.nice",               // PCP_PROC_NICE
+    "proc.psinfo.threads",            // PCP_PROC_THREADS
+    "proc.psinfo.start_time",         // PCP_PROC_STARTTIME
+    "proc.psinfo.processor",          // PCP_PROC_PROCESSOR
+    "proc.psinfo.cmd",                // PCP_PROC_CMD
+    "proc.psinfo.psargs",             // PCP_PROC_PSARGS
+    "proc.psinfo.cgroups",            // PCP_PROC_CGROUPS
+    "proc.psinfo.oom_score",          // PCP_PROC_OOMSCORE
+    "proc.psinfo.vctxsw",             // PCP_PROC_VCTXSW
+    "proc.psinfo.nvctxsw",            // PCP_PROC_NVCTXSW
+    "proc.psinfo.labels",             // PCP_PROC_LABELS
+    "proc.psinfo.environ",            // PCP_PROC_ENVIRON
+    "proc.psinfo.ttyname",            // PCP_PROC_TTYNAME
+    "proc.psinfo.exe",                // PCP_PROC_EXE
+    "proc.psinfo.cwd",                // PCP_PROC_CWD
+    "proc.autogroup.id",              // PCP_PROC_AUTOGROUP_ID
+    "proc.autogroup.nice",            // PCP_PROC_AUTOGROUP_NICE
+    "proc.id.uid",                    // PCP_PROC_ID_UID
+    "proc.id.uid_nm",                 // PCP_PROC_ID_USER
+    "proc.io.rchar",                  // PCP_PROC_IO_RCHAR
+    "proc.io.wchar",                  // PCP_PROC_IO_WCHAR
+    "proc.io.syscr",                  // PCP_PROC_IO_SYSCR
+    "proc.io.syscw",                  // PCP_PROC_IO_SYSCW
+    "proc.io.read_bytes",             // PCP_PROC_IO_READB
+    "proc.io.write_bytes",            // PCP_PROC_IO_WRITEB
+    "proc.io.cancelled_write_bytes",  // PCP_PROC_IO_CANCELLED
+    "proc.memory.size",               // PCP_PROC_MEM_SIZE
+    "proc.memory.rss",                // PCP_PROC_MEM_RSS
+    "proc.memory.share",              // PCP_PROC_MEM_SHARE
+    "proc.memory.textrss",            // PCP_PROC_MEM_TEXTRS
+    "proc.memory.librss",             // PCP_PROC_MEM_LIBRS
+    "proc.memory.datrss",             // PCP_PROC_MEM_DATRS
+    "proc.memory.dirty",              // PCP_PROC_MEM_DIRTY
+    "proc.smaps.pss",                 // PCP_PROC_SMAPS_PSS
+    "proc.smaps.swap",                // PCP_PROC_SMAPS_SWAP
+    "proc.smaps.swappss",             // PCP_PROC_SMAPS_SWAPPSS
+];
 
 // CPUMeter.h `CPU_METER_*` indices into `Meter::values` (the shuffled htop
 // CPU-time buckets), matching the `linux/Platform.c` port's local consts.
@@ -337,12 +511,166 @@ pub fn Platform_addMetric(id: Metric, name: &str) -> usize {
     }
 }
 
-/// TODO: port of `bool Platform_init(void)` (`Platform.c:349`). Deferred: needs
-/// the `pmOptions` global (`opts`) + `pmGetOptions`/`pmGetContextOptions`/
-/// `pmNewContext` CLI substrate (option (b) — the `pmOptions` layout is too
-/// version-dependent to transcribe safely). See the module doc.
+/// Port of `bool Platform_init(void)` (`Platform.c:349`). Sets up the PMAPI
+/// context from the parsed `opts` (archive / host / local fallback), allocates
+/// the [`pcp`] global (`PCP_METRIC_COUNT`-sized `names`/`pmids`/`fetch`/`descs`,
+/// the C `xCalloc` arrays), registers every built-in metric
+/// (`Platform_metricNames`) plus the dynamic meters/columns/screens, looks up
+/// the PMIDs + descriptors, then performs the first fetch to cache the boot
+/// time / release / CPU / pid constants. Returns `false` (with the C stderr
+/// diagnostics) on any setup failure. The C `pmDebugOptions.appl0` chatter is
+/// omitted (rule); real error messages stay on stderr.
 pub fn Platform_init() -> bool {
-    todo!("pcp/Platform.c:349 Platform_init — deferred (needs the pmOptions/pmGetOptions CLI substrate)")
+    unsafe {
+        let o = opts.0.get();
+
+        // `local:` context source for the host/local fallback (kept alive
+        // through pmNewContext).
+        let local = CString::new("local:").expect("Platform_init: \"local:\" has interior NUL");
+
+        let source: *const c_char = if (*o).context == PM_CONTEXT_ARCHIVE {
+            *(*o).archives as *const c_char
+        } else if (*o).context == PM_CONTEXT_HOST {
+            if (*o).nhosts > 0 {
+                *(*o).hosts as *const c_char
+            } else {
+                local.as_ptr()
+            }
+        } else {
+            (*o).context = PM_CONTEXT_HOST;
+            local.as_ptr()
+        };
+
+        let mut sts = pmNewContext((*o).context, source);
+        // with no host requested, fallback to PM_CONTEXT_LOCAL shared libraries
+        if sts < 0 && (*o).context == PM_CONTEXT_HOST && (*o).nhosts == 0 {
+            (*o).context = PM_CONTEXT_LOCAL;
+            sts = pmNewContext((*o).context, ptr::null());
+        }
+        if sts < 0 {
+            eprintln!(
+                "Cannot setup PCP metric source: {}",
+                CStr::from_ptr(pmErrStr(sts)).to_string_lossy()
+            );
+            return false;
+        }
+        // setup timezones and other general startup preparation completion
+        if pmGetContextOptions(sts, o) < 0 || (*o).errors != 0 {
+            pmflush();
+            return false;
+        }
+
+        // pcp = xCalloc(1, sizeof(Platform)); + the four xCalloc'd arrays.
+        let count = PCP_METRIC_COUNT as usize;
+        let platform = Platform {
+            context: sts,
+            reconnect: false,
+            totalMetrics: 0,
+            names: vec![ptr::null(); count],
+            pmids: vec![0 as pmID; count],
+            fetch: vec![0 as pmID; count],
+            descs: (0..count).map(|_| core::mem::zeroed()).collect(),
+            result: ptr::null_mut(),
+            meters: PCPDynamicMeters::default(),
+            columns: PCPDynamicColumns::default(),
+            screens: PCPDynamicScreens::default(),
+            offset: core::mem::zeroed(),
+            btime: 0,
+            release: None,
+            pidmax: 0,
+            ncpu: 0,
+        };
+        pcp.store(Box::into_raw(Box::new(platform)), Ordering::Relaxed);
+        let p = pcp.load(Ordering::Relaxed);
+
+        if (*p).context == PM_CONTEXT_ARCHIVE {
+            libc::gettimeofday(&mut (*p).offset, ptr::null_mut());
+            // #if PMAPI_VERSION >= 3
+            let start = libc::timeval {
+                tv_sec: (*o).start.tv_sec,
+                tv_usec: ((*o).start.tv_nsec / 1000) as libc::suseconds_t,
+            };
+            pmtimevalDec(&mut (*p).offset, &start);
+        }
+
+        for i in 0..count {
+            Platform_addMetric(Metric_fromId(i), Platform_metricNames[i]);
+        }
+        (*p).meters.offset = count;
+
+        PCPDynamicMeters_init(&mut (*p).meters);
+
+        (*p).columns.offset = count + (*p).meters.cursor;
+        PCPDynamicColumns_init(&mut (*p).columns);
+        PCPDynamicScreens_init(&mut (*p).screens, &mut (*p).columns);
+
+        let total = (*p).totalMetrics as c_int;
+        let sts = pmLookupName(total, (*p).names.as_ptr(), (*p).pmids.as_mut_ptr());
+        if sts < 0 {
+            eprintln!(
+                "Error: cannot lookup metric names: {}",
+                CStr::from_ptr(pmErrStr(sts)).to_string_lossy()
+            );
+            Platform_done();
+            return false;
+        }
+
+        let sts = pmLookupDescs(total, (*p).pmids.as_mut_ptr(), (*p).descs.as_mut_ptr());
+        if sts < 1 {
+            if sts < 0 {
+                eprintln!(
+                    "Error: cannot lookup descriptors: {}",
+                    CStr::from_ptr(pmErrStr(sts)).to_string_lossy()
+                );
+            } else {
+                // ensure we have at least one valid metric to work with
+                eprintln!("Error: cannot find a single valid metric, exiting");
+            }
+            Platform_done();
+            return false;
+        }
+
+        // set proc.control.perclient.threads to 1 for live contexts
+        Metric_enableThreads();
+
+        // extract values needed for setup - e.g. cpu count, pid_max
+        Metric_enable(PCP_PID_MAX, true);
+        Metric_enable(PCP_BOOTTIME, true);
+        Metric_enable(PCP_HINV_NCPU, true);
+        Metric_enable(PCP_HINV_NDISK, true);
+        Metric_enable(PCP_PERCPU_SYSTEM, true);
+        Metric_enable(PCP_UNAME_SYSNAME, true);
+        Metric_enable(PCP_UNAME_RELEASE, true);
+        Metric_enable(PCP_UNAME_MACHINE, true);
+        Metric_enable(PCP_UNAME_DISTRO, true);
+
+        // enable metrics for all dynamic columns (including those from dynamic screens)
+        let coff = (*p).columns.offset;
+        let ccount = (*p).columns.count;
+        for id in coff..(coff + ccount) {
+            Metric_enable(Metric_fromId(id), true);
+        }
+
+        Metric_fetch(None);
+
+        for id in 0..(PCP_PROC_PID as usize) {
+            Metric_enable(Metric_fromId(id), true);
+        }
+        Metric_enable(PCP_PID_MAX, false); // needed one time only
+        Metric_enable(PCP_BOOTTIME, false);
+        Metric_enable(PCP_UNAME_SYSNAME, false);
+        Metric_enable(PCP_UNAME_RELEASE, false);
+        Metric_enable(PCP_UNAME_MACHINE, false);
+        Metric_enable(PCP_UNAME_DISTRO, false);
+
+        // first sample (fetch) performed above, save constants
+        Platform_getBootTime();
+        Platform_setRelease();
+        Platform_getMaxCPU();
+        Platform_getMaxPid();
+
+        true
+    }
 }
 
 /// Port of `void Platform_dynamicColumnsDone(Hashtable* columns)`
@@ -953,25 +1281,77 @@ pub fn Platform_getFailedState() -> Option<&'static str> {
     }
 }
 
-/// TODO: port of `void Platform_longOptionsUsage(const char* name)`
-/// (`Platform.c:862`). Deferred as part of the CLI-options trio (it is opts-free
-/// itself, but the CLI path is otherwise unported — see the module doc).
-pub fn Platform_longOptionsUsage(name: &str) {
-    let _ = name;
-    todo!("pcp/Platform.c:862 Platform_longOptionsUsage — deferred with the CLI-options trio")
+/// Port of `void Platform_longOptionsUsage(const char* name)`
+/// (`Platform.c:862`). Prints the PCP-specific `--host`/`--hostzone`/
+/// `--timezone` help lines (the C `printf` of the three-line string; `name` is
+/// `ATTR_UNUSED`).
+pub fn Platform_longOptionsUsage(_name: &str) {
+    // C: one printf of a three-line concatenated string literal.
+    println!("   --host=HOSTSPEC              metrics source is PMCD at HOSTSPEC [see PCPIntro(1)]");
+    println!("   --hostzone                   set reporting timezone to local time of metrics source");
+    println!("   --timezone=TZ                set reporting timezone");
 }
 
-/// TODO: port of `CommandLineStatus Platform_getLongOption(int opt, int argc,
-/// char** argv)` (`Platform.c:869`). Deferred: needs the `pmOptions` global
-/// (`opts`) + `optind`/`optarg`/`__pmAddOptHost`/`pmprintf` CLI substrate (see
-/// the module doc).
-pub fn Platform_getLongOption(
-    opt: c_int,
-    argc: c_int,
-    argv: *mut *mut c_char,
-) -> CommandLineStatus {
-    let _ = (opt, argc, argv);
-    todo!("pcp/Platform.c:869 Platform_getLongOption — deferred (needs the pmOptions/opts CLI substrate)")
+/// Port of `CommandLineStatus Platform_getLongOption(int opt, ATTR_UNUSED int
+/// argc, char** argv)` (`Platform.c:869`). Handles the PCP `--host`/
+/// `--hostzone`/`--timezone` options against the `opts` global, using the
+/// POSIX getopt globals `optind`/`optarg` and the libpcp-internal
+/// `__pmAddOptHost`. Signature matches the linux port (C `int opt` → `i32`;
+/// unused `int argc` → `_argc`; `char** argv` → the `parseArguments` `&[String]`
+/// model). The C `argv[optind][0] == '\0'` empty-arg check maps to
+/// `argv[optind].is_empty()`.
+pub fn Platform_getLongOption(opt: i32, _argc: i32, argv: &[String]) -> CommandLineStatus {
+    // C: `extern void __pmAddOptHost(pmOptions*, char*);` — a libpcp export
+    // without a public header, declared exactly as the C declares it.
+    extern "C" {
+        fn __pmAddOptHost(opts: *mut pmOptions, arg: *mut c_char);
+        // POSIX getopt(3) globals (`libc` exposes neither); the C reads them
+        // directly as `optind`/`optarg`.
+        static mut optind: c_int;
+        static mut optarg: *mut c_char;
+    }
+
+    unsafe {
+        let o = opts.0.get();
+        match opt {
+            // --host=HOSTSPEC
+            PLATFORM_LONGOPT_HOST => {
+                if argv[optind as usize].is_empty() {
+                    return CommandLineStatus::ErrorExit;
+                }
+                __pmAddOptHost(o, optarg);
+                CommandLineStatus::Ok
+            }
+            // --hostzone
+            PLATFORM_LONGOPT_HOSTZONE => {
+                if !(*o).timezone.is_null() {
+                    let fmt = CString::new("%s: at most one of -Z and -z allowed\n")
+                        .expect("Platform_getLongOption: fmt has interior NUL");
+                    pmprintf(fmt.as_ptr(), pmGetProgname());
+                    (*o).errors += 1;
+                } else {
+                    (*o).set_tzflag(1);
+                }
+                CommandLineStatus::Ok
+            }
+            // --timezone=TZ
+            PLATFORM_LONGOPT_TIMEZONE => {
+                if argv[optind as usize].is_empty() {
+                    return CommandLineStatus::ErrorExit;
+                }
+                if (*o).tzflag() != 0 {
+                    let fmt = CString::new("%s: at most one of -Z and -z allowed\n")
+                        .expect("Platform_getLongOption: fmt has interior NUL");
+                    pmprintf(fmt.as_ptr(), pmGetProgname());
+                    (*o).errors += 1;
+                } else {
+                    (*o).timezone = optarg;
+                }
+                CommandLineStatus::Ok
+            }
+            _ => CommandLineStatus::ErrorExit,
+        }
+    }
 }
 
 /// Port of `void Platform_gettime_realtime(struct timeval* tv, uint64_t* msec)`
