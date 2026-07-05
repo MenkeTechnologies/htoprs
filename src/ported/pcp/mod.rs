@@ -9,5 +9,7 @@
 //! with `PCPProcess`) reuse the shared `Process`/`Row`/`Object` object model
 //! and compile under `--features pcp`.
 
+pub mod metric;
 pub mod pcpprocess;
+pub mod platform;
 pub mod pmapi;

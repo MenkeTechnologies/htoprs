@@ -40,6 +40,28 @@ pub const PM_TYPE_STRING: c_int = 6;
 /// `#define PM_VAL_INSITU 0` (`pmapi.h:547`) — `pmValue.value.lval` is the value.
 pub const PM_VAL_INSITU: c_int = 0;
 
+/// `#define PM_ID_NULL 0xffffffff` (`pmapi.h:87`) — a disabled/absent PMID.
+pub const PM_ID_NULL: pmID = 0xffff_ffff;
+
+// Space scale codes (`pmapi.h:128-129`), the `pmUnits.scaleSpace` values.
+pub const PM_SPACE_BYTE: c_int = 0;
+pub const PM_SPACE_KBYTE: c_int = 1;
+
+// Time scale codes (`pmapi.h:138-143`), the `pmUnits.scaleTime` values.
+pub const PM_TIME_NSEC: c_int = 0;
+pub const PM_TIME_USEC: c_int = 1;
+pub const PM_TIME_MSEC: c_int = 2;
+pub const PM_TIME_SEC: c_int = 3;
+pub const PM_TIME_MIN: c_int = 4;
+pub const PM_TIME_HOUR: c_int = 5;
+
+/// `#define PM_TEXT_ONELINE 1` (`pmapi.h:768`).
+pub const PM_TEXT_ONELINE: c_int = 1;
+
+/// `#define PM_ERR_IPC (-PM_ERR_BASE-21)` (`pmapi.h:233`) with
+/// `PM_ERR_BASE = PM_ERR_BASE2 = 12345` (`pmapi.h:207-208`) ⇒ `-12366`.
+pub const PM_ERR_IPC: c_int = -12366;
+
 /// `typedef union pmAtomValue` (`pmapi.h`) — a single metric value in one of the
 /// PM_TYPE_* representations.
 #[repr(C)]
@@ -133,6 +155,24 @@ pub struct pmResult {
 pub struct pmUnits {
     /// The packed dimension/scale bitfields.
     pub bits: u32,
+}
+
+impl pmUnits {
+    /// `pmUnits.scaleSpace` (`unsigned int : 4`). On the little-endian targets
+    /// (`HAVE_BITFIELDS_LTOR` undefined, `pmapi.h:106` `#else` layout), the
+    /// fields pack LSB-first as `extraScale:3, extraUnit:5, scaleCount:4,
+    /// scaleTime:4, scaleSpace:4, …`, so `scaleSpace` occupies bits 16–19.
+    #[inline]
+    pub fn scaleSpace(self) -> c_int {
+        ((self.bits >> 16) & 0xF) as c_int
+    }
+
+    /// `pmUnits.scaleTime` (`unsigned int : 4`) — bits 12–15 (see
+    /// [`pmUnits::scaleSpace`] for the bit-order derivation).
+    #[inline]
+    pub fn scaleTime(self) -> c_int {
+        ((self.bits >> 12) & 0xF) as c_int
+    }
 }
 
 /// `typedef struct pmDesc` (`pmapi.h`) — a metric's descriptor.
