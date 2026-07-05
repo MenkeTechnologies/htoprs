@@ -9,6 +9,8 @@
 //! with `PCPProcess`) reuse the shared `Process`/`Row`/`Object` object model
 //! and compile under `--features pcp`.
 
+pub mod indomtable;
+pub mod instance;
 pub mod metric;
 pub mod pcpdynamiccolumn;
 pub mod pcpdynamicmeter;

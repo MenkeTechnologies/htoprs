@@ -15,6 +15,7 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
+use crate::ported::hashtable::Hashtable;
 use crate::ported::machine::Machine;
 use crate::ported::pcp::metric::Metric;
 use crate::ported::pcp::pmapi::{pmDesc, pmID, pmResult};
@@ -89,4 +90,12 @@ pub fn Platform_getBootTime() -> libc::time_t {
 pub fn Platform_addMetric(id: Metric, name: &str) -> usize {
     let _ = (id, name);
     todo!("pcp/Platform.c:328 Platform_addMetric — not yet ported (needs the metric registry)")
+}
+
+/// TODO: port of `Hashtable* Platform_dynamicColumns(void)` (`pcp/Platform.c`).
+/// Returns the global dynamic-column registry (`pcp->columns.table`, a deferred
+/// `Platform` field). Scaffolded here so [`Instance`](super::instance)'s
+/// `compareByKey`/`writeField` call sites stay 1:1 until `Platform.c` is ported.
+pub fn Platform_dynamicColumns() -> *mut Hashtable {
+    todo!("pcp/Platform.c Platform_dynamicColumns — not yet ported (needs pcp->columns)")
 }
