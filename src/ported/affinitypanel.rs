@@ -23,14 +23,13 @@
 //!   the `#else` arm (`this->cpu = cpu`) is what ports. Returns an owned
 //!   [`MaskItem`] (the `History_new`/`Affinity_new` idiom for a C fn that
 //!   heap-allocates and returns a pointer).
-//! - [`MaskItem_display`] (`AffinityPanel.c:62`) — the always-run checkbox
-//!   glyph (`[x]`/`[o]`/`[ ]` in `CHECK_BOX`/`CHECK_MARK`) plus the trailing
-//!   `text` (in `CHECK_TEXT`), through the real [`RichString`]/
-//!   [`ColorElements`] substrate. The `if (this->indent)` tree-node branch
-//!   needs `CRT_treeStr[TREE_STR_OPEN/SHUT]`, which is not ported in
-//!   `crt.rs`; since only the hwloc-only [`MaskItem_newMask`] ever sets a
-//!   non-NULL `indent`, that branch is unreachable in this build and stays
-//!   a `todo!()` (the `ListItem_display` moving-glyph precedent).
+//! - [`MaskItem_display`] (`AffinityPanel.c:62`) — the checkbox glyph
+//!   (`[x]`/`[o]`/`[ ]` in `CHECK_BOX`/`CHECK_MARK`), the `if (this->indent)`
+//!   tree-node branch (indent guides + `CRT_treeStr[TREE_STR_OPEN/SHUT]` in
+//!   `PROCESS_TREE`), and the trailing `text` (in `CHECK_TEXT`), through the
+//!   real [`RichString`]/[`ColorElements`]/[`TreeStr`] substrate. The tree
+//!   branch is only reached in a `HAVE_LIBHWLOC` build (only
+//!   [`MaskItem_newMask`] sets a non-NULL `indent`) but is ported in full.
 //! - [`AffinityPanel_getAffinity`] (`AffinityPanel.c:444`) — the non-hwloc
 //!   branch: `Affinity_new(host)`, then for each `cpuids` item whose
 //!   `value` is set, `Affinity_add(affinity, item->cpu)`. Both
@@ -82,7 +81,7 @@
 #![allow(dead_code)]
 
 use crate::ported::affinity::{Affinity, Affinity_add, Affinity_new};
-use crate::ported::crt::{ColorElements, ColorScheme};
+use crate::ported::crt::{ColorElements, ColorScheme, TreeStr};
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
 use crate::ported::panel::{HandlerResult, Panel, PanelClass, Panel_done};
@@ -141,12 +140,12 @@ pub fn MaskItem_delete(this: MaskItem) {
 /// Appends the checkbox (`[x]` for a fully-set item, `[o]` for a partial
 /// one, `[ ]` otherwise) using `CRT_colors[CHECK_BOX]`/`CHECK_MARK`, a
 /// `CHECK_TEXT` space, then the item `text` in `CHECK_TEXT`. The
-/// `if (this->indent)` tree-node branch draws the indent guides and the
-/// open/shut glyph via `CRT_treeStr[TREE_STR_OPEN/SHUT]`, which is not
-/// ported in `crt.rs` (`crt.rs` is off-limits to this module); since only
-/// the hwloc-only [`MaskItem_newMask`] sets a non-NULL `indent`, that branch
-/// is unreachable in this non-hwloc build and stays a `todo!()` — the
-/// `ListItem_display` moving-glyph precedent.
+/// `if (this->indent)` tree-node branch draws the indent guides in
+/// `PROCESS_TREE` plus the open/shut glyph via
+/// [`TreeStr::TREE_STR_OPEN`]/[`TreeStr::TREE_STR_SHUT`] (`CRT_treeStr`). That
+/// branch is only reachable in a `HAVE_LIBHWLOC` build (only the hwloc-only
+/// [`MaskItem_newMask`] sets a non-NULL `indent`), but it is now ported
+/// faithfully rather than left a stub.
 pub fn MaskItem_display(this: &MaskItem, out: &mut RichString) {
     let check_box = ColorElements::CHECK_BOX.packed(ColorScheme::active());
     let check_mark = ColorElements::CHECK_MARK.packed(ColorScheme::active());
@@ -162,19 +161,21 @@ pub fn MaskItem_display(this: &MaskItem, out: &mut RichString) {
     }
     RichString_appendAscii(out, check_box, b"]");
     RichString_appendAscii(out, check_text, b" ");
-    if this.indent.is_some() {
+    if let Some(indent) = &this.indent {
         // C: RichString_appendWide(out, CRT_colors[PROCESS_TREE], this->indent);
         //    RichString_appendWide(out, CRT_colors[PROCESS_TREE],
         //       this->sub_tree == 2 ? CRT_treeStr[TREE_STR_OPEN]
         //                            : CRT_treeStr[TREE_STR_SHUT]);
         //    RichString_appendAscii(out, CRT_colors[CHECK_TEXT], " ");
-        // The open/shut glyph needs the unported CRT_treeStr tables
-        // (TREE_STR_OPEN/SHUT); crt.rs is off-limits to this module, and
-        // this branch is unreachable without libhwloc (only MaskItem_newMask
-        // sets a non-NULL indent).
-        todo!(
-            "AffinityPanel.c:77: tree-node indent needs unported CRT_treeStr (TREE_STR_OPEN/SHUT)"
-        );
+        let process_tree = ColorElements::PROCESS_TREE.packed(ColorScheme::active());
+        RichString_appendWide(out, process_tree, indent.as_bytes());
+        let glyph = if this.sub_tree == 2 {
+            TreeStr::TREE_STR_OPEN.glyph()
+        } else {
+            TreeStr::TREE_STR_SHUT.glyph()
+        };
+        RichString_appendWide(out, process_tree, glyph.as_bytes());
+        RichString_appendAscii(out, check_text, b" ");
     }
     RichString_appendWide(out, check_text, this.text.as_bytes());
 }
@@ -419,20 +420,37 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CRT_treeStr")]
-    fn display_tree_node_branch_is_blocked_on_crt_treestr() {
-        // A non-NULL indent marks a tree node; that branch needs the
-        // unported CRT_treeStr tables and is unreachable without libhwloc.
-        let it = MaskItem {
+    fn display_tree_node_draws_indent_and_openshut_glyph() {
+        // A non-NULL indent marks a tree node (only set in a HAVE_LIBHWLOC
+        // build). The branch draws "[<box>] <indent><glyph> <text>", where the
+        // glyph is CRT_treeStr[TREE_STR_OPEN] when sub_tree == 2 else
+        // TREE_STR_SHUT. Compare against the same table so the assertion holds
+        // in both the ASCII and UTF-8 glyph modes.
+        let shut = MaskItem {
             text: "Package".to_string(),
             indent: Some("|- ".to_string()),
-            value: 2,
-            sub_tree: 1,
+            value: 2,    // [x]
+            sub_tree: 1, // != 2 -> SHUT
             children: Vec::new(),
             cpu: 0,
         };
         let mut rs = RichString::new();
-        MaskItem_display(&it, &mut rs);
+        MaskItem_display(&shut, &mut rs);
+        assert_eq!(
+            rendered(&rs),
+            format!("[x] |- {} Package", TreeStr::TREE_STR_SHUT.glyph())
+        );
+
+        let open = MaskItem {
+            sub_tree: 2, // -> OPEN
+            ..shut
+        };
+        let mut rs = RichString::new();
+        MaskItem_display(&open, &mut rs);
+        assert_eq!(
+            rendered(&rs),
+            format!("[x] |- {} Package", TreeStr::TREE_STR_OPEN.glyph())
+        );
     }
 
     // ── AffinityPanel_getAffinity ─────────────────────────────────────
