@@ -155,7 +155,7 @@ fn InDomTable_getInstance(this: &mut InDomTable, id: c_int) -> (bool, usize) {
     let host = this.super_.host;
     let this_ptr = this as *const InDomTable;
     let mut inst = Instance_new(host, this_ptr);
-    debug_assert!(inst.name.is_none());
+    debug_assert!(inst.name.get().is_none());
     Instance_setId(&mut inst, id);
 
     let idx = this.super_.rows.len();

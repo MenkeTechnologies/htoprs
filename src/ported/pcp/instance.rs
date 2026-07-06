@@ -25,12 +25,11 @@
 //!   safe-Rust downcast is exact-type. Same cross-module impedance mismatch
 //!   documented in `pcpdynamiccolumn.rs`.
 //! - **`Instance_externalName` lazy fill** ([`Instance_externalName`]): C fills
-//!   `this->name` lazily via `pmNameInDom` through the *mutable* `Row*` slot
-//!   (`Row_SortKeyString` is `const char* (*)(Row*)` in C). The ported
-//!   [`Row_SortKeyString`](crate::ported::row::Row_SortKeyString) slot is
-//!   `fn(&dyn Object) -> Option<&[u8]>` (shared ref), so the `&mut this->name`
-//!   fill cannot be performed through it without violating Rust aliasing. The
-//!   ported body returns the current `name` (`None` until populated). Reported.
+//!   `this->name` lazily via `pmNameInDom` through the `Row*` slot. The ported
+//!   [`Row_SortKeyString`](crate::ported::row::Row_SortKeyString) slot is a
+//!   shared `&dyn Object`, so `name` is a [`OnceCell`] filled through it (the
+//!   `Cell`-interior-mutability precedent from `pcpdynamicscreen.rs`); no
+//!   deviation.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -38,8 +37,9 @@
 
 use core::any::Any;
 use core::ffi::c_void;
-use std::ffi::CStr;
-use std::os::raw::c_int;
+use std::cell::OnceCell;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use crate::ported::hashtable::Hashtable_get;
@@ -49,7 +49,7 @@ use crate::ported::pcp::indomtable::InDomTable;
 use crate::ported::pcp::metric::{Metric_desc, Metric_fromId, Metric_instance, Metric_type};
 use crate::ported::pcp::pcpdynamiccolumn::{PCPDynamicColumn, PCPDynamicColumn_writeAtomValue};
 use crate::ported::pcp::platform::Platform_dynamicColumns;
-use crate::ported::pcp::pmapi::{pmAtomValue, pmInDom, PM_TYPE_STRING};
+use crate::ported::pcp::pmapi::{pmAtomValue, pmInDom, pmNameInDom, PM_TYPE_STRING};
 use crate::ported::process::spaceship_nullstr;
 use crate::ported::richstring::RichString;
 use crate::ported::row::{
@@ -60,14 +60,17 @@ use crate::ported::settings::{
 };
 
 /// Port of `typedef struct Instance_` (`pcp/Instance.h:17`). "Extends" [`Row`]
-/// via the embedded `super_` (C's first member). `char* name` → `Option<String>`
-/// (`None` = C `NULL`); the `const struct InDomTable_*` back-pointer → a raw
-/// `*const InDomTable`.
+/// via the embedded `super_` (C's first member). `char* name` → an owned
+/// [`CString`] lazily filled once (empty `OnceCell` = C `NULL`); the
+/// `const struct InDomTable_*` back-pointer → a raw `*const InDomTable`.
 pub struct Instance {
     /// C `Row super`.
     pub super_: Row,
-    /// C `char* name` — external instance name (`None` = C `NULL`).
-    pub name: Option<String>,
+    /// C `char* name` — external instance name. Held in a [`OnceCell`] so the
+    /// `const`-slot [`Instance_externalName`] can lazily fill it through a
+    /// shared `&Instance` (C mutates `this->name` through the `Row*` slot);
+    /// empty until [`pmNameInDom`] first succeeds (C `NULL`).
+    pub name: OnceCell<CString>,
     /// C `const struct InDomTable_* indom` — the owning instance domain.
     pub indom: *const InDomTable,
     /// C `unsigned int offset` — default result offset for metric searches.
@@ -103,7 +106,7 @@ pub fn Instance_setId(this: &mut Instance, id: c_int) {
 pub fn Instance_new(host: *const Machine, indom: *const InDomTable) -> Box<Instance> {
     let mut this = Box::new(Instance {
         super_: Row::default(),
-        name: None,
+        name: OnceCell::new(),
         // C sets `this->indom = indom` after Row_init; Row_init touches only
         // `super`, so setting it here is order-equivalent.
         indom,
@@ -120,7 +123,9 @@ pub fn Instance_new(host: *const Machine, indom: *const InDomTable) -> Box<Insta
 /// Does not free the struct storage — the `_done` contract.
 pub fn Instance_done(this: &mut Instance) {
     // if (this->name) free(this->name);
-    this.name = None;
+    // Dropping the OnceCell frees the owned CString (the copy of the
+    // pmNameInDom-malloc'd name); the raw was freed at fill time.
+    this.name = OnceCell::new();
     // Row_done(&this->super);
     Row_done(&this.super_);
 }
@@ -198,18 +203,31 @@ pub fn Instance_writeField(super_: &dyn Object, str: &mut RichString, field: Row
 ///
 /// C lazily fills `this->name` via `pmNameInDom(InDom_getId, Instance_getId,
 /// &this->name)` when it is still `NULL`, then returns it. The ported
-/// [`Row_SortKeyString`](crate::ported::row::Row_SortKeyString) slot is
-/// `fn(&dyn Object) -> Option<&[u8]>` (shared ref), so the `&mut this->name`
-/// fill cannot be performed here without violating aliasing (see the module
-/// note). The ported body returns the current `name` (`None` until populated).
+/// [`Row_SortKeyString`](crate::ported::row::Row_SortKeyString) slot hands out a
+/// shared `&dyn Object`, so `name` is a [`OnceCell`] filled through it: the
+/// libpcp-`malloc`'d name is copied into an owned [`CString`] and the raw is
+/// freed (the copy-then-`free` model the module doc describes), then cached.
+/// `pmNameInDom` failing leaves the cell empty (C's `NULL`), so it retries next
+/// call — exactly the C's `if (!this->name)` guard.
 pub fn Instance_externalName(super_: &dyn Object) -> Option<&[u8]> {
     let this = (super_ as &dyn Any)
         .downcast_ref::<Instance>()
         .expect("Instance_externalName: row is not an Instance");
-    // C: if (!this->name) (void)pmNameInDom(InDom_getId(this), Instance_getId(this), &this->name);
-    // — the lazy fill needs `&mut this->name`, unavailable through this shared
-    // slot; return the current name (reported substrate limitation).
-    this.name.as_deref().map(str::as_bytes)
+    // if (!this->name) (void)pmNameInDom(InDom_getId(this), Instance_getId(this), &this->name);
+    if this.name.get().is_none() {
+        let mut raw: *mut c_char = ptr::null_mut();
+        unsafe { pmNameInDom(InDom_getId(this), Instance_getId(this), &mut raw) };
+        // pmNameInDom sets *name to a malloc'd string only on success; copy it
+        // into an owned CString and free the libpcp allocation (the caller-frees
+        // contract, per pmNameInDom(3)).
+        if !raw.is_null() {
+            let owned = unsafe { CStr::from_ptr(raw) }.to_owned();
+            unsafe { libc::free(raw as *mut c_void) };
+            let _ = this.name.set(owned);
+        }
+    }
+    // return this->name;
+    this.name.get().map(|c| c.to_bytes())
 }
 
 /// Port of `static int Instance_compareByKey(const Row* v1, const Row* v2, int
