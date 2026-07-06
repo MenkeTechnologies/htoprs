@@ -65,6 +65,14 @@ demangle = []
 # hand-declared per-arch (x86_64/aarch64), verified by primary-source reading of
 # the libunwind headers + the port gate (libunwind does not link on macOS).
 unwind = []
+# Faithful analog of htop's `HAVE_LIBCAP` (`./configure --enable-capabilities`)
+# build variant: the libcap capability-dropping prelude in `Platform_init`
+# (`linux/Platform.c` `dropCapabilities`). Off by default; its libcap surface
+# (`cap_init`/`cap_get_proc`/`cap_set_proc`/…) is hand-declared, verified by
+# primary-source reading of libcap's `sys/capability.h` + the port gate (libcap
+# does not link on macOS, so `cargo check --features capabilities` type-checks
+# the FFI without linking).
+capabilities = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libmedium = "0.13.4"

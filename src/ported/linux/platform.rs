@@ -16,15 +16,19 @@
 //! - `Platform_longOptionsUsage` (`Platform.c:994`, non-`HAVE_LIBCAP` build)
 //! - `Platform_done` (`Platform.c:1171`, non-`HAVE_SENSORS` build)
 //! - `Platform_init` (`Platform.c:1129`)
+//! - `dropCapabilities` (`Platform.c:1044`, `HAVE_LIBCAP` build) — behind the
+//!   `capabilities` cargo feature (off by default; libcap FFI, the tier-3
+//!   external-lib model shared with the `demangle`/`unwind` ports)
 //!
 //! Everything else is still `todo!()` and blocked on unported substrate —
 //! chiefly the meter setters needing `Meter::host` (unmodeled field, owned by
 //! `meter.rs`) plus the `LinuxMachine` memory/zfs/zswap/zram/gpu accessors,
 //! and the panel/action/lock types (`DiskIOData`, `NetworkIOData`,
 //! `FileLocks_*`, `CommandLineStatus`, `State`, `MainPanel`, …) owned by other
-//! files. `HAVE_LIBCAP`-only functions (`dropCapabilities`, the
-//! `Platform_getLongOption`/`longOptionsUsage` capability branches) are the
-//! mutually-exclusive alternative build and are not ported (rule 3).
+//! files. The `HAVE_LIBCAP` `Platform_getLongOption`/`longOptionsUsage`
+//! capability branches are the mutually-exclusive alternative build and are not
+//! ported (rule 3); `dropCapabilities` itself is ported behind the
+//! `capabilities` feature (see above).
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
@@ -1580,9 +1584,245 @@ pub fn Platform_getLongOption(opt: i32, _argc: i32, _argv: &[String]) -> Command
     CommandLineStatus::ErrorExit
 }
 
-/// TODO: port of `static int dropCapabilities(enum CapMode mode` from `Platform.c:1044`.
-pub fn dropCapabilities() {
-    todo!("port of Platform.c:1044")
+// ---------------------------------------------------------------------------
+// `HAVE_LIBCAP` capability-dropping prelude (`linux/Platform.c` `#ifdef
+// HAVE_LIBCAP` blocks). Behind the `capabilities` cargo feature (off by
+// default), the same tier-3 external-lib model as the sibling `demangle` /
+// `unwind` ports: the libcap surface is hand-declared in an `extern` block and
+// only links `libcap` when the feature is enabled on a host that has it (htop's
+// `HAVE_LIBCAP` path). Verified by primary-source reading of libcap's
+// `sys/capability.h` + the port-purity gate; libcap does not link on macOS, so
+// `cargo check --features capabilities` type-checks the FFI without linking.
+//
+// Type / constant values are transcribed from the kernel `<linux/capability.h>`
+// and libcap `<sys/capability.h>` (do NOT change them):
+//   cap_flag_t:       CAP_EFFECTIVE = 0, CAP_PERMITTED = 1
+//   cap_flag_value_t: CAP_CLEAR = 0, CAP_SET = 1
+//   capability values: CAP_DAC_READ_SEARCH = 2, CAP_KILL = 5,
+//                      CAP_NET_ADMIN = 12, CAP_SYS_PTRACE = 19, CAP_SYS_NICE = 23
+
+/// Port of libcap's `typedef struct _cap_struct* cap_t;`
+/// (`sys/capability.h:44`) — an opaque handle we only pass through the FFI.
+#[cfg(feature = "capabilities")]
+#[allow(non_camel_case_types)]
+type cap_t = *mut libc::c_void;
+
+/// Port of libcap's `typedef int cap_value_t;` (`sys/capability.h:52`).
+#[cfg(feature = "capabilities")]
+#[allow(non_camel_case_types)]
+type cap_value_t = libc::c_int;
+
+// `cap_flag_t` (`sys/capability.h:85`) — which capability set a flag lives in.
+#[cfg(feature = "capabilities")]
+const CAP_EFFECTIVE: libc::c_int = 0;
+#[cfg(feature = "capabilities")]
+const CAP_PERMITTED: libc::c_int = 1;
+
+// `cap_flag_value_t` (`sys/capability.h:118`) — a single flag's on/off state.
+#[cfg(feature = "capabilities")]
+const CAP_SET: libc::c_int = 1;
+
+// Capability values from `<linux/capability.h>` (kernel ABI).
+#[cfg(feature = "capabilities")]
+const CAP_DAC_READ_SEARCH: cap_value_t = 2;
+#[cfg(feature = "capabilities")]
+const CAP_KILL: cap_value_t = 5;
+#[cfg(feature = "capabilities")]
+const CAP_NET_ADMIN: cap_value_t = 12;
+#[cfg(feature = "capabilities")]
+const CAP_SYS_PTRACE: cap_value_t = 19;
+#[cfg(feature = "capabilities")]
+const CAP_SYS_NICE: cap_value_t = 23;
+
+// libcap functions used by `dropCapabilities`, transcribed from
+// `sys/capability.h` (the `cap_flag_t`/`cap_flag_value_t` enum parameters are
+// `int`-sized in the C ABI, so they map to `libc::c_int`). These live inside an
+// `extern` block, so they are not module-level free fns and do not enter the
+// port gate; only `dropCapabilities` (a C-fn-list name) is scanned.
+#[cfg(feature = "capabilities")]
+#[link(name = "cap")]
+extern "C" {
+    /// `cap_t cap_init(void)` (`sys/capability.h:135`).
+    fn cap_init() -> cap_t;
+    /// `int cap_free(void*)` (`sys/capability.h:134`).
+    fn cap_free(p: *mut libc::c_void) -> libc::c_int;
+    /// `cap_t cap_get_proc(void)` (`sys/capability.h:169`).
+    fn cap_get_proc() -> cap_t;
+    /// `int cap_set_proc(cap_t)` (`sys/capability.h:171`).
+    fn cap_set_proc(caps: cap_t) -> libc::c_int;
+    /// `int cap_clear(cap_t)` (`sys/capability.h:143`).
+    fn cap_clear(caps: cap_t) -> libc::c_int;
+    /// `int cap_get_flag(cap_t, cap_value_t, cap_flag_t, cap_flag_value_t*)`
+    /// (`sys/capability.h:140`).
+    fn cap_get_flag(
+        caps: cap_t,
+        cap: cap_value_t,
+        flag: libc::c_int,
+        value_p: *mut libc::c_int,
+    ) -> libc::c_int;
+    /// `int cap_set_flag(cap_t, cap_flag_t, int, const cap_value_t*,
+    /// cap_flag_value_t)` (`sys/capability.h:141`).
+    fn cap_set_flag(
+        caps: cap_t,
+        flag: libc::c_int,
+        ncap: libc::c_int,
+        caps_list: *const cap_value_t,
+        value: libc::c_int,
+    ) -> libc::c_int;
+    /// `int cap_get_bound(cap_value_t)` (`sys/capability.h:173`) — backs the
+    /// `CAP_IS_SUPPORTED` macro.
+    fn cap_get_bound(cap: cap_value_t) -> libc::c_int;
+}
+
+/// Port of `enum CapMode` (`Platform.c:80`, `HAVE_LIBCAP` build). Values match
+/// the C enum ordering exactly: `CAP_MODE_OFF = 0`, `CAP_MODE_BASIC = 1`,
+/// `CAP_MODE_STRICT = 2`.
+#[cfg(feature = "capabilities")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CapMode {
+    Off = 0,    // CAP_MODE_OFF
+    Basic = 1,  // CAP_MODE_BASIC
+    Strict = 2, // CAP_MODE_STRICT
+}
+
+/// Port of `static int dropCapabilities(enum CapMode mode)` from
+/// `Platform.c:1044` (`HAVE_LIBCAP` build). Reduces the process capability set
+/// to the minimum htop needs, keeping — of the caps it currently holds
+/// (permitted) — only `keepcapsBasic`/`keepcapsStrict` in the new permitted +
+/// effective sets, then installing that set with `cap_set_proc`.
+///
+/// `CAP_NET_ADMIN` is present in the Basic set because this build models htop's
+/// `HAVE_DELAYACCT` variant as always-on for Linux (the delay-accounting
+/// netlink port; see `LinuxProcessTable`), so the C `#ifdef HAVE_DELAYACCT`
+/// guard around `CAP_NET_ADMIN` resolves to "included" here.
+///
+/// `CAP_IS_SUPPORTED(cap)` is the C macro `(cap_get_bound(cap) >= 0)`; it is
+/// inlined as the negated `cap_get_bound(cap) < 0` "unsupported → skip" check
+/// (a distinct fn would trip the port gate). Diagnostics: the C
+/// `fprintf(stderr, "…: %s", strerror(errno))` maps to `eprintln!` with
+/// `std::io::Error::last_os_error()` (the ported-strerror equivalent). Every
+/// exit path frees the same handles the C `cap_free`s, in the same order.
+///
+/// Returns 0 on success, -1 on failure (the C `int` return).
+#[cfg(feature = "capabilities")]
+fn dropCapabilities(mode: CapMode) -> libc::c_int {
+    // if (mode == CAP_MODE_OFF) return 0;
+    if mode == CapMode::Off {
+        return 0;
+    }
+
+    // capabilities we keep to operate
+    let keepcaps_strict: [cap_value_t; 2] = [CAP_DAC_READ_SEARCH, CAP_SYS_PTRACE];
+    let keepcaps_basic: [cap_value_t; 5] = [
+        CAP_DAC_READ_SEARCH, // read non world-readable process files of other users, like /proc/[pid]/io
+        CAP_KILL,            // send signals to processes of other users
+        CAP_SYS_NICE,        // lower process nice value / change nice value for arbitrary processes
+        CAP_SYS_PTRACE,      // read /proc/[pid]/exe
+        CAP_NET_ADMIN,       // #ifdef HAVE_DELAYACCT: netlink socket for delay accounting
+    ];
+    // const cap_value_t* const keepcaps = (mode == CAP_MODE_BASIC) ? keepcapsBasic : keepcapsStrict;
+    // The C `ncap` is carried by the slice length (`keepcaps.len()`).
+    let keepcaps: &[cap_value_t] = if mode == CapMode::Basic {
+        &keepcaps_basic
+    } else {
+        &keepcaps_strict
+    };
+
+    // SAFETY: FFI into libcap. Every `cap_t` obtained (`caps`, `curr_caps`) is
+    // checked for NULL before use and freed on every return path, mirroring the
+    // C `goto`-free cleanup exactly.
+    unsafe {
+        let caps: cap_t = cap_init();
+        if caps.is_null() {
+            eprintln!(
+                "Error: cannot initialize capabilities: {}",
+                std::io::Error::last_os_error()
+            );
+            return -1;
+        }
+
+        if cap_clear(caps) < 0 {
+            eprintln!(
+                "Error: cannot clear capabilities: {}",
+                std::io::Error::last_os_error()
+            );
+            cap_free(caps);
+            return -1;
+        }
+
+        let curr_caps: cap_t = cap_get_proc();
+        if curr_caps.is_null() {
+            eprintln!(
+                "Error: cannot get current process capabilities: {}",
+                std::io::Error::last_os_error()
+            );
+            cap_free(caps);
+            return -1;
+        }
+
+        // for (size_t i = 0; i < ncap; i++)
+        for &cap in keepcaps {
+            // if (!CAP_IS_SUPPORTED(keepcaps[i])) continue;
+            // CAP_IS_SUPPORTED(cap) == (cap_get_bound(cap) >= 0)
+            if cap_get_bound(cap) < 0 {
+                continue;
+            }
+
+            // cap_flag_value_t current;
+            let mut current: libc::c_int = 0;
+            if cap_get_flag(curr_caps, cap, CAP_PERMITTED, &mut current) < 0 {
+                eprintln!(
+                    "Error: cannot get current value of capability {}: {}",
+                    cap,
+                    std::io::Error::last_os_error()
+                );
+                cap_free(curr_caps);
+                cap_free(caps);
+                return -1;
+            }
+
+            if current != CAP_SET {
+                continue;
+            }
+
+            if cap_set_flag(caps, CAP_PERMITTED, 1, &cap, CAP_SET) < 0 {
+                eprintln!(
+                    "Error: cannot set permitted capability {}: {}",
+                    cap,
+                    std::io::Error::last_os_error()
+                );
+                cap_free(curr_caps);
+                cap_free(caps);
+                return -1;
+            }
+
+            if cap_set_flag(caps, CAP_EFFECTIVE, 1, &cap, CAP_SET) < 0 {
+                eprintln!(
+                    "Error: cannot set effective capability {}: {}",
+                    cap,
+                    std::io::Error::last_os_error()
+                );
+                cap_free(curr_caps);
+                cap_free(caps);
+                return -1;
+            }
+        }
+
+        if cap_set_proc(caps) < 0 {
+            eprintln!(
+                "Error: cannot set process capabilities: {}",
+                std::io::Error::last_os_error()
+            );
+            cap_free(curr_caps);
+            cap_free(caps);
+            return -1;
+        }
+
+        cap_free(curr_caps);
+        cap_free(caps);
+    }
+
+    0
 }
 
 /// Port of `bool Platform_init(void)` from `Platform.c:1129`. Verifies
