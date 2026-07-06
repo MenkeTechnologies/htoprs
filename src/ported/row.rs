@@ -1014,14 +1014,12 @@ pub fn Row_printNanoseconds(str: &mut RichString, total_nanoseconds: u64, colori
 /// `void Row_printRate(RichString* str, double rate, bool coloring)`.
 ///
 /// Formats a transfer rate (bytes/second) as `"%7.2f X/s "` with a
-/// magnitude-scaled unit. The scale index `i` is found by a general loop
-/// dividing by `ONE_K` until below `ONE_K` (or `i` reaches the end of
-/// `unitPrefixes`), and the prefix is `'B'` for `i == 0` else
-/// `unitPrefixes[i - 1]` (`K`, `M`, `G`, `T`, `P`, `E`, `Z`, `Y`, `R`,
-/// `Q`). Coloring by band: `PROCESS_SHADOW` for sub-0.005 and invalid,
-/// `PROCESS` for `i` of 0/1 (B/K), `PROCESS_MEGABYTES` for `i == 2` (M),
-/// `LARGE_NUMBER` for `i >= 3` (G and above). A negative or NaN rate
-/// renders `"        N/A "`.
+/// magnitude-scaled unit, via the C's fixed if/else chain: `B/s` (`<ONE_K`,
+/// or `PROCESS_SHADOW` when `<0.005`), `K/s` (`<ONE_M`), `M/s`
+/// (`PROCESS_MEGABYTES`, `<ONE_G`), `G/s` (`LARGE_NUMBER`, `<ONE_T`), `T/s`
+/// (`<ONE_P`), and `P/s` for everything larger — the chain caps at peta, so a
+/// rate `>= ONE_E` prints e.g. `"1024.00 P/s "`, never an `E/s`/`Z/s` prefix.
+/// A negative or NaN rate renders `"        N/A "`.
 ///
 /// `isNonnegative(rate)` (`Macros.h`) is `isgreaterequal(rate, 0.0)`,
 /// false for NaN; inlined as `rate >= 0.0` (Rust `>=` is quiet for NaN).
@@ -1042,30 +1040,34 @@ pub fn Row_printRate(str: &mut RichString, rate: f64, coloring: bool) {
         megabytes_color = color_of(PROCESS);
     }
 
+    // The C is a fixed if/else chain that caps at the peta branch (the final
+    // `else` always divides by `ONE_P` and prints `"P/s"`), NOT a general loop —
+    // a rate >= ONE_E still renders as `"1024.00 P/s "`, never `"E/s"`.
     if !(rate >= 0.0) {
+        // if (!isNonnegative(rate)) — isgreaterequal(rate, 0.0), false for NaN.
         RichString_appendAscii(str, shadow_color, b"        N/A ");
-        return;
+    } else if rate < 0.005 {
+        let buf = format!("{:7.2} B/s ", rate);
+        RichString_appendnAscii(str, shadow_color, buf.as_bytes(), buf.len());
+    } else if rate < ONE_K as f64 {
+        let buf = format!("{:7.2} B/s ", rate);
+        RichString_appendnAscii(str, base_color, buf.as_bytes(), buf.len());
+    } else if rate < ONE_M as f64 {
+        let buf = format!("{:7.2} K/s ", rate / ONE_K as f64);
+        RichString_appendnAscii(str, base_color, buf.as_bytes(), buf.len());
+    } else if rate < ONE_G as f64 {
+        let buf = format!("{:7.2} M/s ", rate / ONE_M as f64);
+        RichString_appendnAscii(str, megabytes_color, buf.as_bytes(), buf.len());
+    } else if rate < ONE_T as f64 {
+        let buf = format!("{:7.2} G/s ", rate / ONE_G as f64);
+        RichString_appendnAscii(str, large_number_color, buf.as_bytes(), buf.len());
+    } else if rate < ONE_P as f64 {
+        let buf = format!("{:7.2} T/s ", rate / ONE_T as f64);
+        RichString_appendnAscii(str, large_number_color, buf.as_bytes(), buf.len());
+    } else {
+        let buf = format!("{:7.2} P/s ", rate / ONE_P as f64);
+        RichString_appendnAscii(str, large_number_color, buf.as_bytes(), buf.len());
     }
-
-    let mut i: usize = 0;
-    let mut scaled = rate;
-    while scaled >= ONE_K as f64 && i < unitPrefixes.len() {
-        scaled /= ONE_K as f64;
-        i += 1;
-    }
-
-    let mut color = base_color;
-    if rate < 0.005 {
-        color = shadow_color;
-    } else if i == 2 {
-        color = megabytes_color;
-    } else if i >= 3 {
-        color = large_number_color;
-    }
-
-    let prefix = if i == 0 { b'B' } else { unitPrefixes[i - 1] };
-    let buf = format!("{:7.2} {}/s ", scaled, prefix as char);
-    RichString_appendnAscii(str, color, buf.as_bytes(), buf.len());
 }
 
 /// Port of `Row.c:500`.
@@ -1677,6 +1679,21 @@ mod tests {
     fn rate_tera_and_peta() {
         assert_eq!(text(&rate(ONE_T as f64, true)), "   1.00 T/s ");
         assert_eq!(text(&rate(ONE_P as f64, true)), "   1.00 P/s ");
+    }
+
+    #[test]
+    fn rate_caps_at_peta_no_prefix_escalation() {
+        // The C `Row_printRate` is a fixed if/else chain whose final `else`
+        // always divides by ONE_P and prints "P/s" — it never escalates to
+        // E/s or larger. A rate of one exbibyte/second (ONE_E = ONE_P * ONE_K)
+        // must render "1024.00 P/s " (rate / ONE_P == 1024), NOT "1.00 E/s ".
+        let one_e = ONE_P as f64 * ONE_K as f64;
+        assert_eq!(text(&rate(one_e, true)), "1024.00 P/s ");
+        assert!(cell_attrs(&rate(one_e, true))
+            .iter()
+            .all(|&a| a == col(LARGE_NUMBER)));
+        // Even far larger stays P/s: 2048 EiB/s -> 2048*1024 = 2097152.00 P/s.
+        assert_eq!(text(&rate(one_e * 2048.0, true)), "2097152.00 P/s ");
     }
 
     #[test]
