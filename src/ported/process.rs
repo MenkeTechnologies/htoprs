@@ -951,20 +951,6 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
         }
         if match_len != 0 {
             cmdline_basename_len = exe_basename_len;
-        } else if cmdline_present {
-            // Strip /proc pseudo-paths from the merged command.
-            const SELF: &[u8] = b"/proc/self/exe";
-            const THREAD: &[u8] = b"/proc/thread-self/exe";
-            let sep_self = cmdline.get(SELF.len()).copied().unwrap_or(0);
-            let sep_thread = cmdline.get(THREAD.len()).copied().unwrap_or(0);
-            if cmdline.starts_with(SELF) && (sep_self == 0 || sep_self == b' ' || sep_self == b'\n')
-            {
-                match_len = SELF.len();
-            } else if cmdline.starts_with(THREAD)
-                && (sep_thread == 0 || sep_thread == b' ' || sep_thread == b'\n')
-            {
-                match_len = THREAD.len();
-            }
         }
     }
 
@@ -1039,9 +1025,17 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
     let mut comm_len = 0usize;
     let mut have_comm_in_exe = false;
     if !is_userland_thread || show_thread_names {
-        let n = (TASK_COMM_LEN - 1).min(proc_comm_s.len());
+        // strncmp(procExe + exeBasenameOffset, procComm, TASK_COMM_LEN - 1) == 0
+        // — a FIXED length of 15, NOT MINIMUM(15, strlen(comm)) as the cmdline
+        // fallback uses. A comm shorter than the exe basename therefore fails:
+        // comm's terminating NUL is compared against the exe's next byte, so the
+        // exe basename must equal comm exactly within 15 bytes. `get(i)` yielding
+        // 0 past each slice's end models the C strings' NUL terminators, matching
+        // strncmp's stop-at-NUL behavior.
         let exe_tail = &proc_exe_s[exe_basename_offset.min(proc_exe_s.len())..];
-        have_comm_in_exe = exe_tail.len() >= n && exe_tail[..n] == proc_comm_s[..n];
+        have_comm_in_exe = (0..TASK_COMM_LEN - 1).all(|i| {
+            exe_tail.get(i).copied().unwrap_or(0) == proc_comm_s.get(i).copied().unwrap_or(0)
+        });
     }
     if have_comm_in_exe {
         comm_len = exe_basename_len;
@@ -3217,6 +3211,42 @@ mod tests {
         assert_eq!(
             (hl.offset, hl.length, hl.flags),
             (0, 3, CMDLINE_HIGHLIGHT_FLAG_BASENAME)
+        );
+    }
+
+    /// [`Process_makeCommandStr`] merged path: a `comm` that is a proper prefix
+    /// of a longer exe basename must NOT be treated as "comm in exe". The C uses
+    /// a FIXED `strncmp(procExe + off, procComm, TASK_COMM_LEN - 1)` (not the
+    /// cmdline path's `MINIMUM(15, strlen)`), so `strncmp("foobar", "foo", 15)`
+    /// fails at comm's NUL vs the exe's `'b'`. The comm is therefore emitted as
+    /// its own `│`-separated field, not folded into the exe basename.
+    #[test]
+    fn make_command_str_comm_prefix_of_exe_is_a_separate_field() {
+        use crate::ported::settings::Settings;
+
+        let mut s = Settings::default();
+        s.showMergedCommand = true;
+        s.showProgramPath = false;
+        s.findCommInCmdline = false;
+        s.stripExeFromCmdline = false;
+        s.shadowDistPathPrefix = false;
+        s.lastUpdate = 1;
+
+        let mut p = Process::default();
+        p.state = ProcessState::RUNNING;
+        p.procExe = Some("/usr/bin/foobar".to_string()); // basename "foobar" at 9
+        p.procExeBasenameOffset = 9;
+        p.procComm = Some("foo".to_string()); // a proper prefix of "foobar"
+        p.cmdline = Some("somethingelse".to_string());
+        p.cmdlineBasenameStart = 0;
+
+        Process_makeCommandStr(&mut p, &s);
+        // "foobar" + sep + "foo" (separate comm field) + sep + cmdline, where the
+        // separator is TREE_STR_VERT ("|" in the ASCII/non-UTF-8 test env). The
+        // pre-fix prefix-match folded comm in, yielding "foobar|somethingelse".
+        assert_eq!(
+            p.mergedCommand.str.as_deref(),
+            Some("foobar|foo|somethingelse")
         );
     }
 
