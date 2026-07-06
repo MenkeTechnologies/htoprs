@@ -95,12 +95,6 @@ pub struct Table {
     pub needsSort: bool,
     /// C `int following` — `-1` or the id of the row being tracked.
     pub following: i32,
-    /// C `int stableId` (`Table.h:37`) — stable tree view: row id to keep
-    /// at a fixed screen position (`-1` = inactive).
-    pub stableId: i32,
-    /// C `int stableLastIdx` (`Table.h:38`) — panel index where the
-    /// `stableId` row was placed in the last rebuild.
-    pub stableLastIdx: i32,
     /// C `struct Panel_* panel` — the `Panel` this table renders into, set
     /// by [`Table_setPanel`] and read by `Table_rebuildPanel`. A raw
     /// `*mut Panel` mirroring htop's pointer graph; null until wired.
@@ -213,8 +207,6 @@ impl Table {
             incFilter: None,
             needsSort: true,
             following: -1,
-            stableId: -1,
-            stableLastIdx: 0,
             panel: core::ptr::null_mut(),
             rows_isDirty: false,
             klass: core::ptr::null(),
@@ -273,8 +265,7 @@ impl Table {
 /// Port of `Table* Table_init(Table* this, const ObjectClass* klass,
 /// Machine* host)` from `Table.c:27`. Initializes the row/display
 /// vectors and the lookup table, sets `needsSort = true`,
-/// `following = -1`, `stableId = -1`, `stableLastIdx = 0`, and stores the
-/// `host` back-pointer.
+/// `following = -1`, and stores the `host` back-pointer.
 ///
 /// Signature mapping: the C `klass` argument selects the `Object` type
 /// tag for the two `Vector_new` calls — class identity in Rust is the
@@ -286,8 +277,6 @@ pub fn Table_init(this: &mut Table, host: *const Machine) {
     this.table = HashMap::new();
     this.needsSort = true;
     this.following = -1;
-    this.stableId = -1;
-    this.stableLastIdx = 0;
     this.host = host;
     this.rows_isDirty = false;
 }
@@ -363,8 +352,6 @@ pub fn Table_add(this: &mut Table, mut row: Box<dyn Object>) {
 fn Table_removeIndex(this: &mut Table, idx: usize) {
     let row = this.row(idx);
     let rowid = row.id;
-    // save before row is freed
-    let rowparent = Row_getGroupOrParent(row);
 
     debug_assert!(this.table.contains_key(&rowid));
 
@@ -378,15 +365,6 @@ fn Table_removeIndex(this: &mut Table, idx: usize) {
         this.following = -1;
         // C: Panel_setSelectionColor(this->panel, PANEL_SELECTION_FOCUS)
         // — ncurses Panel side-effect, applied by the UI layer.
-    }
-
-    // When the stable-tree-view anchor exits, walk up to its parent.
-    if this.stableId != -1 && this.stableId == rowid {
-        if rowparent != 0 && rowparent != rowid && this.table.contains_key(&rowparent) {
-            this.stableId = rowparent;
-        } else {
-            this.stableId = -1;
-        }
     }
 
     debug_assert!(!this.table.contains_key(&rowid));
