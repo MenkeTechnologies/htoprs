@@ -458,15 +458,19 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
 }
 
 /// Port of `static int compareRowByKnownParentThenNatural(const void*
-/// v1, const void* v2)` from `Table.c:154`. The C dispatches through the
-/// `Row_compareByParent` macro (`As_Row(r1)->compareByParent ? ... :
-/// Row_compareByParent_Base(r1, r2)`); the base `Table` rows have no
-/// override, so this calls [`Row_compareByParent_Base`] directly. (A
-/// `ProcessTable` whose rows are `Process`es would dispatch to
-/// `Process_compareByParent`; that vtable specialization is not modeled
-/// by the base `Table` port.)
-fn compareRowByKnownParentThenNatural(v1: &Row, v2: &Row) -> i32 {
-    Row_compareByParent_Base(v1, v2)
+/// v1, const void* v2)` from `Table.c:154`. Dispatches the C
+/// `Row_compareByParent(r1, r2)` macro (`Row.h:105`):
+/// `As_Row(r1)->compareByParent ? As_Row(r1)->compareByParent(r1, r2) :
+/// Row_compareByParent_Base(r1, r2)`. For process rows the slot is
+/// [`Process_compareByParent`](crate::ported::process::Process_compareByParent),
+/// which tie-breaks equal-parent siblings by the active sort key/direction —
+/// exactly as the flat sort dispatches `.compare()`. Base `Row`s have no
+/// override (`None`), so they fall back to [`Row_compareByParent_Base`] (id).
+fn compareRowByKnownParentThenNatural(v1: &dyn Object, v2: &dyn Object) -> i32 {
+    match v1.row_class().and_then(|rc| rc.compareByParent) {
+        Some(f) => f(v1, v2),
+        None => Row_compareByParent_Base(v1.as_row().unwrap(), v2.as_row().unwrap()),
+    }
 }
 
 /// Port of `static void Table_buildTree(Table* this)` from `Table.c:159`.
@@ -504,8 +508,8 @@ pub fn Table_buildTree(this: &mut Table) {
     let n = this.rows.len() as isize;
     quickSort(&mut this.rows, 0, n - 1, &|a, b| {
         compareRowByKnownParentThenNatural(
-            a.as_ref().unwrap().as_row().unwrap(),
-            b.as_ref().unwrap().as_row().unwrap(),
+            a.as_ref().unwrap().as_ref(),
+            b.as_ref().unwrap().as_ref(),
         )
     });
     // Pointers survive a C Vector sort; the index map must be refreshed.
