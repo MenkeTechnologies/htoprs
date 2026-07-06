@@ -1267,11 +1267,19 @@ impl Panel {
     }
 
     /// Items that fit in `lines` starting at `from` and walking `dir` (+1 down,
-    /// -1 up), by accumulating [`item_height`]. At least 1. Used for page steps
-    /// when rows are variable-height.
+    /// -1 up), by accumulating [`item_height`]. Used for page steps when rows
+    /// are variable-height.
+    ///
+    /// Returns 0 when `lines <= 0`, matching C's `PANEL_SCROLL(h - headerHeight)`
+    /// — a panel too short to show any row does not move on a page key. When at
+    /// least one line is visible the result is floored to 1, so a variable-height
+    /// row taller than the page still advances by one.
     ///
     /// [`item_height`]: Panel::item_height
     fn items_per_page(&self, from: i32, lines: i32, dir: i32) -> i32 {
+        if lines <= 0 {
+            return 0;
+        }
         let size = self.items.len() as i32;
         let mut used = 0;
         let mut cnt = 0;
@@ -1821,6 +1829,29 @@ mod tests {
         let mut p = blank();
         fill(&mut p, 3);
         assert!(!Panel_onKey(&mut p, b'z' as i32));
+    }
+
+    #[test]
+    fn onkey_page_is_noop_when_panel_shows_no_rows() {
+        // Degenerate height: h == headerHeight, so C's
+        // PANEL_SCROLL(h - Panel_headerHeight) is a zero-step no-op. The port's
+        // items_per_page must return 0 here, not floor the step to 1 (which would
+        // advance the selection by one row where htop leaves it put).
+        let mut p = blank();
+        fill(&mut p, 10);
+        p.selected = 5;
+        p.scrollV = 0;
+        p.h = Panel_headerHeight(&p); // lines = h - headerHeight = 0
+        assert!(Panel_onKey(&mut p, KEY_NPAGE));
+        assert_eq!(
+            p.selected, 5,
+            "PageDown must not move selection with no visible rows"
+        );
+        assert!(Panel_onKey(&mut p, KEY_PPAGE));
+        assert_eq!(
+            p.selected, 5,
+            "PageUp must not move selection with no visible rows"
+        );
     }
 
     // ── ensure_scroll (scroll-follows-selection) ──────────────────────
