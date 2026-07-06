@@ -32,6 +32,7 @@ use std::os::raw::{c_int, c_void};
 use std::ptr;
 
 use crate::ported::crt::CRT_fatalError;
+use crate::ported::generic::openzfs_sysctl::{openzfs_sysctl_init, openzfs_sysctl_updateArcStats};
 use crate::ported::linux::linuxmachine::ZfsArcStats;
 use crate::ported::machine::{Machine, Machine_done, Machine_init};
 
@@ -198,17 +199,15 @@ pub fn DarwinMachine_getVMStats(this: &mut DarwinMachine) {
 /// Rotates the CPU-load snapshot (`prev_load = curr_load`, re-fetch
 /// `curr_load`) and refreshes the VM statistics.
 ///
-/// Deviation: the final `openzfs_sysctl_updateArcStats(&host->zfs)` is not
-/// yet ported (`generic/openzfs_sysctl.c` substrate is absent), so the ZFS
-/// ARC stats are left unrefreshed. Everything else — the load rotation the
-/// CPU-time-diff scan depends on, and the VM stats — is faithful.
+/// Rotates the load snapshot, refreshes the VM statistics, and refreshes the
+/// ZFS ARC stats (`openzfs_sysctl_updateArcStats`, `DarwinMachine.c:91`).
 pub fn Machine_scan(host: &mut DarwinMachine) {
     /* Update the global data (CPU times and VM stats) */
     DarwinMachine_freeCPULoadInfo(&mut host.prev_load);
     host.prev_load = host.curr_load;
     DarwinMachine_allocateCPULoadInfo(&mut host.curr_load);
     DarwinMachine_getVMStats(host);
-    // openzfs_sysctl_updateArcStats(&host.zfs) — unported (zfs substrate).
+    openzfs_sysctl_updateArcStats(&mut host.zfs);
 }
 
 /// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)` from
@@ -218,9 +217,9 @@ pub fn Machine_scan(host: &mut DarwinMachine) {
 /// `Box<DarwinMachine>` (C returns `&this->super`); the caller derives the
 /// `*mut Machine` graph pointer from `&mut box.super_`.
 ///
-/// Deviations (documented): `openzfs_sysctl_init`/`_updateArcStats` (ZFS ARC
-/// stats) are not run — the openzfs substrate is unported — so `zfs` stays
-/// zeroed. `GPUService` is resolved via `IOServiceGetMatchingService(IOGPU)`
+/// `openzfs_sysctl_init` + `_updateArcStats` seed the ZFS ARC stats (via the
+/// `kstat.zfs.misc.arcstats.*` sysctls), matching `DarwinMachine.c:110-111`.
+/// `GPUService` is resolved via `IOServiceGetMatchingService(IOGPU)`
 /// (the C's own call); the failure branch's `CRT_debug` log is a DEBUG-only
 /// no-op, so it is omitted.
 pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine> {
@@ -245,7 +244,8 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine>
     /* Initialize the VM statistics */
     DarwinMachine_getVMStats(&mut this);
 
-    // openzfs_sysctl_init / _updateArcStats — ZFS substrate unported.
+    openzfs_sysctl_init(&mut this.zfs);
+    openzfs_sysctl_updateArcStats(&mut this.zfs);
 
     // this->GPUService = IOServiceGetMatchingService(kIOMainPortDefault,
     //     IOServiceMatching("IOGPU"));

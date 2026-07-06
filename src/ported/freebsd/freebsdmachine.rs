@@ -18,10 +18,9 @@
 //!   [`Machine_getCPUPhysicalCoreID`] (`FreeBSDMachine.c:406`),
 //!   [`Machine_getCPUThreadIndex`] (`FreeBSDMachine.c:412`).
 //!
-//! Deviation (documented, as the darwin port): `openzfs_sysctl_init` /
-//! `openzfs_sysctl_updateArcStats` (`generic/openzfs_sysctl.c`) are unported,
-//! so `zfs` stays zeroed (`enabled == 0`) — the ARC portion of the memory /
-//! ZFS meters reads as empty until that substrate lands.
+//! `openzfs_sysctl_init` / `openzfs_sysctl_updateArcStats`
+//! (`generic/openzfs_sysctl.c`) seed and refresh the `zfs` ARC stats via the
+//! `kstat.zfs.misc.arcstats.*` sysctls, matching `FreeBSDMachine.c:82-83`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
@@ -31,6 +30,7 @@ use std::os::raw::{c_int, c_ulong, c_void};
 use std::ptr;
 
 use crate::ported::crt::CRT_fatalError;
+use crate::ported::generic::openzfs_sysctl::{openzfs_sysctl_init, openzfs_sysctl_updateArcStats};
 use crate::ported::linux::linuxmachine::{memory_t, ZfsArcStats};
 use crate::ported::machine::{Machine, Machine_done, Machine_init};
 
@@ -125,9 +125,8 @@ pub struct FreeBSDMachine {
 /// Returns the owning `Box<FreeBSDMachine>` (C returns `&this->super`); the
 /// caller derives `*mut Machine` from `&mut box.super_`.
 ///
-/// Deviations: `openzfs_sysctl_init` / `openzfs_sysctl_updateArcStats`
-/// (`generic/openzfs_sysctl.c`) are unported — skipped, as in
-/// [`Machine_scan`]. The C caches a `MIB_vm_stats_vm_v_page_count` file-scope
+/// `openzfs_sysctl_init` + `_updateArcStats` seed the ZFS ARC stats
+/// (`FreeBSDMachine.c:82-83`). The C caches a `MIB_vm_stats_vm_v_page_count` file-scope
 /// static that is never read; the [`FreeBSDMachine`] struct model omits it, so
 /// its `sysctlnametomib` is resolved into a throwaway to preserve the side
 /// effect.
@@ -214,7 +213,8 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<FreeBSDMachine
 
     nametomib(c"vfs.bufspace", &mut this.MIB_vfs_bufspace);
 
-    // openzfs_sysctl_init / openzfs_sysctl_updateArcStats — ZFS substrate unported.
+    openzfs_sysctl_init(&mut this.zfs);
+    openzfs_sysctl_updateArcStats(&mut this.zfs);
 
     let mut smp: c_int = 0;
     let mut len = size_of::<c_int>();
@@ -622,10 +622,9 @@ pub fn FreeBSDMachine_scanMemoryInfo(this: &mut FreeBSDMachine) {
 }
 
 /// Port of `void Machine_scan(Machine* super)` from `FreeBSDMachine.c:389`.
-/// Refreshes the ZFS ARC stats (deviation: unported, see the module docs),
-/// then rescans memory and CPU.
+/// Refreshes the ZFS ARC stats, then rescans memory and CPU.
 pub fn Machine_scan(this: &mut FreeBSDMachine) {
-    // openzfs_sysctl_updateArcStats(&this.zfs) — ZFS substrate unported.
+    openzfs_sysctl_updateArcStats(&mut this.zfs);
     FreeBSDMachine_scanMemoryInfo(this);
     FreeBSDMachine_scanCPU(this);
 }
