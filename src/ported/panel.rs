@@ -260,11 +260,6 @@ pub struct Panel {
     pub needsRedraw: bool,
     pub cursorOn: bool,
     pub wasFocus: bool,
-    /// Port of `bool allowExcessScrollV` (`Panel.h:79`). When true, `scrollV`
-    /// outside `[0, size-h]` is permitted so [`Panel_draw`] can render blank
-    /// lines above/below the list (used by stable tree-view hard mode, a
-    /// subclass). `false` for a base panel, so its scroll is always clamped.
-    pub allowExcessScrollV: bool,
     pub lastMouseBarClickX: i32,
     pub currentBar: Option<FunctionBar>,
     pub defaultBar: Option<FunctionBar>,
@@ -304,7 +299,6 @@ impl Panel {
             needsRedraw: true,
             cursorOn: false,
             wasFocus: false,
-            allowExcessScrollV: false,
             lastMouseBarClickX: 0,
             currentBar: None,
             defaultBar: None,
@@ -315,7 +309,7 @@ impl Panel {
     }
 }
 
-/// Port of the `PanelClass` vtable (`Panel.h:36`). C dispatches
+/// Port of the `PanelClass` vtable (`Panel.h:49`). C dispatches
 /// `Panel_eventHandler`/`Panel_drawFunctionBar`/`Panel_printHeader` through
 /// `As_Panel(this)->klass`; the faithful Rust analog is a trait every panel
 /// subclass implements, so a `Box<dyn PanelClass>` (the `ScreenManager`'s
@@ -425,7 +419,6 @@ pub fn Panel_init(this: &mut Panel, x: i32, y: i32, w: i32, h: i32, fuBar: Optio
     this.needsRedraw = true;
     this.cursorOn = false;
     this.wasFocus = false;
-    this.allowExcessScrollV = false; // C: Panel.c:67
     this.lastMouseBarClickX = 0;
     this.header = RichString::new();
     this.defaultBar = fuBar.clone();
@@ -530,7 +523,6 @@ pub fn Panel_prune(this: &mut Panel) {
     this.selected = 0;
     this.oldSelected = 0;
     this.needsRedraw = true;
-    this.allowExcessScrollV = false; // C: Panel.c:122
 }
 
 /// Port of `Panel.c:125`. Appends `o` to the item list (owned).
@@ -749,17 +741,13 @@ pub fn Panel_draw(
 
     this.ensure_scroll_var(size, h);
 
-    // topPad: empty screen lines above the first row (non-zero only when
-    // allowExcessScrollV left scrollV negative). C: Panel.c:293-296.
-    let top_pad = if this.scrollV < 0 { -this.scrollV } else { 0 };
-    let first = this.scrollV + top_pad;
+    // C `Panel.c:282`: int first = this->scrollV; (scrollV is clamped >= 0, so
+    // there are no blank pad lines above the first row).
+    let first = this.scrollV;
     // In graph mode the item count that fits is variable, so draw until the
-    // lines run out (`line < h` below); uniform mode keeps the ported bound.
-    let up_to = if rh <= 1 {
-        (first + h - top_pad).min(size)
-    } else {
-        size
-    };
+    // lines run out (`line < h` below); uniform mode keeps the ported bound
+    // (C `MINIMUM(first + h, size)`).
+    let up_to = if rh <= 1 { (first + h).min(size) } else { size };
 
     let selection_color = if focus {
         this.selectionColorId.packed(ColorScheme::active())
@@ -773,12 +761,6 @@ pub fn Panel_draw(
     // stride — force the full redraw there.
     if this.needsRedraw || force_redraw || rh > 1 {
         let mut line = 0i32;
-        // Blank pad lines above the first row (C: Panel.c:305-308). `top_pad`
-        // counts items, so `* rh` gives the screen lines to blank.
-        while line < top_pad * rh {
-            Ncurses::mvhline(&mut out, y + line, x, ' ', w);
-            line += 1;
-        }
         let mut i = first;
         while line < h && i < up_to {
             // htoprs: physical lines this item occupies (1 in single-height
@@ -1214,23 +1196,19 @@ pub fn Panel_getCh(this: &Panel) -> i32 {
 }
 
 impl Panel {
-    /// Pure scroll clamp from `Panel_draw` (`Panel.c:272-291`): keeps the
+    /// Pure scroll clamp from `Panel_draw` (`Panel.c:266-278`): keeps the
     /// scroll area and the selection on screen, mutating `scrollV`/
     /// `needsRedraw`. Factored out so the "scroll follows selection"
     /// behavior is unit-testable without a TTY. `h` is the drawable row
-    /// count after the header adjustment. The `scrollV` clamp is skipped
-    /// when `allowExcessScrollV` is set (C guards it with
-    /// `if (!this->allowExcessScrollV)`); the selection-on-screen check is
-    /// always applied, matching the C control flow.
+    /// count after the header adjustment.
     fn ensure_scroll(&mut self, size: i32, h: i32) {
-        if !self.allowExcessScrollV {
-            if self.scrollV < 0 {
-                self.scrollV = 0;
-                self.needsRedraw = true;
-            } else if self.scrollV > size - h {
-                self.scrollV = (size - h).max(0);
-                self.needsRedraw = true;
-            }
+        // C `Panel.c:266-270`: clamp scrollV into [0, size - h].
+        if self.scrollV < 0 {
+            self.scrollV = 0;
+            self.needsRedraw = true;
+        } else if self.scrollV > size - h {
+            self.scrollV = (size - h).max(0);
+            self.needsRedraw = true;
         }
         if self.selected < self.scrollV {
             self.scrollV = self.selected;
