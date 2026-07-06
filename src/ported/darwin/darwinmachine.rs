@@ -220,8 +220,8 @@ pub fn Machine_scan(host: &mut DarwinMachine) {
 /// `openzfs_sysctl_init` + `_updateArcStats` seed the ZFS ARC stats (via the
 /// `kstat.zfs.misc.arcstats.*` sysctls), matching `DarwinMachine.c:110-111`.
 /// `GPUService` is resolved via `IOServiceGetMatchingService(IOGPU)`
-/// (the C's own call); the failure branch's `CRT_debug` log is a DEBUG-only
-/// no-op, so it is omitted.
+/// (the C's own call); the failure branch's `CRT_debug` log is ported via the
+/// [`CRT_debug!`](crate::CRT_debug) macro (debug builds only).
 pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine> {
     let mut this = Box::new(DarwinMachine {
         super_: Machine::default(),
@@ -249,10 +249,13 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine>
 
     // this->GPUService = IOServiceGetMatchingService(kIOMainPortDefault,
     //     IOServiceMatching("IOGPU"));
-    // kIOMainPortDefault == MACH_PORT_NULL (0). On no match GPUService stays 0
-    // (the C's CRT_debug log is a DEBUG-only no-op).
+    // kIOMainPortDefault == MACH_PORT_NULL (0). On no match GPUService stays 0.
     this.GPUService =
         unsafe { IOServiceGetMatchingService(0, IOServiceMatching(c"IOGPU".as_ptr())) };
+    // if (!this->GPUService) CRT_debug("Cannot initialize IOGPU service");
+    if this.GPUService == 0 {
+        crate::CRT_debug!("Cannot initialize IOGPU service");
+    }
 
     this
 }

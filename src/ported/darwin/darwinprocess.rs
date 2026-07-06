@@ -976,10 +976,11 @@ pub fn DarwinProcess_setFromLibprocPidinfo(
 /// thread rows for that process). The `HAVE_THREAD_EXTENDED_INFO_DATA_T`
 /// branch is taken — the type modern macOS provides ([`libc::thread_extended_info`]).
 ///
-/// Deviations (documented): the C `CRT_debug(..., mach_error_string(ret))`
-/// diagnostics on each mach failure are omitted (`CRT_debug` is unported);
-/// the control flow (`taskAccess = false` / `continue` / early return) is
-/// faithful. `tprocess->user = proc->user` copies the C `char*` share by
+/// The C `CRT_debug(..., mach_error_string(ret))` diagnostics on each mach
+/// failure are ported via the [`CRT_debug!`](crate::CRT_debug) macro (debug
+/// builds only, matching the C's `#ifndef NDEBUG` gate); the control flow
+/// (`taskAccess = false` / `continue` / early return) is faithful.
+/// `tprocess->user = proc->user` copies the C `char*` share by
 /// cloning the owned [`String`]. The trailing `if (!preExisting)
 /// ProcessTable_add(...)` is a no-op here — [`ProcessTable_getProcess`] adds a
 /// freshly-seen row immediately (see its doc).
@@ -1014,9 +1015,16 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
     let mut task: libc::task_t = 0;
     let ret = libc::task_for_pid(libc::mach_task_self(), pid, &mut task);
     if ret != libc::KERN_SUCCESS {
-        // TODO: workaround for modern MacOS limits on task_for_pid().
-        // (KERN_FAILURE is the SIP denial; other errors would be logged via
-        // CRT_debug in the C — omitted, CRT_debug unported.)
+        // TODO: workaround for modern MacOS limits on task_for_pid()
+        // if (ret != KERN_FAILURE)
+        //    CRT_debug("task_for_pid(%d) failed: %s", pid, mach_error_string(ret));
+        // (KERN_FAILURE is the SIP denial, logged only for other errors.)
+        if ret != libc::KERN_FAILURE {
+            crate::CRT_debug!(
+                "task_for_pid({pid}) failed: {}",
+                unsafe { std::ffi::CStr::from_ptr(libc::mach_error_string(ret)) }.to_string_lossy()
+            );
+        }
         (*dp).taskAccess = false;
         return;
     }
@@ -1025,6 +1033,11 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
     let mut thread_count: libc::mach_msg_type_number_t = 0;
     let ret = libc::task_threads(task, &mut thread_list, &mut thread_count);
     if ret != libc::KERN_SUCCESS {
+        // CRT_debug("task_threads(%d) failed: %s", pid, mach_error_string(ret));
+        crate::CRT_debug!(
+            "task_threads({pid}) failed: {}",
+            unsafe { std::ffi::CStr::from_ptr(libc::mach_error_string(ret)) }.to_string_lossy()
+        );
         (*dp).taskAccess = false;
         mach_port_deallocate(libc::mach_task_self(), task);
         return;
@@ -1051,6 +1064,11 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
             &mut identifer_info_count,
         );
         if ret != libc::KERN_SUCCESS {
+            // CRT_debug("thread_info(%d:%d) for identifier failed: %s", pid, i, mach_error_string(ret));
+            crate::CRT_debug!(
+                "thread_info({pid}:{i}) for identifier failed: {}",
+                unsafe { std::ffi::CStr::from_ptr(libc::mach_error_string(ret)) }.to_string_lossy()
+            );
             continue;
         }
 
@@ -1101,6 +1119,11 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
             &mut extended_info_count,
         );
         if ret != libc::KERN_SUCCESS {
+            // CRT_debug("thread_info(%d:%d) for extended failed: %s", pid, i, mach_error_string(ret));
+            crate::CRT_debug!(
+                "thread_info({pid}:{i}) for extended failed: {}",
+                unsafe { std::ffi::CStr::from_ptr(libc::mach_error_string(ret)) }.to_string_lossy()
+            );
             continue;
         }
 

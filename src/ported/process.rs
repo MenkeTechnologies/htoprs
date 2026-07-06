@@ -2103,7 +2103,11 @@ pub fn Process_compareByKey_Base(p1: &Process, p2: &Process, key: RowField) -> i
         ),
         // C default: `assert(0)` "should never be reached" — returns a
         // PID compare. Reached only for NULL_FIELD or a non-reserved key.
-        _ => spaceship_number!(Process_getPid(p1), Process_getPid(p2)),
+        _ => {
+            // CRT_debug("Process_compareByKey_Base() called with key %d", key);
+            crate::CRT_debug!("Process_compareByKey_Base() called with key {}", key);
+            spaceship_number!(Process_getPid(p1), Process_getPid(p2))
+        }
     }
 }
 
