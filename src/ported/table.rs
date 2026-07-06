@@ -779,7 +779,7 @@ pub fn Table_printHeader(settings: &Settings, header: &mut RichString) {
     }
 }
 
-/// Port of `void Table_prepareEntries(Table* this)` from `Table.c:401`.
+/// Port of `void Table_prepareEntries(Table* this)` from `Table.c:322`.
 /// Resets per-scan row flags before a refresh: `updated = false`,
 /// `wasShown = show`, `show = true`.
 pub fn Table_prepareEntries(this: &mut Table) {
@@ -792,7 +792,7 @@ pub fn Table_prepareEntries(this: &mut Table) {
 }
 
 /// Port of `Row* Table_cleanupRow(Table* table, Row* row, int idx)` from
-/// `Table.c:411`. Decides a row's fate after a refresh: a tombed row is
+/// `Table.c:332`. Decides a row's fate after a refresh: a tombed row is
 /// removed once its `tombStampMs` elapses; a not-updated row is either
 /// tombed (when `highlightChanges` and it was shown) or removed
 /// immediately; otherwise it is kept.
@@ -847,7 +847,7 @@ pub fn Table_cleanupRow(this: &mut Table, idx: usize) -> bool {
     true
 }
 
-/// Port of `void Table_cleanupEntries(Table* this)` from `Table.c:437`.
+/// Port of `void Table_cleanupEntries(Table* this)` from `Table.c:358`.
 /// Walks `rows` back-to-front applying [`Table_cleanupRow`], tracking the
 /// lowest removed index, then compacts from there.
 pub fn Table_cleanupEntries(this: &mut Table) {

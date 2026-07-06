@@ -104,7 +104,7 @@ const EMPTY_FIELD: ProcessFieldData = ProcessFieldData {
 };
 
 /// Port of `const ProcessFieldData Process_fields[LAST_PROCESSFIELD]` from
-/// `solaris/SolarisProcess.c:41` — the Solaris per-field metadata table, indexed
+/// `solaris/SolarisProcess.c:24` — the Solaris per-field metadata table, indexed
 /// by [`ProcessField`] id (plus the platform [`ZONEID`]..[`LWPID`] ids). The C
 /// table comments out `TPGID`/`MINFLT`/`MAJFLT`, so those slots stay empty.
 /// Trailing spaces in the titles are significant (they set the printed column

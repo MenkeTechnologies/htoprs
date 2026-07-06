@@ -1608,7 +1608,7 @@ pub fn initDegreeSign() {
 /// always takes the not-changed branch.
 static CRT_settings: AtomicPtr<Settings> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Port of `full_write` (`XUtils.c:344`) — the retry-on-`EINTR` write loop
+/// Port of `full_write` (`XUtils.c:319`) — the retry-on-`EINTR` write loop
 /// the CRT.c stderr-dump and signal paths rely on. Private helper: this fn
 /// belongs to `XUtils` in the C (still stubbed there), inlined here to avoid
 /// a cross-module dependency for the raw-fd writes.

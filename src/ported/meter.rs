@@ -477,7 +477,7 @@ pub struct Meter {
     /// setters downcast to `*const DarwinMachine`). Null when the meter is
     /// not yet attached to a host.
     pub host: *const Machine,
-    /// C `void* meterData` (`Meter.h:118`) — a generic per-meter data slot
+    /// C `void* meterData` (`Meter.h:128`) — a generic per-meter data slot
     /// (used by `CPUMeter`'s multi-column variants for `CPUMeterData`, and by
     /// `DiskIOMeter`/`MemorySwapMeter`). Modeled as an owned `Box<dyn Any>`
     /// (the faithful analogue of the C `void*`); `Drop` reclaims it, replacing
@@ -604,7 +604,7 @@ pub fn Meter_new(host: *const Machine, param: u32, type_: &'static MeterClass) -
         attributes: type_.attributes,
         isPercentChart: type_.isPercentChart,
         // C: not in the class metadata; zero-initialised by the `Meter*
-        // this = xCalloc(1, sizeof(Meter))` in `Meter_new` (`Meter.c:79`),
+        // this = xCalloc(1, sizeof(Meter))` in `Meter_new` (`Meter.c:452`),
         // written later by `Header_calculateHeight`.
         columnWidthCount: 0,
         isMultiColumn: type_.isMultiColumn,

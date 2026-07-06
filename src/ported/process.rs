@@ -208,7 +208,7 @@ pub struct ProcessMergedCommand {
 }
 
 /// Port of the `ReservedFields` enum from `RowField.h:12` (the process
-/// field / column-id list). `Process.h:249` aliases `typedef int32_t
+/// field / column-id list). `Process.h:230` aliases `typedef int32_t
 /// ProcessField`; this models the fixed reserved set with the exact C
 /// discriminants (note the intentional gaps — e.g. `9`, `11`, `13`–`17`
 /// are platform-specific fields defined per-platform in
@@ -1623,7 +1623,7 @@ pub fn Process_writeField(this: &Process, str: &mut RichString, field: RowField)
     RichString_appendAscii(str, attr, buffer.as_bytes());
 }
 
-/// Port of `void Process_done(Process* this)` from `Process.c:818`: a pure
+/// Port of `void Process_done(Process* this)` from `Process.c:795`: a pure
 /// `free()` teardown of `cmdline`, `procComm`, `procExe`, `procCwd`,
 /// `mergedCommand.str`, and `tty_name`. Every one of those C `char*`s is an
 /// owned `Option<String>` on [`Process`], so taking `this` by value and
@@ -1730,7 +1730,7 @@ pub fn Process_rowIsVisible(super_: &dyn Object, table: &Table) -> bool {
 }
 
 /// Port of `static bool Process_matchesFilter(const Process* this, const
-/// Table* table)` from `Process.c:878`. Returns whether the display must
+/// Table* table)` from `Process.c:855`. Returns whether the display must
 /// filter this process out, via the three C mechanisms: (1) a per-user view
 /// (`host->userId != -1 && st_uid != userId`); (2) the incremental filter
 /// (`incFilter` set and not a case-insensitive substring of the command);
@@ -1807,7 +1807,7 @@ pub fn Process_init(this: &mut Process, host: *const c_void) {
 }
 
 /// Port of `static bool Process_setPriority(Process* this, int priority)`
-/// from `Process.c:908`. Refuses in read-only mode ([`Settings_isReadonly`]),
+/// from `Process.c:885`. Refuses in read-only mode ([`Settings_isReadonly`]),
 /// then `setpriority(PRIO_PROCESS, pid, priority)`. On success, the cached
 /// `nice` is refreshed only when the kernel actually changed the value
 /// (`old_prio != getpriority(...)` re-read) — htop's guard against a no-op
@@ -1870,7 +1870,7 @@ pub fn Process_sendSignal(this: &Process, sgn: Arg) -> bool {
 }
 
 /// Port of `bool Process_rowSendSignal(Row* super, Arg sgn)` from
-/// `Process.c:931`. Casts the `Row*` to `Process*` (the `Object_isA` guard
+/// `Process.c:908`. Casts the `Row*` to `Process*` (the `Object_isA` guard
 /// + `Any` downcast) and delegates to [`Process_sendSignal`]. `sendSignal`
 /// only reads the pid, so a shared `&Process` suffices.
 pub fn Process_rowSendSignal(super_: &mut dyn Object, sgn: Arg) -> bool {

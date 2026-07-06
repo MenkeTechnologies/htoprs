@@ -62,7 +62,7 @@ pub fn parseOSRelease() -> String {
 }
 
 /// Port of `const char* Generic_unameRelease(Platform_FetchReleaseFunction
-/// fetchRelease)` from `generic/uname.c:114`. Builds
+/// fetchRelease)` from `generic/uname.c:82`. Builds
 /// `"<sysname> <release> [<machine>]"` from `uname(2)`, appending
 /// ` @ <distro>` when the OS-release name (from `fetchRelease`) is present and
 /// not already contained. Cached on first call (C's `static ... savedString` +
@@ -106,7 +106,7 @@ pub fn Generic_unameRelease(fetch_release: impl FnOnce() -> String) -> &'static 
     })
 }
 
-/// Port of `const char* Generic_uname(void)` from `generic/uname.c:139`:
+/// Port of `const char* Generic_uname(void)` from `generic/uname.c:113`:
 /// `return Generic_unameRelease(parseOSRelease);`.
 pub fn Generic_uname() -> &'static str {
     Generic_unameRelease(parseOSRelease)

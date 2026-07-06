@@ -1361,7 +1361,7 @@ pub fn writeMeterModes(this: &Settings, out: &mut String, separator: char, colum
     out.push(separator);
 }
 
-/// Port of `full_write` (`XUtils.c:344`) — the retry-on-`EINTR` write loop
+/// Port of `full_write` (`XUtils.c:319`) — the retry-on-`EINTR` write loop
 /// draining `buf` to `fd`. Returns the byte count written, or the negative
 /// `write(2)` return on a non-`EINTR` error. Private (as in C's `XUtils`);
 /// used by [`signal_safe_fprintf`] and [`Settings_write`].
@@ -1915,7 +1915,7 @@ pub fn Settings_new(
     this
 }
 
-/// Port of `RowField` (`RowField.h:60` — `typedef int32_t RowField`). The
+/// Port of `RowField` (`RowField.h:54` — `typedef int32_t RowField`). The
 /// screen sort keys and field list are `RowField`s: reserved process-field
 /// ids (see [`crate::ported::process::ProcessField`]) plus runtime
 /// dynamic-column ids past `ROW_DYNAMIC_FIELDS`, so the raw `int32_t` is
