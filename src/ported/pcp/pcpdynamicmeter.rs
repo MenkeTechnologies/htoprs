@@ -491,7 +491,14 @@ pub fn PCPDynamicMeter_parseFile(meters: &mut PCPDynamicMeters, path: &str) {
         }
 
         // String_splitFirst(trimmed, '='): key = config[0], value = config[1] (raw, or NULL).
+        // A trailing '=' with nothing after it yields NO value in C (its
+        // `if (s[0] != '\0')` guard leaves n == 1, value NULL), so the line is
+        // skipped. In particular `<name>.metric=` must NOT reach
+        // pmRegisterDerivedMetric with an empty expression (a CRT_fatalError the
+        // C never triggers). `str::split_once` returns `Some("")` for a trailing
+        // '=', so map that to None.
         let (key_raw, value_raw) = match trimmed.split_once('=') {
+            Some((k, "")) => (k, None),
             Some((k, v)) => (k, Some(v)),
             None => (trimmed.as_str(), None),
         };

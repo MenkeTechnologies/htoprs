@@ -426,7 +426,12 @@ pub fn PCPDynamicColumn_parseFile(columns: &mut PCPDynamicColumns, path: &str) {
         }
 
         // String_splitFirst(trimmed, '='): key = config[0], value = config[1] (or NULL).
+        // A trailing '=' with nothing after it yields NO value in C (its
+        // `if (s[0] != '\0')` guard leaves n == 1, value NULL), so the line is
+        // skipped — NOT applied with an empty string, which `str::split_once`
+        // would otherwise return as `Some("")`.
         let (key_raw, value_opt) = match trimmed.split_once('=') {
+            Some((k, "")) => (k, None),
             Some((k, v)) => (k, Some(v)),
             None => (trimmed.as_str(), None),
         };
