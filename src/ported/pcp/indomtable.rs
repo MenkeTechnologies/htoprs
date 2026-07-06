@@ -13,7 +13,7 @@
 //!
 //! The ported [`Table`] owns its rows as `Vec<Option<Box<dyn Object>>>` and
 //! references them by index (not by the raw `Row*` C stores in its hashtable).
-//! So [`InDomTable_getInstance`] resolves-or-creates and returns `(preExisting,
+//! So `InDomTable_getInstance` resolves-or-creates and returns `(preExisting,
 //! idx)` — constructing and [`Table_add`]-ing a fresh [`Instance`] itself (the
 //! `ProcessTable_getProcess` precedent) rather than handing back a `Row*` for
 //! the caller to add. C's `Table_add` (done in `InDomTable_goThroughEntries`
@@ -167,7 +167,7 @@ fn InDomTable_getInstance(this: &mut InDomTable, id: c_int) -> (bool, usize) {
 /// Port of `static void InDomTable_goThroughEntries(InDomTable* this)`
 /// (`InDomTable.c:68`). Iterates every instance of the representative metric
 /// ([`Metric_iterate`]), resolving-or-creating each [`Instance`] via
-/// [`InDomTable_getInstance`], stamping its `offset`, and marking the row
+/// `InDomTable_getInstance`, stamping its `offset`, and marking the row
 /// `updated`/`show`. (The C's conditional `Table_add` for a new instance is
 /// folded into `getInstance`; see the module note.)
 pub fn InDomTable_goThroughEntries(this: &mut InDomTable) {

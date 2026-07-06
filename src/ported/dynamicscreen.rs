@@ -111,6 +111,11 @@ impl Object for DynamicScreen {
     fn klass(&self) -> &'static ObjectClass {
         &DynamicScreen_class
     }
+
+    /// This object *is* the `DynamicScreen` base (C `(DynamicScreen*)value`).
+    fn as_dynamic_screen(&self) -> Option<&DynamicScreen> {
+        Some(self)
+    }
 }
 
 /// Model of the file-private C `DynamicIterator` struct
@@ -203,10 +208,9 @@ pub fn DynamicScreen_search(
     };
     if let Some(screens) = screens {
         Hashtable_foreach(screens, &mut |k, value| {
-            let any: &dyn core::any::Any = value;
-            let screen = any
-                .downcast_ref::<DynamicScreen>()
-                .expect("value is a DynamicScreen");
+            // Base off either a `DynamicScreen` or a `PCPDynamicScreen`
+            // (C's `void*` prefix cast).
+            let screen = value.as_dynamic_screen().expect("value is a DynamicScreen");
             DynamicScreen_compare(k, screen, &mut iter);
         });
     }
@@ -224,8 +228,8 @@ pub fn DynamicScreen_search(
 /// `Hashtable_get` return being assigned to a `const DynamicScreen*`.
 pub fn DynamicScreen_lookup(screens: &Hashtable, key: u32) -> Option<&str> {
     Hashtable_get(screens, key).map(|value| {
-        let any: &dyn core::any::Any = value;
-        any.downcast_ref::<DynamicScreen>()
+        value
+            .as_dynamic_screen()
             .expect("value is a DynamicScreen")
             .name
             .as_str()

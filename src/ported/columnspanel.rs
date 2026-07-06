@@ -69,7 +69,6 @@
 use crate::ported::crt::{
     ColorElements, KEY_DC, KEY_DEL_MAC, KEY_DOWN, KEY_ENTER, KEY_F, KEY_MOUSE, KEY_RECLICK, KEY_UP,
 };
-use crate::ported::dynamiccolumn::DynamicColumn;
 use crate::ported::functionbar::FunctionBar_new;
 use crate::ported::hashtable::{Hashtable, Hashtable_get};
 use crate::ported::linux::linuxprocess::{Process_fields, LAST_PROCESSFIELD};
@@ -334,9 +333,8 @@ pub fn ColumnsPanel_add(super_: &mut Panel, key: u32, columns: &Hashtable) {
         //    else { name = column->heading ? column->heading : column->name; }
         match Hashtable_get(columns, key) {
             Some(obj) => {
-                let any: &dyn core::any::Any = obj;
-                let column = any
-                    .downcast_ref::<DynamicColumn>()
+                let column = obj
+                    .as_dynamic_column()
                     .expect("ColumnsPanel_add: dynamic column entry is not a DynamicColumn");
                 column.heading.as_deref().unwrap_or(column.name.as_str())
             }

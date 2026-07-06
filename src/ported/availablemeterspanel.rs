@@ -368,9 +368,8 @@ pub fn AvailableMetersPanel_addDynamicMeters(super_: &mut Panel, settings: &Sett
     // SAFETY: `dynamicMeters` is the Settings-borrowed Hashtable (a `*mut`
     // aliasing the Machine-owned table for the run).
     Hashtable_foreach(unsafe { &*dynamic_meters }, &mut |_key, value| {
-        let any: &dyn core::any::Any = value;
-        let meter = any
-            .downcast_ref::<DynamicMeter>()
+        let meter = value
+            .as_dynamic_meter()
             .expect("AvailableMetersPanel_addDynamicMeters: hashtable value is not a DynamicMeter");
         // unsigned int identifier = (iter->offset << 16) | iter->id;
         let identifier = (offset << 16) | id;

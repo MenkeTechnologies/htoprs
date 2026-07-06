@@ -47,7 +47,7 @@
 //! - **Owner-`Hashtable`, shared-only `get`.** The screens live in an owner
 //!   [`Hashtable`] (`Hashtable_new(0, true)`) that exposes only
 //!   [`Hashtable_get`] → `&dyn Object` and *drops* values on
-//!   [`Hashtable_remove`]. So the C pattern of inserting a screen at `[name]`
+//!   `Hashtable_remove`. So the C pattern of inserting a screen at `[name]`
 //!   and then mutating it in place through the returned `void*` on subsequent
 //!   lines is not expressible; parsing instead holds the in-progress screen as a
 //!   local owned value and flushes it into the table at the next section / EOF
@@ -64,16 +64,14 @@
 //!   single write in `appendDynamicColumns` cannot persist through the owner
 //!   table; the value is still computed ([`formatFields`]) but not stored, and
 //!   this is the reported gap (the `PCPDynamicColumns_setupWidths` precedent).
-//! - **`DynamicScreen_search` exact-type downcast.** The screens table stores
-//!   `PCPDynamicScreen`, but
+//! - **`DynamicScreen_search` over `PCPDynamicScreen` values.** The screens
+//!   table stores `PCPDynamicScreen`, and
 //!   [`DynamicScreen_search`](crate::ported::dynamicscreen::DynamicScreen_search)
 //!   (used by [`PCPDynamicScreen_uniqueName`] and
-//!   [`PCPDynamicScreens_addAvailableColumns`], as the C does) `Any`-downcasts
-//!   stored values to `DynamicScreen`. C's `void*` prefix aliasing reads the
-//!   `DynamicScreen` prefix of a `PCPDynamicScreen`; the safe-Rust `Any`
-//!   downcast is exact-type and cannot, so those two call sites hit the
-//!   cross-module impedance mismatch (fixable only in `dynamicscreen.rs`),
-//!   identical to the sibling `uniqueName` note.
+//!   [`PCPDynamicScreens_addAvailableColumns`], as the C does) reads each
+//!   value's `DynamicScreen` base through [`Object::as_dynamic_screen`] — the
+//!   safe analog of C's `(DynamicScreen*)value` struct-prefix cast, which
+//!   [`PCPDynamicScreen`] overrides to return its `super_`.
 //! - **Immutable-foreach free subsumed by `Drop`.** [`PCPDynamicScreens_free`]
 //!   receives a shared `&dyn Object` and cannot drive the owning teardown; the
 //!   owner table's `Box<dyn Object>` `Drop` frees each screen's owned fields, and
@@ -192,6 +190,13 @@ static PCPDynamicScreen_class: ObjectClass = ObjectClass {
 impl Object for PCPDynamicScreen {
     fn klass(&self) -> &'static ObjectClass {
         &PCPDynamicScreen_class
+    }
+
+    /// The `DynamicScreen` base is the `super_` prefix (C's
+    /// `(DynamicScreen*)pcpScreen` cast) — lets `DynamicScreen_search` read a
+    /// `PCPDynamicScreen` stored in the shared table.
+    fn as_dynamic_screen(&self) -> Option<&DynamicScreen> {
+        Some(&self.super_)
     }
 }
 
@@ -552,9 +557,9 @@ pub fn PCPDynamicScreen_validateScreenName(key: &mut String, path: &str, line: u
 /// PCPDynamicScreens* screens)` (`PCPDynamicScreen.c:201`): the name has not been
 /// defined previously iff [`DynamicScreen_search`] finds no screen with it.
 ///
-/// See the module note: `DynamicScreen_search` exact-type downcasts to
-/// `DynamicScreen`, but this table stores `PCPDynamicScreen`; the C `void*`
-/// prefix aliasing has no safe-Rust `Any` analog (cross-module limitation).
+/// `DynamicScreen_search` reads each stored `PCPDynamicScreen`'s `DynamicScreen`
+/// base through `Object::as_dynamic_screen` (the safe analog of C's `void*`
+/// prefix cast), so it matches a name defined via this table.
 pub fn PCPDynamicScreen_uniqueName(key: &str, screens: &PCPDynamicScreens) -> bool {
     // return !DynamicScreen_search(screens->table, key, NULL);
     !DynamicScreen_search(screens.table.as_ref(), key, None)
@@ -944,9 +949,9 @@ pub fn PCPDynamicScreen_addDynamicScreen(screens: &PCPDynamicScreens, ss: &mut S
 /// title when no description/caption exists).
 ///
 /// The C `Vector_prune(availableColumns->items)` maps to clearing the panel's
-/// owned item `Vec`. The [`DynamicScreen_search`] over the screens table hits
-/// the exact-type downcast limitation (the table stores `PCPDynamicScreen`, not
-/// `DynamicScreen`) — see the module note.
+/// owned item `Vec`. The [`DynamicScreen_search`] over the screens table reads
+/// each stored `PCPDynamicScreen`'s base through `Object::as_dynamic_screen`
+/// (the safe analog of C's `void*` prefix cast) — see the module note.
 pub fn PCPDynamicScreens_addAvailableColumns(
     availableColumns: &mut Panel,
     screens: &Hashtable,

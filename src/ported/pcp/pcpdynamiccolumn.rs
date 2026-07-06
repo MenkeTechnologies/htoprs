@@ -40,19 +40,17 @@
 //!
 //! [`PCPDynamicColumns_setupWidths`] drives its per-column `super.width` write
 //! (C `Hashtable_foreach(columns->table, PCPDynamicColumn_setupWidth, NULL)`)
-//! through [`Hashtable::foreach_value_mut`] — the `&mut` analog of the shared
+//! through `Hashtable::foreach_value_mut` — the `&mut` analog of the shared
 //! [`Hashtable_foreach`], added for this one mutating callback. The per-value
 //! free in [`PCPDynamicColumns_free`] is subsumed by the owner table's `Box`
 //! `Drop`.
 //!
-//! One cross-module limitation remains (reported):
-//! [`crate::ported::dynamiccolumn::DynamicColumn_search`] (called by
-//! [`PCPDynamicColumn_uniqueName`], as the C does) downcasts stored values to
-//! `DynamicColumn` via `Any`, but this table stores `PCPDynamicColumn`. C's
-//! `void*` struct-prefix aliasing lets it read the `DynamicColumn` prefix of a
-//! `PCPDynamicColumn`; the safe-Rust `Any` downcast is exact-type and cannot.
-//! This is a cross-module impedance mismatch (fixable only in
-//! `dynamiccolumn.rs`), noted in the port report.
+//! [`PCPDynamicColumn_uniqueName`] calls
+//! [`crate::ported::dynamiccolumn::DynamicColumn_search`] over this table (which
+//! stores `PCPDynamicColumn`), as the C does. The search reads each value's
+//! `DynamicColumn` base through [`Object::as_dynamic_column`] — the safe analog
+//! of C's `(DynamicColumn*)value` struct-prefix cast, which
+//! [`PCPDynamicColumn`] overrides to return its `super_`.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -152,6 +150,13 @@ static PCPDynamicColumn_class: ObjectClass = ObjectClass {
 impl Object for PCPDynamicColumn {
     fn klass(&self) -> &'static ObjectClass {
         &PCPDynamicColumn_class
+    }
+
+    /// The `DynamicColumn` base is the `super_` prefix (C's
+    /// `(DynamicColumn*)pcpColumn` cast) — lets `DynamicColumn_search` read a
+    /// `PCPDynamicColumn` stored in the shared table.
+    fn as_dynamic_column(&self) -> Option<&DynamicColumn> {
+        Some(&self.super_)
     }
 }
 
@@ -323,9 +328,9 @@ pub fn PCPDynamicColumn_validateColumnName(key: &mut String, path: &str, line: u
 /// PCPDynamicColumns* columns)` (`PCPDynamicColumn.c:108`): the name has not been
 /// defined previously iff [`DynamicColumn_search`] finds no column with it.
 ///
-/// See the module note: `DynamicColumn_search` downcasts stored values to
-/// `DynamicColumn`, but this table stores `PCPDynamicColumn`; the C `void*`
-/// prefix aliasing has no safe-Rust `Any` analog (cross-module limitation).
+/// `DynamicColumn_search` reads each stored `PCPDynamicColumn`'s `DynamicColumn`
+/// base through `Object::as_dynamic_column` (the safe analog of C's `void*`
+/// prefix cast), so it matches a name defined via this table.
 pub fn PCPDynamicColumn_uniqueName(key: &str, columns: &PCPDynamicColumns) -> bool {
     // return DynamicColumn_search(columns->table, key, NULL) == NULL;
     DynamicColumn_search(columns.table.as_ref(), key, None).is_none()
@@ -704,7 +709,7 @@ pub fn PCPDynamicColumn_setupWidth(column: &mut PCPDynamicColumn) {
 ///
 /// The owning `columns.table` is held by value (`Option<Hashtable>`), so
 /// `setupWidths` has exclusive `&mut` access and drives the per-column write
-/// through [`Hashtable::foreach_value_mut`] — the `&mut` analog of
+/// through `Hashtable::foreach_value_mut` — the `&mut` analog of
 /// `Hashtable_foreach` for the one mutating C callback. Each stored value is a
 /// `PCPDynamicColumn` (the exact type the C casts `value` to), so the callback
 /// resolves it with an exact-type `downcast_mut`.

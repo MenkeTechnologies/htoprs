@@ -52,24 +52,17 @@
 //! `U+FFFD`-replaced rather than stored raw, the only observable divergence from
 //! the C `char` buffer).
 //!
-//! # Substrate limitations (reported, identical to the sibling column port)
+//! # Substrate notes (identical to the sibling column port)
 //!
 //! - The ported [`Hashtable`] stores owned `Box<dyn Object>` values and drops
 //!   them on removal, so the per-value free in [`PCPDynamicMeter_free`] is
 //!   subsumed by the owner table's `Box` `Drop`.
-//! - [`crate::ported::dynamicmeter::DynamicMeter_search`] (called by
-//!   [`PCPDynamicMeter_uniqueName`], as the C does) downcasts stored values to
-//!   `DynamicMeter` via `Any`, but this table stores `PCPDynamicMeter`. C's
-//!   `void*` struct-prefix aliasing lets it read the `DynamicMeter` prefix of a
-//!   `PCPDynamicMeter`; the safe-Rust `Any` downcast is exact-type and cannot.
-//!   This cross-module impedance mismatch (fixable only in `dynamicmeter.rs`)
-//!   means same-name duplicate detection across the safe boundary is not
-//!   expressible; noted in the port report.
-//! - `Platform_addMetric` (the PCP platform metric-array registrar) is a
-//!   `pcp/Platform.c` function (not yet ported), scaffolded as a `todo!()` in
-//!   [`platform`](super::platform) and imported here so
-//!   [`PCPDynamicMeter_lookupMetric`]'s call site stays 1:1 until `Platform.c`
-//!   lands.
+//! - [`PCPDynamicMeter_uniqueName`] calls
+//!   [`crate::ported::dynamicmeter::DynamicMeter_search`] over this table (which
+//!   stores `PCPDynamicMeter`), as the C does; the search reads each value's
+//!   `DynamicMeter` base through [`Object::as_dynamic_meter`] — the safe analog
+//!   of C's `(DynamicMeter*)value` struct-prefix cast, overridden by
+//!   [`PCPDynamicMeter`] to return its `super_`.
 //! - The in-progress meter is held as a local owned value and inserted into the
 //!   table at the next section header / EOF (instead of C's insert-then-mutate-
 //!   through-`void*`), because the ported [`Hashtable`] hands back no mutable
@@ -159,6 +152,13 @@ static PCPDynamicMeter_class: ObjectClass = ObjectClass {
 impl Object for PCPDynamicMeter {
     fn klass(&self) -> &'static ObjectClass {
         &PCPDynamicMeter_class
+    }
+
+    /// The `DynamicMeter` base is the `super_` prefix (C's
+    /// `(DynamicMeter*)pcpMeter` cast) — lets `DynamicMeter_search` read a
+    /// `PCPDynamicMeter` stored in the shared table.
+    fn as_dynamic_meter(&self) -> Option<&DynamicMeter> {
+        Some(&self.super_)
     }
 }
 

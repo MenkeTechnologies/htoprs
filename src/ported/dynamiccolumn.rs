@@ -93,6 +93,12 @@ impl Object for DynamicColumn {
     fn klass(&self) -> &'static ObjectClass {
         &DynamicColumn_class
     }
+
+    /// This object *is* the `DynamicColumn` base (C `(DynamicColumn*)value`
+    /// where the stored value is a `DynamicColumn`).
+    fn as_dynamic_column(&self) -> Option<&DynamicColumn> {
+        Some(self)
+    }
 }
 
 /// Model of the file-private C `DynamicIterator` struct
@@ -201,9 +207,11 @@ pub fn DynamicColumn_search<'a>(
     if let Some(dynamics) = dynamics {
         Hashtable_foreach(dynamics, &mut |k, value| {
             // C: const DynamicColumn* column = (const DynamicColumn*)value;
-            let any: &dyn core::any::Any = value;
-            let column = any
-                .downcast_ref::<DynamicColumn>()
+            // The stored value may be a `DynamicColumn` or a `PCPDynamicColumn`
+            // (whose `super_` is one); `as_dynamic_column` yields the base off
+            // either, the safe analog of C's `void*` prefix cast.
+            let column = value
+                .as_dynamic_column()
                 .expect("DynamicColumn_search: hashtable value is not a DynamicColumn");
 
             let mut iter = DynamicIterator {
@@ -228,10 +236,7 @@ pub fn DynamicColumn_search<'a>(
     if matched {
         dynamics
             .and_then(|d| Hashtable_get(d, matched_key))
-            .and_then(|o| {
-                let any: &dyn core::any::Any = o;
-                any.downcast_ref::<DynamicColumn>()
-            })
+            .and_then(|o| o.as_dynamic_column())
     } else {
         None
     }
@@ -242,10 +247,7 @@ pub fn DynamicColumn_search<'a>(
 /// safe-Rust analog downcasts the `&dyn Object` value back to its
 /// concrete type via `Any`. A miss returns `None` (C `NULL`).
 pub fn DynamicColumn_lookup(dynamics: &Hashtable, key: u32) -> Option<&DynamicColumn> {
-    Hashtable_get(dynamics, key).and_then(|o| {
-        let any: &dyn core::any::Any = o;
-        any.downcast_ref::<DynamicColumn>()
-    })
+    Hashtable_get(dynamics, key).and_then(|o| o.as_dynamic_column())
 }
 
 /// Port of `DynamicColumn.c:74`. Thin wrapper over

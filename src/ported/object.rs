@@ -201,6 +201,34 @@ pub trait Object: core::any::Any {
     fn as_process_mut(&mut self) -> Option<&mut crate::ported::process::Process> {
         None
     }
+
+    /// C `(const DynamicColumn*)value` — a view of this object's embedded
+    /// [`DynamicColumn`](crate::ported::dynamiccolumn::DynamicColumn) base, or
+    /// `None` for objects that are not dynamic columns. Both `DynamicColumn`
+    /// (itself) and `PCPDynamicColumn` (`super_`) return their embedded
+    /// `DynamicColumn`, so `DynamicColumn_search` reads the base off either
+    /// concrete type the shared `dynamicColumns` table may hold — C's
+    /// `void*` struct-prefix cast, which has no exact-type `Any`-downcast
+    /// analog. The default models a non-`DynamicColumn` object.
+    fn as_dynamic_column(&self) -> Option<&crate::ported::dynamiccolumn::DynamicColumn> {
+        None
+    }
+
+    /// C `(const DynamicMeter*)value` — a view of this object's embedded
+    /// [`DynamicMeter`](crate::ported::dynamicmeter::DynamicMeter) base, or
+    /// `None` otherwise. `DynamicMeter` returns itself, `PCPDynamicMeter`
+    /// returns `super_`; see [`as_dynamic_column`](Object::as_dynamic_column).
+    fn as_dynamic_meter(&self) -> Option<&crate::ported::dynamicmeter::DynamicMeter> {
+        None
+    }
+
+    /// C `(const DynamicScreen*)value` — a view of this object's embedded
+    /// [`DynamicScreen`](crate::ported::dynamicscreen::DynamicScreen) base, or
+    /// `None` otherwise. `DynamicScreen` returns itself, `PCPDynamicScreen`
+    /// returns `super_`; see [`as_dynamic_column`](Object::as_dynamic_column).
+    fn as_dynamic_screen(&self) -> Option<&crate::ported::dynamicscreen::DynamicScreen> {
+        None
+    }
 }
 
 /// Port of `bool Object_isA(const Object* o, const ObjectClass* klass)`

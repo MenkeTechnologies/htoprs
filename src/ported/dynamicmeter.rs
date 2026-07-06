@@ -148,6 +148,11 @@ impl Object for DynamicMeter {
     fn klass(&self) -> &'static ObjectClass {
         &DynamicMeter_objectClass
     }
+
+    /// This object *is* the `DynamicMeter` base (C `(DynamicMeter*)value`).
+    fn as_dynamic_meter(&self) -> Option<&DynamicMeter> {
+        Some(self)
+    }
 }
 
 /// Port of the file-local `DynamicIterator` struct (`DynamicMeter.c:50`).
@@ -234,9 +239,10 @@ pub fn DynamicMeter_search(
     if let Some(dynamics) = dynamics {
         Hashtable_foreach(dynamics, &mut |k, value| {
             // C: const DynamicMeter* meter = (const DynamicMeter*)value;
-            let any: &dyn core::any::Any = value;
-            let meter = any
-                .downcast_ref::<DynamicMeter>()
+            // Base off either a `DynamicMeter` or a `PCPDynamicMeter` (C's
+            // `void*` prefix cast).
+            let meter = value
+                .as_dynamic_meter()
                 .expect("DynamicMeter_search: hashtable value is not a DynamicMeter");
             DynamicMeter_compare(k, meter, &mut iter);
         });
@@ -259,10 +265,7 @@ pub fn DynamicMeter_search(
 /// miss, C `NULL`).
 pub fn DynamicMeter_lookup(dynamics: &Hashtable, key: u32) -> Option<&str> {
     Hashtable_get(dynamics, key)
-        .and_then(|o| {
-            let any: &dyn core::any::Any = o;
-            any.downcast_ref::<DynamicMeter>()
-        })
+        .and_then(|o| o.as_dynamic_meter())
         .map(|meter| meter.name.as_str())
 }
 
@@ -317,10 +320,7 @@ pub fn DynamicMeter_getCaption(this: &Meter) -> &str {
             .dynamicMeters
             .expect("DynamicMeter_getCaption: settings->dynamicMeters is NULL")
     };
-    let meter = Hashtable_get(dynamics, this.param).and_then(|o| {
-        let any: &dyn core::any::Any = o;
-        any.downcast_ref::<DynamicMeter>()
-    });
+    let meter = Hashtable_get(dynamics, this.param).and_then(|o| o.as_dynamic_meter());
 
     // C: if (meter) return meter->caption ? meter->caption : meter->name;
     if let Some(meter) = meter {
@@ -361,10 +361,7 @@ pub fn DynamicMeter_getUiName(this: &Meter, name: &mut [u8], length: usize) {
             .dynamicMeters
             .expect("DynamicMeter_getUiName: settings->dynamicMeters is NULL")
     };
-    let meter = Hashtable_get(dynamics, this.param).and_then(|o| {
-        let any: &dyn core::any::Any = o;
-        any.downcast_ref::<DynamicMeter>()
-    });
+    let meter = Hashtable_get(dynamics, this.param).and_then(|o| o.as_dynamic_meter());
 
     // C: if (meter) {
     if let Some(meter) = meter {

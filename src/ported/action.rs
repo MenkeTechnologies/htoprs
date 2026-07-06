@@ -115,7 +115,6 @@ use crate::ported::crt::{
 };
 #[cfg(target_os = "macos")]
 use crate::ported::darwin::platform::{Platform_memoryClasses, Platform_numberOfMemoryClasses};
-use crate::ported::dynamiccolumn::DynamicColumn;
 use crate::ported::envscreen::{EnvScreen_delete, EnvScreen_new};
 use crate::ported::functionbar::{FunctionBar_newEnterEsc, Ncurses};
 use crate::ported::hashtable::Hashtable_get;
@@ -756,10 +755,9 @@ pub fn actionSetSortColumn(st: &mut State) -> Htop_Reaction {
             let column = match dynamicColumns {
                 // SAFETY: dynamicColumns is the Machine-owned Hashtable pointer
                 // (settings->dynamicColumns), valid for the run.
-                Some(dc) => Hashtable_get(unsafe { &*dc }, field as u32).and_then(|o| {
-                    let any: &dyn core::any::Any = o;
-                    any.downcast_ref::<DynamicColumn>()
-                }),
+                Some(dc) => {
+                    Hashtable_get(unsafe { &*dc }, field as u32).and_then(|o| o.as_dynamic_column())
+                }
                 None => None,
             };
             let column = match column {

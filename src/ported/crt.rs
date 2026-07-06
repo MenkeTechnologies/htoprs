@@ -1784,7 +1784,7 @@ pub fn dumpStderr() {}
 /// the source location, then writes the caller's formatted message to stderr,
 /// terminated by a newline. The C's printf varargs (`fmt, ...` → `vfprintf`)
 /// are modelled as a pre-formatted [`std::fmt::Arguments`], captured by the
-/// [`CRT_debug!`] macro (the port of the `CRT_debug(...)` macro, `CRT.h:170`)
+/// `CRT_debug!` macro (the port of the `CRT_debug(...)` macro, `CRT.h:170`)
 /// via `format_args!` — Rust has no stable variadic `fn`.
 #[cfg(debug_assertions)]
 pub fn CRT_debug_impl(file: &str, lineno: usize, func: &str, args: std::fmt::Arguments) {

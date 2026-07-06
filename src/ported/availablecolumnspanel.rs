@@ -280,8 +280,7 @@ pub fn AvailableColumnsPanel_addDynamicColumns(
     // C: assert(dynamicColumns); -- subsumed by the &Hashtable reference type.
     // C: Hashtable_foreach(dynamicColumns, AvailableColumnsPanel_addDynamicColumn, this);
     Hashtable_foreach(dynamicColumns, &mut |key, value| {
-        let any: &dyn core::any::Any = value;
-        let column = any.downcast_ref::<DynamicColumn>().expect(
+        let column = value.as_dynamic_column().expect(
             "AvailableColumnsPanel_addDynamicColumns: hashtable value is not a DynamicColumn",
         );
         AvailableColumnsPanel_addDynamicColumn(key, column, this);

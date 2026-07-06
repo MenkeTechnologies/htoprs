@@ -977,7 +977,7 @@ pub fn DarwinProcess_setFromLibprocPidinfo(
 /// branch is taken — the type modern macOS provides ([`libc::thread_extended_info`]).
 ///
 /// The C `CRT_debug(..., mach_error_string(ret))` diagnostics on each mach
-/// failure are ported via the [`CRT_debug!`](crate::CRT_debug) macro (debug
+/// failure are ported via the `CRT_debug!` macro (debug
 /// builds only, matching the C's `#ifndef NDEBUG` gate); the control flow
 /// (`taskAccess = false` / `continue` / early return) is faithful.
 /// `tprocess->user = proc->user` copies the C `char*` share by

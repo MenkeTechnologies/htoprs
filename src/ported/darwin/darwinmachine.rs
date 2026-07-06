@@ -221,7 +221,7 @@ pub fn Machine_scan(host: &mut DarwinMachine) {
 /// `kstat.zfs.misc.arcstats.*` sysctls), matching `DarwinMachine.c:110-111`.
 /// `GPUService` is resolved via `IOServiceGetMatchingService(IOGPU)`
 /// (the C's own call); the failure branch's `CRT_debug` log is ported via the
-/// [`CRT_debug!`](crate::CRT_debug) macro (debug builds only).
+/// `CRT_debug!` macro (debug builds only).
 pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<DarwinMachine> {
     let mut this = Box::new(DarwinMachine {
         super_: Machine::default(),

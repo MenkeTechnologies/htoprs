@@ -644,9 +644,8 @@ pub unsafe fn ScreenTabsPanel_new(settings: *mut Settings) -> ScreenTabsPanel {
     let dyn_screens = unsafe { &*ds_ht };
     let super_mut = &mut this.super_;
     Hashtable_foreach(dyn_screens, &mut |key, value| {
-        let any: &dyn core::any::Any = value;
-        let screen = any
-            .downcast_ref::<DynamicScreen>()
+        let screen = value
+            .as_dynamic_screen()
             .expect("ScreenTabsPanel_new: dynamicScreens value is not a DynamicScreen");
         addDynamicScreen(key, screen, super_mut);
     });
