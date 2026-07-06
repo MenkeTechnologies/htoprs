@@ -49,6 +49,8 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+use std::cell::OnceCell;
+
 use crate::ported::hashtable::{Hashtable, Hashtable_delete, Hashtable_foreach, Hashtable_get};
 use crate::ported::object::{Object, ObjectClass, Object_class};
 
@@ -81,18 +83,21 @@ use crate::ported::unsupported::platform::{Platform_dynamicScreens, Platform_dyn
 /// Model of the C `DynamicScreen` struct (`DynamicScreen.h`). `name` is read
 /// by [`DynamicScreen_compare`] / [`DynamicScreen_lookup`]; `heading` (C
 /// `char* heading`, the user-settable readable name, nullable ⇒ `Option`) is
-/// read by `ScreenTabsPanel.c`'s `addDynamicScreen`. The remaining C fields
-/// (`caption`, `fields`, `sortKey`, `columnKeys`, `direction`) are omitted
-/// because no ported code path reads them.
+/// read by `ScreenTabsPanel.c`'s `addDynamicScreen`; `columnKeys`/`direction`
+/// are read by `Settings_newDynamicScreen`. The remaining C fields
+/// (`caption`, `fields`, `sortKey`) are omitted because no ported code path
+/// reads them.
 pub struct DynamicScreen {
     /// C `char name[32]` — unique name, cannot contain spaces.
     pub name: String,
     /// C `char* heading` — user-settable more readable name (`NULL` ⇒ `None`).
     pub heading: Option<String>,
-    /// C `char* columnKeys` — the space-separated field keys the screen shows
-    /// (`NULL` ⇒ `None`); read by `Settings_newDynamicScreen` to seed the
-    /// screen's sort key and field list.
-    pub columnKeys: Option<String>,
+    /// C `char* columnKeys` — the space-separated field keys the screen shows;
+    /// read by `Settings_newDynamicScreen` to seed the screen's sort key and
+    /// field list. Held in a [`OnceCell`] (empty ⇒ C `NULL`) because the PCP
+    /// screen sets it (C `screen->super.columnKeys = formatFields(screen)`)
+    /// through a shared, table-resident `&DynamicScreen`.
+    pub columnKeys: OnceCell<String>,
     /// C `int direction` — the screen's default sort direction (1 asc / -1 desc).
     pub direction: i32,
 }
@@ -245,7 +250,7 @@ mod tests {
         DynamicScreen {
             name: name.to_string(),
             heading: None,
-            columnKeys: None,
+            columnKeys: OnceCell::new(),
             direction: 1,
         }
     }

@@ -58,12 +58,11 @@
 //!   shared `&PCPDynamicScreen` soundly — reproducing C's in-place mutation of a
 //!   table-resident object without the `invalid_reference_casting`
 //!   (`&T`→`&mut T`) that a raw const-cast would trip.
-//!   The one field C also mutates post-insert that lives on the *reduced base*
-//!   struct, `super.columnKeys = formatFields(screen)`, cannot be wrapped in a
-//!   `Cell` (the base struct is in the uneditable `dynamicscreen.rs`), so that
-//!   single write in `appendDynamicColumns` cannot persist through the owner
-//!   table; the value is still computed ([`formatFields`]) but not stored, and
-//!   this is the reported gap (the `PCPDynamicColumns_setupWidths` precedent).
+//!   The one field C mutates post-insert on the base struct,
+//!   `super.columnKeys = formatFields(screen)`, is likewise a
+//!   [`OnceCell`] on the base [`DynamicScreen`], so
+//!   `appendDynamicColumns` sets it through the shared table-resident screen
+//!   (read later by [`Settings_newDynamicScreen`]).
 //! - **`DynamicScreen_search` over `PCPDynamicScreen` values.** The screens
 //!   table stores `PCPDynamicScreen`, and
 //!   [`DynamicScreen_search`]
@@ -90,7 +89,7 @@
 #![allow(dead_code)]
 
 use core::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
@@ -268,9 +267,9 @@ pub fn formatFields(screen: &PCPDynamicScreen) -> String {
 /// boxes, not the screen), and the box ownership is handed to the `columns`
 /// table via [`Box::from_raw`] (C's aliasing insert). The `indom`/`key` writes
 /// go through the screen's [`Cell`]s. The final `screen->super.columnKeys =
-/// formatFields(screen)` write cannot persist through the owner table (the
-/// reduced base `columnKeys` is not `Cell`-wrapped) — see the module note; the
-/// value is computed but discarded.
+/// formatFields(screen)` write goes through the base [`DynamicScreen`]'s
+/// [`OnceCell`] `columnKeys`, persisting through the shared
+/// table-resident screen for [`Settings_newDynamicScreen`] to read.
 pub fn PCPDynamicScreens_appendDynamicColumns(
     screens: &PCPDynamicScreens,
     columns: &mut PCPDynamicColumns,
@@ -329,10 +328,10 @@ pub fn PCPDynamicScreens_appendDynamicColumns(
         }
 
         // screen->super.columnKeys = formatFields(screen);
-        // The reduced base `columnKeys` is not Cell-wrapped, so this write cannot
-        // persist through the owner table (see the module note). Computed for
-        // fidelity, discarded.
-        let _column_keys = formatFields(screen);
+        // The base `columnKeys` is a OnceCell, so this write persists through the
+        // shared, table-resident `&DynamicScreen` (set-once, matching the C's
+        // single assignment). Read later by Settings_newDynamicScreen.
+        let _ = screen.super_.columnKeys.set(formatFields(screen));
     }
 }
 
@@ -585,7 +584,7 @@ pub fn PCPDynamicScreen_new(
         super_: DynamicScreen {
             name,
             heading: None,
-            columnKeys: None,
+            columnKeys: OnceCell::new(),
             direction: 0,
         },
         caption: None,

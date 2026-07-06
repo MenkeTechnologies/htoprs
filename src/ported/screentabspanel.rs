@@ -101,6 +101,8 @@
 #![allow(non_upper_case_globals)]
 #![allow(dead_code)]
 
+#[cfg(test)]
+use std::cell::OnceCell;
 use std::sync::Mutex;
 
 use crate::ported::crt::{
@@ -1296,7 +1298,7 @@ mod tests {
         let ds = DynamicScreen {
             name: "pods".to_string(),
             heading: None,
-            columnKeys: None,
+            columnKeys: OnceCell::new(),
             direction: 1,
         };
 
@@ -1364,7 +1366,7 @@ mod tests {
         let mut ds = DynamicScreen {
             name: "pods".to_string(),
             heading: None,
-            columnKeys: None,
+            columnKeys: OnceCell::new(),
             direction: 1,
         };
         let item = ScreenTabListItem_new("Pods", &mut ds as *mut DynamicScreen);
@@ -1683,7 +1685,7 @@ mod tests {
         let mut ds_pods = DynamicScreen {
             name: "pods".to_string(),
             heading: None,
-            columnKeys: None,
+            columnKeys: OnceCell::new(),
             direction: 1,
         };
         let mut tabs = tabs_panel(&mut names);

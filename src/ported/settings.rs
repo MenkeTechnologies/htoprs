@@ -817,7 +817,7 @@ pub fn Settings_newDynamicScreen(
     screen: &DynamicScreen,
     table: Option<TableHandle>,
 ) -> usize {
-    let column_keys = screen.columnKeys.as_deref().unwrap_or("");
+    let column_keys = screen.columnKeys.get().map(String::as_str).unwrap_or("");
     // int sortKey = toFieldIndex(this->dynamicColumns, screen->columnKeys);
     let sortKey = match this.dynamicColumns {
         Some(p) => toFieldIndex(unsafe { &*p }, column_keys),
