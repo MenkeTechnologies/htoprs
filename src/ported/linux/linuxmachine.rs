@@ -481,7 +481,7 @@ fn LinuxMachine_scanHugePages(this: &mut LinuxMachine) {
 }
 
 /// Port of `static void LinuxMachine_scanZramInfo(LinuxMachine* this)`
-/// from `LinuxMachine.c:323`. Enumerates `zramN` block devices under
+/// from `LinuxMachine.c:277`. Enumerates `zramN` block devices under
 /// `/sys/block` and sums their disk/compressed/original sizes.
 ///
 /// The C static helpers `LinuxMachine_isZramBlockName` (`LinuxMachine.c:277`)
@@ -544,7 +544,7 @@ fn LinuxMachine_scanZramInfo(this: &mut LinuxMachine) {
 }
 
 /// Port of `static void LinuxMachine_scanZfsArcstats(LinuxMachine* this)`
-/// from `LinuxMachine.c:356`. Parses `/proc/spl/kstat/zfs/arcstats`
+/// from `LinuxMachine.c:328`. Parses `/proc/spl/kstat/zfs/arcstats`
 /// (three whitespace columns: name, type, value) into `this.zfs`.
 fn LinuxMachine_scanZfsArcstats(this: &mut LinuxMachine) {
     let mut dbufSize: memory_t = 0;
@@ -623,7 +623,7 @@ fn LinuxMachine_scanZfsArcstats(this: &mut LinuxMachine) {
 }
 
 /// Port of `static void LinuxMachine_scanCPUTime(LinuxMachine* this)` from
-/// `LinuxMachine.c:430`. Reads `/proc/stat`, deriving per-CPU period/time
+/// `LinuxMachine.c:402`. Reads `/proc/stat`, deriving per-CPU period/time
 /// counters (via `saturatingSub`) and `runningTasks`. `saturatingSub` is
 /// inlined as `a.saturating_sub(b)`.
 fn LinuxMachine_scanCPUTime(this: &mut LinuxMachine) {
@@ -762,7 +762,7 @@ fn LinuxMachine_scanCPUTime(this: &mut LinuxMachine) {
 }
 
 /// Port of `static int scanCPUFrequencyFromSysCPUFreq(LinuxMachine* this)`
-/// from `LinuxMachine.c:538`. Reads `scaling_cur_freq` per online CPU from
+/// from `LinuxMachine.c:510`. Reads `scaling_cur_freq` per online CPU from
 /// sysfs, converting kHz to MHz. Returns 0 on success, -1 when timed out /
 /// bailed early (slow first read), or `-errno` when a file cannot be
 /// opened. The static `timeout` counter becomes an [`AtomicI32`].
@@ -821,7 +821,7 @@ fn scanCPUFrequencyFromSysCPUFreq(this: &mut LinuxMachine) -> i32 {
 }
 
 /// Port of `static void scanCPUFrequencyFromCPUinfo(LinuxMachine* this)`
-/// from `LinuxMachine.c:600`. Falls back to `/proc/cpuinfo` per-CPU MHz
+/// from `LinuxMachine.c:572`. Falls back to `/proc/cpuinfo` per-CPU MHz
 /// fields; sysfs data already present is not overridden
 /// (`isNonnegative(freq)` inlined as `freq >= 0.0`, false for NaN).
 fn scanCPUFrequencyFromCPUinfo(this: &mut LinuxMachine) {
@@ -883,7 +883,7 @@ fn scanCPUFrequencyFromCPUinfo(this: &mut LinuxMachine) {
 }
 
 /// Port of `static void LinuxMachine_fetchCPUTopologyFromCPUinfo(
-/// LinuxMachine* this)` from `LinuxMachine.c:651`. Reads `physical id` /
+/// LinuxMachine* this)` from `LinuxMachine.c:623`. Reads `physical id` /
 /// `core id` per CPU from `/proc/cpuinfo` (blank line ends each CPU block)
 /// and records `maxPhysicalID` / `maxCoreID`.
 fn LinuxMachine_fetchCPUTopologyFromCPUinfo(this: &mut LinuxMachine) {
@@ -949,7 +949,7 @@ fn LinuxMachine_fetchCPUTopologyFromCPUinfo(this: &mut LinuxMachine) {
 }
 
 /// Port of `static void LinuxMachine_assignCCDs(LinuxMachine* this, int
-/// ccds)` from `LinuxMachine.c:702`. Distributes AMD CCD IDs across cores
+/// ccds)` from `LinuxMachine.c:674`. Distributes AMD CCD IDs across cores
 /// (iterated by physical/core ID) assuming equal-size CCDs; `ccds == 0`
 /// clears all `ccdID` to -1.
 fn LinuxMachine_assignCCDs(this: &mut LinuxMachine, ccds: i32) {
@@ -986,7 +986,7 @@ fn LinuxMachine_assignCCDs(this: &mut LinuxMachine, ccds: i32) {
 }
 
 /// Port of `static void LinuxMachine_computeThreadIndices(LinuxMachine*
-/// this)` from `LinuxMachine.c:742`. Computes the SMT `threadIndex` and a
+/// this)` from `LinuxMachine.c:714`. Computes the SMT `threadIndex` and a
 /// normalized `coreIndex` per CPU from shared physical/core IDs.
 fn LinuxMachine_computeThreadIndices(this: &mut LinuxMachine) {
     let existingCPUs = this.super_.existingCPUs as usize;
@@ -1027,7 +1027,7 @@ fn LinuxMachine_computeThreadIndices(this: &mut LinuxMachine) {
 }
 
 /// Port of `static void LinuxMachine_scanCPUFrequency(LinuxMachine* this)`
-/// from `LinuxMachine.c:788`. Resets every CPU frequency to NaN, then
+/// from `LinuxMachine.c:756`. Resets every CPU frequency to NaN, then
 /// prefers the sysfs source and falls back to `/proc/cpuinfo`.
 fn LinuxMachine_scanCPUFrequency(this: &mut LinuxMachine) {
     let existingCPUs = this.super_.existingCPUs;
@@ -1043,7 +1043,7 @@ fn LinuxMachine_scanCPUFrequency(this: &mut LinuxMachine) {
     scanCPUFrequencyFromCPUinfo(this);
 }
 
-/// Port of `void Machine_scan(Machine* super)` from `LinuxMachine.c:800`.
+/// Port of `void Machine_scan(Machine* super)` from `LinuxMachine.c:768`.
 /// Runs the per-scan memory / huge-page / ZFS / ZRAM / CPU-time passes,
 /// then (when enabled) the CPU-frequency pass.
 ///
@@ -1051,7 +1051,7 @@ fn LinuxMachine_scanCPUFrequency(this: &mut LinuxMachine) {
 /// trailing `LibSensors_getCPUTemperatures` call are omitted (no-sensors
 /// build variant; see module docs).
 ///
-/// Port of `void Machine_scan(Machine* super)` from `LinuxMachine.c:786`.
+/// Port of `void Machine_scan(Machine* super)` from `LinuxMachine.c:768`.
 /// Runs the per-scan `/proc` passes in C order, then — when
 /// `settings->showCPUFrequency` is set — the CPU-frequency pass. C binds
 /// `const Settings* settings = super->settings;` and dereferences it with no
@@ -1080,7 +1080,7 @@ pub fn Machine_scan(this: &mut LinuxMachine) {
 }
 
 /// Port of `Machine* Machine_new(UsersTable* usersTable, uid_t userId)`
-/// from `LinuxMachine.c:823`. Allocates a `LinuxMachine` (C `xCalloc`,
+/// from `LinuxMachine.c:791`. Allocates a `LinuxMachine` (C `xCalloc`,
 /// mirrored by `Default::default()` zero-init), runs the base
 /// [`Machine_init`], resolves page size / clock ticks via `sysconf`, reads
 /// the kernel boot time (`btime`) from `/proc/stat`, then runs the CPU-count
@@ -1173,7 +1173,7 @@ pub fn Machine_new(usersTable: Option<usize>, userId: u32) -> Box<LinuxMachine> 
     this
 }
 
-/// Port of `void Machine_delete(Machine* super)` from `LinuxMachine.c:877`.
+/// Port of `void Machine_delete(Machine* super)` from `LinuxMachine.c:845`.
 /// The C body downcasts to `LinuxMachine*`, walks and frees the
 /// `gpuEngineData` linked list, `free`s `cpuData`, and calls
 /// `Machine_done(super)` (itself a free/destroy teardown). Take `this` by
@@ -1186,7 +1186,7 @@ pub fn Machine_delete(mut this: LinuxMachine) {
 }
 
 /// Port of `bool Machine_isCPUonline(const Machine* super, unsigned int
-/// id)` from `LinuxMachine.c:894`. The C `(const LinuxMachine*)super`
+/// id)` from `LinuxMachine.c:862`. The C `(const LinuxMachine*)super`
 /// downcast is a `&LinuxMachine` here.
 pub fn Machine_isCPUonline(this: &LinuxMachine, id: u32) -> bool {
     debug_assert!(id < this.super_.existingCPUs);
@@ -1194,7 +1194,7 @@ pub fn Machine_isCPUonline(this: &LinuxMachine, id: u32) -> bool {
 }
 
 /// Port of `int Machine_getCPUPhysicalCoreID(const Machine* super,
-/// unsigned int id)` from `LinuxMachine.c:901`. Returns the normalized
+/// unsigned int id)` from `LinuxMachine.c:869`. Returns the normalized
 /// `coreIndex` of CPU `id`.
 pub fn Machine_getCPUPhysicalCoreID(this: &LinuxMachine, id: u32) -> i32 {
     debug_assert!(id < this.super_.existingCPUs);
@@ -1202,7 +1202,7 @@ pub fn Machine_getCPUPhysicalCoreID(this: &LinuxMachine, id: u32) -> i32 {
 }
 
 /// Port of `int Machine_getCPUThreadIndex(const Machine* super, unsigned
-/// int id)` from `LinuxMachine.c:908`. Returns the SMT `threadIndex` of
+/// int id)` from `LinuxMachine.c:876`. Returns the SMT `threadIndex` of
 /// CPU `id`.
 pub fn Machine_getCPUThreadIndex(this: &LinuxMachine, id: u32) -> i32 {
     debug_assert!(id < this.super_.existingCPUs);

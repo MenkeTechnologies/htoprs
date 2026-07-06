@@ -1309,7 +1309,7 @@ pub fn writeFields(
     out.push(separator);
 }
 
-/// Port of `Settings.c:603`. Appends `list[0..len]` to `out`,
+/// Port of `Settings.c:597`. Appends `list[0..len]` to `out`,
 /// space-separated, followed by `separator`. Models the C `OutputFunc
 /// of` / `FILE* fp` sink as a `&mut String` buffer since the produced
 /// text is identical.
@@ -1323,7 +1323,7 @@ pub fn writeList(out: &mut String, list: &[String], len: usize, separator: char)
     out.push(separator);
 }
 
-/// Port of `Settings.c:613`. Writes column `column`'s meter names via
+/// Port of `Settings.c:607`. Writes column `column`'s meter names via
 /// [`writeList`] when it has meters, otherwise writes `!` then the
 /// separator.
 pub fn writeMeters(this: &Settings, out: &mut String, separator: char, column: usize) {
@@ -1341,7 +1341,7 @@ pub fn writeMeters(this: &Settings, out: &mut String, separator: char, column: u
     }
 }
 
-/// Port of `Settings.c:622`. Writes column `column`'s meter modes as
+/// Port of `Settings.c:616`. Writes column `column`'s meter modes as
 /// space-separated unsigned integers when it has meters, otherwise `!`;
 /// then the separator.
 pub fn writeMeterModes(this: &Settings, out: &mut String, separator: char, column: usize) {
@@ -1978,7 +1978,7 @@ pub fn ScreenSettings_getActiveDirection(this: &ScreenSettings) -> i32 {
     }
 }
 
-/// Port of `Settings.c:922`. Flips the active sort direction between `1`
+/// Port of `Settings.c:913`. Flips the active sort direction between `1`
 /// and `-1`: `treeDirection` when `treeView` is set, otherwise
 /// `direction`. Faithful to the C `(*attr == 1) ? -1 : 1`, so any value
 /// other than `1` becomes `1` (not negated).
@@ -2015,24 +2015,24 @@ pub fn ScreenSettings_setSortKey(this: &mut ScreenSettings, sortKey: RowField) {
     }
 }
 
-/// The file-static `bool readonly` from `Settings.c:938`. A process-wide
+/// The file-static `bool readonly` from `Settings.c:929`. A process-wide
 /// latch, so it is a `static` `AtomicBool` here rather than a passed
 /// value.
 static READONLY: AtomicBool = AtomicBool::new(false);
 
-/// Port of `Settings.c:940`. Sets the process-wide `readonly` latch. The
+/// Port of `Settings.c:931`. Sets the process-wide `readonly` latch. The
 /// C `readonly = true` becomes an atomic store.
 pub fn Settings_enableReadonly() {
     READONLY.store(true, Ordering::Relaxed);
 }
 
-/// Port of `Settings.c:944`. Returns the current value of the
+/// Port of `Settings.c:935`. Returns the current value of the
 /// process-wide `readonly` latch.
 pub fn Settings_isReadonly() -> bool {
     READONLY.load(Ordering::Relaxed)
 }
 
-/// Port of `Settings.c:948`. Resizes `hColumns` to the new layout's
+/// Port of `Settings.c:939`. Resizes `hColumns` to the new layout's
 /// column count: grows with default (C `memset`-zeroed) columns, or
 /// drops trailing columns (Rust `Drop` frees their names/modes, matching
 /// the C `free` loop). Then updates `hLayout` and sets `changed`.

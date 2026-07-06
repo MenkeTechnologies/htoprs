@@ -1162,11 +1162,11 @@ pub static CRT_colorSchemes: [[i32; LAST_COLORELEMENT as usize]; LAST_COLORSCHEM
 };
 
 /// Active color scheme index. Models the C global `ColorScheme
-/// CRT_colorScheme` (`CRT.c:831`); the active row (C's `const int*
+/// CRT_colorScheme` (`CRT.c:958`); the active row (C's `const int*
 /// CRT_colors`) is `CRT_colorSchemes[CRT_colorScheme]`.
 pub static CRT_colorScheme: AtomicUsize = AtomicUsize::new(COLORSCHEME_DEFAULT as usize);
 
-/// Port of `void CRT_setColors(int colorScheme)` from `CRT.c:1343` —
+/// Port of `void CRT_setColors(int colorScheme)` from `CRT.c:1334` —
 /// the pure part: clamp an out-of-range scheme to `COLORSCHEME_DEFAULT`,
 /// store it in `CRT_colorScheme`, and select the active scheme row
 /// (`CRT_colors = CRT_colorSchemes[colorScheme]`). The `init_pair`
@@ -1410,7 +1410,7 @@ static CRT_treeStrUtf8: [&str; LAST_TREE_STR] = [
 
 impl TreeStr {
     /// C's `CRT_treeStr[self]` (`CRT.c:95`; the `CRT_treeStr` pointer is
-    /// retargeted to the ASCII or UTF-8 table in `CRT_init`, `CRT.c:1288`).
+    /// retargeted to the ASCII or UTF-8 table in `CRT_init`, `CRT.c:1279`).
     /// Selects the glyph at read time from the [`CRT_utf8`] flag — the same
     /// runtime pick `CRT_degreeSign` uses. Modeled as a method (the build
     /// gate inspects only free `fn`s, and C's `CRT_treeStr` is a variable,
@@ -2029,7 +2029,7 @@ pub fn CRT_init(
     initDegreeSign();
 }
 
-/// Port of `void CRT_done(void)` from `CRT.c:1299`.
+/// Port of `void CRT_done(void)` from `CRT.c:1290`.
 ///
 /// Restores the terminal crossterm-side: show the cursor
 /// (`curs_set(1)`), disable mouse capture, leave the alternate screen
@@ -2047,7 +2047,7 @@ pub fn CRT_done() {
     let _ = terminal::disable_raw_mode();
 }
 
-/// Port of `void CRT_fatalError(const char* note)` from `CRT.c:1317`.
+/// Port of `void CRT_fatalError(const char* note)` from `CRT.c:1308`.
 ///
 /// Captures the current OS error (`strerror(errno)` via
 /// [`io::Error::last_os_error`]), restores the terminal with
@@ -2064,7 +2064,7 @@ pub fn CRT_fatalError(note: &str) -> ! {
     std::process::exit(2);
 }
 
-/// Port of `int CRT_readKey(void)` from `CRT.c:1324`.
+/// Port of `int CRT_readKey(void)` from `CRT.c:1315`.
 ///
 /// htop forces blocking input with the `halfdelay(settings->delay)`
 /// timeout, then calls `getch()`. Here: poll for an event up to the
@@ -2096,13 +2096,13 @@ pub fn CRT_readKey() -> i32 {
     }
 }
 
-/// Port of `void CRT_disableDelay(void)` from `CRT.c:1333`.
+/// Port of `void CRT_disableDelay(void)` from `CRT.c:1324`.
 /// ncurses `nodelay(stdscr, TRUE)` — make input non-blocking.
 pub fn CRT_disableDelay() {
     CRT_nodelay.store(true, Ordering::Relaxed);
 }
 
-/// Port of `void CRT_enableDelay(void)` from `CRT.c:1339`.
+/// Port of `void CRT_enableDelay(void)` from `CRT.c:1330`.
 /// ncurses `halfdelay(settings->delay)` — restore the timed blocking read.
 pub fn CRT_enableDelay() {
     CRT_nodelay.store(false, Ordering::Relaxed);

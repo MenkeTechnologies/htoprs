@@ -947,7 +947,7 @@ pub fn Panel_draw(
 }
 
 /// Port of `static int Panel_headerHeight(const Panel* this)` from
-/// `Panel.c:374`: `1` when the header is non-empty, else `0`.
+/// `Panel.c:357`: `1` when the header is non-empty, else `0`.
 pub fn Panel_headerHeight(this: &Panel) -> i32 {
     if RichString_sizeVal(&this.header) > 0 {
         1
@@ -956,7 +956,7 @@ pub fn Panel_headerHeight(this: &Panel) -> i32 {
     }
 }
 
-/// Port of `bool Panel_onKey(Panel* this, int key)` from `Panel.c:380`.
+/// Port of `bool Panel_onKey(Panel* this, int key)` from `Panel.c:363`.
 ///
 /// Navigation/scroll key handling. Ported faithfully against the item
 /// count, `CRT_scrollHAmount`, and `CRT_scrollWheelVAmount` (`crt.rs`).
@@ -1067,7 +1067,7 @@ pub fn Panel_onKey(this: &mut Panel, key: i32) -> bool {
 }
 
 /// Port of `HandlerResult Panel_selectByTyping(Panel* this, int ch)` from
-/// `Panel.c:507` — the base `Panel_class.eventHandler`, an incremental
+/// `Panel.c:468` — the base `Panel_class.eventHandler`, an incremental
 /// type-to-search over the list's `ListItem` values.
 ///
 /// Faithful port of the C control flow:
@@ -1177,7 +1177,7 @@ pub fn Panel_selectByTyping(this: &mut Panel, ch: i32) -> HandlerResult {
     result
 }
 
-/// Port of `int Panel_getCh(Panel* this)` from `Panel.c:565`.
+/// Port of `int Panel_getCh(Panel* this)` from `Panel.c:526`.
 ///
 /// Behavioral crossterm port. Positions/shows the cursor when `cursorOn`
 /// (C `move`+`curs_set(1)`), else hides it, then reads a key via the
@@ -1304,7 +1304,7 @@ impl Panel {
         }
     }
 
-    /// The `PANEL_SCROLL(amount)` macro body (`Panel.c:387`): shift the
+    /// The `PANEL_SCROLL(amount)` macro body (`Panel.c:368`): shift the
     /// selection and clamp `scrollV` into `[0, MAX(0, size - h - headerHeight)]`.
     fn panel_scroll(&mut self, amount: i32, size: i32) {
         self.selected += amount;

@@ -10,27 +10,27 @@
 //! - [`LinuxProcess`] — every `struct LinuxProcess_` field from
 //!   `LinuxProcess.h:33`, embedding [`Process`] as its `super_` base (the
 //!   substrate `LinuxProcessTable`/`GPU`/`LibNl` consume).
-//! - [`LinuxProcess_new`] (`LinuxProcess.c:112`) — constructor.
-//! - `LinuxProcess_effectiveIOPriority` (`LinuxProcess.c:137`) — pure.
-//! - [`LinuxProcess_updateIOPriority`] (`LinuxProcess.c:153`) and
-//!   `LinuxProcess_setIOPriority` (`LinuxProcess.c:164`) — the
+//! - [`LinuxProcess_new`] (`LinuxProcess.c:117`) — constructor.
+//! - `LinuxProcess_effectiveIOPriority` (`LinuxProcess.c:145`) — pure.
+//! - [`LinuxProcess_updateIOPriority`] (`LinuxProcess.c:161`) and
+//!   `LinuxProcess_setIOPriority` (`LinuxProcess.c:172`) — the
 //!   `ioprio_get`/`ioprio_set` syscalls (Linux-only, exactly as the C
 //!   `#ifdef SYS_ioprio_*` guards them), plus
-//!   [`LinuxProcess_rowSetIOPriority`] (`LinuxProcess.c:172`).
-//! - `LinuxProcess_totalIORate` (`LinuxProcess.c:213`) — pure.
-//! - `LinuxProcess_changeAutogroupPriorityBy` (`LinuxProcess.c:185`) and
-//!   [`LinuxProcess_rowChangeAutogroupPriorityBy`] (`LinuxProcess.c:207`).
-//! - [`LinuxProcess_isAutogroupEnabled`] (`LinuxProcess.c:178`) — reads
+//!   [`LinuxProcess_rowSetIOPriority`] (`LinuxProcess.c:180`).
+//! - `LinuxProcess_totalIORate` (`LinuxProcess.c:221`) — pure.
+//! - `LinuxProcess_changeAutogroupPriorityBy` (`LinuxProcess.c:193`) and
+//!   [`LinuxProcess_rowChangeAutogroupPriorityBy`] (`LinuxProcess.c:215`).
+//! - [`LinuxProcess_isAutogroupEnabled`] (`LinuxProcess.c:186`) — reads
 //!   `sched_autogroup_enabled` via the now-ported `Compat_readfile`.
 //!
 //! Also ported:
-//! - [`Process_delete`] (`LinuxProcess.c:119`) — the by-value teardown
+//! - [`Process_delete`] (`LinuxProcess.c:124`) — the by-value teardown
 //!   consuming `super_` into `Process_done`, the Linux-only heap fields
 //!   dropping with the destructured remainder (darwin precedent).
 //!
 //! Still stubbed (blocked on unported substrate; see each fn's doc):
-//! - [`LinuxProcess_rowWriteField`] (`LinuxProcess.c:226`) and
-//!   [`LinuxProcess_compareByKey`] (`LinuxProcess.c:366`) — both switch on
+//! - [`LinuxProcess_rowWriteField`] (`LinuxProcess.c:234`) and
+//!   [`LinuxProcess_compareByKey`] (`LinuxProcess.c:373`) — both switch on
 //!   the Linux platform [`ProcessField`] ids (`M_DRS`, `RCHAR`, `OOM`, …)
 //!   defined by `linux/ProcessField.h`, which the shared [`ProcessField`]
 //!   enum in `process.rs` intentionally does not enumerate (it models only
@@ -965,7 +965,7 @@ pub struct LinuxProcess {
     pub autogroup_nice: i32,
 }
 
-/// Port of `const ProcessClass LinuxProcess_class` from `LinuxProcess.c:459`.
+/// Port of `const ProcessClass LinuxProcess_class` from `LinuxProcess.c:474`.
 /// The `RowClass` vtable wires the inherited `Process` slots (`isHighlighted`,
 /// `isVisible`, `sortKeyString`, `compareByParent`) plus the Linux-specific
 /// `writeField` ([`LinuxProcess_rowWriteField`]) and the `compareByKey`
@@ -1049,7 +1049,7 @@ impl Object for LinuxProcess {
 }
 
 /// Port of `Process* LinuxProcess_new(const Machine* host)` from
-/// `LinuxProcess.c:112`. C `xCalloc`s the struct (so every field is
+/// `LinuxProcess.c:117`. C `xCalloc`s the struct (so every field is
 /// zero/`NULL`), sets its class to `LinuxProcess`, and runs
 /// [`Process_init`] on the embedded base. The heap pointer is modeled as an
 /// owned value returned by move (the `Affinity_new` idiom); the
@@ -1063,7 +1063,7 @@ pub fn LinuxProcess_new(host: *const Machine) -> LinuxProcess {
     this
 }
 
-/// Port of `void Process_delete(Object* cast)` from `LinuxProcess.c:119`.
+/// Port of `void Process_delete(Object* cast)` from `LinuxProcess.c:124`.
 /// The C body downcasts to `LinuxProcess*`, calls `Process_done(&this->super)`,
 /// then `free`s the Linux-only heap fields (`cgroup`, `cgroup_short`,
 /// `container_short`, `secattr`) and `free(this)`. Take `this` by value: the
@@ -1077,7 +1077,7 @@ pub fn Process_delete(this: LinuxProcess) {
 }
 
 /// Port of `static int LinuxProcess_effectiveIOPriority(const LinuxProcess*
-/// this)` from `LinuxProcess.c:137`. When the process has no explicit IO
+/// this)` from `LinuxProcess.c:145`. When the process has no explicit IO
 /// priority class (`IOPRIO_CLASS_NONE`), the effective priority is derived
 /// from the CPU nice level in the best-effort class (see note [1] in the C
 /// source); otherwise the stored `ioPriority` is returned. The
@@ -1092,7 +1092,7 @@ fn LinuxProcess_effectiveIOPriority(this: &LinuxProcess) -> i32 {
 }
 
 /// Port of `IOPriority LinuxProcess_updateIOPriority(Process* p)` from
-/// `LinuxProcess.c:153`. Gathers the thread's IO scheduling class+priority
+/// `LinuxProcess.c:161`. Gathers the thread's IO scheduling class+priority
 /// via the `ioprio_get` syscall and caches it in `ioPriority`.
 ///
 /// Signature mapping: the C body immediately does `LinuxProcess* this =
@@ -1119,7 +1119,7 @@ pub fn LinuxProcess_updateIOPriority(this: &mut LinuxProcess) -> IOPriority {
 }
 
 /// Port of `static bool LinuxProcess_setIOPriority(Process* p, Arg ioprio)`
-/// from `LinuxProcess.c:164`. Applies the requested IO priority via the
+/// from `LinuxProcess.c:172`. Applies the requested IO priority via the
 /// `ioprio_set` syscall, then re-reads it (via
 /// [`LinuxProcess_updateIOPriority`]) and reports whether it took effect.
 ///
@@ -1146,7 +1146,7 @@ fn LinuxProcess_setIOPriority(this: &mut LinuxProcess, ioprio: Arg) -> bool {
 }
 
 /// Port of `bool LinuxProcess_rowSetIOPriority(Row* super, Arg ioprio)` from
-/// `LinuxProcess.c:172`. Casts the `Row*` to a `Process*` (here a
+/// `LinuxProcess.c:180`. Casts the `Row*` to a `Process*` (here a
 /// [`LinuxProcess`], the concrete object), asserts it really is a
 /// [`Process`] via [`Object_isA`], and delegates to
 /// `LinuxProcess_setIOPriority`. The C `(Process*) super` cast validated
@@ -1161,7 +1161,7 @@ pub fn LinuxProcess_rowSetIOPriority(super_: &mut dyn Object, ioprio: Arg) -> bo
 }
 
 /// Port of `bool LinuxProcess_isAutogroupEnabled(void)` from
-/// `LinuxProcess.c:178`. Reads `PROCDIR "/sys/kernel/sched_autogroup_enabled"`
+/// `LinuxProcess.c:186`. Reads `PROCDIR "/sys/kernel/sched_autogroup_enabled"`
 /// into a 16-byte buffer via [`Compat_readfile`]; returns `false` on any read
 /// error (`< 0`), else `true` iff the first byte is `'1'`. The C string-literal
 /// concatenation `PROCDIR "/sys/..."` is rebuilt from the `PROCDIR` const and
@@ -1178,7 +1178,7 @@ pub fn LinuxProcess_isAutogroupEnabled() -> bool {
 }
 
 /// Port of `static bool LinuxProcess_changeAutogroupPriorityBy(Process* p,
-/// Arg delta)` from `LinuxProcess.c:185`. Opens `PROCDIR/<pid>/autogroup`
+/// Arg delta)` from `LinuxProcess.c:193`. Opens `PROCDIR/<pid>/autogroup`
 /// for read+write, parses the `"/autogroup-%ld nice %d"` line, and — if
 /// that succeeds — rewinds and writes back `nice + delta.i`, returning
 /// whether the write succeeded.
@@ -1248,7 +1248,7 @@ fn LinuxProcess_changeAutogroupPriorityBy(p: &Process, delta: Arg) -> bool {
 }
 
 /// Port of `bool LinuxProcess_rowChangeAutogroupPriorityBy(Row* super, Arg
-/// delta)` from `LinuxProcess.c:207`. Casts the `Row*` to a `Process*`
+/// delta)` from `LinuxProcess.c:215`. Casts the `Row*` to a `Process*`
 /// (here a [`LinuxProcess`]), asserts it really is a [`Process`] via
 /// [`Object_isA`], and delegates to
 /// `LinuxProcess_changeAutogroupPriorityBy` on the embedded base. Same
@@ -1263,7 +1263,7 @@ pub fn LinuxProcess_rowChangeAutogroupPriorityBy(super_: &dyn Object, delta: Arg
 }
 
 /// Port of `static double LinuxProcess_totalIORate(const LinuxProcess* lp)`
-/// from `LinuxProcess.c:213`. Sums the non-negative read/write IO rates
+/// from `LinuxProcess.c:221`. Sums the non-negative read/write IO rates
 /// (`NAN` when neither is available). `isNonnegative(x)` (`Macros.h:141`) is
 /// `isgreaterequal(x, 0.0)`, i.e. `x >= 0.0` (false for `NaN`), inlined at
 /// each use site.
@@ -1281,7 +1281,7 @@ fn LinuxProcess_totalIORate(lp: &LinuxProcess) -> f64 {
 }
 
 /// Port of `static void LinuxProcess_rowWriteField(const Row* super,
-/// RichString* str, ProcessField field)` from `LinuxProcess.c:226` — the
+/// RichString* str, ProcessField field)` from `LinuxProcess.c:234` — the
 /// Linux-specific per-field renderer. Handles the Linux platform fields and
 /// delegates every other key to the base [`Process_writeField`]. Mirrors
 /// [`crate::ported::process::Process_writeField`]'s structure: `return` arms
@@ -1560,7 +1560,7 @@ pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, fie
 }
 
 /// Port of `static int LinuxProcess_compareByKey(const Process* v1, const
-/// Process* v2, ProcessField key)` from `LinuxProcess.c:366`. Compares two
+/// Process* v2, ProcessField key)` from `LinuxProcess.c:373`. Compares two
 /// processes on a Linux platform field, delegating unhandled keys to
 /// [`Process_compareByKey_Base`]. This is the `compareByKey`
 /// [`ProcessClass`] slot; the C `const Process*` receivers are `&dyn Object`

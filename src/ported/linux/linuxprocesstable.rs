@@ -1255,7 +1255,7 @@ pub fn LinuxProcessTable_readMaps(
     }
 }
 
-/// Port of `LinuxProcessTable.c:840`. Reads `/proc/<pid>/statm`
+/// Port of `LinuxProcessTable.c:860`. Reads `/proc/<pid>/statm`
 /// (process-shared data): total program size and RSS (both scaled to KiB),
 /// shared/text/data sizes, and derives private RSS. Thread tasks copy
 /// `m_virt`/`m_resident` from the main task. The C `sscanf("%ld %ld ...")`
@@ -1761,7 +1761,7 @@ fn LinuxProcessTable_readCGroupFile(process: &mut LinuxProcess, procFd: openat_a
     }
 }
 
-/// Port of `LinuxProcessTable.c:1022`. Reads `/proc/<pid>/oom_score` into the
+/// Port of `LinuxProcessTable.c:1128`. Reads `/proc/<pid>/oom_score` into the
 /// [`LinuxProcess`] `oom` field (thread tasks copy from the main task).
 /// Defaults to `UINT_MAX` and only accepts a value terminated by NUL, `\n`,
 /// or space, exactly as the C guards. `fast_strtoull_dec` is capped at the
@@ -1801,7 +1801,7 @@ fn LinuxProcessTable_readOomData(
     process.oom = oom as u32;
 }
 
-/// Port of `LinuxProcessTable.c:1052`. Reads `/proc/<pid>/autogroup` (CFS
+/// Port of `LinuxProcessTable.c:1157`. Reads `/proc/<pid>/autogroup` (CFS
 /// autogroup id + nice), copying from the main task for threads. The C
 /// `sscanf("/autogroup-%ld nice %d", ...)` (requiring both fields, `ok == 2`)
 /// is modeled by a prefix strip + whitespace split. `autogroup_id` stays `-1`
@@ -1885,7 +1885,7 @@ fn LinuxProcessTable_readSecattrData(
     process.secattr = Some(text);
 }
 
-/// Port of `LinuxProcessTable.c:1111`. Resolves `/proc/<pid>/cwd` (the
+/// Port of `LinuxProcessTable.c:1216`. Resolves `/proc/<pid>/cwd` (the
 /// process working directory) via `readlinkat`, storing it in
 /// [`Process::procCwd`]; threads copy from the main task. The C
 /// `#if HAVE_READLINKAT && HAVE_OPENAT` branch (the one this build commits
@@ -1919,7 +1919,7 @@ fn LinuxProcessTable_readCwd(
     process.super_.procCwd = Some(String::from_utf8_lossy(&pathBuffer[..r as usize]).into_owned());
 }
 
-/// Port of `LinuxProcessTable.c:1145`. Resolves `/proc/<pid>/exe` via
+/// Port of `LinuxProcessTable.c:1250`. Resolves `/proc/<pid>/exe` via
 /// `readlinkat`, handling the kernel `" (deleted)"` suffix (stripping it and
 /// flagging `procExeDeleted`), and updates the executable path through
 /// [`Process_updateExe`]. Threads copy from the main task. The
@@ -1992,7 +1992,7 @@ fn LinuxProcessList_readExe(
     }
 }
 
-/// Port of `LinuxProcessTable.c:1194`. Reads a whole `/proc` file whose size
+/// Port of `LinuxProcessTable.c:1299`. Reads a whole `/proc` file whose size
 /// is not known in advance, growing the buffer (starting at 512 bytes,
 /// doubling) up to `MAX_CMDLINE_BUFFER_SIZE` while each read fills the buffer.
 /// The C `char*` result + `ssize_t* amtRead` out-param become a returned
@@ -2020,7 +2020,7 @@ fn readFileDynamic(procFd: openat_arg_t, filename: &CStr) -> Option<(Vec<u8>, ss
     Some((buffer, amtRead))
 }
 
-/// Port of `LinuxProcessTable.c:1219`. Reads `/proc/<pid>/cmdline`, first
+/// Port of `LinuxProcessTable.c:1324`. Reads `/proc/<pid>/cmdline`, first
 /// refreshing the exe link ([`LinuxProcessList_readExe`]), then splitting the
 /// NUL-delimited argument vector and computing the basename token
 /// `[tokenStart, tokenEnd)` for display. Ports the full argument-parsing
@@ -2211,7 +2211,7 @@ fn LinuxProcessTable_readCmdlineFile(
     true
 }
 
-/// Port of `LinuxProcessTable.c:1396`. Reads `/proc/<pid>/comm` (the process
+/// Port of `LinuxProcessTable.c:1501`. Reads `/proc/<pid>/comm` (the process
 /// "command" name) and updates it via [`Process_updateComm`]; a failed read
 /// clears it (`None`). The C `command[amtRead - 1] = '\0'` drops the trailing
 /// newline, modeled by slicing off the last byte.
@@ -2327,7 +2327,7 @@ pub fn LinuxProcessTable_updateTtyDevice(ttyDrivers: &[TtyDriver], tty_nr: u64) 
     format!("/dev/{maj}:{min}")
 }
 
-/// Port of `LinuxProcessTable.c:1466`. True iff `proc` has been alive for
+/// Port of `LinuxProcessTable.c:1571`. True iff `proc` has been alive for
 /// more than `seconds`, using the host's current realtime clock and the
 /// process's parsed start time. Reads `proc->super.host->realtimeMs` through
 /// the opaque `*const Machine` handle (the `GPU_readProcessData` idiom).
