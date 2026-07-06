@@ -114,11 +114,11 @@ pub struct Table {
     pub klass: *const TableClass,
 }
 
-/// Port of `typedef void (*Table_ScanPrepare)(Table* this)` (`Table.h:38`).
+/// Port of `typedef void (*Table_ScanPrepare)(Table* this)` (`Table.h:42`).
 pub type Table_ScanPrepare = fn(*mut Table);
-/// Port of `typedef void (*Table_ScanIterate)(Table* this)` (`Table.h:39`).
+/// Port of `typedef void (*Table_ScanIterate)(Table* this)` (`Table.h:43`).
 pub type Table_ScanIterate = fn(*mut Table);
-/// Port of `typedef void (*Table_ScanCleanup)(Table* this)` (`Table.h:40`).
+/// Port of `typedef void (*Table_ScanCleanup)(Table* this)` (`Table.h:44`).
 pub type Table_ScanCleanup = fn(*mut Table);
 
 /// Port of `typedef struct TableClass_` (`Table.h:46`). The scan-vtable half
@@ -371,7 +371,7 @@ fn Table_removeIndex(this: &mut Table, idx: usize) {
 }
 
 /// Port of `static void Table_buildTreeBranch(Table* this, int rowid,
-/// unsigned int level, int32_t indent, bool show)` from `Table.c:104`.
+/// unsigned int level, int32_t indent, bool show)` from `Table.c:90`.
 /// Appends the children of `rowid` (and, recursively, their subtrees) to
 /// `displayList` in tree order, setting each row's `indent`, `show`, and
 /// `tree_depth`.
@@ -458,7 +458,7 @@ fn Table_buildTreeBranch(this: &mut Table, rowid: i32, level: u32, indent: i32, 
 }
 
 /// Port of `static int compareRowByKnownParentThenNatural(const void*
-/// v1, const void* v2)` from `Table.c:154`. Dispatches the C
+/// v1, const void* v2)` from `Table.c:139`. Dispatches the C
 /// `Row_compareByParent(r1, r2)` macro (`Row.h:105`):
 /// `As_Row(r1)->compareByParent ? As_Row(r1)->compareByParent(r1, r2) :
 /// Row_compareByParent_Base(r1, r2)`. For process rows the slot is
@@ -473,7 +473,7 @@ fn compareRowByKnownParentThenNatural(v1: &dyn Object, v2: &dyn Object) -> i32 {
     }
 }
 
-/// Port of `static void Table_buildTree(Table* this)` from `Table.c:159`.
+/// Port of `static void Table_buildTree(Table* this)` from `Table.c:145`.
 /// Builds a sorted tree from scratch: marks root rows (self-parented,
 /// parentless, or parent-unknown), sorts `rows` by known parent then id,
 /// then walks each root emitting its subtree into `displayList` via
@@ -538,7 +538,7 @@ pub fn Table_buildTree(this: &mut Table) {
 }
 
 /// Port of `void Table_updateDisplayList(Table* this)` from
-/// `Table.c:208`. In tree view, rebuilds the tree when `needsSort`;
+/// `Table.c:194`. In tree view, rebuilds the tree when `needsSort`;
 /// otherwise insertion-sorts `rows` (when `needsSort`) and copies them
 /// straight into `displayList`. Clears `needsSort`.
 ///
@@ -584,7 +584,7 @@ pub fn Table_updateDisplayList(this: &mut Table) {
     this.needsSort = false;
 }
 
-/// Port of `void Table_expandTree(Table* this)` from `Table.c:225`. Sets
+/// Port of `void Table_expandTree(Table* this)` from `Table.c:211`. Sets
 /// `showChildren = true` on every row (expand-all).
 pub fn Table_expandTree(this: &mut Table) {
     for obj in this.rows.iter_mut().flatten() {
@@ -593,7 +593,7 @@ pub fn Table_expandTree(this: &mut Table) {
 }
 
 /// Port of `void Table_collapseAllBranches(Table* this)` from
-/// `Table.c:234`. Rebuilds the tree to refresh `tree_depth`, forces a
+/// `Table.c:220`. Rebuilds the tree to refresh `tree_depth`, forces a
 /// re-sort, then collapses every non-root row (`tree_depth > 0 && id >
 /// 1`, so PID 0/1 stay expanded on platforms where init has depth 1).
 pub fn Table_collapseAllBranches(this: &mut Table) {
@@ -608,7 +608,7 @@ pub fn Table_collapseAllBranches(this: &mut Table) {
     }
 }
 
-/// Port of `void Table_rebuildPanel(Table* this)` from `Table.c:246`.
+/// Port of `void Table_rebuildPanel(Table* this)` from `Table.c:232`.
 /// Rebuilds the tree/display list, then re-populates the (borrowing) live
 /// `Panel` with the visible rows: it prunes the panel, walks the display
 /// list, and sets each shown row as a [`PanelItem::Borrowed`] pointer into
@@ -722,7 +722,7 @@ pub fn Table_rebuildPanel(this: &mut Table) {
 }
 
 /// Port of `void Table_printHeader(const Settings* settings, RichString*
-/// header)` from `Table.c:368`. Rebuilds the column-header `RichString`: for
+/// header)` from `Table.c:289`. Rebuilds the column-header `RichString`: for
 /// each active-screen field, appends its aligned title in the header or
 /// selection color, overlays the ascending/descending tree glyph on the
 /// active sort column, and appends `"(merged)"` after `COMM` when

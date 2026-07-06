@@ -1170,7 +1170,7 @@ pub fn Process_makeCommandStr(this: &mut Process, settings: &Settings) {
 }
 
 /// Port of `void Process_writeCommand(const Process* this, int attr, int
-/// baseAttr, RichString* str)` from `Process.c:494`. Appends the process's
+/// baseAttr, RichString* str)` from `Process.c:471`. Appends the process's
 /// command to `str`: when the cached merged-command string is present it is
 /// appended and its recorded highlight regions are re-applied (filtered by
 /// the `highlightBaseName`/`highlightDeletedExe` settings); otherwise the raw
@@ -1260,7 +1260,7 @@ pub fn Process_writeCommand(this: &Process, attr: i32, baseAttr: i32, str: &mut 
     }
 }
 
-/// Port of `processStateChar(ProcessState state)` from `Process.c:568`.
+/// Port of `processStateChar(ProcessState state)` from `Process.c:545`.
 /// Maps a [`ProcessState`] to its single-character display code. The C
 /// `default: assert(0); return '!'` path is unreachable here — a valid
 /// `ProcessState` value covers every arm — so the match is exhaustive.
@@ -1284,7 +1284,7 @@ pub fn processStateChar(state: ProcessState) -> char {
 }
 
 /// Port of `static void Process_rowWriteField(const Row* super, RichString*
-/// str, RowField field)` from `Process.c:590` — the `writeField`
+/// str, RowField field)` from `Process.c:567` — the `writeField`
 /// [`RowClass`] vtable slot for `Process`. Downcasts the object (C's
 /// `(const Process*)super`) and delegates to [`Process_writeField`].
 pub fn Process_rowWriteField(super_: &dyn Object, str: &mut RichString, field: RowField) {
@@ -1296,7 +1296,7 @@ pub fn Process_rowWriteField(super_: &dyn Object, str: &mut RichString, field: R
 }
 
 /// Port of `void Process_writeField(const Process* this, RichString* str,
-/// RowField field)` from `Process.c:596` — the base per-field renderer. Each
+/// RowField field)` from `Process.c:573` — the base per-field renderer. Each
 /// arm either delegates to a `Row_print*` helper / `Process_writeCommand` /
 /// `Row_printLeftAlignedField` (the C `return` arms) or formats into a text
 /// buffer and picks a color, which the shared tail appends (the C `break`
@@ -1635,7 +1635,7 @@ pub fn Process_done(this: Process) {
 }
 
 /// Port of `const char* Process_getCommand(const Process* this)`
-/// from `Process.c:831`. Reads `this->super.host->settings->showThreadNames`
+/// from `Process.c:808`. Reads `this->super.host->settings->showThreadNames`
 /// (`Process.c:834`) via the `Row::host as *const Machine` deref: a
 /// userland thread with `showThreadNames` set, or a process with no cached
 /// merged-command string, renders its raw `cmdline`; otherwise the cached
@@ -1657,7 +1657,7 @@ pub fn Process_getCommand(this: &Process) -> Option<&[u8]> {
 }
 
 /// Port of `static const char* Process_getSortKey(const Process* this)`
-/// from `Process.c:841`: `return Process_getCommand(this)`. A thin
+/// from `Process.c:818`: `return Process_getCommand(this)`. A thin
 /// delegation to [`Process_getCommand`]. Returns the command bytes
 /// (C `const char*`).
 pub fn Process_getSortKey(this: &Process) -> Option<&[u8]> {
@@ -1665,7 +1665,7 @@ pub fn Process_getSortKey(this: &Process) -> Option<&[u8]> {
 }
 
 /// Port of `const char* Process_rowGetSortKey(Row* super)` from
-/// `Process.c:845`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// `Process.c:822`. Casts the `Row*` to `Process*` (the `Object_isA`
 /// guard + `Any` downcast idiom, matching the C `(const Process*) super`
 /// + `assert(Object_isA(...))`) and delegates to [`Process_getSortKey`].
 pub fn Process_rowGetSortKey(super_: &dyn Object) -> Option<&[u8]> {
@@ -1677,7 +1677,7 @@ pub fn Process_rowGetSortKey(super_: &dyn Object) -> Option<&[u8]> {
 }
 
 /// Port of `static bool Process_isHighlighted(const Process* this)`
-/// from `Process.c:852`. True when the row belongs to another user and
+/// from `Process.c:829`. True when the row belongs to another user and
 /// `shadowOtherUsers` is set, so the display shadows it. Reads
 /// `this->super.host->settings->shadowOtherUsers` and `host->htopUserId` via
 /// the established `Row::host as *const Machine` deref.
@@ -1691,7 +1691,7 @@ pub fn Process_isHighlighted(this: &Process) -> bool {
 }
 
 /// Port of `bool Process_rowIsHighlighted(const Row* super)` from
-/// `Process.c:858`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// `Process.c:835`. Casts the `Row*` to `Process*` (the `Object_isA`
 /// guard + `Any` downcast idiom) and delegates to
 /// [`Process_isHighlighted`]; the wiring is faithful.
 pub fn Process_rowIsHighlighted(super_: &dyn Object) -> bool {
@@ -1703,7 +1703,7 @@ pub fn Process_rowIsHighlighted(super_: &dyn Object) -> bool {
 }
 
 /// Port of `static bool Process_isVisible(const Process* p, const Settings*
-/// settings)` from `Process.c:865`. Hides userland threads when
+/// settings)` from `Process.c:842`. Hides userland threads when
 /// `hideUserlandThreads` is set; otherwise every process is visible.
 pub fn Process_isVisible(p: &Process, settings: &Settings) -> bool {
     if settings.hideUserlandThreads {
@@ -1713,7 +1713,7 @@ pub fn Process_isVisible(p: &Process, settings: &Settings) -> bool {
 }
 
 /// Port of `bool Process_rowIsVisible(const Row* super, const Table* table)`
-/// from `Process.c:871` — the `isVisible` [`RowClass`] slot for `Process`.
+/// from `Process.c:848` — the `isVisible` [`RowClass`] slot for `Process`.
 /// Downcasts and delegates to [`Process_isVisible`] with the table's host
 /// settings.
 pub fn Process_rowIsVisible(super_: &dyn Object, table: &Table) -> bool {
@@ -1782,7 +1782,7 @@ pub fn Process_matchesFilter(this: &Process, table: &Table) -> bool {
 }
 
 /// Port of `bool Process_rowMatchesFilter(const Row* super, const Table*
-/// table)` from `Process.c:895`. Casts the `Row*` to `Process*` (the
+/// table)` from `Process.c:872`. Casts the `Row*` to `Process*` (the
 /// `Object_isA` guard + `Any` downcast idiom) and delegates to
 /// [`Process_matchesFilter`]. Wired into the `Process_class` `matchesFilter`
 /// [`RowClass`] slot.
@@ -1795,7 +1795,7 @@ pub fn Process_rowMatchesFilter(super_: &dyn Object, table: &Table) -> bool {
 }
 
 /// Port of `void Process_init(Process* this, const Machine* host)` from
-/// `Process.c:901`. Runs the base [`Row_init`] then sets the two
+/// `Process.c:878`. Runs the base [`Row_init`] then sets the two
 /// process-specific defaults the C body assigns
 /// (`cmdlineBasenameEnd = 0`, `st_uid = (uid_t)-1`). Pure — `host` is
 /// only stored, never dereferenced.
@@ -1833,7 +1833,7 @@ pub fn Process_setPriority(this: &mut Process, priority: i32) -> bool {
 }
 
 /// Port of `bool Process_rowChangePriorityBy(Row* super, Arg delta)` from
-/// `Process.c:921`. Casts the `Row*` to `Process*` (the `Object_isA`
+/// `Process.c:898`. Casts the `Row*` to `Process*` (the `Object_isA`
 /// guard + mutable `Any` downcast idiom), then nudges the priority by
 /// `delta.i` relative to the current `nice`. The C `(int)this->nice +
 /// delta.i` is `i32` arithmetic; `delta` is the [`Arg::I`] arm (the
@@ -1857,7 +1857,7 @@ pub fn Process_rowChangePriorityBy(super_: &mut dyn Object, delta: Arg) -> bool 
 }
 
 /// Port of `static bool Process_sendSignal(Process* this, Arg sgn)` from
-/// `Process.c:927`. A thin wrapper over `kill(pid, sgn.i)`, returning
+/// `Process.c:904`. A thin wrapper over `kill(pid, sgn.i)`, returning
 /// whether the syscall succeeded. `sgn` is the [`Arg::I`] arm carrying the
 /// signal number (the `Arg::V` arm is impossible, matching the C `sgn.i`
 /// union read).
@@ -1969,7 +1969,7 @@ pub fn Process_compareByParent(r1: &dyn Object, r2: &dyn Object) -> i32 {
 }
 
 /// Port of `int Process_compareByKey_Base(const Process* p1, const
-/// Process* p2, ProcessField key)` from `Process.c:966`. The per-field
+/// Process* p2, ProcessField key)` from `Process.c:943`. The per-field
 /// sort comparator: for each column id it compares the corresponding
 /// field with `SPACESHIP_NUMBER` / `SPACESHIP_NULLSTR` /
 /// `SPACESHIP_DEFAULTSTR` / [`compareRealNumbers`], line-for-line with
@@ -2161,7 +2161,7 @@ pub fn Process_isThread(this: &Process) -> bool {
 }
 
 /// Port of `void Process_updateComm(Process* this, const char* comm)`
-/// from `Process.c:1043`. No-op when both the stored `procComm` and the
+/// from `Process.c:1020`. No-op when both the stored `procComm` and the
 /// new `comm` are `None` (C `NULL`), or when both are present and equal
 /// (`String_eq`, inlined as `==`). Otherwise it replaces `procComm`
 /// (`xStrdup(comm)` → an owned `String`, `NULL` → `None`) and resets the
@@ -2228,7 +2228,7 @@ pub fn skipPotentialPath(cmdline: &[u8], end: usize) -> usize {
 }
 
 /// Port of `void Process_updateCmdline(Process* this, const char* cmdline,
-/// size_t basenameStart, size_t basenameEnd)` from `Process.c:1077`.
+/// size_t basenameStart, size_t basenameEnd)` from `Process.c:1054`.
 ///
 /// No-op when both the stored and new `cmdline` are `None` (C `NULL`), or
 /// when both are present and equal (`String_eq`, inlined as `==`).
@@ -2286,7 +2286,7 @@ pub fn Process_updateCmdline(
 }
 
 /// Port of `void Process_updateExe(Process* this, const char* exe)` from
-/// `Process.c:1102`. No-op when both the stored `procExe` and the new
+/// `Process.c:1079`. No-op when both the stored `procExe` and the new
 /// `exe` are `None` (C `NULL`), or when both are present and equal
 /// (`String_eq`, inlined as `==`). Otherwise it replaces `procExe`
 /// (`xStrdup(exe)` → an owned `String`, `NULL` → `None`), recomputes the
@@ -2331,7 +2331,7 @@ pub fn Process_updateExe(this: &mut Process, exe: Option<&str>) {
 }
 
 /// Port of `void Process_updateCPUFieldWidths(float percentage)` from
-/// `Process.c:1122`. Grows the `PERCENT_CPU` / `PERCENT_NORM_CPU` column
+/// `Process.c:1099`. Grows the `PERCENT_CPU` / `PERCENT_NORM_CPU` column
 /// widths to fit the largest CPU% seen: 4 below 99.9%, else enough digits for
 /// the integer part plus two chars (the `.` and one precision digit).
 pub fn Process_updateCPUFieldWidths(percentage: f32) {
