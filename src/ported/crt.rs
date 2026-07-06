@@ -1779,14 +1779,42 @@ pub fn dumpStderr() {
 #[cfg(not(debug_assertions))]
 pub fn dumpStderr() {}
 
-/// TODO: port of `void CRT_debug_impl(const char* file, size_t lineno, const char* func, const char* fmt, ...)` from `CRT.c:1056`.
-///
-/// Stubbed: the C body is a variadic (`...`) `vfprintf` shim. Rust has no
-/// stable variadic `fn`, so the faithful analog is a macro, not the `pub fn`
-/// the port gate requires; leaving it a stub rather than faking a fixed-arity
-/// signature that would not match the C call sites.
-pub fn CRT_debug_impl() {
-    todo!("port of CRT.c:1056")
+/// Port of `void CRT_debug_impl(const char* file, size_t lineno, const char*
+/// func, const char* fmt, ...)` from `CRT.c:1056` (`#ifndef NDEBUG`). Prefixes
+/// the source location, then writes the caller's formatted message to stderr,
+/// terminated by a newline. The C's printf varargs (`fmt, ...` → `vfprintf`)
+/// are modelled as a pre-formatted [`std::fmt::Arguments`], captured by the
+/// [`CRT_debug!`] macro (the port of the `CRT_debug(...)` macro, `CRT.h:170`)
+/// via `format_args!` — Rust has no stable variadic `fn`.
+#[cfg(debug_assertions)]
+pub fn CRT_debug_impl(file: &str, lineno: usize, func: &str, args: std::fmt::Arguments) {
+    // fprintf(stderr, "[%s:%zu (%s)]: ", file, lineno, func);
+    eprint!("[{file}:{lineno} ({func})]: ");
+    // va_start(args, fmt); vfprintf(stderr, fmt, args); va_end(args);
+    eprint!("{args}");
+    // fprintf(stderr, "\n");
+    eprintln!();
+}
+
+/// Port of the `CRT_debug(...)` macro from `CRT.h:167`–`170`. In debug builds
+/// (`#else` of `#ifdef NDEBUG`) it forwards `__FILE__`/`__LINE__` plus the
+/// formatted arguments to [`CRT_debug_impl`]; in release (`NDEBUG`) it expands
+/// to nothing, discarding its arguments unevaluated exactly like the empty C
+/// `#define CRT_debug(...)`. Rust has no stable `__func__`, so the function
+/// name passed to [`CRT_debug_impl`] is empty.
+#[cfg(debug_assertions)]
+#[macro_export]
+macro_rules! CRT_debug {
+    ($($arg:tt)*) => {
+        $crate::ported::crt::CRT_debug_impl(file!(), line!() as usize, "", format_args!($($arg)*))
+    };
+}
+
+/// Port of the empty release `# define CRT_debug(...)` (`CRT.h:167`).
+#[cfg(not(debug_assertions))]
+#[macro_export]
+macro_rules! CRT_debug {
+    ($($arg:tt)*) => {};
 }
 
 /// `static struct sigaction old_sig_handler[32];` (`CRT.c:1076`) — the
