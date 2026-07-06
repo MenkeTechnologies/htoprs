@@ -246,7 +246,7 @@ pub fn Header_populateFromSettings(this: &mut Header, settings: &Settings) {
 /// names/modes (C `NULL`) with `len == 0`, matching the C
 /// `len ? xCalloc(...) : NULL`.
 ///
-/// The C reconstructs each serialized name at write time (`Header.c:150`):
+/// The C reconstructs each serialized name at write time (`Header.c:163`):
 /// `"%s(%u)"` for a `CPUMeter` with a `param`, `"%s(%s)"` for a
 /// `DynamicMeter` (via `DynamicMeter_lookup(settings->dynamicMeters,
 /// param)`), else plain `As_Meter(meter)->name`. The class-identity test

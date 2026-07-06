@@ -55,13 +55,13 @@ use crate::ported::object::ObjectClass;
 use crate::ported::richstring::{RichString, RichString_appendnAscii};
 
 /// Port of `static const int OK_attributes[] = { METER_VALUE_OK }`
-/// (`LoadAverageMeter.c:34`) — the bar color when load < 1.0.
+/// (`LoadAverageMeter.c:30`) — the bar color when load < 1.0.
 static OK_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_OK as i32];
 /// Port of `static const int Medium_attributes[] = { METER_VALUE_WARN }`
-/// (`LoadAverageMeter.c:38`) — load in `[1.0, activeCPUs)`.
+/// (`LoadAverageMeter.c:34`) — load in `[1.0, activeCPUs)`.
 static MEDIUM_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_WARN as i32];
 /// Port of `static const int High_attributes[] = { METER_VALUE_ERROR }`
-/// (`LoadAverageMeter.c:42`) — load ≥ activeCPUs.
+/// (`LoadAverageMeter.c:38`) — load ≥ activeCPUs.
 static HIGH_ATTRIBUTES: [i32; 1] = [ColorElements::METER_VALUE_ERROR as i32];
 
 /// Port of `static void LoadAverageMeter_updateValues(Meter* this)` from
