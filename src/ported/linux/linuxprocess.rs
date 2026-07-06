@@ -911,6 +911,19 @@ pub struct LinuxProcess {
     pub cgroup_short: Option<String>,
     /// C `char* container_short` — guessed container name.
     pub container_short: Option<String>,
+
+    /// C `char* ctid` — OpenVZ container id.
+    ///
+    /// The C guards this with `#ifdef HAVE_OPENVZ`; the port carries it
+    /// unconditionally — a minor documented deviation, same as other
+    /// conditional fields the port always-includes.
+    pub ctid: Option<String>,
+    /// C `pid_t vpid` — OpenVZ virtual pid.
+    ///
+    /// The C guards this with `#ifdef HAVE_OPENVZ`; the port carries it
+    /// unconditionally (see [`Self::ctid`]).
+    pub vpid: i32,
+
     /// C `unsigned int oom` — OOM killer score.
     pub oom: u32,
 

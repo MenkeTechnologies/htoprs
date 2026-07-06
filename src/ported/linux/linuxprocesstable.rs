@@ -11,7 +11,8 @@
 //! `readSecattrData`, `LinuxProcessList_readExe`,
 //! `LinuxProcessTable_readCmdlineFile`, `LinuxProcessList_readComm`,
 //! `readSmapsFile` (with `skipEndOfLine`), `updateTtyDevice` (with glibc
-//! `major`/`minor`).
+//! `major`/`minor`), `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader, gated at
+//! its call site on the runtime `PROCESS_FLAG_LINUX_OPENVZ` flag).
 //!
 //! `readMaps` + `calcLibSize_helper` are ported: `LibraryData` is modeled as an
 //! `Object` with `Cell` fields, so the per-inode aggregate is updated in place
@@ -21,9 +22,8 @@
 //! Still stubbed (each fn's doc gives the precise blocker): the scan drivers
 //! `LinuxProcessTable_recurseProcTree` / `ProcessTable_goThroughEntries`
 //! (need the process-typed `ProcessTable_getProcess`/`_add`, still stubbed in
-//! `processtable.rs`); `ProcessTable_delete` (pure `free()` teardown → `Drop`);
-//! and `readOpenVZData` (`#ifdef HAVE_OPENVZ` reader needing the unmodeled
-//! `ctid`/`vpid` fields).
+//! `processtable.rs`); and `ProcessTable_delete` (pure `free()` teardown →
+//! `Drop`).
 #![allow(non_snake_case)]
 // `LibraryData_class` and similar keep the C-style `Type_class` naming.
 #![allow(non_upper_case_globals)]
@@ -50,8 +50,8 @@ use crate::ported::linux::linuxprocess::{
     LinuxProcess, LinuxProcess_isAutogroupEnabled, LinuxProcess_new, LinuxProcess_updateIOPriority,
     PROCESS_FLAG_LINUX_AUTOGROUP, PROCESS_FLAG_LINUX_CGROUP, PROCESS_FLAG_LINUX_CONTAINER,
     PROCESS_FLAG_LINUX_CTXT, PROCESS_FLAG_LINUX_GPU, PROCESS_FLAG_LINUX_IOPRIO,
-    PROCESS_FLAG_LINUX_LRS_FIX, PROCESS_FLAG_LINUX_OOM, PROCESS_FLAG_LINUX_SECATTR,
-    PROCESS_FLAG_LINUX_SMAPS,
+    PROCESS_FLAG_LINUX_LRS_FIX, PROCESS_FLAG_LINUX_OOM, PROCESS_FLAG_LINUX_OPENVZ,
+    PROCESS_FLAG_LINUX_SECATTR, PROCESS_FLAG_LINUX_SMAPS,
 };
 use crate::ported::machine::Machine;
 use crate::ported::object::{Object, ObjectClass};
@@ -1462,16 +1462,158 @@ pub fn LinuxProcessTable_readSmapsFile(
     true
 }
 
-/// TODO: port of `static void LinuxProcessTable_readOpenVZData(LinuxProcess*
+/// Port of `static void LinuxProcessTable_readOpenVZData(LinuxProcess*
 /// process, openat_arg_t procFd)` from `LinuxProcessTable.c:934` (guarded by
-/// `#ifdef HAVE_OPENVZ`; only reached from the equally-guarded call site in
-/// `recurseProcTree`). Blocked on two counts: (1) it reads/writes
-/// `process->ctid` (a `char*`) and `process->vpid`, but neither field is
-/// modeled on [`LinuxProcess`] (only `m_lrs` et al. exist); and (2) this build
-/// has not committed to the `HAVE_OPENVZ` variant. (The partial-line
-/// `skipEndOfLine` dependency is now ported.) Stays stubbed until those land.
-pub fn LinuxProcessTable_readOpenVZData() {
-    todo!("port of LinuxProcessTable.c:934 — needs ctid/vpid fields + HAVE_OPENVZ")
+/// `#ifdef HAVE_OPENVZ`; the port drops the compile-time guard and gates on the
+/// runtime `PROCESS_FLAG_LINUX_OPENVZ` flag at the call site instead). Fills
+/// `process.ctid` (OpenVZ container id) and `process.vpid` (virtual pid) from
+/// `/proc/<pid>/status` on OpenVZ hosts.
+///
+/// The C first tests the ABSOLUTE `PROCDIR "/vz"` (`/proc/vz`) with `access`,
+/// NOT the per-process `procFd` — kept absolute here via [`libc::access`]. When
+/// `/proc/vz` is absent (any non-OpenVZ host, e.g. macOS or mainline Linux) or
+/// `status` can't be opened, it clears `ctid` and defaults `vpid` to the real
+/// pid via [`Process_getPid`], matching the C early-returns.
+///
+/// The C `fgets(linebuf, 256, file)` + `strchr(linebuf, '\n')` partial-line
+/// handling is reproduced by the same manual 255-byte window over a shared
+/// `BufReader` used in [`LinuxProcessTable_readSmapsFile`], so the
+/// [`skipEndOfLine`] branch fires exactly as in the C when a physical line
+/// exceeds 255 bytes. The C `strncasecmp(linebuf, "envID", sep - linebuf)`
+/// key match is a *prefix* comparison of length `sep - linebuf` (the field
+/// name), so a name that is a case-insensitive prefix of `"envID"`/`"VPid"`
+/// matches; this is reproduced faithfully rather than via a whole-string
+/// `eq_ignore_ascii_case`. The C value-trim (`do { sep++; } while (*sep && *sep
+/// <= 32)` then `while (*value_end > 32) value_end++`) becomes the byte-slice
+/// scan below; end-of-buffer stands in for the C `fgets` NUL terminator. The
+/// `free_and_xStrdup`-only-when-changed optimisation is kept as a [`String_eq`]
+/// guard, though an unconditional owned-`String` assign would be equivalent.
+fn LinuxProcessTable_readOpenVZData(process: &mut LinuxProcess, procFd: openat_arg_t) {
+    use std::io::Read;
+
+    // if (access(PROCDIR "/vz", R_OK) != 0) { free(ctid); ctid = NULL;
+    //    vpid = Process_getPid(&super); return; }
+    // PROCDIR is "/proc"; the C uses the absolute path, not procFd.
+    if unsafe { libc::access(c"/proc/vz".as_ptr(), libc::R_OK) } != 0 {
+        process.ctid = None;
+        process.vpid = Process_getPid(&process.super_);
+        return;
+    }
+
+    // FILE* file = fopenat(procFd, "status", "r"); if (!file) { ... same ... }
+    let file = match fopenat(procFd, c"status", "r") {
+        Some(f) => f,
+        None => {
+            process.ctid = None;
+            process.vpid = Process_getPid(&process.super_);
+            return;
+        }
+    };
+    let mut file = std::io::BufReader::new(file);
+
+    let mut foundEnvID = false;
+    let mut foundVPid = false;
+
+    // char linebuf[256]; while (fgets(linebuf, sizeof(linebuf), file)) { ... }
+    // fgets reads at most 255 bytes and stops after a '\n'.
+    let mut byte = [0u8; 1];
+    loop {
+        let mut linebuf: Vec<u8> = Vec::with_capacity(256);
+        let mut sawNewline = false;
+        while linebuf.len() < 255 {
+            match file.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    linebuf.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        sawNewline = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // fgets returns NULL only when nothing was read (EOF).
+        if linebuf.is_empty() {
+            break;
+        }
+
+        // if (strchr(linebuf, '\n') == NULL) { if (!skipEndOfLine(file)) break; }
+        if !sawNewline && !skipEndOfLine(&mut file) {
+            break;
+        }
+
+        // char* name_value_sep = strchr(linebuf, ':'); if (!sep) continue;
+        let sep = match linebuf.iter().position(|&c| c == b':') {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // strncasecmp(linebuf, "<name>", sep - linebuf) — a prefix match of
+        // length `sep` (the field-name length): the name must equal the first
+        // `sep` bytes of the target, case-insensitively. A name longer than the
+        // target fails at the target's implicit NUL; a shorter one is a prefix.
+        let name = &linebuf[..sep];
+        let is_prefix = |target: &[u8]| -> bool {
+            target.len() >= name.len() && target[..name.len()].eq_ignore_ascii_case(name)
+        };
+        let field = if is_prefix(b"envID") {
+            1
+        } else if is_prefix(b"VPid") {
+            2
+        } else {
+            continue;
+        };
+
+        // do { sep++; } while (*sep != '\0' && *sep <= 32); — skip the ':' and
+        // any following bytes <= 32 (spaces/tabs/newlines). End-of-buffer is the
+        // C NUL terminator.
+        let mut value_start = sep + 1;
+        while value_start < linebuf.len() && linebuf[value_start] <= 32 {
+            value_start += 1;
+        }
+
+        // char* value_end = sep; while (*value_end > 32) value_end++;
+        let mut value_end = value_start;
+        while value_end < linebuf.len() && linebuf[value_end] > 32 {
+            value_end += 1;
+        }
+
+        // if (sep == value_end) continue; — empty value.
+        if value_start == value_end {
+            continue;
+        }
+
+        // *value_end = '\0'; — the value is linebuf[value_start..value_end].
+        let value = String::from_utf8_lossy(&linebuf[value_start..value_end]);
+
+        match field {
+            1 => {
+                foundEnvID = true;
+                // if (!String_eq(value, ctid ? ctid : "")) free_and_xStrdup(&ctid, value);
+                if !String_eq(&value, process.ctid.as_deref().unwrap_or("")) {
+                    process.ctid = Some(value.into_owned());
+                }
+            }
+            2 => {
+                // if ((process->vpid = strtopid(value)) != 0) foundVPid = true;
+                process.vpid = strtopid(&value);
+                if process.vpid != 0 {
+                    foundVPid = true;
+                }
+            }
+            _ => unreachable!("OpenVZ handling: unimplemented field case"),
+        }
+    }
+
+    // fclose(file) — file dropped here.
+
+    if !foundEnvID {
+        process.ctid = None;
+    }
+
+    if !foundVPid {
+        process.vpid = Process_getPid(&process.super_);
+    }
 }
 
 /// Port of `static void LinuxProcessTable_readCGroupFile(LinuxProcess*
@@ -2540,6 +2682,12 @@ pub fn LinuxProcessTable_recurseProcTree(
 
             unsafe {
                 if !pre_existing {
+                    // The C `#ifdef HAVE_OPENVZ` compile-guard is dropped; the
+                    // runtime `PROCESS_FLAG_LINUX_OPENVZ` flag is the port's gate.
+                    if (ss_flags & PROCESS_FLAG_LINUX_OPENVZ) != 0 {
+                        LinuxProcessTable_readOpenVZData(&mut *lp_ptr, procFd);
+                    }
+
                     if (*lp_ptr).super_.isKernelThread {
                         Process_updateCmdline(&mut (*lp_ptr).super_, None, 0, 0);
                     } else {
@@ -2910,6 +3058,40 @@ mod tests {
         // Unparsed start time (<= 0) is never "older than".
         proc.starttime_ctime = 0;
         assert!(!isOlderThan(&proc, 0));
+    }
+
+    #[test]
+    fn readOpenVZData_non_openvz_host_clears_ctid_and_defaults_vpid() {
+        // On any non-OpenVZ host — macOS, or mainline Linux — `/proc/vz` is
+        // absent, so `access("/proc/vz", R_OK) != 0` fires and the function
+        // takes the first early-return: it must clear any stale `ctid` and set
+        // `vpid` to the real pid, without ever touching the dirfd. This is the
+        // only branch synthesizable off-OpenVZ; the parse path needs a real
+        // `/proc/vz` + `status` and is verified by reading the C spec.
+        assert_ne!(
+            unsafe { libc::access(c"/proc/vz".as_ptr(), libc::R_OK) },
+            0,
+            "test host unexpectedly has /proc/vz — not an OpenVZ container",
+        );
+
+        let dir = std::env::temp_dir().join("htoprs_readopenvz_none");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fd = open_dirfd(&dir);
+
+        use crate::ported::process::Process_setPid;
+
+        let mut lp = LinuxProcess::default();
+        Process_setPid(&mut lp.super_, 4242);
+        // Seed stale values the early-return must overwrite.
+        lp.ctid = Some("stale-ctid".to_string());
+        lp.vpid = -99;
+
+        LinuxProcessTable_readOpenVZData(&mut lp, fd);
+        unsafe { libc::close(fd) };
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(lp.ctid, None);
+        assert_eq!(lp.vpid, 4242);
     }
 
     #[test]
