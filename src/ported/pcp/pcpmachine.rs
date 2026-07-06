@@ -13,7 +13,7 @@
 //!   indexed by [`CPUMetric`]); allocated once in [`Machine_new`].
 //! - `percpu` — `Vec<Vec<pmAtomValue>>`, one inner `Vec<pmAtomValue>` per CPU
 //!   (each sized `CPU_METRIC_COUNT`); (re)allocated by
-//!   [`PCPMachine_updateCPUcount`].
+//!   `PCPMachine_updateCPUcount`.
 //! - `values` — `Vec<pmAtomValue>` sized by the CPU count, a scratch buffer for
 //!   one per-CPU metric fetch.
 //!
@@ -652,7 +652,7 @@ fn PCPMachine_scan(this: &mut PCPMachine) {
 /// Port of `void Machine_scan(Machine* super)` (`PCPMachine.c:337`). Enables the
 /// per-tick metric set (adjusting the optional per-flag metrics), toggles the
 /// alternate-pass smaps metrics, fetches a new PMAPI sample (bailing on
-/// failure), updates the timestamp/period, then runs [`PCPMachine_scan`].
+/// failure), updates the timestamp/period, then runs `PCPMachine_scan`.
 pub fn Machine_scan(this: &mut PCPMachine) {
     let (flags, showCPUFrequency) = {
         let settings = this

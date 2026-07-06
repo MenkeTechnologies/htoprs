@@ -3,7 +3,7 @@
 //! the per-row value formatter for user-defined PCP metric columns.
 //!
 //! 1:1 faithful port; the C is the spec. `PCPDynamicColumn` "extends"
-//! [`DynamicColumn`](crate::ported::dynamiccolumn::DynamicColumn) via the
+//! [`DynamicColumn`] via the
 //! embedded `super_`, exactly as the C struct embeds `DynamicColumn super` as
 //! its first member. The libpcp/PMAPI surface is reused from
 //! [`crate::ported::pcp::pmapi`] and the `Metric` wrapper from

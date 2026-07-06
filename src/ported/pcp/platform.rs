@@ -437,7 +437,7 @@ const Darwin_memoryClasses: [MemoryClass; MEMORY_CLASS_LIMIT] = [
 
 /// Port of `MemoryClass Platform_memoryClasses[MEMORY_CLASS_LIMIT]`
 /// (`Platform.c:98`) — the dynamically-adjusted memory model, selected between
-/// the Linux and Darwin sets by [`Platform_setRelease`] via the C
+/// the Linux and Darwin sets by `Platform_setRelease` via the C
 /// `memcpy(Platform_memoryClasses, ...)`. Modeled as a [`Mutex`]-guarded array
 /// (the sound analog of the C global-array mutation); seeded with the Linux set
 /// (the C zero-init is overwritten on the first `Platform_setRelease`).
@@ -1110,7 +1110,7 @@ fn Platform_setRelease() {
 }
 
 /// Port of `const char* Platform_getRelease(void)` (`Platform.c:772`). Builds
-/// `pcp->release` on first use ([`Platform_setRelease`]) and returns it. The
+/// `pcp->release` on first use (`Platform_setRelease`) and returns it. The
 /// returned `&str` borrows the leaked-`Box` global (program lifetime), hence
 /// `'static`.
 pub fn Platform_getRelease() -> Option<&'static str> {

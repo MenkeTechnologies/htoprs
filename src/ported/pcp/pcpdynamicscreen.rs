@@ -4,7 +4,7 @@
 //! `Dynamic(...)` columns into htop's [`Settings`]/[`ScreenSettings`]/[`Panel`].
 //!
 //! 1:1 faithful port; the C is the spec. `PCPDynamicScreen` "extends"
-//! [`DynamicScreen`](crate::ported::dynamicscreen::DynamicScreen) via the
+//! [`DynamicScreen`] via the
 //! embedded `super_`, exactly as the C struct embeds `DynamicScreen super` as
 //! its first member. This is the direct sibling of
 //! [`crate::ported::pcp::pcpdynamiccolumn`] and
@@ -37,7 +37,7 @@
 //! # Substrate limitations (reported)
 //!
 //! - **Reduced base `DynamicScreen`.** The ported
-//!   [`DynamicScreen`](crate::ported::dynamicscreen::DynamicScreen) carries only
+//!   [`DynamicScreen`] carries only
 //!   `name`/`heading`/`columnKeys`/`direction`; the C `super.caption` and
 //!   `super.sortKey` fields the C `parseFile` writes were dropped from that
 //!   reduced struct (no ported reader). Since `dynamicscreen.rs` is not editable
@@ -66,7 +66,7 @@
 //!   this is the reported gap (the `PCPDynamicColumns_setupWidths` precedent).
 //! - **`DynamicScreen_search` over `PCPDynamicScreen` values.** The screens
 //!   table stores `PCPDynamicScreen`, and
-//!   [`DynamicScreen_search`](crate::ported::dynamicscreen::DynamicScreen_search)
+//!   [`DynamicScreen_search`]
 //!   (used by [`PCPDynamicScreen_uniqueName`] and
 //!   [`PCPDynamicScreens_addAvailableColumns`], as the C does) reads each
 //!   value's `DynamicScreen` base through [`Object::as_dynamic_screen`] — the

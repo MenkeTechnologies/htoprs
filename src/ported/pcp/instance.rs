@@ -1,7 +1,7 @@
 //! Port of `pcp/Instance.c` + `.h` — htop's Performance Co-Pilot instance-domain
 //! row: `Instance` (which "extends" [`Row`]) and its `RowClass` vtable. One
 //! `Instance` is one instance of a PCP instance domain (`pmInDom`), displayed as
-//! a row in an [`InDomTable`](crate::ported::pcp::indomtable::InDomTable).
+//! a row in an [`InDomTable`].
 //!
 //! 1:1 faithful port; the C is the spec. It reuses the shared [`Row`]/[`Object`]
 //! object model, the ported [`Metric`](crate::ported::pcp::metric) libpcp

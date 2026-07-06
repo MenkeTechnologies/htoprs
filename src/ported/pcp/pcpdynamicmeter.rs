@@ -4,7 +4,7 @@
 //! for user-defined PCP metric meters.
 //!
 //! 1:1 faithful port; the C is the spec. `PCPDynamicMeter` "extends"
-//! [`DynamicMeter`](crate::ported::dynamicmeter::DynamicMeter) via the embedded
+//! [`DynamicMeter`] via the embedded
 //! `super_`, exactly as the C struct embeds `DynamicMeter super` as its first
 //! member. The libpcp/PMAPI surface is reused from
 //! [`crate::ported::pcp::pmapi`] and the `Metric` wrapper from
@@ -37,7 +37,7 @@
 //! exact function the C calls, for exact `%d`/`%u`/`%lld`/`%llu`/`%.2f`/`%s`
 //! fidelity — reinterpreting the written bytes for the `RichString` /
 //! `txtBuffer` targets. Space-dimensioned values go through
-//! [`Meter_humanUnit`](crate::ported::meter::Meter_humanUnit), which the port
+//! [`Meter_humanUnit`], which the port
 //! models as returning an owned `String`; that string is then written with
 //! `pmsprintf("%s", …)` so the byte-count bookkeeping matches the C
 //! `Meter_humanUnit(buffer + bytes, …)` path for the realistic (never

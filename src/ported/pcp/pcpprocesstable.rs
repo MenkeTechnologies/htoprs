@@ -803,7 +803,7 @@ fn PCPProcessTable_updateProcesses(this: &mut PCPProcessTable) -> bool {
 
 /// Port of `void ProcessTable_goThroughEntries(ProcessTable* super)`
 /// (`PCPProcessTable.c:485`). Downcasts to the PCP table and delegates to
-/// [`PCPProcessTable_updateProcesses`].
+/// `PCPProcessTable_updateProcesses`.
 pub fn ProcessTable_goThroughEntries(this: &mut PCPProcessTable) {
     PCPProcessTable_updateProcesses(this);
 }
