@@ -59,6 +59,12 @@ pcp = []
 # Demangle.c`). Off by default; its `cplus_demangle` (libiberty) surface is
 # hand-declared, verified by primary-source reading + the port gate.
 demangle = []
+# Faithful analog of htop's `HAVE_LIBUNWIND_PTRACE` build variant: the
+# libunwind-ptrace backtrace backend for the backtrace screen (`generic/
+# UnwindPtrace.c`). Off by default; its libunwind/`_UPT_*` surface is
+# hand-declared per-arch (x86_64/aarch64), verified by primary-source reading of
+# the libunwind headers + the port gate (libunwind does not link on macOS).
+unwind = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libmedium = "0.13.4"

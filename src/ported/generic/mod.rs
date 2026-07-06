@@ -12,3 +12,8 @@ pub mod demangle;
 pub mod fdstat_sysctl;
 pub mod gettime;
 pub mod uname;
+// htop's `HAVE_LIBUNWIND_PTRACE` build variant (libunwind-ptrace backtrace
+// backend), behind the `unwind` cargo feature — off by default, verified by
+// reading the libunwind headers + the gate (libunwind does not link on macOS).
+#[cfg(feature = "unwind")]
+pub mod unwindptrace;
