@@ -71,15 +71,12 @@
 //!   helper and [`ProcessLocksScreen_scan`] + `Platform_getProcessLocks`,
 //!   all blocked below — defining them now would unblock nothing.
 //! - [`ProcessLocksScreen_scan`] (`ProcessLocksScreen.c:49`) — the
-//!   `InfoScreenClass` `scan` hook. Its per-line substrate is available
-//!   (`Panel_getSelectedIndex` / `Panel_prune` / `Panel_setSelected`
-//!   (`panel.rs`), `InfoScreen_addLine` (`infoscreen.rs`),
-//!   `Vector_insertionSort` (`vector.rs`)), but its data source
-//!   `Platform_getProcessLocks(pid)` (`Platform.c:555`) is an unported
-//!   `todo!()` (`linux/platform.rs`): it parses `/proc/<pid>/*` lock state
-//!   into the unmodeled `FileLocks_ProcessData` list. Without that lock
-//!   enumeration there is nothing to iterate, format, and add — the whole
-//!   function is gated on it.
+//!   `InfoScreenClass` `scan` hook, fully ported. Its data source
+//!   `Platform_getProcessLocks(pid)` is dispatched per target: on Linux it
+//!   parses `/proc/<pid>/fdinfo/*` into the modeled [`FileLocks_ProcessData`]
+//!   list (`linux/platform.rs`); darwin returns `None` (as the C does); the
+//!   BSDs/Solaris return `None` (their platform impls are stubs) and
+//!   dragonfly/openbsd fall back to `None` (no ported impl).
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)] // faithful C struct names (FileLocks_ProcessData, …)
 #![allow(dead_code)]
@@ -244,9 +241,27 @@ pub fn ProcessLocksScreen_scan(this: &mut ProcessLocksScreen) {
     Panel_prune(&mut this.super_.display);
 
     // C: FileLocks_ProcessData* pdata = Platform_getProcessLocks(this->pid);
+    // Dispatch to the target's platform impl (Linux parses /proc/<pid>/fdinfo;
+    // darwin returns None as the C does). dragonfly/openbsd have no ported impl
+    // (todo!() stubs), so they fall through to None.
     #[cfg(target_os = "macos")]
     let pdata = crate::ported::darwin::platform::Platform_getProcessLocks(this.pid);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    let pdata = crate::ported::linux::platform::Platform_getProcessLocks(this.pid);
+    #[cfg(target_os = "freebsd")]
+    let pdata = crate::ported::freebsd::platform::Platform_getProcessLocks(this.pid);
+    #[cfg(target_os = "netbsd")]
+    let pdata = crate::ported::netbsd::platform::Platform_getProcessLocks(this.pid);
+    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    let pdata = crate::ported::solaris::platform::Platform_getProcessLocks(this.pid);
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "solaris",
+        target_os = "illumos"
+    )))]
     let pdata: Option<FileLocks_ProcessData> = None;
 
     match pdata {
@@ -272,18 +287,26 @@ pub fn ProcessLocksScreen_scan(this: &mut ProcessLocksScreen) {
             while let Some(node) = ldata {
                 let d = &node.data;
                 let end = if d.end == u64::MAX {
-                    "<END OF FILE>".to_string()
+                    // C `%19s` on "<END OF FILE>" — right-justified, width 19.
+                    format!("{:>19}", "<END OF FILE>")
                 } else {
                     format!("{:19}", d.end)
                 };
+                // C `%#6"PRIx64"`: the `#` flag prefixes `0x` only for a nonzero
+                // value, so dev == 0 renders "     0", not "   0x0".
+                let dev = if d.dev == 0 {
+                    format!("{:6}", 0)
+                } else {
+                    format!("{:#6x}", d.dev)
+                };
                 let filename = d.filename.as_deref().unwrap_or("<N/A>");
                 let entry = format!(
-                    "{:5} {:<10} {:<10} {:<10} {:#6x} {:10} {:19} {}  {}",
+                    "{:5} {:<10} {:<10} {:<10} {} {:10} {:19} {}  {}",
                     d.fd,
                     d.locktype,
                     d.exclusive,
                     d.readwrite,
-                    d.dev,
+                    dev,
                     d.inode,
                     d.start,
                     end,
