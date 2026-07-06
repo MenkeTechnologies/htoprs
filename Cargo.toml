@@ -73,6 +73,17 @@ unwind = []
 # does not link on macOS, so `cargo check --features capabilities` type-checks
 # the FFI without linking).
 capabilities = []
+# Faithful analog of htop's `HAVE_LIBHWLOC` (`./configure --enable-hwloc`) build
+# variant: the hwloc topology backend for the AffinityPanel ("Use CPUs:" picker,
+# `AffinityPanel.c`). Off by default; its libhwloc surface (`hwloc_bitmap_*`,
+# `hwloc_obj_type_string`, …) is hand-declared, verified by primary-source
+# reading of hwloc's `include/hwloc.h` + `include/hwloc/bitmap.h` + the port gate
+# (libhwloc does not link on macOS, so `cargo check --features hwloc` type-checks
+# the FFI without linking). The topology-tree build in `AffinityPanel_new` reads
+# `host->topology`, a `Machine` field the ported `Machine` omits (machine.rs:46);
+# until that field is wired, `topoRoot`/`allCpuset` stay the substrate-gap
+# null/None defaults (see the module docs).
+hwloc = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libmedium = "0.13.4"
