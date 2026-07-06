@@ -563,6 +563,31 @@ pub fn Hashtable_foreach(this: &Hashtable, f: &mut dyn FnMut(u32, &dyn Object)) 
     }
 }
 
+/// Feature-gated to `pcp`: its sole caller (`PCPDynamicColumns_setupWidths`)
+/// lives behind `#[cfg(feature = "pcp")]`, so the method is compiled only when
+/// that path is.
+#[cfg(feature = "pcp")]
+impl Hashtable {
+    /// Mutable-value iteration over every filled bucket in storage order — the
+    /// `&mut` analog of [`Hashtable_foreach`] for the one C `Hashtable_foreach`
+    /// call site whose `Hashtable_PairFunction` writes back into the stored
+    /// `void* value` (`PCPDynamicColumns_setupWidths` →
+    /// `PCPDynamicColumn_setupWidth`, `pcp/PCPDynamicColumn.c:310`). The generic
+    /// [`Hashtable_foreach`] hands out `&dyn Object` because its other ten call
+    /// sites only read (or free via `Drop`) and several iterate a shared
+    /// (`&Hashtable`) table; widening them all to `&mut` to serve this single
+    /// mutating callback would be the wrong trade. Not a C function — a
+    /// substrate primitive, so it is an inherent method (nested, hence exempt
+    /// from the port-purity gate) rather than a free `pub fn`.
+    pub(crate) fn foreach_value_mut(&mut self, f: &mut dyn FnMut(u32, &mut dyn Object)) {
+        for walk in self.buckets.iter_mut() {
+            if let Some(value) = walk.value.as_deref_mut() {
+                f(walk.key, value);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

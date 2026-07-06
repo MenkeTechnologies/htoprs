@@ -36,29 +36,23 @@
 //! the unsigned as `u64` (`c_ulonglong`) with the same C default-argument
 //! promotions.
 //!
-//! # Substrate limitations (reported)
+//! # Substrate note
 //!
-//! - The ported [`Hashtable`] stores owned `Box<dyn Object>` values and exposes
-//!   only shared-ref access ([`Hashtable_get`] → `&dyn Object`,
-//!   [`Hashtable_foreach`] → `&dyn Object`); its owner tables also *drop* values
-//!   on `Hashtable_remove`. So an in-place mutable pass over the stored columns
-//!   — which C's `PCPDynamicColumn_setupWidth` needs to write `super.width` — is
-//!   not expressible. [`PCPDynamicColumn_setupWidth`] carries the faithful body
-//!   (taking `&mut`), but [`PCPDynamicColumns_setupWidths`] cannot wire it back
-//!   through the table. Likewise the per-value free in [`PCPDynamicColumns_free`]
-//!   is subsumed by the owner table's `Box` `Drop`.
-//! - [`crate::ported::dynamiccolumn::DynamicColumn_search`] (called by
-//!   [`PCPDynamicColumn_uniqueName`], as the C does) downcasts stored values to
-//!   `DynamicColumn` via `Any`, but this table stores `PCPDynamicColumn`. C's
-//!   `void*` struct-prefix aliasing lets it read the `DynamicColumn` prefix of a
-//!   `PCPDynamicColumn`; the safe-Rust `Any` downcast is exact-type and cannot.
-//!   This is a cross-module impedance mismatch (fixable only in
-//!   `dynamiccolumn.rs`), noted in the port report.
-//! - `Platform_addMetric` (the PCP platform metric-array registrar) is a
-//!   `pcp/Platform.c` function (not yet ported), scaffolded as a `todo!()` in
-//!   [`platform`](super::platform) and imported here so
-//!   [`PCPDynamicColumn_addMetric`]'s call site stays 1:1 until `Platform.c`
-//!   lands.
+//! [`PCPDynamicColumns_setupWidths`] drives its per-column `super.width` write
+//! (C `Hashtable_foreach(columns->table, PCPDynamicColumn_setupWidth, NULL)`)
+//! through [`Hashtable::foreach_value_mut`] — the `&mut` analog of the shared
+//! [`Hashtable_foreach`], added for this one mutating callback. The per-value
+//! free in [`PCPDynamicColumns_free`] is subsumed by the owner table's `Box`
+//! `Drop`.
+//!
+//! One cross-module limitation remains (reported):
+//! [`crate::ported::dynamiccolumn::DynamicColumn_search`] (called by
+//! [`PCPDynamicColumn_uniqueName`], as the C does) downcasts stored values to
+//! `DynamicColumn` via `Any`, but this table stores `PCPDynamicColumn`. C's
+//! `void*` struct-prefix aliasing lets it read the `DynamicColumn` prefix of a
+//! `PCPDynamicColumn`; the safe-Rust `Any` downcast is exact-type and cannot.
+//! This is a cross-module impedance mismatch (fixable only in
+//! `dynamiccolumn.rs`), noted in the port report.
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -708,14 +702,23 @@ pub fn PCPDynamicColumn_setupWidth(column: &mut PCPDynamicColumn) {
 /// PCPDynamicColumn_setupWidth, NULL)` to set every column's `super.width` in
 /// place.
 ///
-/// The ported [`Hashtable`] exposes only shared-ref iteration and drops values
-/// on `Hashtable_remove` for owner tables, so the in-place width write that
-/// [`PCPDynamicColumn_setupWidth`] performs cannot be applied to the stored
-/// columns through the table (see the module note). Wiring this back needs a
-/// mutable Hashtable iterator, which the ported substrate does not provide;
-/// reported.
+/// The owning `columns.table` is held by value (`Option<Hashtable>`), so
+/// `setupWidths` has exclusive `&mut` access and drives the per-column write
+/// through [`Hashtable::foreach_value_mut`] — the `&mut` analog of
+/// `Hashtable_foreach` for the one mutating C callback. Each stored value is a
+/// `PCPDynamicColumn` (the exact type the C casts `value` to), so the callback
+/// resolves it with an exact-type `downcast_mut`.
 pub fn PCPDynamicColumns_setupWidths(columns: &mut PCPDynamicColumns) {
-    let _ = columns;
+    // Hashtable_foreach(columns->table, PCPDynamicColumn_setupWidth, NULL);
+    if let Some(table) = columns.table.as_mut() {
+        table.foreach_value_mut(&mut |_key, value| {
+            // PCPDynamicColumn* column = (PCPDynamicColumn*) value;
+            let any: &mut dyn core::any::Any = value;
+            if let Some(column) = any.downcast_mut::<PCPDynamicColumn>() {
+                PCPDynamicColumn_setupWidth(column);
+            }
+        });
+    }
 }
 
 /// Port of `static int PCPDynamicColumn_normalize(const pmDesc* desc, const
