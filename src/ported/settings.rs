@@ -981,11 +981,18 @@ pub fn Settings_read(
     };
 
     // Slurp the file; the per-line loop below plays the role of the C
-    // String_readLine(fp) loop.
-    let mut contents = String::new();
-    if fp.read_to_string(&mut contents).is_err() {
+    // String_readLine(fp) loop. The C reads byte-wise (char*) and imposes no
+    // encoding, so a non-UTF-8 htoprc (e.g. a Latin-1 meter caption written by
+    // an existing htop) parses normally. Decode lossily rather than requiring
+    // UTF-8: aborting here would silently reset ALL of the user's settings to
+    // defaults — a compat-floor regression. A genuine read error still fails;
+    // only the encoding requirement is relaxed. (The one residual vs C: a
+    // non-UTF-8 byte inside a value becomes U+FFFD instead of the raw byte.)
+    let mut raw = Vec::new();
+    if fp.read_to_end(&mut raw).is_err() {
         return false;
     }
+    let contents = String::from_utf8_lossy(&raw);
 
     // ScreenSettings* screen = NULL; — modeled as an index into `this.screens`.
     let mut screen: Option<usize> = None;
@@ -2047,6 +2054,31 @@ pub fn Settings_setHeaderLayout(this: &mut Settings, hLayout: HeaderLayout) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`Settings_read`] must tolerate a non-UTF-8 htoprc (the C reads byte-wise
+    /// and never aborts on encoding). A stray `0xFF` byte previously made
+    /// `read_to_string` fail, returning `false` and silently discarding every
+    /// user setting — a compat-floor regression against an existing htop config.
+    #[test]
+    fn read_tolerates_non_utf8_config_bytes() {
+        let dir = std::env::temp_dir().join("htoprs_settings_nonutf8");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("htoprc");
+        // A valid `delay=42`, then a line of raw non-UTF-8 bytes (skipped: no '=').
+        let mut bytes = b"delay=42\n".to_vec();
+        bytes.extend_from_slice(b"\xff\xff\xff\n");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let machine = crate::ported::machine::Machine::default();
+        let mut s = Settings::default();
+        let ok = Settings_read(&mut s, path.to_str().unwrap(), &machine, false);
+
+        assert!(ok, "read must succeed despite the non-UTF-8 bytes");
+        assert_eq!(
+            s.delay, 42,
+            "delay must parse, not be discarded by an abort"
+        );
+    }
 
     #[test]
     fn header_layouts_table_is_consistent() {
