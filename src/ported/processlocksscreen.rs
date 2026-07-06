@@ -243,7 +243,7 @@ pub fn ProcessLocksScreen_scan(this: &mut ProcessLocksScreen) {
     // C: FileLocks_ProcessData* pdata = Platform_getProcessLocks(this->pid);
     // Dispatch to the target's platform impl (Linux parses /proc/<pid>/fdinfo;
     // darwin returns None as the C does). dragonfly/openbsd have no ported impl
-    // (todo!() stubs), so they fall through to None.
+    // yet (their platform slots are scaffolds), so they fall through to None.
     #[cfg(target_os = "macos")]
     let pdata = crate::ported::darwin::platform::Platform_getProcessLocks(this.pid);
     #[cfg(target_os = "linux")]
