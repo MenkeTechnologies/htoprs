@@ -47,17 +47,15 @@
 //! - [`AffinityPanel_buildTopology`] (`AffinityPanel.c:341`) — walks
 //!   `obj->children[0..arity]` recursively, threading the `indent` bitmask.
 //!
-//! # Substrate gap: `host->topology`
+//! # `host->topology`
 //!
 //! The C `AffinityPanel_new` hwloc branch reads `host->topology` twice — to seed
 //! `allCpuset` (`hwloc_topology_get_complete_cpuset`) and to build `topoRoot`
 //! (`AffinityPanel_buildTopology(hwloc_get_root_obj(host->topology), …)`). The
-//! ported [`Machine`] omits the `topology` field (machine.rs:46), and this port's
-//! edit scope is `affinitypanel.rs` + `Cargo.toml` only, so the field cannot be
-//! added here. Consequently the hwloc `AffinityPanel_new` leaves `allCpuset`
-//! null and `topoRoot` `None`; the five topology functions are ported and
-//! type-check but are only reached once `host->topology` is wired. This is the
-//! one deliberate deviation, marked `SUBSTRATE GAP` at each site.
+//! ported [`Machine`] now carries the `#[cfg(feature = "hwloc")] topology` field,
+//! loaded by `Machine_init` (`hwloc_topology_init` + `set_all_types_filter` +
+//! `load`), so `AffinityPanel_new` seeds both from it here (`hwloc_get_root_obj`
+//! is the header's `static __hwloc_inline hwloc_get_obj_by_depth(topo, 0, 0)`).
 //!
 //! # Shared / non-hwloc functions
 //!
@@ -267,6 +265,14 @@ extern "C" {
     fn hwloc_bitmap_next(bitmap: hwloc_const_bitmap_t, prev: c_int) -> c_int;
     /// `const char* hwloc_obj_type_string(hwloc_obj_type_t type);` (`hwloc.h:1096`).
     fn hwloc_obj_type_string(type_: hwloc_obj_type_t) -> *const c_char;
+    /// `hwloc_const_cpuset_t hwloc_topology_get_complete_cpuset(hwloc_topology_t);`
+    /// (`helper.h`) — the machine's complete cpuset, owned by the topology.
+    fn hwloc_topology_get_complete_cpuset(topology: hwloc_topology_t) -> hwloc_const_cpuset_t;
+    /// `hwloc_obj_t hwloc_get_obj_by_depth(hwloc_topology_t, int depth, unsigned idx);`
+    /// (`hwloc.h:1045`). `hwloc_get_root_obj(topo)` is the header's
+    /// `static __hwloc_inline hwloc_get_obj_by_depth(topo, 0, 0)`.
+    fn hwloc_get_obj_by_depth(topology: hwloc_topology_t, depth: c_int, idx: c_uint)
+        -> hwloc_obj_t;
 }
 
 /// Model of the C `MaskItem` struct (`AffinityPanel.c:33`), non-hwloc
@@ -476,8 +482,8 @@ pub fn MaskItem_newSingleton(text: &str, cpu: i32, isSet: bool) -> MaskItem {
 /// (`Box<dyn Object>`), whose element pointers the `super_` [`Panel`] borrows
 /// via [`Panel_splice`] (the C's non-owning-panel / owning-`cpuids` shared
 /// store); `width` is the computed panel width. The hwloc-only fields
-/// (`topoRoot`, `allCpuset`, `workCpuset`) live inside `#ifdef HAVE_LIBHWLOC`
-/// and are omitted.
+/// (`topoRoot`, `allCpuset`, `workCpuset`) live inside the C's
+/// `#ifdef HAVE_LIBHWLOC`, mirrored here behind `#[cfg(feature = "hwloc")]`.
 pub struct AffinityPanel {
     pub super_: Panel,
     pub host: *mut Machine,
@@ -486,12 +492,12 @@ pub struct AffinityPanel {
     pub width: u32,
     /// C `#ifdef HAVE_LIBHWLOC` field `MaskItem* topoRoot` — the root of the
     /// topology tree ([`AffinityPanel_buildTopology`] returns it). Modelled
-    /// `Option<Box<MaskItem>>` (C's nullable `MaskItem*`). `None` until
-    /// `host->topology` is wired (see the module `SUBSTRATE GAP` note).
+    /// `Option<Box<MaskItem>>` (C's nullable `MaskItem*`). `None` when
+    /// `host->topology` failed to load.
     #[cfg(feature = "hwloc")]
     pub topoRoot: Option<Box<MaskItem>>,
     /// C `hwloc_const_cpuset_t allCpuset` — the machine's complete cpuset (owned
-    /// by the topology, so never freed). Null until `host->topology` is wired.
+    /// by the topology, so never freed). Null when `host->topology` failed to load.
     #[cfg(feature = "hwloc")]
     pub allCpuset: hwloc_const_cpuset_t,
     /// C `hwloc_bitmap_t workCpuset` — the working selection set the panel edits.
@@ -675,8 +681,8 @@ pub fn AffinityPanel_update(this: &mut AffinityPanel, keepSelected: bool) {
 ///
 /// Sets the `F3` label, prunes, then either walks the topology tree
 /// ([`AffinityPanel_updateTopo`] on `topoRoot`) when `topoView` is set, or
-/// re-adds each `cpuids` item via [`AffinityPanel_updateItem`]. `topoRoot` is
-/// `None` until `host->topology` is wired (SUBSTRATE GAP), so the topology arm
+/// re-adds each `cpuids` item via [`AffinityPanel_updateItem`]. When
+/// `host->topology` failed to load `topoRoot` is `None`, so the topology arm
 /// falls through to the `cpuids` loop when it is absent — the one place this
 /// port adds a guard the C (which always has a `topoRoot`) does not.
 #[cfg(feature = "hwloc")]
@@ -1154,10 +1160,9 @@ pub fn AffinityPanel_new(
 /// CPU is also marked in `workCpuset`. The C additionally seeds
 /// `allCpuset = hwloc_topology_get_complete_cpuset(host->topology)` and
 /// `topoRoot = AffinityPanel_buildTopology(hwloc_get_root_obj(host->topology),
-/// …)`. Both read `host->topology`, a `Machine` field the ported `Machine`
-/// omits (machine.rs:46) and outside this port's edit scope — the SUBSTRATE GAP
-/// documented at the module level — so `allCpuset` stays null and `topoRoot`
-/// `None` until that field is wired.
+/// …)`. Both read the ported `Machine`'s `#[cfg(feature = "hwloc")] topology`
+/// field (loaded by `Machine_init`); when it failed to load `allCpuset` stays
+/// null and `topoRoot` `None`.
 #[cfg(feature = "hwloc")]
 pub fn AffinityPanel_new(
     host: *mut Machine,
@@ -1177,6 +1182,14 @@ pub fn AffinityPanel_new(
         .settings
         .as_ref()
         .is_some_and(|s| s.topologyAffinity);
+    // this->allCpuset = hwloc_topology_get_complete_cpuset(host->topology);
+    // (`host->topology` is the handle `Machine_init` loaded; `None` only if
+    // `hwloc_topology_init` itself failed, where the C would read a garbage
+    // handle — the port yields a null cpuset instead.)
+    let all_cpuset = match unsafe { (*host).topology } {
+        Some(topo) => unsafe { hwloc_topology_get_complete_cpuset(topo) },
+        None => core::ptr::null(),
+    };
     // this->workCpuset = hwloc_bitmap_alloc();
     let work_cpuset = unsafe { hwloc_bitmap_alloc() };
 
@@ -1186,10 +1199,9 @@ pub fn AffinityPanel_new(
         topoView: topo_view,
         cpuids: Vector_new(&MaskItem_class, true, VECTOR_DEFAULT_SIZE),
         width: 14,
-        // SUBSTRATE GAP: this->allCpuset = hwloc_topology_get_complete_cpuset(host->topology);
-        allCpuset: core::ptr::null(),
+        allCpuset: all_cpuset,
         workCpuset: work_cpuset,
-        // SUBSTRATE GAP: this->topoRoot = AffinityPanel_buildTopology(host->topology's root, …);
+        // this->topoRoot set after the cpuids loop (needs `this`), matching the C.
         topoRoot: None,
     };
 
@@ -1233,6 +1245,22 @@ pub fn AffinityPanel_new(
             &mut this.cpuids,
             Box::new(MaskItem_newSingleton(&number, i as i32, is_set)),
         );
+    }
+
+    // this->topoRoot = AffinityPanel_buildTopology(this, hwloc_get_root_obj(host->topology), 0, NULL);
+    // `buildTopology` `Box::into_raw`s the root (parent == NULL branch of
+    // `addObject`), so the returned `*mut MaskItem` is reclaimed here into the
+    // owning `topoRoot` box (its `children` tree drops recursively with it).
+    if let Some(topo) = unsafe { (*host).topology } {
+        let root = AffinityPanel_buildTopology(
+            &mut this,
+            unsafe { hwloc_get_obj_by_depth(topo, 0, 0) },
+            0,
+            core::ptr::null_mut(),
+        );
+        if !root.is_null() {
+            this.topoRoot = Some(unsafe { Box::from_raw(root) });
+        }
     }
 
     if let Some(w) = width {

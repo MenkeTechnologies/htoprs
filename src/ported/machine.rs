@@ -172,6 +172,40 @@ pub struct Machine {
     pub activeTable: Option<TableHandle>,
     /// C `Table* processTable`.
     pub processTable: Option<TableHandle>,
+    /// C `#ifdef HAVE_LIBHWLOC hwloc_topology_t topology` — the CPU topology
+    /// handle (`None` until `Machine_init` loads it). Behind the `hwloc` feature.
+    #[cfg(feature = "hwloc")]
+    pub topology: Option<*mut core::ffi::c_void>,
+    /// C `#ifdef HAVE_LIBHWLOC bool topologyOk` — the topology loaded cleanly.
+    #[cfg(feature = "hwloc")]
+    pub topologyOk: bool,
+}
+
+/// `#define HWLOC_TYPE_FILTER_KEEP_STRUCTURE 2` (`hwloc.h:2644`) — keep an object
+/// type only when it adds hierarchy structure; the filter `Machine_init` applies
+/// (the `HWLOC_API_VERSION >= 0x20000` branch).
+#[cfg(feature = "hwloc")]
+const HWLOC_TYPE_FILTER_KEEP_STRUCTURE: core::ffi::c_int = 2;
+
+// The libhwloc topology-setup surface `Machine_init` / `Machine_done` use
+// (`#ifdef HAVE_LIBHWLOC`). Hand-declared behind the `hwloc` feature; won't link
+// on macOS (tier-3, verified against the hwloc headers) — the tree's per-arch
+// `unwind`/`hwloc` FFI precedent.
+#[cfg(feature = "hwloc")]
+#[link(name = "hwloc")]
+extern "C" {
+    /// `int hwloc_topology_init(hwloc_topology_t*)` (`hwloc.h:796`).
+    fn hwloc_topology_init(topologyp: *mut *mut core::ffi::c_void) -> core::ffi::c_int;
+    /// `int hwloc_topology_load(hwloc_topology_t)` (`hwloc.h:818`).
+    fn hwloc_topology_load(topology: *mut core::ffi::c_void) -> core::ffi::c_int;
+    /// `void hwloc_topology_destroy(hwloc_topology_t)` (`hwloc.h:824`).
+    fn hwloc_topology_destroy(topology: *mut core::ffi::c_void);
+    /// `int hwloc_topology_set_all_types_filter(hwloc_topology_t, enum
+    /// hwloc_type_filter_e)` (`hwloc.h:2680`).
+    fn hwloc_topology_set_all_types_filter(
+        topology: *mut core::ffi::c_void,
+        filter: core::ffi::c_int,
+    ) -> core::ffi::c_int;
 }
 
 /// Port of `void Machine_init(Machine* this, UsersTable* usersTable, uid_t
@@ -198,6 +232,22 @@ pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) 
     // `Generic_gettime_realtime`).
     let mut realtime: libc::timeval = unsafe { core::mem::zeroed() };
     Generic_gettime_realtime(&mut realtime, &mut this.realtimeMs);
+
+    // #ifdef HAVE_LIBHWLOC: init + load the CPU topology (the
+    // `HWLOC_API_VERSION >= 0x20000` branch — one KEEP_STRUCTURE type filter
+    // then `hwloc_topology_load`). `topologyOk` stays false unless both succeed.
+    #[cfg(feature = "hwloc")]
+    {
+        this.topologyOk = false;
+        let mut topo: *mut core::ffi::c_void = core::ptr::null_mut();
+        if unsafe { hwloc_topology_init(&mut topo) } == 0 {
+            this.topologyOk = unsafe {
+                hwloc_topology_set_all_types_filter(topo, HWLOC_TYPE_FILTER_KEEP_STRUCTURE) == 0
+                    && hwloc_topology_load(topo) == 0
+            };
+            this.topology = Some(topo);
+        }
+    }
 }
 
 /// Port of `void Machine_done(Machine* this)` from `Machine.c:53`. C body:
@@ -220,6 +270,14 @@ pub fn Machine_init(this: &mut Machine, usersTable: Option<usize>, userId: u32) 
 /// for the OS to reclaim at exit (the faithful net effect, since C only calls
 /// `Machine_done` at process teardown).
 pub fn Machine_done(this: &mut Machine) {
+    // #ifdef HAVE_LIBHWLOC: if (this->topologyOk) hwloc_topology_destroy(this->topology);
+    #[cfg(feature = "hwloc")]
+    if this.topologyOk {
+        if let Some(topo) = this.topology.take() {
+            unsafe { hwloc_topology_destroy(topo) };
+        }
+    }
+
     // Object_delete(this->processTable);
     #[cfg(target_os = "macos")]
     if let Some(pt) = this.processTable.take() {
