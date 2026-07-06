@@ -1778,7 +1778,9 @@ fn LinuxProcessTable_readOomData(
 
     let mut buffer = [0u8; PROC_LINE_LENGTH + 1];
 
-    process.oom = u32::MAX; // UINT_MAX
+    // C sets no sentinel: on any read/parse failure `oom` keeps its prior value
+    // (0 after a fresh Default, matching the C calloc), so it is only written on
+    // a successful parse below.
     let oomRead = Compat_readfileat(procFd, c"oom_score", &mut buffer);
     if oomRead < 1 {
         return;

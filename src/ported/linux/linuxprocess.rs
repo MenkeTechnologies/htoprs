@@ -1474,12 +1474,9 @@ pub fn LinuxProcess_rowWriteField(super_: &dyn Object, str: &mut RichString, fie
             return;
         }
         f if f == PF::OOM as RowField => {
-            if this.oom == u32::MAX {
-                attr = CE::PROCESS_SHADOW.packed(scheme);
-                buffer = " N/A ".to_string();
-            } else {
-                buffer = format!("{:>4} ", this.oom);
-            }
+            // xSnprintf(buffer, n, "%4u ", lp->oom); — unconditional, default
+            // attr. The vendored C has no sentinel/"N/A" branch for OOM.
+            buffer = format!("{:>4} ", this.oom);
         }
         f if f == PF::IO_PRIORITY as RowField => {
             let klass = this.ioPriority >> IOPRIO_CLASS_SHIFT;
@@ -1860,12 +1857,14 @@ mod tests {
             RichString_size(&rs)
         };
 
-        // OOM = UINT_MAX → " N/A " (5 cols); a value → "%4u " + space = 5.
-        lp.oom = u32::MAX;
-        assert_eq!(render(&lp, ProcessField::OOM as RowField), 5);
+        // OOM renders "%4u " unconditionally (C has no N/A sentinel): a small
+        // value pads to width 4 + trailing space = 5 cols; a 10-digit value
+        // overflows the field to 10 + space = 11.
         lp.oom = 3;
-        assert_eq!(render(&lp, ProcessField::OOM as RowField), 5);
-        // ISCONTAINER default (TRI_INITIAL) → "N/A  " (5).
+        assert_eq!(render(&lp, ProcessField::OOM as RowField), 5); // "   3 "
+        lp.oom = u32::MAX;
+        assert_eq!(render(&lp, ProcessField::OOM as RowField), 11); // "4294967295 "
+                                                                    // ISCONTAINER default (TRI_INITIAL) → "N/A  " (5).
         assert_eq!(render(&lp, ProcessField::ISCONTAINER as RowField), 5);
         // A base field (STATE running) delegates to Process_writeField → "R ".
         lp.super_.state = ProcessState::RUNNING;
