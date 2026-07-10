@@ -599,7 +599,10 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
     };
 
     // htoprs infra (no C analog): restore the terminal on a panic so a stub hit
-    // mid-render does not leave the tty in raw mode / the alternate screen.
+    // mid-render does not leave the tty in raw mode / the alternate screen, then
+    // persist the panic (message + backtrace) to ~/.cache/htoprs/crash.log so it
+    // survives the alternate-screen teardown that would otherwise erase a stderr
+    // report, and point the user at the log on the now-restored terminal.
     {
         let default = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -607,6 +610,9 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
             let _ = terminal::disable_raw_mode();
             let mut out = std::io::stdout();
             let _ = execute!(out, terminal::LeaveAlternateScreen, cursor::Show);
+            if let Some(path) = crate::extensions::crashlog::log_panic(info) {
+                eprintln!("htoprs: crash logged to {}", path.display());
+            }
             default(info);
         }));
     }

@@ -30,6 +30,9 @@
 //! (Classic → Gradient → Solid → Thin → Ascii), consulted by the ported
 //! `BarMeterMode_draw` fill loop and wired into the keybinding table as an
 //! [`Htop_Action`].
+//! [`crashlog`] persists crash detail (panic message + backtrace, and the
+//! ported SIGSEGV/SIGBUS report) to `~/.cache/htoprs/crash.log`, since a crash
+//! report written to a tty on the alternate screen is otherwise lost.
 //!
 //! [`Htop_Action`]: crate::ported::action::Htop_Action
 
@@ -43,6 +46,7 @@ pub mod alerts;
 pub mod barstyle;
 pub mod braille;
 pub mod bridge;
+pub mod crashlog;
 pub mod export;
 pub mod filter;
 pub mod finder;

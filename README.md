@@ -221,3 +221,20 @@ compares output byte-for-byte, modulo the deliberate rebrand
 3.5.x is installed, so CI stays green; a dev box with htop runs the real
 comparison. Point it at a specific reference with `HTOP_REF=/path/to/htop`.
 See [docs/PARITY.md](docs/PARITY.md).
+
+## Troubleshooting crashes
+
+A TUI runs on the alternate screen with the tty in raw mode, so a crash report
+printed to the terminal is painted over and lost the moment the screen is
+restored. htoprs therefore persists crashes to a logfile:
+
+```sh
+cat ~/.cache/htoprs/crash.log
+```
+
+Every entry records the time, htoprs version, pid, thread, source location, the
+panic message, and a full backtrace (captured unconditionally — no
+`RUST_BACKTRACE=1` needed). Entries are appended, so the history survives across
+crashes. The path honors `$XDG_CACHE_HOME` (`$XDG_CACHE_HOME/htoprs/crash.log`)
+and can be overridden verbatim with `$CRASH_LOG=/path/to/log`. On a crash the
+restored terminal also prints `htoprs: crash logged to <path>`.
