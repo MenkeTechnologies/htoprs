@@ -117,7 +117,7 @@ pub static Row_fieldWidths: [AtomicU8; LAST_PROCESSFIELD] =
 /// unit-prefix letters `Row_printKBytes` indexes by magnitude. `XUtils.h`
 /// is not yet a ported module; this data is reproduced verbatim here (the
 /// same values `meter.rs` also copies from `XUtils.h:160`).
-const unitPrefixes: [u8; 10] = [b'K', b'M', b'G', b'T', b'P', b'E', b'Z', b'Y', b'R', b'Q'];
+const unitPrefixes: [u8; 10] = *b"KMGTPEZYRQ";
 
 /// The discrete color selection [`Row_printPercentage`] makes for its
 /// `int* attr` out-param.
