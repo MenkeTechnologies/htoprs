@@ -127,7 +127,7 @@ jobs:
             printf 'class Htoprs < Formula\n'
             printf '  desc "Interactive process viewer — a faithful Rust port of htop"\n'
             printf '  homepage "https://github.com/MenkeTechnologies/htoprs"\n'
-            printf '  license "GPL-2.0-or-later"\n'
+            printf '  license "MIT"\n'
             printf '  version "%s"\n\n' "$V"
             if [ -n "$mac_blocks" ]; then
               printf '  on_macos do\n%s\n  end\n\n' "$mac_blocks"
