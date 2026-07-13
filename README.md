@@ -138,7 +138,7 @@ stubs marks work still in flight. Overall and per-file coverage — real ports v
 stubs — lives in `docs/port_report.html` (derived from source at run time —
 nothing hardcoded).
 
-On top of the port sits an `src/extensions/` layer (18 modules, exempt from the
+On top of the port sits an `src/extensions/` layer (20 modules, exempt from the
 port-purity gate) — the named color-theme system, the help/theme overlay, and
 the live monitoring suite (per-PID history, alerts, braille CPU graphs, finder,
 diffs, exporters) described above.
