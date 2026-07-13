@@ -2222,12 +2222,12 @@ pub fn actionHelp(st: &mut State) -> Htop_Reaction {
     // C: mvaddstr(line++, 0, "htop " VERSION " - " COPYRIGHT);
     Ncurses::mvaddstr(&mut out, line, 0, &format!("htop {VERSION} - {COPYRIGHT}"));
     line += 1;
-    // C: mvaddstr(line++, 0, "Released under the GNU GPLv2+. ...");
+    // C: mvaddstr(line++, 0, "Released under the MIT License. ...");
     Ncurses::mvaddstr(
         &mut out,
         line,
         0,
-        "Released under the GNU GPLv2+. See 'man' page for more info.",
+        "Released under the MIT License. See 'man' page for more info.",
     );
     line += 1;
 

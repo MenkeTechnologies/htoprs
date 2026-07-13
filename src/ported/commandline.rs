@@ -74,7 +74,7 @@ pub fn printHelpFlag(name: &str) {
     print!(
         "{name} {VERSION}\n\
          {COPYRIGHT}\n\
-         Released under the GNU GPLv2+.\n\n\
+         Released under the MIT License.\n\n\
          -C --no-color                   Use a monochrome color scheme\n\
          -d --delay=DELAY                Set the delay between updates, in tenths of seconds\n\
          -F --filter=FILTER              Show only the commands matching the given filter\n   \

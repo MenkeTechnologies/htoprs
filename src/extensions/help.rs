@@ -289,7 +289,7 @@ fn print_help_to(name: &str, color: bool) {
         paint(color, MAGENTA, &format!("  v{VERSION}")),
         paint(color, YELLOW, COPYRIGHT)
     );
-    println!("  Released under the GNU GPLv2+.");
+    println!("  Released under the MIT License.");
     println!("  Press F1 inside {name} for online help. See 'man {name}' for more.");
     println!(
         "{}",
