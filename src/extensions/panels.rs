@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::extensions::aggregate::{aggregate, GroupBy};
 use crate::extensions::alerts::{AlertEngine, Firing, Metric, Rule};
 use crate::extensions::filter::{Compiled, Field, Filter, FilterStore};
+use crate::extensions::forecast::{self, Ceiling, Projection};
 use crate::extensions::graph::Scalar;
 use crate::extensions::model::Proc;
 use crate::extensions::overlay::{
@@ -56,6 +57,12 @@ const SPARK_W: usize = 12;
 const SPARK_GRAPH_H: i32 = 3;
 /// Rows of matches a list modal shows at once.
 const LIST_ROWS: usize = 16;
+/// Default forecast horizon (seconds): a PID whose projected time-to-ceiling is
+/// at or under this gets the inline exhaustion tint. One hour.
+const FORECAST_HORIZON: f64 = 3600.0;
+/// Fallback seconds-per-sample used before two refreshes have been observed
+/// (htop's `DEFAULT_DELAY` of 15 tenths = 1.5s).
+const DEFAULT_SAMPLE_SECS: f64 = 1.5;
 
 /// Show a transient confirmation toast for a monitoring-hotkey action, reusing
 /// the same status-toast channel the theme overlay and the `b` bar-style cycler
@@ -90,6 +97,7 @@ enum Modal {
     Graph,
     Aggregate,
     Palette,
+    Forecast,
 }
 
 /// The command-palette action registry (`:`): a searchable name paired with the
@@ -101,6 +109,7 @@ const CMDS: &[(&str, i32)] = &[
     ("snapshot / diff process table", b'd' as i32),
     ("export table to JSON / CSV", b'o' as i32),
     ("alerts — threshold rules", b'A' as i32),
+    ("forecast — memory-exhaustion ETA", b'E' as i32),
     ("cpu history graph", b'G' as i32),
     ("aggregate / pivot totals", b'y' as i32),
     ("sparkline — cycle per-PID CPU graph", b'v' as i32),
@@ -133,6 +142,19 @@ struct PanelState {
     cpu_peak: f64,
     tick: u64,
 
+    // ── forecast (memory-exhaustion horizon) ──────────────────────────────
+    /// The detected memory ceiling, resolved once and cached.
+    ceiling: Ceiling,
+    /// Wall-clock seconds between refreshes, measured live from the tick gap so
+    /// the ETA math tracks the real sample rate (and pauses).
+    sample_secs: f64,
+    /// When the last `ingest` ran, for the `sample_secs` measurement.
+    last_tick_at: Option<std::time::Instant>,
+    /// Every rising PID's projection this frame, sorted by soonest ETA.
+    projections: Vec<Projection>,
+    /// PIDs whose ETA is at or under `forecast_horizon` — the inline-tint set.
+    forecast_soon: HashSet<u32>,
+
     // ── UI ────────────────────────────────────────────────────────────────
     modal: Modal,
     spark: SparkMode,
@@ -143,6 +165,11 @@ struct PanelState {
     /// from the Alerts modal (`A`, then `t`); the alert engine keeps evaluating
     /// either way, so the modal's firing counts stay live when this is off.
     alert_hl: bool,
+    /// Whether the forecast inline exhaustion tint is enabled (toggled from the
+    /// Forecast modal `E` → `t`); the projections are computed either way.
+    forecast_hl: bool,
+    /// Only ETAs at or under this (seconds) get the inline tint.
+    forecast_horizon: f64,
     pending_select: Option<u32>,
     /// A key the command palette (`:`) picked, injected into the run loop's
     /// key read so it flows through the normal dispatch pipeline.
@@ -188,12 +215,23 @@ impl PanelState {
             selected_pid: None,
             cpu_peak: 100.0,
             tick: 0,
+            ceiling: forecast::Ceiling::detect(),
+            sample_secs: DEFAULT_SAMPLE_SECS,
+            last_tick_at: None,
+            projections: Vec::new(),
+            forecast_soon: HashSet::new(),
             modal: Modal::None,
             spark: saved.as_ref().map(|p| p.spark).unwrap_or_default(),
             agg_by: saved.as_ref().map(|p| p.agg_by).unwrap_or_default(),
             // Restore the saved hot-row-highlight toggle; absent (first run) =
             // off (opt-in via the Alerts modal `A` → `t`).
             alert_hl: saved.as_ref().and_then(|p| p.alert_hl).unwrap_or(false),
+            forecast_hl: saved.as_ref().and_then(|p| p.forecast_hl).unwrap_or(false),
+            forecast_horizon: saved
+                .as_ref()
+                .and_then(|p| p.forecast_horizon_secs)
+                .filter(|s| *s > 0.0)
+                .unwrap_or(FORECAST_HORIZON),
             pending_select: None,
             pending_key: None,
             finder_query: String::new(),
@@ -224,9 +262,52 @@ impl PanelState {
         self.selected_pid = selected;
         self.table = rows;
         self.tick += 1;
+        self.measure_sample_secs();
+        self.recompute_forecast();
         if self.modal == Modal::Finder {
             self.recompute_finder();
         }
+    }
+
+    /// Update the live seconds-per-sample estimate from the gap between this
+    /// refresh and the previous one. Clamped to a sane window so a paused UI or
+    /// a burst of key redraws cannot poison the ETA math; the first refresh (no
+    /// prior instant) keeps the default until a real interval is seen.
+    fn measure_sample_secs(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.last_tick_at {
+            let dt = now.duration_since(prev).as_secs_f64();
+            if (0.1..=3600.0).contains(&dt) {
+                self.sample_secs = dt;
+            }
+        }
+        self.last_tick_at = Some(now);
+    }
+
+    /// Fit a trend on every PID's memory ring and project time-to-ceiling.
+    /// Keeps only rising PIDs, sorted by soonest ETA; the ones inside the
+    /// horizon form the inline-tint set.
+    fn recompute_forecast(&mut self) {
+        let ceiling = self.ceiling.bytes;
+        let mut projs: Vec<Projection> = self
+            .table
+            .iter()
+            .filter_map(|p| {
+                let series = self.ring.mem_series(p.pid);
+                forecast::project(p.pid, &p.comm, &series, ceiling, self.sample_secs)
+            })
+            .collect();
+        projs.sort_by(|a, b| {
+            a.eta_secs
+                .partial_cmp(&b.eta_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        self.forecast_soon = projs
+            .iter()
+            .filter(|p| p.eta_secs <= self.forecast_horizon)
+            .map(|p| p.pid)
+            .collect();
+        self.projections = projs;
     }
 
     fn any_active(&self) -> bool {
@@ -293,6 +374,11 @@ impl PanelState {
                 self.modal = Modal::Alerts;
                 toast(format!("Alerts — {} firing", self.firing.len()));
             }
+            0x45 => {
+                // 'E' — forecast: memory-exhaustion horizon.
+                self.modal = Modal::Forecast;
+                toast(format!("Forecast — {} rising", self.projections.len()));
+            }
             0x47 => {
                 // 'G'
                 self.modal = Modal::Graph;
@@ -345,6 +431,22 @@ impl PanelState {
                     let by = self.agg_by;
                     super::prefs::update(|p| p.agg_by = by);
                     toast(format!("Aggregate by {}", by.label()));
+                } else {
+                    self.modal = Modal::None;
+                }
+            }
+            Modal::Forecast => {
+                // 't' toggles the inline exhaustion tint in place (persisted so
+                // it survives restarts); any other non-Esc key closes.
+                if code == KeyCode::Char('t') {
+                    self.forecast_hl = !self.forecast_hl;
+                    let on = self.forecast_hl;
+                    super::prefs::update(|p| p.forecast_hl = Some(on));
+                    toast(if on {
+                        "Forecast tint: on"
+                    } else {
+                        "Forecast tint: off"
+                    });
                 } else {
                     self.modal = Modal::None;
                 }
@@ -594,6 +696,7 @@ impl PanelState {
                     .collect(),
             ),
             Modal::Alerts => self.render_alerts(buf, area, &s),
+            Modal::Forecast => self.render_forecast(buf, area, &s),
             Modal::Graph => self.render_graph(buf, area, &s),
             Modal::Aggregate => self.render_aggregate(buf, area, &s),
             Modal::Palette => self.render_palette(buf, area, &s),
@@ -864,6 +967,59 @@ impl PanelState {
             .collect()
     }
 
+    /// The forecast modal (`E`): every rising PID's projected time to its
+    /// memory ceiling, soonest first. A leading indicator — the row reads
+    /// "pid 3120 mysqld: +12 MB/s → hits 8 GB cap in ~4m20s".
+    fn render_forecast(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
+        let tint = if self.forecast_hl { "on" } else { "off" };
+        let mut lines = vec![
+            (
+                format!(
+                    "ceiling: {} ({})   tint: {tint}   (t: toggle)",
+                    forecast::fmt_bytes(self.ceiling.bytes),
+                    self.ceiling.source.label()
+                ),
+                s.title,
+            ),
+            (
+                format!(
+                    "{} rising · horizon {} · {:.1}s/sample",
+                    self.projections.len(),
+                    forecast::fmt_eta(self.forecast_horizon),
+                    self.sample_secs
+                ),
+                s.dim,
+            ),
+        ];
+        if self.projections.is_empty() {
+            lines.push((
+                "no process is trending toward its memory ceiling".into(),
+                s.body,
+            ));
+        }
+        for p in self.projections.iter().take(LIST_ROWS - 3) {
+            // Rows inside the horizon are the ones that also get the inline
+            // tint, so highlight them here too; the rest stay body-colored.
+            let st = if p.eta_secs <= self.forecast_horizon {
+                s.alert
+            } else {
+                s.body
+            };
+            lines.push((
+                format!(
+                    "pid {} {}: {} → cap in {}",
+                    p.pid,
+                    trunc(&p.comm, 12),
+                    forecast::fmt_rate(p.rate_bps),
+                    forecast::fmt_eta(p.eta_secs)
+                ),
+                st,
+            ));
+        }
+        lines.push(("t toggle tint · Esc close".into(), s.dim));
+        self.render_lines(buf, area, s, "Forecast — exhaustion horizon", lines);
+    }
+
     fn render_graph(&self, buf: &mut Buffer, area: Rect, s: &Sty) {
         let width = 48usize;
         let height = 6usize;
@@ -1074,8 +1230,13 @@ pub fn draw_active<W: Write>(out: &mut W) {
 pub fn alert_attr(pid: u32) -> Option<i32> {
     PANELS.with(|p| {
         let s = p.borrow();
+        // A live threshold breach (alerts) outranks a projected one (forecast):
+        // "already over" is more urgent than "will be over". Both flow through
+        // this single `Panel_draw` chokepoint so no ported call site changes.
         if s.alert_hl && s.firing.contains(&pid) {
             Some(hot_row_attr())
+        } else if s.forecast_hl && s.forecast_soon.contains(&pid) {
+            Some(forecast_row_attr())
         } else {
             None
         }
@@ -1096,6 +1257,20 @@ fn hot_row_attr() -> i32 {
         A_REVERSE | A_BOLD
     } else {
         A_BOLD | ColorPair(White, Red)
+    }
+}
+
+/// The inline color for a PID projected to hit its memory ceiling within the
+/// forecast horizon: bold black on yellow — a "warning ahead", deliberately
+/// amber rather than the alert row's red so a *projected* breach never looks
+/// like a *live* one, and never the selection cyan. Falls back to bold-dim on
+/// the monochrome scheme, distinct from the alert row's reverse-bold.
+fn forecast_row_attr() -> i32 {
+    use crate::ported::crt::{Black, ColorPair, Yellow, A_BOLD, A_DIM};
+    if matches!(ColorScheme::active(), ColorScheme::COLORSCHEME_MONOCHROME) {
+        A_DIM | A_BOLD
+    } else {
+        A_BOLD | ColorPair(Black, Yellow)
     }
 }
 

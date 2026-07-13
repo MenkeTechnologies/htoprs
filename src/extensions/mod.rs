@@ -18,7 +18,9 @@
 //! [`procring`] per-process CPU/mem history + sparkline column,
 //! [`finder`] fuzzy process finder, [`snapshot`] capture + diff a table,
 //! [`filter`] regex + saved named filters, [`export`] table -> JSON/CSV,
-//! [`alerts`] debounced threshold rules, [`graph`] braille history graph.
+//! [`alerts`] debounced threshold rules, [`graph`] braille history graph,
+//! [`forecast`] per-process resource-exhaustion horizon (trend → ETA to the
+//! PID's real memory ceiling).
 //! [`braille`] is the shared glyph renderer used by [`procring`] and [`graph`].
 //! [`bridge`] materializes the live ported `Process` rows as `Proc`, and
 //! [`panels`] is the running-TUI wiring — a thread-local state the run loop
@@ -50,6 +52,7 @@ pub mod crashlog;
 pub mod export;
 pub mod filter;
 pub mod finder;
+pub mod forecast;
 pub mod frame;
 pub mod graph;
 pub mod help;

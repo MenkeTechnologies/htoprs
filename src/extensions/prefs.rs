@@ -49,6 +49,15 @@ pub struct Prefs {
     /// The `Tab`-cycled key the aggregate/pivot modal (`y`) rolls up on.
     #[serde(default)]
     pub agg_by: GroupBy,
+    /// Whether the forecast inline row tint (`E` modal → `t`) is enabled: PIDs
+    /// projected to hit their memory ceiling within the horizon get recolored.
+    /// `None` (absent / first run) means the default: off.
+    #[serde(default)]
+    pub forecast_hl: Option<bool>,
+    /// The forecast horizon in seconds: only ETAs at or under this get the
+    /// inline tint. `None` (absent / first run) means the default (1 hour).
+    #[serde(default)]
+    pub forecast_horizon_secs: Option<f64>,
 }
 
 /// `~/.config/htoprs/prefs.json` (honoring `$XDG_CONFIG_HOME`), matching the

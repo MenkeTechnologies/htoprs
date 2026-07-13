@@ -59,8 +59,9 @@ enforced mechanically, following the same precedent as `zshrs`.
   running-TUI wiring for the htoprs-original monitoring capabilities — the
   monitoring analog of the theme overlay. A thread-local state is fed the real
   table each sample tick (advancing the per-PID history rings, the debounced
-  threshold alerts, and the CPU history graph) and gets first refusal on keys,
-  with hotkeys chosen from those htop leaves unbound:
+  threshold alerts, the CPU history graph, and the memory-exhaustion forecast)
+  and gets first refusal on keys, with hotkeys chosen from those htop leaves
+  unbound:
 
   | Key | Capability |
   |-----|------------|
@@ -69,15 +70,18 @@ enforced mechanically, following the same precedent as `zshrs`.
   | `d` | Snapshot: first press captures a baseline, next press diffs the live table against it (`+`started `-`exited `~`changed); `w` writes the snapshot JSON |
   | `o` | Export the current table to JSON + CSV under `~/.config/htoprs/` |
   | `A` | Threshold alerts — the rule set and every currently-firing PID |
+  | `E` | Forecast — per-process memory-exhaustion horizon: every rising PID's projected time to its real ceiling, soonest first (`t` toggles the inline row tint) |
   | `G` | Braille CPU history graph (system total plus the selected PID) |
   | `y` | Aggregate/pivot: live CPU+memory totals grouped by user / command / parent (`Tab` cycles the key) |
   | `:` | Command palette — fuzzy-search every action by name and run it (reuses the `f` matcher); reaches both extension and htop actions |
   | `v` | Cycle the per-PID CPU sparkline: off → narrow right-edge column → CPU-scaled inline braille graph |
 
-  Two of these reach the rows themselves rather than a modal, injected at the
+  Some of these reach the rows themselves rather than a modal, injected at the
   per-row draw site in `Panel_draw` (the same extension-hook pattern the theme
-  border uses, so no new ported `fn`): a firing-alert PID's row is recolored,
-  and the `v` sparkline is drawn on the rows. `v` cycles three states — off, a
+  border uses, so no new ported `fn`): a firing-alert PID's row is recolored
+  (red), a PID forecast to hit its memory ceiling within the horizon is tinted
+  amber through the same single chokepoint (a live alert outranks a projected
+  one), and the `v` sparkline is drawn on the rows. `v` cycles three states — off, a
   narrow braille sparkline overdrawn at each row's right edge, and an inline
   graph mode where each process grows a full-width braille CPU graph beneath its
   info line. The graph is rendered by the same braille canvas as the `G` history
@@ -88,6 +92,18 @@ enforced mechanically, following the same precedent as `zshrs`.
   (`item_height` = `1 + graph_lines(cpu)` for a process, `1` otherwise), so the
   cursor, paging, and scrolling all track whole processes. Non-process panels
   keep `rowHeight = 1` and are byte-identical to the ported behavior.
+- **Memory-exhaustion forecast (`extensions::forecast`, `E`):** a leading
+  indicator htop lacks entirely. Each refresh it fits a hand-rolled
+  ordinary-least-squares trend on every PID's bounded memory ring and projects
+  the wall-clock time until that PID's resident set crosses its own real
+  ceiling — in precedence order a Linux cgroup-v2 `memory.max`, else the
+  process address-space `RLIMIT_AS`, else total machine RAM (detected once and
+  cached). Only rising trends produce an ETA; the modal lists them soonest
+  first ("pid 3120 mysqld: +12 MB/s → cap in ~4m20s"), and `t` enables an inline
+  amber row tint for any PID projected to exhaust within the horizon (default
+  1 hour). The sample interval is measured live from the tick gap, so the ETA
+  tracks the real refresh rate and pauses. The tint and horizon persist to
+  `~/.config/htoprs/prefs.json`.
 - **Bar fill-glyph cycler (`extensions::barstyle`, ported from storageshower):**
   `b` cycles the character every bar meter (CPU, Memory, Swap, …) fills with,
   through five styles — Classic (`|`, htop's default), Gradient (position-shaded
@@ -138,10 +154,10 @@ stubs marks work still in flight. Overall and per-file coverage — real ports v
 stubs — lives in `docs/port_report.html` (derived from source at run time —
 nothing hardcoded).
 
-On top of the port sits an `src/extensions/` layer (20 modules, exempt from the
+On top of the port sits an `src/extensions/` layer (21 modules, exempt from the
 port-purity gate) — the named color-theme system, the help/theme overlay, and
-the live monitoring suite (per-PID history, alerts, braille CPU graphs, finder,
-diffs, exporters) described above.
+the live monitoring suite (per-PID history, alerts, memory-exhaustion forecast,
+braille CPU graphs, finder, diffs, exporters) described above.
 
 ### Terminal backend & substrate
 
