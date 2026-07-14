@@ -290,7 +290,10 @@ fn cgroup_memory_max() -> Option<u64> {
             }
         }
         // Stop once we have consumed the relative path back to the mount root.
-        if !dir.pop() || !dir.starts_with("/sys/fs/cgroup") || dir == std::path::Path::new("/sys/fs/cgroup") {
+        if !dir.pop()
+            || !dir.starts_with("/sys/fs/cgroup")
+            || dir == std::path::Path::new("/sys/fs/cgroup")
+        {
             // Check the root itself once, then give up.
             if let Ok(raw) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
                 let v = raw.trim();
@@ -321,7 +324,7 @@ fn rlimit_as() -> Option<u64> {
     if rc != 0 || lim.rlim_cur == libc::RLIM_INFINITY {
         return None;
     }
-    Some(lim.rlim_cur as u64)
+    Some(lim.rlim_cur)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -381,7 +384,11 @@ mod tests {
         let series = [1000u64, 2000, 3000, 4000];
         let t = Trend::fit(&series).expect("fit");
         assert!((t.slope - 1000.0).abs() < 1e-9, "slope was {}", t.slope);
-        assert!((t.current() - 4000.0).abs() < 1e-9, "current was {}", t.current());
+        assert!(
+            (t.current() - 4000.0).abs() < 1e-9,
+            "current was {}",
+            t.current()
+        );
         let eta = t.eta_secs(10_000.0, 1.0).expect("rising trend has an eta");
         assert!((eta - 6.0).abs() < 1e-9, "eta was {eta}");
     }
@@ -396,8 +403,14 @@ mod tests {
 
     #[test]
     fn flat_or_falling_trend_has_no_eta() {
-        assert!(Trend::fit(&[5000u64, 5000, 5000]).unwrap().eta_secs(9000.0, 1.0).is_none());
-        assert!(Trend::fit(&[4000u64, 3000, 2000]).unwrap().eta_secs(9000.0, 1.0).is_none());
+        assert!(Trend::fit(&[5000u64, 5000, 5000])
+            .unwrap()
+            .eta_secs(9000.0, 1.0)
+            .is_none());
+        assert!(Trend::fit(&[4000u64, 3000, 2000])
+            .unwrap()
+            .eta_secs(9000.0, 1.0)
+            .is_none());
     }
 
     #[test]
