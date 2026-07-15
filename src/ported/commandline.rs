@@ -751,6 +751,11 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
     // The main loop.
     ScreenManager_run(&mut scr, None, None, None);
 
+    // htoprs infra: the run loop unwound cleanly (not via a signal handler,
+    // which logs itself and `_exit`s). Persist why — quit key, stdin EOF, or the
+    // iteration limit — to crash.log so a normal exit is as traceable as a crash.
+    crate::extensions::crashlog::flush_exit();
+
     CRT_done();
     0
 }

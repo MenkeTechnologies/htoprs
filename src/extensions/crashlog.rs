@@ -23,6 +23,7 @@
 //! *inside* the panic hook, and a panic during unwinding aborts the process.
 
 use std::backtrace::Backtrace;
+use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::panic::PanicHookInfo;
@@ -116,6 +117,55 @@ pub fn log_panic(info: &PanicHookInfo<'_>) -> Option<PathBuf> {
          --- backtrace ---\n\
          {backtrace}\n\
          ======================================================\n",
+        ts = timestamp(),
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+    );
+    log_line(&entry)
+}
+
+// The reason the run loop last recorded for its imminent termination, set by
+// `set_exit_reason` and drained by `flush_exit`. Thread-local because the TUI
+// reads keys and runs the loop on a single thread (`ScreenManager_run`); nested
+// screens (Setup, the process-kill list) overwrite it harmlessly, so the value
+// present when the top-level loop unwinds is the true exit cause.
+thread_local! {
+    static PENDING_EXIT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Record why the current run loop is about to unwind toward process exit
+/// (a quit keystroke, stdin EOF, or the `-n` iteration limit). The last reason
+/// set before the top-level `ScreenManager_run` returns is the one [`flush_exit`]
+/// writes. Cheap and allocation-light on the hot path — only called at the
+/// single frame where the loop decides to break.
+pub fn set_exit_reason(reason: impl Into<String>) {
+    PENDING_EXIT.with(|c| *c.borrow_mut() = Some(reason.into()));
+}
+
+/// Write the pending exit reason recorded by [`set_exit_reason`] to the log,
+/// then clear it. Called once at true program exit (after the top-level run
+/// loop returns). A no-op returning `None` when nothing was recorded — e.g. a
+/// signal-driven exit, which never reaches this path and logs itself from the
+/// signal handler via [`log_exit`].
+pub fn flush_exit() -> Option<PathBuf> {
+    let reason = PENDING_EXIT.with(|c| c.borrow_mut().take())?;
+    log_exit(&reason)
+}
+
+/// Append a terminal "exit" record (timestamp, version, pid, reason) to the
+/// same log as [`log_panic`]. Used both for clean exits (via [`flush_exit`])
+/// and directly from the signal handlers, so every way htoprs can leave the
+/// run loop lands one line in `crash.log` explaining why. Returns the path
+/// written, or `None` if no log path resolves / the write fails.
+pub fn log_exit(reason: &str) -> Option<PathBuf> {
+    let entry = format!(
+        "\n\
+         -------------------- htoprs exit ---------------------\n\
+         time:      {ts}\n\
+         version:   {version}\n\
+         pid:       {pid}\n\
+         reason:    {reason}\n\
+         ------------------------------------------------------\n",
         ts = timestamp(),
         version = env!("CARGO_PKG_VERSION"),
         pid = std::process::id(),

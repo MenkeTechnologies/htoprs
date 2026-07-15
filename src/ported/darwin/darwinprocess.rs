@@ -1069,6 +1069,11 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
                 "thread_info({pid}:{i}) for identifier failed: {}",
                 unsafe { std::ffi::CStr::from_ptr(libc::mach_error_string(ret)) }.to_string_lossy()
             );
+            // htoprs fix (leak): `task_threads` hands back one owned mach send
+            // right per thread; skipping the iteration without releasing `thread`
+            // leaks a port name every scan, exhausting the task's ipc name space
+            // over a long run. Release before every `continue`.
+            mach_port_deallocate(libc::mach_task_self(), thread);
             continue;
         }
 
@@ -1095,6 +1100,8 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
 
         if hideUserlandThreads {
             (*tdproc).super_.super_.show = false;
+            // htoprs fix (leak): release the thread send right on this skip path.
+            mach_port_deallocate(libc::mach_task_self(), thread);
             continue;
         }
 
@@ -1124,6 +1131,8 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
                 "thread_info({pid}:{i}) for extended failed: {}",
                 unsafe { std::ffi::CStr::from_ptr(libc::mach_error_string(ret)) }.to_string_lossy()
             );
+            // htoprs fix (leak): release the thread send right on this skip path.
+            mach_port_deallocate(libc::mach_task_self(), thread);
             continue;
         }
 
@@ -1159,16 +1168,24 @@ pub unsafe fn DarwinProcess_scanThreads(dp: *mut DarwinProcess, dpt: *mut Darwin
 
         // if (!preExisting) ProcessTable_add(...) — getProcess already added.
         let _ = pre_existing;
+
+        // htoprs fix (leak): release the thread send right at the end of the
+        // normal path too — every iteration must drop the one owned reference
+        // `task_threads` returned, or the ipc port name space grows unbounded.
+        mach_port_deallocate(libc::mach_task_self(), thread);
     }
 
     if isProcessStuck {
         (*dp).super_.state = ProcessState::UNINTERRUPTIBLE_WAIT;
     }
 
+    // htoprs fix: the array is `thread_count` elements of `thread_act_t`
+    // (4 bytes), not of `thread_act_array_t` (an 8-byte pointer). The prior
+    // `size_of::<thread_act_array_t>()` deallocated twice the array's byte span.
     libc::vm_deallocate(
         libc::mach_task_self(),
         thread_list as libc::vm_address_t,
-        size_of::<libc::thread_act_array_t>() * thread_count as usize,
+        size_of::<libc::thread_act_t>() * thread_count as usize,
     );
     mach_port_deallocate(libc::mach_task_self(), task);
 }

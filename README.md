@@ -238,19 +238,30 @@ compares output byte-for-byte, modulo the deliberate rebrand
 comparison. Point it at a specific reference with `HTOP_REF=/path/to/htop`.
 See [docs/PARITY.md](docs/PARITY.md).
 
-## Troubleshooting crashes
+## Troubleshooting crashes and exits
 
 A TUI runs on the alternate screen with the tty in raw mode, so a crash report
 printed to the terminal is painted over and lost the moment the screen is
-restored. htoprs therefore persists crashes to a logfile:
+restored. htoprs therefore persists both crashes and the reason for every exit
+to a logfile:
 
 ```sh
 cat ~/.cache/htoprs/crash.log
 ```
 
-Every entry records the time, htoprs version, pid, thread, source location, the
+Crash entries record the time, htoprs version, pid, thread, source location, the
 panic message, and a full backtrace (captured unconditionally — no
-`RUST_BACKTRACE=1` needed). Entries are appended, so the history survives across
-crashes. The path honors `$XDG_CACHE_HOME` (`$XDG_CACHE_HOME/htoprs/crash.log`)
-and can be overridden verbatim with `$CRASH_LOG=/path/to/log`. On a crash the
-restored terminal also prints `htoprs: crash logged to <path>`.
+`RUST_BACKTRACE=1` needed). In addition, every normal exit appends a one-line
+`reason`, so it is always clear *why* htoprs stopped:
+
+- a quit keystroke (`reason: quit key: 'q' (ch=113)`),
+- a terminating signal, including a controlling-terminal / SSH hangup
+  (`reason: signal 1 (Hangup: 1)`) or a fatal fault
+  (`reason: fatal signal 11 (Segmentation fault: 11)`),
+- stdin reaching EOF / a detached tty (`reason: stdin EOF …`),
+- or the `-n` iteration limit being reached.
+
+Entries are appended, so the history survives across runs. The path honors
+`$XDG_CACHE_HOME` (`$XDG_CACHE_HOME/htoprs/crash.log`) and can be overridden
+verbatim with `$CRASH_LOG=/path/to/log`. On a crash the restored terminal also
+prints `htoprs: crash logged to <path>`.

@@ -838,6 +838,9 @@ pub fn ScreenManager_run(
                 let host = unsafe { &mut *this.host };
                 host.iterationsRemaining -= 1;
                 if host.iterationsRemaining == 0 {
+                    crate::extensions::crashlog::set_exit_reason(
+                        "iteration limit reached (-n / iterationsRemaining hit 0)",
+                    );
                     quit = true;
                     // Present the final frame before quitting (don't leave the
                     // thread-local frame buffer open for a parent run loop).
@@ -873,6 +876,12 @@ pub fn ScreenManager_run(
             if prevCh == ch && !timedOut {
                 closeTimeout += 1;
                 if closeTimeout == 100 {
+                    // htoprs infra: 100 back-to-back empty reads with no recalc
+                    // means the input stream went away (EOF / detached tty) —
+                    // record it so this otherwise-silent break is explained.
+                    crate::extensions::crashlog::set_exit_reason(
+                        "stdin EOF: 100 consecutive empty key reads (closeTimeout)",
+                    );
                     break;
                 }
             } else {
@@ -977,6 +986,17 @@ pub fn ScreenManager_run(
         if result.contains(HandlerResult::HANDLED) {
             continue;
         } else if result.contains(HandlerResult::BREAK_LOOP) {
+            // htoprs infra: the panel asked to leave the loop (quit key `q`,
+            // Esc out of a subscreen, or a kill/action that breaks). Record the
+            // triggering key so a keystroke-driven exit is distinguishable from a
+            // signal or stdin EOF in crash.log. Nested screens overwrite this
+            // harmlessly; the value at the top-level return is the real cause.
+            let key_desc = if (0x20..0x7f).contains(&ch) {
+                format!("quit key: '{}' (ch={ch})", ch as u8 as char)
+            } else {
+                format!("quit key: ch={ch}")
+            };
+            crate::extensions::crashlog::set_exit_reason(key_desc);
             quit = true;
             continue;
         }

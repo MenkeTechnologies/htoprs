@@ -1646,11 +1646,10 @@ fn full_write_str(fd: libc::c_int, s: &str) -> libc::ssize_t {
 pub extern "C" fn CRT_handleSIGTERM(sgn: libc::c_int) {
     CRT_done();
 
-    let settings = CRT_settings.load(Ordering::Relaxed);
-    if settings.is_null() || !unsafe { (*settings).changed } {
-        unsafe { libc::_exit(0) };
-    }
-
+    // htoprs infra (no C analog): record which signal terminated the run to
+    // crash.log before `_exit`, so an exit driven by INT/TERM/QUIT/HUP (e.g. a
+    // controlling terminal or SSH session going away after a long uptime) is
+    // explained after the fact rather than vanishing with the alternate screen.
     let signal_str_ptr = unsafe { libc::strsignal(sgn) };
     let signal_str = if signal_str_ptr.is_null() {
         String::from("unknown reason")
@@ -1659,6 +1658,12 @@ pub extern "C" fn CRT_handleSIGTERM(sgn: libc::c_int) {
             .to_string_lossy()
             .into_owned()
     };
+    crate::extensions::crashlog::log_exit(&format!("signal {sgn} ({signal_str})"));
+
+    let settings = CRT_settings.load(Ordering::Relaxed);
+    if settings.is_null() || !unsafe { (*settings).changed } {
+        unsafe { libc::_exit(0) };
+    }
 
     let err_buf = format!(
         "A signal {sgn} ({signal_str}) was received, exiting without persisting settings to htoprc.\n"
@@ -1860,6 +1865,12 @@ pub fn CRT_installSignalHandlers() {
         libc::signal(libc::SIGINT, term);
         libc::signal(libc::SIGTERM, term);
         libc::signal(libc::SIGQUIT, term);
+        // htoprs infra (divergence from the C, which leaves SIGHUP at its default
+        // terminate disposition): route SIGHUP through the same handler so a
+        // controlling-terminal / SSH-session hangup after a long run is logged to
+        // crash.log rather than exiting silently. Net effect is unchanged — the
+        // handler still ends in `_exit` — but the exit now leaves a reason.
+        libc::signal(libc::SIGHUP, term);
         libc::signal(libc::SIGUSR1, libc::SIG_IGN);
         libc::signal(libc::SIGUSR2, libc::SIG_IGN);
     }
@@ -1910,6 +1921,8 @@ pub fn CRT_resetSignalHandlers() {
         libc::signal(libc::SIGINT, libc::SIG_DFL);
         libc::signal(libc::SIGTERM, libc::SIG_DFL);
         libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+        // Paired with the SIGHUP install above (htoprs infra).
+        libc::signal(libc::SIGHUP, libc::SIG_DFL);
         libc::signal(libc::SIGUSR1, libc::SIG_DFL);
         libc::signal(libc::SIGUSR2, libc::SIG_DFL);
     }
@@ -1986,9 +1999,9 @@ pub fn terminalSupportsDefinedKeys(termType: Option<&str>) -> bool {
 /// [`CRT_setColors`], the [`CRT_utf8`] flag, mouse capture, and the
 /// degree sign.
 ///
-/// Deferred vs the C: ncurses `define_key` seeding (crossterm's own event
-/// parser already recognizes those escape sequences) and the signal-handler
-/// install (`CRT_installSignalHandlers`, still stubbed). The `CRT_treeStr`
+/// Signal handlers are installed via [`CRT_installSignalHandlers`] at the tail,
+/// as in the C. Deferred vs the C: only ncurses `define_key` seeding (crossterm's
+/// own event parser already recognizes those escape sequences). The `CRT_treeStr`
 /// pointer retarget is subsumed by [`TreeStr::glyph`], which selects the
 /// active glyph table from [`CRT_utf8`] at read time.
 pub fn CRT_init(
@@ -2027,6 +2040,14 @@ pub fn CRT_init(
     CRT_setMouse(enable_mouse);
 
     initDegreeSign();
+
+    // CRT.c:1194 — CRT_installSignalHandlers(). Previously deferred while the
+    // installer was a stub; now that it is fully ported, wire it so htoprs has
+    // htop's signal behavior: INT/TERM/QUIT/HUP tear the terminal down and exit
+    // via CRT_handleSIGTERM, and the fatal faults route to CRT_handleSIGSEGV.
+    // Both handlers also record the terminating signal to crash.log, so a
+    // signal-driven exit is no longer silent.
+    CRT_installSignalHandlers();
 }
 
 /// Port of `void CRT_done(void)` from `CRT.c:1290`.
@@ -2161,6 +2182,22 @@ pub fn print_backtrace() {
 /// hence the C-ABI `extern "C" fn(c_int)` signature.
 pub extern "C" fn CRT_handleSIGSEGV(signal: libc::c_int) {
     CRT_done();
+
+    // htoprs infra (no C analog): the C emits its fatal report only to stderr,
+    // which the alternate-screen teardown erases. Persist the fault to crash.log
+    // first so a SIGSEGV/SIGBUS/SIGABRT (including the resource-exhaustion faults
+    // that can follow a long run) is recoverable after the terminal is restored.
+    {
+        let signal_str_ptr = unsafe { libc::strsignal(signal) };
+        let signal_str = if signal_str_ptr.is_null() {
+            String::from("unknown reason")
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(signal_str_ptr) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        crate::extensions::crashlog::log_exit(&format!("fatal signal {signal} ({signal_str})"));
+    }
 
     let program = crate::ported::htop::program;
     const VERSION: &str = env!("CARGO_PKG_VERSION");
