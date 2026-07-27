@@ -2926,9 +2926,23 @@ pub fn LinuxProcessTable_recurseProcTree(
             // errorReadingProcess:
             Compat_openatArgClose(procFd);
             if !pre_existing {
-                // A really short-lived process: remove the row getProcess added.
-                this.super_.super_.rows[idx] = None;
-                this.super_.super_.table.remove(&pid);
+                // C (`LinuxProcessTable.c:1943`): a really short-lived process
+                // we have no full info about is just `Process_delete`d — its
+                // row was never added, since C's `ProcessTable_add` runs at the
+                // end of the success path. The ported `ProcessTable_getProcess`
+                // adds up front (see its doc), so the equivalent here is to
+                // undo that add.
+                //
+                // Read the slot back from the id map rather than reusing `idx`:
+                // the `task/` recursion above may have compacted `rows` since
+                // `idx` was taken. Compact immediately as well — C leaves no
+                // NULL slot behind at this point, and `ProcessTable_cleanupEntries`
+                // walks every slot expecting a live row.
+                if let Some(slot) = this.super_.super_.table.remove(&pid) {
+                    this.super_.super_.rows[slot] = None;
+                    this.super_.super_.rows_isDirty = true;
+                    crate::ported::table::Table_compact(&mut this.super_.super_, slot);
+                }
             }
             continue;
         }
@@ -3394,6 +3408,92 @@ mod tests {
         assert_eq!(pt.super_.totalTasks, 1, "one task counted");
         // The row is shown and marked updated by the scan.
         assert!(proc.super_.updated);
+    }
+
+    /// A PID directory that disappears mid-scan (here: one with no readable
+    /// `stat`) takes the `errorReadingProcess` path. Because the ported
+    /// `ProcessTable_getProcess` adds the row up front, that path has to undo
+    /// the add *and* close the resulting gap — otherwise a `None` slot survives
+    /// the scan and `ProcessTable_cleanupEntries`, which walks every slot,
+    /// panics with "NULL row slot" on the next refresh.
+    #[test]
+    fn recurseProcTree_short_lived_pid_leaves_no_null_row_slot() {
+        use crate::ported::machine::{ScreenSettings, Settings};
+        use crate::ported::processtable::ProcessTable_cleanupEntries;
+
+        let root = std::env::temp_dir().join("htoprs_recurse_shortlived");
+        let _ = std::fs::remove_dir_all(&root);
+
+        // PID 43: a well-formed entry the scan reads to completion.
+        let good = root.join("43");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(
+            good.join("stat"),
+            b"43 (goodproc) R 1 43 43 0 -1 0 100 0 0 0 10 5 0 0 20 0 1 0 137 \
+              4194304 50 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+                .as_ref(),
+        )
+        .unwrap();
+        std::fs::write(good.join("statm"), b"1024 50 10 5 0 20 0\n".as_ref()).unwrap();
+        std::fs::write(good.join("cmdline"), b"goodproc\0".as_ref()).unwrap();
+        std::fs::write(good.join("comm"), b"goodproc\n".as_ref()).unwrap();
+        let good_task = good.join("task/43");
+        std::fs::create_dir_all(&good_task).unwrap();
+        std::fs::write(
+            good_task.join("stat"),
+            b"43 (goodproc) R 1 43 43 0 -1 0 100 0 0 0 10 5 0 0 20 0 1 0 137 \
+              4194304 50 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+                .as_ref(),
+        )
+        .unwrap();
+
+        // PID 44: an empty directory — `openat` succeeds, every read fails.
+        std::fs::create_dir_all(root.join("44")).unwrap();
+
+        let mut lm = LinuxMachine {
+            pageSize: 4096,
+            jiffies: 100,
+            period: 100.0,
+            runningTasks: 1,
+            super_: Machine {
+                existingCPUs: 1,
+                activeCPUs: 1,
+                totalMem: 1_000_000,
+                realtimeMs: 1_000_000,
+                settings: Some(Settings {
+                    screens: vec![ScreenSettings::default()],
+                    ssIndex: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let host_ptr = &mut lm.super_ as *mut Machine;
+        let mut pt = ProcessTable_new(host_ptr, None);
+
+        let dir_c = std::ffi::CString::new(root.to_str().unwrap()).unwrap();
+        let ok = LinuxProcessTable_recurseProcTree(&mut pt, libc::AT_FDCWD, &lm, &dir_c, None);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(ok, "recurseProcTree returned false");
+
+        // The failed PID left no gap, and the id map still indexes `rows`.
+        assert!(
+            pt.super_.super_.rows.iter().all(|slot| slot.is_some()),
+            "scan left a NULL row slot behind"
+        );
+        assert!(!pt.super_.super_.table.contains_key(&44), "pid 44 kept");
+        for (&id, &i) in pt.super_.super_.table.iter() {
+            let row = pt.super_.super_.rows[i].as_ref().expect("stale id -> None");
+            assert_eq!(row.as_row().unwrap().id, id, "id map out of sync with rows");
+        }
+
+        // The crash the user hit: cleanupEntries walks every slot.
+        ProcessTable_cleanupEntries(&mut pt.super_);
+        assert!(
+            pt.super_.super_.table.contains_key(&43),
+            "the good pid was culled"
+        );
     }
 
     #[test]

@@ -23,10 +23,25 @@ Wired now:
 | `CommandLine_run` / `setCommFilter` generalized to `any(macos, linux)`; `Platform_init` failure now returns 1 as in C | `src/ported/commandline.rs` |
 | Linux process-table free branch in `Machine_delete` | `src/ported/machine.rs` |
 
+First run on Ubuntu 24.04 got into the run loop and then panicked in
+`ProcessTable_cleanupEntries: NULL row slot`. Cause: the ported
+`ProcessTable_getProcess` adds a new row up front (a documented divergence —
+C adds it at the end of the success path), so
+`LinuxProcessTable_recurseProcTree`'s `errorReadingProcess` path has to undo
+that add. It nulled the slot without marking the vector dirty or compacting, so
+a short-lived PID (a `/proc/<pid>` that vanishes mid-scan) left a hole that
+`ProcessTable_cleanupEntries` walked into. Fixed in
+`LinuxProcessTable_recurseProcTree`: look the slot up by id (the `task/`
+recursion may have compacted since), soft-remove it, and `Table_compact`
+immediately. Pinned by
+`recurseProcTree_short_lived_pid_leaves_no_null_row_slot`, which fails on the
+old path and passes on the new one.
+
 Verified: `cargo clippy --all-targets -D warnings` and a full `cargo build`
 link (via `zig cc -target x86_64-linux-gnu`) for `x86_64-unknown-linux-gnu`,
-plus the native macOS suite. **Not yet verified: running the resulting binary on
-a real Linux host** — no container runtime was available on the build machine.
+plus the native macOS suite. **A full interactive session on Linux is still
+unproven** — the crash above was the first startup, so anything past the first
+few refreshes has not been exercised.
 
 ## Remaining Linux gaps
 
