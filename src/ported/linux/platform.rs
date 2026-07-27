@@ -74,6 +74,7 @@ use crate::ported::processlocksscreen::{
     FileLocks_Data, FileLocks_LockData, FileLocks_ProcessData,
 };
 use crate::ported::settings::Settings_isReadonly;
+use crate::ported::signalspanel::SignalItem;
 use crate::ported::swapmeter::SwapMeter_class;
 use crate::ported::sysarchmeter::SysArchMeter_class;
 use crate::ported::tasksmeter::TasksMeter_class;
@@ -137,6 +138,156 @@ pub static Platform_meterTypes: &[&MeterClass] = &[
     &RightCPUs8Meter_class,
     &BlankMeter_class,
 ];
+
+/// Port of `const SignalItem Platform_signals[]` (`linux/Platform.c:104`) —
+/// the signal picker table for `actionKill`. Transcribed verbatim from the C
+/// designated initializer, including the two duplicate-number rows the C
+/// table carries (` 6 SIGIOT` aliasing `SIGABRT`, `29 SIGPOLL` aliasing
+/// `SIGIO`). `Platform_numberOfSignals` is the slice length.
+#[allow(non_upper_case_globals)] // faithful C global name
+pub static Platform_signals: &[SignalItem] = &[
+    SignalItem {
+        name: " 0 Cancel",
+        number: 0,
+    },
+    SignalItem {
+        name: " 1 SIGHUP",
+        number: 1,
+    },
+    SignalItem {
+        name: " 2 SIGINT",
+        number: 2,
+    },
+    SignalItem {
+        name: " 3 SIGQUIT",
+        number: 3,
+    },
+    SignalItem {
+        name: " 4 SIGILL",
+        number: 4,
+    },
+    SignalItem {
+        name: " 5 SIGTRAP",
+        number: 5,
+    },
+    SignalItem {
+        name: " 6 SIGABRT",
+        number: 6,
+    },
+    SignalItem {
+        name: " 6 SIGIOT",
+        number: 6,
+    },
+    SignalItem {
+        name: " 7 SIGBUS",
+        number: 7,
+    },
+    SignalItem {
+        name: " 8 SIGFPE",
+        number: 8,
+    },
+    SignalItem {
+        name: " 9 SIGKILL",
+        number: 9,
+    },
+    SignalItem {
+        name: "10 SIGUSR1",
+        number: 10,
+    },
+    SignalItem {
+        name: "11 SIGSEGV",
+        number: 11,
+    },
+    SignalItem {
+        name: "12 SIGUSR2",
+        number: 12,
+    },
+    SignalItem {
+        name: "13 SIGPIPE",
+        number: 13,
+    },
+    SignalItem {
+        name: "14 SIGALRM",
+        number: 14,
+    },
+    SignalItem {
+        name: "15 SIGTERM",
+        number: 15,
+    },
+    SignalItem {
+        name: "16 SIGSTKFLT",
+        number: 16,
+    },
+    SignalItem {
+        name: "17 SIGCHLD",
+        number: 17,
+    },
+    SignalItem {
+        name: "18 SIGCONT",
+        number: 18,
+    },
+    SignalItem {
+        name: "19 SIGSTOP",
+        number: 19,
+    },
+    SignalItem {
+        name: "20 SIGTSTP",
+        number: 20,
+    },
+    SignalItem {
+        name: "21 SIGTTIN",
+        number: 21,
+    },
+    SignalItem {
+        name: "22 SIGTTOU",
+        number: 22,
+    },
+    SignalItem {
+        name: "23 SIGURG",
+        number: 23,
+    },
+    SignalItem {
+        name: "24 SIGXCPU",
+        number: 24,
+    },
+    SignalItem {
+        name: "25 SIGXFSZ",
+        number: 25,
+    },
+    SignalItem {
+        name: "26 SIGVTALRM",
+        number: 26,
+    },
+    SignalItem {
+        name: "27 SIGPROF",
+        number: 27,
+    },
+    SignalItem {
+        name: "28 SIGWINCH",
+        number: 28,
+    },
+    SignalItem {
+        name: "29 SIGIO",
+        number: 29,
+    },
+    SignalItem {
+        name: "29 SIGPOLL",
+        number: 29,
+    },
+    SignalItem {
+        name: "30 SIGPWR",
+        number: 30,
+    },
+    SignalItem {
+        name: "31 SIGSYS",
+        number: 31,
+    },
+];
+
+/// Port of `const unsigned int Platform_numberOfSignals`
+/// (`linux/Platform.c:141`) — `ARRAYSIZE(Platform_signals)`.
+#[allow(non_upper_case_globals)] // faithful C global name
+pub const Platform_numberOfSignals: usize = Platform_signals.len();
 
 /// (`linux/Platform.c:152`), in `MEMORY_CLASS_*` index order.
 #[allow(non_upper_case_globals)] // faithful C global name
@@ -1555,6 +1706,16 @@ pub fn Platform_getBattery(percent: &mut f64, isOnAC: &mut ACPresence) {
     cache.cachePercent = *percent;
     cache.cacheIsOnAC = *isOnAC;
     cache.cacheTime = now;
+}
+
+/// Port of `static inline void Platform_gettime_realtime(struct timeval* tv,
+/// uint64_t* msec)` (linux `Platform.h:120`), whose entire body forwards to
+/// `Generic_gettime_realtime` (`generic/gettime.c`) — so this is the same
+/// one-line forward, to the ported [`Generic_gettime_realtime`].
+///
+/// [`Generic_gettime_realtime`]: crate::ported::generic::gettime::Generic_gettime_realtime
+pub fn Platform_gettime_realtime(tv: &mut libc::timeval, msec: &mut u64) {
+    crate::ported::generic::gettime::Generic_gettime_realtime(tv, msec);
 }
 
 /// Port of `void Platform_longOptionsUsage(const char* name)` from

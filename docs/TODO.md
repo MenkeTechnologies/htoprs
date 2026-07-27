@@ -1,37 +1,43 @@
-That string is at src/ported/commandline.rs:773, inside a deliberate non-darwin stub:
+# TODO
 
-  src/ported/commandline.rs:572  #[cfg(target_os = "macos")]        pub fn CommandLine_run  ← full assembly
-  src/ported/commandline.rs:766  #[cfg(not(target_os = "macos"))]   pub fn CommandLine_run  ← parses argv, prints, returns 1
+## Linux TUI gate — fixed, pending runtime verification
 
-  So it isn't a runtime detection failure — the Linux runtime object graph was never assembled. cargo check --locked --target x86_64-unknown-linux-gnu
-  --bin htoprs → Finished dev profile ... in 10.24s, so the crate builds for Linux; only the entry path is gated.
+`htoprs` on Linux used to print
 
-  What already exists on the Linux side:
+```
+htoprs: the interactive TUI is wired for macOS (darwin) in this build
+```
 
-  ┌──────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────┐
-  │                          piece                           │                                       location                                       │
-  ├──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
-  │ Machine_new / Machine_scan                               │ src/ported/linux/linuxmachine.rs:1103, :1059                                         │
-  ├──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
-  │ ProcessTable_new / goThroughEntries                      │ src/ported/linux/linuxprocesstable.rs:431, :2912                                     │
-  ├──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
-  │ Platform_init, Platform_meterTypes,                      │ src/ported/linux/platform.rs:1841, :111, :143                                        │
-  │ Platform_memoryClasses                                   │                                                                                      │
-  ├──────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
-  │ meter dispatch                                           │ already #[cfg(not(target_os = "macos"))] use linux::platform::… (e.g.                │
-  │                                                          │ swapmeter.rs:42)                                                                     │
-  └──────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────┘
+and exit 1. The cause was not runtime detection: the Linux runtime object graph
+was never assembled — `CommandLine_run` had a `#[cfg(target_os = "macos")]` full
+body and a `#[cfg(not(target_os = "macos"))]` stub that only parsed argv.
 
-  Three real holes beyond the stub, all verified:
+Wired now:
 
-  1. No LinuxProcessTable_class. Only DarwinProcessTable_class exists (darwinprocesstable.rs:311), and darwin sets super_.super_.klass at :344. Linux
-  ProcessTable_new (:431-461) never sets klass, so Table_scanPrepare/iterate/cleanup fall back to the base defaults and ProcessTable_goThroughEntries
-  never fires — empty process list.
-  2. Realtime resample is macOS-only. screenmanager.rs:366-375 calls darwin::platform::Platform_gettime_realtime with no not(macos) arm, while
-  generic/gettime.rs:13 Generic_gettime_realtime (what htop's Linux macro aliases) is ported and unused there. host.realtimeMs would stay 0, so the
-  delay gate at :380-389 never advances.
-  3. Constructor shape mismatch. Darwin returns Box<DarwinProcessTable> (:331); Linux returns the value (:431). machine.rs:293-294 also has no Linux
-  free branch (leak-only, matches C's exit-time behavior).
+| piece | location |
+|---|---|
+| `LinuxProcessTable_class` scan vtable + `klass` wiring (C `LinuxProcessTable.c:263` `Object_setClass(this, Class(ProcessTable))`) | `src/ported/linux/linuxprocesstable.rs` |
+| `Platform_gettime_realtime` (C `linux/Platform.h:120` → `Generic_gettime_realtime`) | `src/ported/linux/platform.rs` |
+| realtime resample arm in `checkRecalculation` | `src/ported/screenmanager.rs` |
+| `Platform_signals` / `Platform_numberOfSignals` (C `linux/Platform.c:104`) | `src/ported/linux/platform.rs` |
+| `CommandLine_run` / `setCommFilter` generalized to `any(macos, linux)`; `Platform_init` failure now returns 1 as in C | `src/ported/commandline.rs` |
+| Linux process-table free branch in `Machine_delete` | `src/ported/machine.rs` |
 
-  Also note release.yml:33,35 ships x86_64/aarch64 Linux tarballs whose binaries hit this stub, and README.md:141 only says "daily driver on macOS"
-  without stating the Linux artifact is non-interactive.
+Verified: `cargo clippy --all-targets -D warnings` and a full `cargo build`
+link (via `zig cc -target x86_64-linux-gnu`) for `x86_64-unknown-linux-gnu`,
+plus the native macOS suite. **Not yet verified: running the resulting binary on
+a real Linux host** — no container runtime was available on the build machine.
+
+## Remaining Linux gaps
+
+- `Platform_meterTypes` (`src/ported/linux/platform.rs`) lists 27 of the C
+  table's 49 entries (`linux/Platform.c`). Missing: `MemorySwapMeter`,
+  `HugePageMeter`, the six `PressureStall*`, `ZfsArcMeter`,
+  `ZfsCompressedArcMeter`, `ZramMeter`, the three `DiskIO*`, `NetworkIOMeter`,
+  `SELinuxMeter`, `SystemdMeter`, `SystemdUserMeter`, `OpenRCMeter`,
+  `OpenRCUserMeter`, `FileDescriptorMeter`, `GPUMeter`. Each is blocked on its
+  own `MeterClass` static — no `pub static *_class` exists in
+  `src/ported/linux/{pressurestallmeter,zrammeter,hugepagemeter,selinuxmeter,systemdmeter,openrcmeter}.rs`
+  — so they do not appear in Setup's available-meters list on Linux.
+- `release.yml` ships x86_64/aarch64 Linux tarballs; re-run the release smoke
+  test on those artifacts once the runtime check above passes.

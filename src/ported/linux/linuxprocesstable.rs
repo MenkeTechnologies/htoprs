@@ -61,10 +61,13 @@ use crate::ported::process::{
     Process_updateCPUFieldWidths, Process_updateCmdline, Process_updateComm, Process_updateExe,
     Tristate, PROCESS_FLAG_CWD, PROCESS_FLAG_IO, PROCESS_FLAG_SCHEDPOL,
 };
-use crate::ported::processtable::{ProcessTable, ProcessTable_init};
+use crate::ported::processtable::{
+    ProcessTable, ProcessTable_cleanupEntries, ProcessTable_init, ProcessTable_prepareEntries,
+};
 use crate::ported::row::{spaceship_number, Row_updateFieldWidth};
 use crate::ported::scheduling::Scheduling_readProcessPolicy;
 use crate::ported::settings::RowField;
+use crate::ported::table::{Table, TableClass};
 use crate::ported::userstable::{UsersTable, UsersTable_getRef};
 use crate::ported::xutils::{
     saturatingSub, String_eq, String_safeStrncpy, String_startsWith, String_strchrnul,
@@ -119,6 +122,11 @@ pub struct TtyDriver {
 /// `cfg(target_os = "linux")` — the delayacct build is modeled as
 /// Linux-only (see the `libnl` module); non-Linux mirrors the
 /// `HAVE_DELAYACCT`-off variant that omits them.
+///
+/// `#[repr(C)]` guarantees `super_` at offset 0, so htop's
+/// `(LinuxProcessTable*) cast` downcast from the base `Table*` — what the
+/// scan-vtable slots in [`LinuxProcessTable_class`] perform — is sound.
+#[repr(C)]
 pub struct LinuxProcessTable {
     /// C `ProcessTable super` — the embedded base table.
     pub super_: ProcessTable,
@@ -418,6 +426,69 @@ fn LinuxProcessTable_initTtyDrivers(this: &mut LinuxProcessTable) {
     this.ttyDrivers = Some(ttyDrivers);
 }
 
+/// The `TableClass` scan-vtable slots for the Linux process table. These are
+/// the `Table*`-downcasting glue the C `ProcessTable_class`
+/// (`ProcessTable.c:94`) stores as `.prepare`/`.iterate`/`.cleanup`: each C
+/// slot takes `Table* super` and casts it to `ProcessTable*` before
+/// delegating. They live on the `impl` (not as free fns) because they are
+/// vtable glue with no standalone C symbol — the same structural pattern the
+/// darwin table uses — and each re-expresses the corresponding
+/// `ProcessTable_class` slot against the `#[repr(C)]` `LinuxProcessTable`
+/// layout (`super_: ProcessTable` at offset 0, whose `super_: Table` is
+/// likewise at offset 0, so the `*mut Table` → `*mut LinuxProcessTable` cast
+/// is sound).
+impl LinuxProcessTable {
+    /// C `ProcessTable_class.prepare` (`ProcessTable_prepareEntries(Table*)`):
+    /// downcast then delegate to the base [`ProcessTable_prepareEntries`].
+    ///
+    /// # Safety precondition
+    /// `super_` is the base of a live `LinuxProcessTable`.
+    fn scan_prepare(super_: *mut Table) {
+        let this = super_ as *mut LinuxProcessTable;
+        // SAFETY: `super_` is the base of a live `LinuxProcessTable`.
+        ProcessTable_prepareEntries(unsafe { &mut (*this).super_ });
+    }
+
+    /// C `ProcessTable_class.iterate` (`ProcessTable_iterateEntries(Table*)`,
+    /// which calls `ProcessTable_goThroughEntries`). The common
+    /// `ProcessTable_iterateEntries` port routes to the *stubbed* base
+    /// `ProcessTable_goThroughEntries`, so this dispatches straight to the
+    /// Linux [`ProcessTable_goThroughEntries`] — the same platform symbol C
+    /// link-resolves.
+    ///
+    /// # Safety precondition
+    /// `super_` is the base of a live `LinuxProcessTable`.
+    fn scan_iterate(super_: *mut Table) {
+        let this = super_ as *mut LinuxProcessTable;
+        // SAFETY: `super_` is the base of a live `LinuxProcessTable`.
+        ProcessTable_goThroughEntries(unsafe { &mut *this });
+    }
+
+    /// C `ProcessTable_class.cleanup` (`ProcessTable_cleanupEntries(Table*)`):
+    /// downcast then delegate to the base [`ProcessTable_cleanupEntries`].
+    ///
+    /// # Safety precondition
+    /// `super_` is the base of a live `LinuxProcessTable`.
+    fn scan_cleanup(super_: *mut Table) {
+        let this = super_ as *mut LinuxProcessTable;
+        // SAFETY: `super_` is the base of a live `LinuxProcessTable`.
+        ProcessTable_cleanupEntries(unsafe { &mut (*this).super_ });
+    }
+}
+
+/// Port of `const TableClass ProcessTable_class` (`ProcessTable.c:94`), the
+/// class the Linux `LinuxProcessTable` runs under — C's
+/// `Object_setClass(this, Class(ProcessTable))` (`LinuxProcessTable.c:263`)
+/// installs the common `ProcessTable_class`, whose `iterate` link-resolves to
+/// the Linux `ProcessTable_goThroughEntries`. Only the scan-vtable half is
+/// modeled (see [`TableClass`]); the `ObjectClass super` (`extends Table`,
+/// `delete = ProcessTable_delete`) is class identity in Rust.
+pub static LinuxProcessTable_class: TableClass = TableClass {
+    prepare: Some(LinuxProcessTable::scan_prepare),
+    iterate: Some(LinuxProcessTable::scan_iterate),
+    cleanup: Some(LinuxProcessTable::scan_cleanup),
+};
+
 /// Port of `LinuxProcessTable.c:261`. Constructs the Linux process table:
 /// initializes the embedded base [`ProcessTable`], loads the tty-driver
 /// table, probes `/proc/self/smaps_rollup` availability, and records htop's
@@ -441,6 +512,11 @@ pub fn ProcessTable_new(host: *const Machine, pidMatchList: Option<usize>) -> Li
     };
 
     ProcessTable_init(&mut this.super_, host, pidMatchList);
+
+    // Object_setClass(this, Class(ProcessTable)) (`LinuxProcessTable.c:263`) —
+    // wire the scan vtable so Machine_scanTables can dispatch
+    // prepare/iterate/cleanup through it.
+    this.super_.super_.klass = &LinuxProcessTable_class as *const TableClass;
 
     LinuxProcessTable_initTtyDrivers(&mut this);
 

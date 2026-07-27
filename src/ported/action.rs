@@ -1517,13 +1517,12 @@ pub fn actionKill(st: &mut State) -> Htop_Reaction {
     let pre = PRE_SELECTED_SIGNAL.load(Ordering::Relaxed);
 
     // C: Panel* signalsPanel = SignalsPanel_new(preSelectedSignal);
-    // The signal table is per-OS (htop links each Platform.c). Darwin's is
-    // ported; the TUI only runs on darwin, so other targets compile against an
-    // empty table (linux's Platform_signals is not ported yet).
+    // The signal table is per-OS (htop links each Platform.c), so select this
+    // build's by cfg — the same dispatch the meter registry uses.
     #[cfg(target_os = "macos")]
     let signals = crate::ported::darwin::platform::Platform_signals;
     #[cfg(not(target_os = "macos"))]
-    let signals: &[crate::ported::signalspanel::SignalItem] = &[];
+    let signals = crate::ported::linux::platform::Platform_signals;
     let signalsPanel = SignalsPanel_new(pre, signals);
 
     // C: const ListItem* sgn = (ListItem*) Action_pickFromVector(st, signalsPanel, 14, true);

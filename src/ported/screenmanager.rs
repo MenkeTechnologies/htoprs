@@ -363,7 +363,7 @@ pub fn checkRecalculation(
 
     // Platform_gettime_realtime(&host->realtime, &host->realtimeMs): resample
     // the wall clock into host->realtimeMs so the delay gate advances.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let mut tv = libc::timeval {
             tv_sec: 0,
@@ -371,7 +371,10 @@ pub fn checkRecalculation(
         };
         // SAFETY: host aliases the caller-owned Machine for the run.
         let ms = unsafe { &mut (*this.host).realtimeMs };
+        #[cfg(target_os = "macos")]
         crate::ported::darwin::platform::Platform_gettime_realtime(&mut tv, ms);
+        #[cfg(target_os = "linux")]
+        crate::ported::linux::platform::Platform_gettime_realtime(&mut tv, ms);
     }
 
     // newTime = tv_sec*10 + tv_usec/100000 == realtimeMs / 100 (tenths of a

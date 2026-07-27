@@ -290,7 +290,18 @@ pub fn Machine_done(this: &mut Machine) {
             Box::from_raw(pt as *mut crate::ported::darwin::darwinprocesstable::DarwinProcessTable)
         });
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    if let Some(pt) = this.processTable.take() {
+        // SAFETY: `pt` is the linux process table `Box::into_raw`'d by
+        // `CommandLine_run`; the repr(C) `super_`-at-offset-0 chain makes the
+        // base `*mut Table` round-trip to `*mut LinuxProcessTable`, and
+        // `Machine` is its sole owner (no other code frees it), so
+        // reconstructing and dropping the `Box` is a correct, non-double free.
+        drop(unsafe {
+            Box::from_raw(pt as *mut crate::ported::linux::linuxprocesstable::LinuxProcessTable)
+        });
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let _ = this.processTable.take();
 
     // free(this->tables);

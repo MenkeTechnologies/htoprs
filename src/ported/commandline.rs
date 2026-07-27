@@ -519,9 +519,10 @@ pub fn parseArguments(program: &str, argv: &[String]) -> (CommandLineStatus, Com
 /// active table's incremental filter: `IncSet_setFilter(inc, *commFilter)` then
 /// `table->incFilter = IncSet_filter(inc)`, mirroring the live
 /// `MainPanel_eventHandler` filter path. The C `free(*commFilter); *commFilter =
-/// NULL` becomes setting the owned `Option<String>` to `None`. macOS-gated,
-/// matching its only caller ([`CommandLine_run`]).
-#[cfg(target_os = "macos")]
+/// NULL` becomes setting the owned `Option<String>` to `None`. Gated to the
+/// targets that assemble the run graph, matching its only caller
+/// ([`CommandLine_run`]).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn setCommFilter(state: *mut crate::ported::action::State, commFilter: &mut Option<String>) {
     use crate::ported::incset::{IncSet_filter, IncSet_setFilter};
 
@@ -564,21 +565,36 @@ fn setCommFilter(state: *mut crate::ported::action::State, commFilter: &mut Opti
 /// The C run graph is a web of shared pointers that live until `exit`, so the
 /// long-lived objects are heap-allocated with [`Box::into_raw`] (leaked for the
 /// program's lifetime, as the C heap allocations are) and wired with raw
-/// pointers — the faithful analog of the C pointer graph. Only the `macos`
-/// (darwin) platform is assembled today; other targets report the gap and exit
-/// non-zero.
+/// pointers — the faithful analog of the C pointer graph. The `macos` (darwin)
+/// and `linux` platforms are assembled today; other targets report the gap and
+/// exit non-zero.
+///
+/// The platform layer is selected by `cfg` the way htop links one platform's
+/// `Machine`/`ProcessTable`/`Platform` translation units: `PlatformMachine` and
+/// `PlatformProcessTable` alias the concrete per-OS types, and the assembly
+/// below is otherwise identical because both are `#[repr(C)]` with their base
+/// (`super_`) at offset 0.
 ///
 /// [`ScreenManager_run`]: crate::ported::screenmanager::ScreenManager_run
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
     use crate::ported::action::State;
     use crate::ported::crt::{CRT_done, CRT_init, ColorScheme};
-    use crate::ported::darwin::darwinmachine::{DarwinMachine, Machine_new, Machine_scan};
-    use crate::ported::darwin::darwinprocesstable::{DarwinProcessTable, ProcessTable_new};
-    use crate::ported::darwin::platform::Platform_init;
+    #[cfg(target_os = "macos")]
+    use crate::ported::darwin::{
+        darwinmachine::{DarwinMachine as PlatformMachine, Machine_new, Machine_scan},
+        darwinprocesstable::{DarwinProcessTable as PlatformProcessTable, ProcessTable_new},
+        platform::Platform_init,
+    };
     use crate::ported::dynamiccolumn::DynamicColumns_new;
     use crate::ported::hashtable::{Hashtable, Hashtable_new};
     use crate::ported::header::{Header, Header_new, Header_populateFromSettings};
+    #[cfg(target_os = "linux")]
+    use crate::ported::linux::{
+        linuxmachine::{LinuxMachine as PlatformMachine, Machine_new, Machine_scan},
+        linuxprocesstable::{LinuxProcessTable as PlatformProcessTable, ProcessTable_new},
+        platform::Platform_init,
+    };
     use crate::ported::machine::{
         Machine, Machine_populateTablesFromSettings, Machine_scanTables, Machine_setTablesPanel,
     };
@@ -617,28 +633,40 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
         }));
     }
 
-    // Platform_init() — mach-tick / scheduler-tick calibration (darwin).
-    Platform_init();
+    // C: if (!Platform_init()) return 1; — mach-tick / scheduler-tick
+    // calibration on darwin, the procfs + containerization probe on linux
+    // (which reports an unreadable /proc itself before returning false).
+    if !Platform_init() {
+        return 1;
+    }
 
     // UsersTable_new(): the uid->name cache handed to Machine_new; leaked for the
     // program's lifetime (as in C, until exit).
     let users_table: *mut UsersTable = Box::into_raw(Box::new(UsersTable_new()));
 
     // Machine_new(usersTable, userId): userId (uid_t)-1 == "all users".
-    let host_raw: *mut DarwinMachine =
+    let host_raw: *mut PlatformMachine =
         Box::into_raw(Machine_new(Some(users_table as usize), u32::MAX));
     // SAFETY: host_raw is a fresh leaked allocation; the base Machine is at
     // offset 0 (`super_`), matching the C `&this->super` upcast.
     let host_ptr: *mut Machine = unsafe { &mut (*host_raw).super_ };
 
-    // ProcessTable_new(host, pidMatchList).
-    let pt_raw: *mut DarwinProcessTable =
-        Box::into_raw(ProcessTable_new(host_ptr as *const Machine, None));
-    // SAFETY: DarwinProcessTable -> ProcessTable (super_) -> Table (super_).
+    // ProcessTable_new(host, pidMatchList). The darwin constructor already
+    // returns the C heap allocation as a `Box`; the linux one returns the
+    // owned value, so box it here — both end up as the same leaked
+    // `*mut PlatformProcessTable` the C graph holds until exit.
+    #[cfg(target_os = "macos")]
+    let pt_owned: Box<PlatformProcessTable> = ProcessTable_new(host_ptr as *const Machine, None);
+    #[cfg(target_os = "linux")]
+    let pt_owned: Box<PlatformProcessTable> =
+        Box::new(ProcessTable_new(host_ptr as *const Machine, None));
+    let pt_raw: *mut PlatformProcessTable = Box::into_raw(pt_owned);
+    // SAFETY: PlatformProcessTable -> ProcessTable (super_) -> Table (super_).
     let pt_table: *mut Table = unsafe { &mut (*pt_raw).super_.super_ };
 
     // Dynamic tables: DynamicColumns_new is ported; dynamic meters/screens are
-    // empty on stock darwin (no PCP), so an empty owner Hashtable is faithful.
+    // empty on stock darwin and linux alike (no PCP), so an empty owner
+    // Hashtable is faithful.
     let dm: *mut Hashtable = Box::into_raw(Box::new(Hashtable_new(7, true)));
     let dc: *mut Hashtable = Box::into_raw(Box::new(DynamicColumns_new()));
     let ds: *mut Hashtable = Box::into_raw(Box::new(Hashtable_new(7, true)));
@@ -760,17 +788,18 @@ pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
     0
 }
 
-/// Non-darwin [`CommandLine_run`]: the interactive TUI is wired for macOS in this
-/// build. Validates the arguments (so `-h`/`-V`/bad flags still behave), then
-/// reports the platform gap and returns a non-zero exit code.
-#[cfg(not(target_os = "macos"))]
+/// [`CommandLine_run`] for the targets whose platform layer is not wired to the
+/// run graph yet (everything but darwin and linux). Validates the arguments (so
+/// `-h`/`-V`/bad flags still behave), then reports the platform gap and returns
+/// a non-zero exit code.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn CommandLine_run(program: &str, argv: &[String]) -> i32 {
     match parseArguments(program, argv) {
         (CommandLineStatus::OkExit, _) => return 0,
         (CommandLineStatus::ErrorExit, _) => return 1,
         (CommandLineStatus::Ok, _) => {}
     }
-    eprintln!("htoprs: the interactive TUI is wired for macOS (darwin) in this build");
+    eprintln!("htoprs: the interactive TUI is wired for darwin and linux in this build");
     eprintln!("htoprs: run 'htoprs --help' for the command-line options");
     1
 }
