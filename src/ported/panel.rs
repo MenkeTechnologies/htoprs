@@ -1323,10 +1323,17 @@ impl Panel {
     fn print_offset<W: Write>(out: &mut W, y: i32, x: i32, item: &RichString, off: i32, n: i32) {
         for k in 0..n {
             let idx = (off + k) as usize;
-            if idx >= item.chptr.len() {
+            // `mvadd_wchnstr` stops at the terminating null cell, so bound the
+            // blit by `chlen`: index `chlen` holds the terminator and anything
+            // past it is stale (`chptr` only grows, never shrinks). Painting
+            // those cells emits a raw NUL byte (and stale text) to the terminal.
+            if idx >= item.chlen as usize || idx >= item.chptr.len() {
                 break;
             }
             let cell = item.chptr[idx];
+            if cell.chars == '\0' {
+                break;
+            }
             Ncurses::attrset(out, cell.attr);
             Ncurses::mvaddch(out, y, x + k, cell.chars);
         }

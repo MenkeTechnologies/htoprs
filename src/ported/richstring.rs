@@ -584,10 +584,17 @@ pub fn RichString_printoffnVal<W: Write>(
 ) {
     for k in 0..n {
         let idx = (off + k) as usize;
-        if idx >= this.chptr.len() {
+        // `mvadd_wchnstr` stops at the string's terminating null cell, so the
+        // blit is bounded by `chlen` — index `chlen` is the terminator and the
+        // cells past it are stale (`chptr` only ever grows). Painting them
+        // would emit a raw NUL byte (and stale text) to the terminal.
+        if idx >= this.chlen as usize || idx >= this.chptr.len() {
             break;
         }
         let cell = this.chptr[idx];
+        if cell.chars == '\0' {
+            break;
+        }
         Ncurses::attrset(out, cell.attr);
         Ncurses::mvaddch(out, y, x + k, cell.chars);
     }
