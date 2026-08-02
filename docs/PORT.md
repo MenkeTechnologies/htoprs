@@ -3,7 +3,8 @@
 `htoprs` is a **1:1 Rust port of htop**. The goal is 100% behavioral parity
 with upstream htop. This is **not** a reimplementation, not a rewrite, not
 "inspired by" htop. Every line of Rust code must trace back to a specific
-line of upstream C code in `src/htop/Src/`.
+line of upstream C code in the htop checkout the tools read via
+`$HTOP_C_SOURCE` (default `~/forkedRepos/htop`).
 
 ---
 
@@ -57,10 +58,12 @@ the only reason.**
    (c) abandoning the change.
 
 
-**Test enforcement:** `tests/ported_fn_names_match_c.rs` rejects any
+**Build enforcement:** the port-purity gate in `build.rs` rejects any
 fn under `src/ported/` whose name is neither in
-`docs/htop_c_functions.txt` nor in
-`tests/data/fake_fn_allowlist.txt`. Adding a new name to the
+`tests/data/htop_c_fn_names.txt` nor in
+`tests/data/fake_fn_allowlist.txt`. It runs on every `cargo build` /
+`test` / `check` and cannot be bypassed by `cargo test --test X`.
+Adding a new name to the
 allowlist without prior maintainer approval is itself a violation —
 the allowlist is not a free pass, it's the audit trail of granted
 exceptions.

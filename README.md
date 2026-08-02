@@ -30,11 +30,14 @@ The C source is the specification. Ports are faithful — the original C is
 translated function-for-function, never reimplemented from scratch. This is
 enforced mechanically, following the same precedent as `zshrs`.
 
-- **Spec:** htop **3.5.1**, 131 `.c` files — vendored in-repo as the
-  `vendor/htop` submodule (pinned to the 3.5.1 tag) and mirrored at the
-  developer checkout `~/forkedRepos/htop`. `docs/port_report.html` is generated
-  against `vendor/htop`; the snapshot/report tools take `$HTOP_C_SOURCE`
-  (default `~/forkedRepos/htop`) to point at either.
+- **Spec:** htop **3.5.1**, 131 `.c` files. The C source is **not** vendored in
+  this repo — the tools that need it read it from `$HTOP_C_SOURCE`, defaulting
+  to a local checkout at `~/forkedRepos/htop`, and abort with
+  `ERROR: htop source not found at <path>` when that directory is missing
+  (`scripts/gen_port_report.py`, `tests/data/extract_c_fn_names.sh`). The build
+  itself needs no checkout: the C-function snapshot
+  `tests/data/htop_c_fn_names.txt` is committed, so `cargo build` and the
+  port-purity gate work from a bare clone.
 - **Port tree:** `src/ported/<file>.rs` — one Rust module per C file. Each `fn`
   carries a `/// Port of` citation naming its `<File>.c:<line>` origin.
 - **Extensions tree:** `src/extensions/<name>.rs` — htoprs-original code that is

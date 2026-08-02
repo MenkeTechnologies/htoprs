@@ -936,8 +936,9 @@ pub(crate) fn draw_box(
 
 /// Draw the keyboard-shortcuts help overlay. Ported from iftoprs `draw_help`;
 /// the section/key content is populated with htoprs (htop) bindings — the
-/// function-bar keys (`F1`..`F10`) and the theme-extension keys (`c`/`C`/`x`/`g`)
-/// — rather than iftop's network-flow keys.
+/// function-bar keys (`F1`..`F10`) and the extension keys (`z` chooser, `~`
+/// editor, `g` header, `B` border, `b` bar style) — rather than iftop's
+/// network-flow keys.
 pub fn draw_help(buf: &mut Buffer, area: Rect, state: &OverlayState) {
     let t = &state.theme;
     let bw = 92u16.min(area.width.saturating_sub(4));

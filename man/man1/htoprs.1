@@ -1,8 +1,7 @@
 .\" htoprs.1 — man page for htoprs(1)
 .\" Ported from htop's htop.1.in (htop 3.5.1). htoprs is a faithful
-.\" Rust port of htop; the command-line interface documented here is
-.\" the port target. Interactive-runtime commands live in htop(1)
-.\" until the TUI is ported.
+.\" Rust port of htop; this page documents the command-line interface.
+.\" Interactive-runtime commands are documented in htoprsall(1).
 .TH HTOPRS 1 "2026-07-10" "htoprs 0.5.12" "User Commands"
 .SH NAME
 htoprs \- interactive process viewer (a faithful Rust port of htop)
@@ -25,14 +24,11 @@ them in a tree, select multiple processes, and act on them at once.
 Tasks such as killing and renicing can be done without entering PIDs.
 .LP
 .B PORT STATUS:
-the port is at an early stage. The
-.BR XUtils.c
-string and math utility layer is ported and tested; the TUI, process
-table, meters, and platform data collection are not yet ported, so the
-binary does not yet present an interactive interface. The options below
-document the CLI contract being ported. For interactive-runtime
-commands, see
-.BR htop (1).
+the interactive TUI, process table, meters, and the platform data
+collectors are ported and run on macOS (darwin) and Linux. Per-file and
+per-function coverage against the htop 3.5.1 C source is published in the
+port report. For interactive-runtime commands, see
+.BR htoprsall (1).
 .SH COMMAND-LINE OPTIONS
 Mandatory arguments to long options are mandatory for short options too.
 .TP
@@ -91,6 +87,7 @@ requesting a sort order with \-s.
 \fB\-H \-\-highlight-changes[=DELAY]\fR
 Highlight new and old processes.
 .SH SEE ALSO
+.BR htoprsall (1),
 .BR htop (1),
 .BR top (1),
 .BR ps (1)
