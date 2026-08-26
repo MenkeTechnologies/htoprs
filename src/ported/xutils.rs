@@ -252,7 +252,7 @@ const MOD37_BIT_POSITION: [u8; 37] = [
 /// (`-x & x`, wrapping negation on the unsigned value) and maps it to
 /// its position via the mod-37 table.
 pub fn countTrailingZeros(x: u32) -> u32 {
-    MOD37_BIT_POSITION[((x.wrapping_neg() & x) % 37) as usize] as u32
+    MOD37_BIT_POSITION[(x.isolate_lowest_one() % 37) as usize] as u32
 }
 
 #[cfg(test)]

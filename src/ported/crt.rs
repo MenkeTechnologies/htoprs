@@ -2071,7 +2071,7 @@ pub fn CRT_done() {
 /// Port of `void CRT_fatalError(const char* note)` from `CRT.c:1308`.
 ///
 /// Captures the current OS error (`strerror(errno)` via
-/// [`io::Error::last_os_error`]), restores the terminal with
+/// `io::Error::last_os_error`), restores the terminal with
 /// [`CRT_done`], writes `"<note>: <error>\n"` to stderr (C:
 /// `fprintf(stderr, "%s: %s\n", note, sysMsg)`), and exits with code 2.
 /// The message is built by `Crt::fatal_error_message` so it is testable
