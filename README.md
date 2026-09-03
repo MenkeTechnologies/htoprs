@@ -140,7 +140,7 @@ enforced mechanically, following the same precedent as `zshrs`.
 
 ## Current state
 
-The port covers **1069 of 1093 C functions (97.8%)** across **130 of the 131 C
+The port covers **1068 of 1101 C functions (97.0%)** across **130 of the 131 C
 files**, with 1 stub remaining — the interactive TUI assembles and runs on both
 macOS (darwin) and Linux; it is a daily driver on macOS. The
 core is ported end-to-end: the process model and table build (`Process`,
