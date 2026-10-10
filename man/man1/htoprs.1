@@ -7,7 +7,7 @@
 htoprs \- interactive process viewer (a faithful Rust port of htop)
 .SH SYNOPSIS
 .B htoprs
-.RB [ \-dCFhpustvH ]
+.RB [ \-CdFhHMnpstUuV ]
 .SH DESCRIPTION
 .B htoprs
 is a Rust port of
@@ -45,7 +45,7 @@ Filter processes by terms matching the commands. The terms are matched
 case-insensitive and as fixed strings (not regexps). You can separate
 multiple terms with "|".
 .TP
-\fB\-\-no-function-bar\fR
+\fB\-\-no-function-bar \-\-no-functionbar\fR
 Hide the function bar.
 .TP
 \fB\-h \-\-help\fR
@@ -80,12 +80,14 @@ Disable all system and process changing features.
 \fB\-V \-\-version\fR
 Output version information and exit.
 .TP
-\fB\-t \-\-tree\fR
+\fB\-t \-\-tree[=MODE]\fR
 Show processes in tree view. This can be used to force a tree view when
-requesting a sort order with \-s.
+requesting a sort order with \-s. The optional MODE sets the tree
+sort stability: classic (0), soft (1) or hard (2).
 .TP
 \fB\-H \-\-highlight-changes[=DELAY]\fR
-Highlight new and old processes.
+Highlight new and old processes. The optional DELAY (seconds, minimum 1)
+is given as the next argument to \-H (\-H 5) or as \-\-highlight-changes=5.
 .SH SEE ALSO
 .BR htoprsall (1),
 .BR htop (1),

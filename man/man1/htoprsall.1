@@ -74,7 +74,7 @@ For a shorter quick-reference page see
 htoprs \- interactive process viewer (a faithful Rust port of htop)
 .SH SYNOPSIS
 .B htoprs
-.RB [ \-dCFhpustvH ]
+.RB [ \-CdFhHMnpstUuV ]
 .RI [ OPTIONS ]
 .SH DESCRIPTION
 .B htoprs
@@ -140,7 +140,7 @@ Show only the commands matching the given filter. Terms are matched
 case-insensitively as fixed strings (not regular expressions); separate
 multiple terms with "|".
 .TP
-\fB\-\-no\-function\-bar\fR
+\fB\-\-no\-function\-bar\fR, \fB\-\-no\-functionbar\fR
 Hide the function bar at the bottom of the screen.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
@@ -157,10 +157,11 @@ for the column list. This forces a flat (list) view unless
 is also given, in which case sorting applies to the direct children of
 each process within the tree.
 .TP
-\fB\-t\fR, \fB\-\-tree\fR
+\fB\-t\fR, \fB\-\-tree\fR[=\fIMODE\fR]
 Show processes in tree view. Combine with
 .B \-s
-to force a tree while requesting a sort order.
+to force a tree while requesting a sort order. The optional MODE sets the
+tree sort stability: classic (0), soft (1) or hard (2).
 .TP
 \fB\-u\fR, \fB\-\-user\fR[=\fIUSERNAME\fR|\fIUID\fR]
 Show only the processes of a given user, or of the current user if the
@@ -184,7 +185,8 @@ no affinity or IO-priority changes. A safe observation-only mode.
 .TP
 \fB\-H\fR, \fB\-\-highlight\-changes\fR[=\fIDELAY\fR]
 Highlight new and old processes. With an optional DELAY (in seconds),
-control how long a change stays highlighted.
+control how long a change stays highlighted; pass it as the next argument
+(\fB\-H 5\fR) or as \fB\-\-highlight\-changes=5\fR.
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Output version information and exit.
@@ -378,7 +380,7 @@ l l.
 .B Key|.B Action
 F5 / t|Toggle tree view
 + / \- / *|Expand / collapse (see chapter 5)
-F / \-\-follow|Follow the selected process as the list re-sorts
+F|Follow the selected process as the list re-sorts
 u|Show only one user's processes (chooser)
 H|Hide / show userland process threads
 K|Hide / show kernel threads
@@ -473,17 +475,19 @@ category of the setup screen:
 .PP
 .B Default
 ,
-.B Monochrome
+.B Monochromatic
 ,
 .B "Black on White"
 ,
 .B "Light Terminal"
 ,
-.B "MC (Midnight Commander)"
+.B MC
 ,
 .B "Black Night"
+,
+.B "Broken Gray"
 , and
-.BR "Broken Gray" .
+.BR Nord .
 .RE
 .PP
 Start in monochrome directly with
@@ -572,7 +576,8 @@ Overrides the base directory for
 Selects terminal capabilities; also gates mouse and Unicode support.
 .TP
 .B NO_COLOR
-When set, color is suppressed even on a color terminal (equivalent to
+When set to a non-empty value, color is suppressed even on a color
+terminal (equivalent to
 .BR \-C ).
 .SH "16. EXIT STATUS"
 .TP
@@ -581,8 +586,8 @@ Successful completion (including a clean quit with
 .BR F10 / q ).
 .TP
 .B 1
-Invalid option, invalid sort key, invalid PID list, or a fatal runtime
-error.
+Invalid option or option argument (sort key, delay, iteration count,
+user, tree mode, filter), or an unsupported non-option argument.
 .SH "17. EXAMPLES"
 .PP
 Default interactive view:
@@ -637,7 +642,7 @@ htoprs \-\-sort\-key help
 Highlight process changes for 5 seconds each:
 .RS
 .nf
-htoprs \-H=5
+htoprs \-H 5
 .fi
 .RE
 .SH "18. PORTING NOTES"
@@ -662,11 +667,7 @@ htop's exactly so that scripts and muscle memory carry over unchanged.
 .BR kill (1),
 .BR renice (1),
 .BR lsof (8),
-.BR strace (1),
-.BR iftoprsall (1),
-.BR lsofrsall (1),
-.BR nmaprsall (1),
-.BR zshrsall (1)
+.BR strace (1)
 .SH AUTHORS
 htoprs is written by MenkeTechnologies
 .RI < https://github.com/MenkeTechnologies >
