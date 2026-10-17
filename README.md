@@ -30,7 +30,7 @@ The C source is the specification. Ports are faithful — the original C is
 translated function-for-function, never reimplemented from scratch. This is
 enforced mechanically, following the same precedent as `zshrs`.
 
-- **Spec:** htop **3.5.1**, 131 `.c` files. The C source is **not** vendored in
+- **Spec:** htop **3.5.1**. The C source is **not** vendored in
   this repo — the tools that need it read it from `$HTOP_C_SOURCE`, defaulting
   to a local checkout at `~/forkedRepos/htop`, and abort with
   `ERROR: htop source not found at <path>` when that directory is missing
@@ -140,8 +140,7 @@ enforced mechanically, following the same precedent as `zshrs`.
 
 ## Current state
 
-The port covers **1068 of 1101 C functions (97.0%)** across **130 of the 131 C
-files**, with 1 stub remaining — the interactive TUI assembles and runs on both
+The port covers the htop C functions and files tallied in `docs/port_report.html` — the interactive TUI assembles and runs on both
 macOS (darwin) and Linux; it is a daily driver on macOS. The
 core is ported end-to-end: the process model and table build (`Process`,
 `ProcessTable`, `Table`, `Row`, `Machine`), the container/util layer (`Vector`,
@@ -155,10 +154,9 @@ dragonflybsd / solaris). Functions that need genuinely unportable C substrate
 (the `xMalloc` family, raw `Object**`/bucket-table internals, varargs
 formatters) stay intentionally unported; a shrinking set of honest `todo!()`
 stubs marks work still in flight. Overall and per-file coverage — real ports vs
-stubs — lives in `docs/port_report.html` (derived from source at run time —
-nothing hardcoded).
+stubs — lives in `docs/port_report.html` (derived from source at run time).
 
-On top of the port sits an `src/extensions/` layer (21 modules, exempt from the
+On top of the port sits an `src/extensions/` layer (exempt from the
 port-purity gate) — the named color-theme system, the help/theme overlay, and
 the live monitoring suite (per-PID history, alerts, memory-exhaustion forecast,
 braille CPU graphs, finder, diffs, exporters) described above.
